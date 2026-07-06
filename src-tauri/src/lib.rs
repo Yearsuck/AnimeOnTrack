@@ -40,6 +40,9 @@ pub fn run() {
             commands::open_episode,
             commands::set_seen,
             commands::list_episodes,
+            commands::rescan_airing,
+            commands::get_mirrors,
+            commands::set_mirrors,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

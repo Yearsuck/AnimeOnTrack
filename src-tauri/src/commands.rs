@@ -3,7 +3,7 @@ use crate::db::Db;
 use crate::diff::new_episodes;
 use crate::models::{Episode, Series};
 use crate::player::{BrowserPlayer, EpisodePlayer};
-use crate::scraper_engine::fetch_html;
+use crate::scraper_engine::{fetch_html, ScrapeResult};
 use std::sync::Mutex;
 use tauri::{AppHandle, State};
 
@@ -13,6 +13,7 @@ pub struct AppState {
 }
 
 const SOURCE_NAME: &str = "AnimeYT";
+const MIRRORS_KEY: &str = "mirror_urls";
 
 fn adapter() -> AnimeytxAdapter {
     AnimeytxAdapter
@@ -26,29 +27,137 @@ fn get_source_id(state: &State<AppState>) -> Result<i64, String> {
         .ok_or_else(|| "no source configured; run scan_airing first".to_string())
 }
 
-/// First-run + manual re-scan: store base_url, scrape airing list, upsert series.
-#[tauri::command]
-pub async fn scan_airing(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    base_url: String,
+fn normalize(url: &str) -> String {
+    url.trim().trim_end_matches('/').to_string()
+}
+
+fn load_mirrors(db: &Db) -> Result<Vec<String>, String> {
+    let raw = db.get_setting(MIRRORS_KEY).map_err(|e| e.to_string())?;
+    Ok(raw
+        .map(|s| s.lines().map(normalize).filter(|l| !l.is_empty()).collect())
+        .unwrap_or_default())
+}
+
+fn save_mirrors(db: &Db, mirrors: &[String]) -> Result<(), String> {
+    db.set_setting(MIRRORS_KEY, &mirrors.join("\n"))
+        .map_err(|e| e.to_string())
+}
+
+/// Add `url` to the front of `mirrors` if not already present (case-insensitive),
+/// otherwise leave the existing order alone.
+fn with_mirror(mirrors: Vec<String>, url: &str) -> Vec<String> {
+    let url = normalize(url);
+    if mirrors.iter().any(|m| m.eq_ignore_ascii_case(&url)) {
+        mirrors
+    } else {
+        let mut out = vec![url];
+        out.extend(mirrors);
+        out
+    }
+}
+
+/// Try `path` (e.g. "/anime-en-emision/" or "/tv/some-series/") against each
+/// mirror in order, returning the first successful scrape along with the
+/// mirror that worked. Site mirrors are near-identical clones of the same
+/// content, so falling through to the next one on failure is a reasonable and
+/// cheap recovery strategy.
+async fn scrape_via_mirrors(
+    app: &AppHandle,
+    mirrors: &[String],
+    path: &str,
+) -> Result<(ScrapeResult, String), String> {
+    if mirrors.is_empty() {
+        return Err("no site URLs configured".into());
+    }
+    let mut last_err = String::new();
+    for mirror in mirrors {
+        let url = format!("{mirror}{path}");
+        match fetch_html(app, &url).await {
+            Ok(r) => return Ok((r, mirror.clone())),
+            Err(e) => last_err = e.to_string(),
+        }
+    }
+    Err(format!("all mirrors failed; last error: {last_err}"))
+}
+
+/// Apply any base64 cover images found during the scrape onto the parsed
+/// series list, replacing their (Cloudflare-blocked) remote poster URL.
+fn apply_covers(mut series: Vec<Series>, covers: &std::collections::HashMap<String, String>) -> Vec<Series> {
+    for s in &mut series {
+        if let Some(remote) = &s.cover_url {
+            if let Some(data_uri) = covers.get(remote) {
+                s.cover_url = Some(data_uri.clone());
+            }
+        }
+    }
+    series
+}
+
+async fn scan_airing_via_mirrors(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    mirrors: Vec<String>,
 ) -> Result<Vec<Series>, String> {
     let a = adapter();
-    let url = a.airing_url(&base_url);
-    let html = fetch_html(&app, &url).await.map_err(|e| e.to_string())?;
-    let series = a.parse_airing(&html).map_err(|e| e.to_string())?;
+    // airing_url() just appends a fixed path; reuse it against an empty base to get that path alone.
+    let path = a.airing_url("").to_string();
+    let (scraped, working_mirror) = scrape_via_mirrors(app, &mirrors, &path).await?;
+    let series = a.parse_airing(&scraped.html).map_err(|e| e.to_string())?;
     if series.is_empty() {
         return Err("no series parsed; site layout may have changed".into());
     }
+    let series = apply_covers(series, &scraped.covers);
+
     let db = state.db.lock().unwrap();
+    save_mirrors(&db, &mirrors)?;
     let src = db
-        .upsert_source(SOURCE_NAME, base_url.trim_end_matches('/'))
+        .upsert_source(SOURCE_NAME, &working_mirror)
         .map_err(|e| e.to_string())?;
     for s in &series {
         db.upsert_series(src, s).map_err(|e| e.to_string())?;
     }
     *state.source_id.lock().unwrap() = Some(src);
     db.list_airing(src).map_err(|e| e.to_string())
+}
+
+/// First-run scan: seed the mirror list with `base_url` (kept first if new),
+/// then scan the airing list trying every configured mirror in order.
+#[tauri::command]
+pub async fn scan_airing(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    base_url: String,
+) -> Result<Vec<Series>, String> {
+    let existing = {
+        let db = state.db.lock().unwrap();
+        load_mirrors(&db)?
+    };
+    let mirrors = with_mirror(existing, &base_url);
+    scan_airing_via_mirrors(&app, &state, mirrors).await
+}
+
+/// Re-scan the airing list using only the mirrors already configured in
+/// Settings (no new URL supplied).
+#[tauri::command]
+pub async fn rescan_airing(app: AppHandle, state: State<'_, AppState>) -> Result<Vec<Series>, String> {
+    let mirrors = {
+        let db = state.db.lock().unwrap();
+        load_mirrors(&db)?
+    };
+    scan_airing_via_mirrors(&app, &state, mirrors).await
+}
+
+#[tauri::command]
+pub fn get_mirrors(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    let db = state.db.lock().unwrap();
+    load_mirrors(&db)
+}
+
+#[tauri::command]
+pub fn set_mirrors(state: State<'_, AppState>, urls: Vec<String>) -> Result<(), String> {
+    let db = state.db.lock().unwrap();
+    let cleaned: Vec<String> = urls.iter().map(|u| normalize(u)).filter(|u| !u.is_empty()).collect();
+    save_mirrors(&db, &cleaned)
 }
 
 #[tauri::command]
@@ -68,29 +177,41 @@ pub fn set_followed(
     db.set_followed(series_id, followed).map_err(|e| e.to_string())
 }
 
-/// For each followed series: scrape its page, insert new episodes. Returns count of new episodes.
+/// For each followed series: scrape its page (falling back across mirrors),
+/// insert new episodes. Returns count of new episodes.
 #[tauri::command]
 pub async fn refresh(app: AppHandle, state: State<'_, AppState>) -> Result<i64, String> {
     let src = get_source_id(&state)?;
-    let followed = {
+    let (followed, mirrors) = {
         let db = state.db.lock().unwrap();
-        db.list_followed(src).map_err(|e| e.to_string())?
+        (
+            db.list_followed(src).map_err(|e| e.to_string())?,
+            load_mirrors(&db)?,
+        )
     };
     let a = adapter();
     let mut total_new = 0i64;
     for s in followed {
-        let html = match fetch_html(&app, &s.url).await {
-            Ok(h) => h,
-            Err(_) => continue, // unreachable series: skip, keep cached data
+        let path = match url::Url::parse(&s.url) {
+            Ok(u) => format!("{}{}", u.path(), u.query().map(|q| format!("?{q}")).unwrap_or_default()),
+            Err(_) => continue, // malformed stored url: skip, keep cached data
         };
-        let scraped = match a.parse_series(&html) {
+        let (scraped, working_mirror) = match scrape_via_mirrors(&app, &mirrors, &path).await {
+            Ok(r) => r,
+            Err(_) => continue, // unreachable on every mirror: skip, keep cached data
+        };
+        let eps = match a.parse_series(&scraped.html) {
             Ok(eps) => eps,
             Err(_) => continue, // layout change: skip, don't wipe
         };
         {
             let db = state.db.lock().unwrap();
+            let new_url = format!("{working_mirror}{path}");
+            if new_url != s.url {
+                db.update_series_url(s.id, &new_url).map_err(|e| e.to_string())?;
+            }
             let known = db.existing_episode_urls(s.id).map_err(|e| e.to_string())?;
-            for mut e in new_episodes(&scraped, &known) {
+            for mut e in new_episodes(&eps, &known) {
                 e.series_id = s.id;
                 db.insert_episode(&e).map_err(|e| e.to_string())?;
                 total_new += 1;

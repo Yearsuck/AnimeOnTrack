@@ -95,6 +95,33 @@ impl Db {
         Ok(())
     }
 
+    /// Update a series' canonical URL (used when a mirror fallback succeeds on
+    /// a different host than the one currently stored).
+    pub fn update_series_url(&self, series_id: i64, url: &str) -> Result<()> {
+        self.conn
+            .execute("UPDATE series SET url=?1 WHERE id=?2", (url, series_id))?;
+        Ok(())
+    }
+
+    pub fn get_setting(&self, key: &str) -> Result<Option<String>> {
+        let v = self
+            .conn
+            .query_row("SELECT value FROM settings WHERE key=?1", [key], |r| {
+                r.get::<_, String>(0)
+            })
+            .ok();
+        Ok(v)
+    }
+
+    pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO settings(key, value) VALUES(?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, value),
+        )?;
+        Ok(())
+    }
+
     fn row_to_series(r: &rusqlite::Row) -> rusqlite::Result<crate::models::Series> {
         Ok(crate::models::Series {
             id: r.get("id")?,

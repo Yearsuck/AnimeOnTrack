@@ -4,7 +4,6 @@ import { AiringGrid } from "./views/AiringGrid";
 import { Pending } from "./views/Pending";
 import { SeriesDetail } from "./views/SeriesDetail";
 import { Settings } from "./views/Settings";
-import { LogPanel } from "./views/LogPanel";
 import { listAiring, refresh, pendingCount } from "./api";
 import type { Series } from "./types";
 
@@ -61,25 +60,16 @@ export default function App() {
     setView("detail");
   }
 
-  if (view === "loading")
-    return (
-      <>
-        <div className="empty">Cargando…</div>
-        <LogPanel />
-      </>
-    );
+  if (view === "loading") return <div className="empty">Cargando…</div>;
 
   if (view === "onboarding")
     return (
-      <>
-        <Onboarding
-          onDone={async () => {
-            await refreshBadge();
-            setView("airing");
-          }}
-        />
-        <LogPanel />
-      </>
+      <Onboarding
+        onDone={async () => {
+          await refreshBadge();
+          setView("airing");
+        }}
+      />
     );
 
   const Tab = ({ id, label }: { id: View; label: string }) => (
@@ -120,8 +110,6 @@ export default function App() {
           onChanged={refreshBadge}
         />
       )}
-
-      <LogPanel />
     </>
   );
 }

@@ -23,3 +23,9 @@ export const setSeen = (episodeId: number, seen: boolean) =>
 
 export const listEpisodes = (seriesId: number) =>
   invoke<Episode[]>("list_episodes", { seriesId });
+
+export const rescanAiring = () => invoke<Series[]>("rescan_airing");
+
+export const getMirrors = () => invoke<string[]>("get_mirrors");
+
+export const setMirrors = (urls: string[]) => invoke<void>("set_mirrors", { urls });
