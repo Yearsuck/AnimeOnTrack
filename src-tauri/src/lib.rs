@@ -1,6 +1,7 @@
 mod db;
 mod diff;
 mod models;
+mod player;
 mod scraper_engine;
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
