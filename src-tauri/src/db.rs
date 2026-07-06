@@ -158,10 +158,37 @@ impl Db {
         Ok(id)
     }
 
-    pub fn mark_seen(&self, episode_id: i64) -> Result<()> {
-        self.conn
-            .execute("UPDATE episodes SET seen=1 WHERE id=?1", [episode_id])?;
+    /// Set an episode's seen flag either way (lets the user un-mark).
+    pub fn set_seen(&self, episode_id: i64, seen: bool) -> Result<()> {
+        self.conn.execute(
+            "UPDATE episodes SET seen=?1 WHERE id=?2",
+            (seen as i64, episode_id),
+        )?;
         Ok(())
+    }
+
+    /// All episodes of a series (seen or not), oldest number first — the
+    /// progress view for "which episode am I on".
+    pub fn list_series_episodes(&self, series_id: i64) -> Result<Vec<crate::models::Episode>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, series_id, number, title, url, released_at, seen
+             FROM episodes WHERE series_id=?1
+             ORDER BY CAST(number AS INTEGER) ASC, id ASC",
+        )?;
+        let rows = stmt
+            .query_map([series_id], |r| {
+                Ok(crate::models::Episode {
+                    id: r.get(0)?,
+                    series_id: r.get(1)?,
+                    number: r.get(2)?,
+                    title: r.get(3)?,
+                    url: r.get(4)?,
+                    released_at: r.get(5)?,
+                    seen: r.get::<_, i64>(6)? != 0,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
     }
 
     pub fn pending_count(&self) -> Result<i64> {
@@ -274,7 +301,7 @@ mod tests {
         assert_eq!(eid, eid_dup);
 
         assert_eq!(db.pending_count().unwrap(), 1);
-        db.mark_seen(eid).unwrap();
+        db.set_seen(eid, true).unwrap();
         assert_eq!(db.pending_count().unwrap(), 0);
     }
 

@@ -1,7 +1,7 @@
 use crate::models::Episode;
 use anyhow::Result;
 use tauri::AppHandle;
-use tauri_plugin_shell::ShellExt;
+use tauri_plugin_opener::OpenerExt;
 
 /// Strategy for "watching" an episode. v1 opens the browser; a future
 /// EmbeddedPlayer can implement the same trait.
@@ -13,7 +13,7 @@ pub struct BrowserPlayer;
 
 impl EpisodePlayer for BrowserPlayer {
     fn open(&self, app: &AppHandle, episode: &Episode) -> Result<()> {
-        app.shell().open(&episode.url, None)?;
+        app.opener().open_url(&episode.url, None::<&str>)?;
         Ok(())
     }
 }

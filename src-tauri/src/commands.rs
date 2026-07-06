@@ -124,16 +124,12 @@ pub fn pending_count(state: State<'_, AppState>) -> Result<i64, String> {
     db.pending_count().map_err(|e| e.to_string())
 }
 
-/// Open an episode in the browser and mark it seen.
+/// Open an episode in the browser. Does NOT mark it seen — the user marks
+/// seen/unseen explicitly via `set_seen`.
 #[tauri::command]
-pub fn open_episode(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    episode_id: i64,
-    url: String,
-) -> Result<(), String> {
+pub fn open_episode(app: AppHandle, url: String) -> Result<(), String> {
     let ep = Episode {
-        id: episode_id,
+        id: 0,
         series_id: 0,
         number: String::new(),
         title: None,
@@ -141,7 +137,19 @@ pub fn open_episode(
         released_at: None,
         seen: false,
     };
-    BrowserPlayer.open(&app, &ep).map_err(|e| e.to_string())?;
+    BrowserPlayer.open(&app, &ep).map_err(|e| e.to_string())
+}
+
+/// Mark an episode seen or unseen (persisted).
+#[tauri::command]
+pub fn set_seen(state: State<'_, AppState>, episode_id: i64, seen: bool) -> Result<(), String> {
     let db = state.db.lock().unwrap();
-    db.mark_seen(episode_id).map_err(|e| e.to_string())
+    db.set_seen(episode_id, seen).map_err(|e| e.to_string())
+}
+
+/// All episodes of a series (progress view), oldest first.
+#[tauri::command]
+pub fn list_episodes(state: State<'_, AppState>, series_id: i64) -> Result<Vec<Episode>, String> {
+    let db = state.db.lock().unwrap();
+    db.list_series_episodes(series_id).map_err(|e| e.to_string())
 }
