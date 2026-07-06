@@ -1,46 +1,126 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Onboarding } from "./views/Onboarding";
 import { AiringGrid } from "./views/AiringGrid";
 import { Pending } from "./views/Pending";
+import { SeriesDetail } from "./views/SeriesDetail";
 import { Settings } from "./views/Settings";
 import { LogPanel } from "./views/LogPanel";
-import { listAiring, refresh } from "./api";
+import { listAiring, refresh, pendingCount } from "./api";
+import type { Series } from "./types";
 
-type View = "loading" | "onboarding" | "pending" | "airing" | "settings";
+type View = "loading" | "onboarding" | "pending" | "airing" | "settings" | "detail";
 
 export default function App() {
   const [view, setView] = useState<View>("loading");
+  const [selected, setSelected] = useState<Series | null>(null);
+  const [pending, setPending] = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
 
-  // Decide first screen: onboarding if no source yet, else pending.
+  const refreshBadge = useCallback(async () => {
+    try {
+      setPending(await pendingCount());
+    } catch {
+      /* no source yet */
+    }
+  }, []);
+
+  // Decide first screen: onboarding if no source yet, else pending (+ refresh-on-open).
+  // Guarded against React StrictMode's dev-only double-invoke so we don't hit
+  // the scraped site twice on startup.
+  const startedRef = useRef(false);
   useEffect(() => {
+    if (startedRef.current) return;
+    startedRef.current = true;
     (async () => {
       try {
         await listAiring(); // throws if no source configured
-        await refresh().catch(() => 0); // refresh-on-open, best effort
         setView("pending");
+        setRefreshing(true);
+        await refresh().catch(() => 0);
+        setRefreshing(false);
+        await refreshBadge();
       } catch {
         setView("onboarding");
       }
     })();
-  }, []);
+  }, [refreshBadge]);
+
+  async function doRefresh() {
+    setRefreshing(true);
+    try {
+      await refresh();
+    } finally {
+      setRefreshing(false);
+      await refreshBadge();
+      setView("pending");
+    }
+  }
+
+  function openSeries(s: Series) {
+    setSelected(s);
+    setView("detail");
+  }
+
+  if (view === "loading")
+    return (
+      <>
+        <div className="empty">Cargando…</div>
+        <LogPanel />
+      </>
+    );
+
+  if (view === "onboarding")
+    return (
+      <>
+        <Onboarding
+          onDone={async () => {
+            await refreshBadge();
+            setView("airing");
+          }}
+        />
+        <LogPanel />
+      </>
+    );
+
+  const Tab = ({ id, label }: { id: View; label: string }) => (
+    <button
+      className={`tab ${view === id ? "active" : ""}`}
+      onClick={() => setView(id)}
+    >
+      {label}
+      {id === "pending" && pending > 0 && <span className="badge">{pending}</span>}
+    </button>
+  );
 
   return (
     <>
-      {view === "loading" && <div style={{ padding: 16 }}>Loading…</div>}
-      {view === "onboarding" && <Onboarding onDone={() => setView("airing")} />}
-      {(view === "pending" || view === "airing" || view === "settings") && (
-        <div>
-          <nav style={{ display: "flex", gap: 8, padding: 8, borderBottom: "1px solid #ccc" }}>
-            <button onClick={() => setView("pending")}>Pending</button>
-            <button onClick={() => setView("airing")}>Airing</button>
-            <button onClick={() => setView("settings")}>Settings</button>
-            <button onClick={async () => { await refresh(); setView("pending"); }}>Refresh</button>
-          </nav>
-          {view === "pending" && <Pending />}
-          {view === "airing" && <AiringGrid />}
-          {view === "settings" && <Settings />}
+      <div className="topbar">
+        <div className="brand">
+          <span className="dot" />
+          AnimeOnTrack
         </div>
+        <div className="tabs">
+          <Tab id="pending" label="Pendientes" />
+          <Tab id="airing" label="En emisión" />
+          <Tab id="settings" label="Ajustes" />
+        </div>
+        <div className="spacer" />
+        <button className="btn btn-primary" onClick={doRefresh} disabled={refreshing}>
+          {refreshing ? "Actualizando…" : "↻ Actualizar"}
+        </button>
+      </div>
+
+      {view === "pending" && <Pending onOpenSeries={openSeries} onChanged={refreshBadge} />}
+      {view === "airing" && <AiringGrid onOpenSeries={openSeries} />}
+      {view === "settings" && <Settings />}
+      {view === "detail" && selected && (
+        <SeriesDetail
+          series={selected}
+          onBack={() => setView("airing")}
+          onChanged={refreshBadge}
+        />
       )}
+
       <LogPanel />
     </>
   );

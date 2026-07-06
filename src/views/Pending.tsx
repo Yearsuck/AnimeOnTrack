@@ -1,8 +1,14 @@
 import { useEffect, useState } from "react";
-import { listPending, openEpisode } from "../api";
-import type { PendingItem } from "../types";
+import { listPending, openEpisode, setSeen } from "../api";
+import type { PendingItem, Series } from "../types";
 
-export function Pending() {
+export function Pending({
+  onOpenSeries,
+  onChanged,
+}: {
+  onOpenSeries: (s: Series) => void;
+  onChanged: () => void;
+}) {
   const [items, setItems] = useState<PendingItem[]>([]);
 
   async function load() {
@@ -13,11 +19,15 @@ export function Pending() {
   }, []);
 
   async function watch(it: PendingItem) {
-    await openEpisode(it.episode.id, it.episode.url);
-    await load();
+    await openEpisode(it.episode.url);
   }
 
-  // group by series title
+  async function markSeen(it: PendingItem) {
+    await setSeen(it.episode.id, true);
+    await load();
+    onChanged();
+  }
+
   const groups = new Map<string, PendingItem[]>();
   for (const it of items) {
     const k = it.series.title;
@@ -25,25 +35,59 @@ export function Pending() {
   }
 
   return (
-    <div style={{ padding: 16 }}>
-      <h2>Pending ({items.length})</h2>
-      {[...groups.entries()].map(([title, eps]) => (
-        <div key={title} style={{ marginBottom: 16 }}>
-          <h3 style={{ margin: "8px 0" }}>
-            {title} <span style={{ color: "#888" }}>({eps.length})</span>
-          </h3>
-          {eps.map((it) => (
-            <div
-              key={it.episode.id}
-              onClick={() => watch(it)}
-              style={{ cursor: "pointer", padding: "6px 8px", borderBottom: "1px solid #eee" }}
-            >
-              {it.episode.number} {it.episode.title ?? ""}
-            </div>
-          ))}
+    <div className="page">
+      <div className="page-head">
+        <h2 className="page-title">Pendientes</h2>
+        <span className="muted">{items.length} episodios por ver</span>
+      </div>
+
+      {items.length === 0 ? (
+        <div className="empty">
+          No hay episodios pendientes.
+          <br />
+          Sigue algún anime en “En emisión” y pulsa Actualizar.
         </div>
-      ))}
-      {items.length === 0 && <p>No pending episodes. Hit refresh.</p>}
+      ) : (
+        [...groups.entries()].map(([title, eps]) => {
+          const series = eps[0].series;
+          return (
+            <div key={title} className="series-block">
+              <div className="series-head" onClick={() => onOpenSeries(series)} style={{ cursor: "pointer" }}>
+                {series.cover_url && <img src={series.cover_url} alt="" />}
+                <div>
+                  <div className="name">{title}</div>
+                  <div className="count">{eps.length} nuevo{eps.length === 1 ? "" : "s"}</div>
+                </div>
+              </div>
+              {eps.map((it) => (
+                <div key={it.episode.id} className="ep-row">
+                  <span className="ep-num">{it.episode.number}</span>
+                  <div className="ep-main">
+                    <div className="ep-title" onClick={() => watch(it)}>
+                      {it.episode.title ?? `Episodio ${it.episode.number}`}
+                    </div>
+                    {it.episode.released_at && (
+                      <div className="ep-date">{it.episode.released_at}</div>
+                    )}
+                  </div>
+                  <div className="ep-actions">
+                    <button className="btn" onClick={() => watch(it)}>
+                      ▶ Ver
+                    </button>
+                    <button
+                      className="check"
+                      title="Marcar como visto"
+                      onClick={() => markSeen(it)}
+                    >
+                      ✓
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          );
+        })
+      )}
     </div>
   );
 }

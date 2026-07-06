@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Series, PendingItem } from "./types";
+import type { Series, Episode, PendingItem } from "./types";
 
 export const scanAiring = (baseUrl: string) =>
   invoke<Series[]>("scan_airing", { baseUrl });
@@ -15,5 +15,11 @@ export const listPending = () => invoke<PendingItem[]>("list_pending");
 
 export const pendingCount = () => invoke<number>("pending_count");
 
-export const openEpisode = (episodeId: number, url: string) =>
-  invoke<void>("open_episode", { episodeId, url });
+export const openEpisode = (url: string) =>
+  invoke<void>("open_episode", { url });
+
+export const setSeen = (episodeId: number, seen: boolean) =>
+  invoke<void>("set_seen", { episodeId, seen });
+
+export const listEpisodes = (seriesId: number) =>
+  invoke<Episode[]>("list_episodes", { seriesId });
