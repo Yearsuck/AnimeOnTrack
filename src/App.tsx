@@ -1,51 +1,43 @@
-import { useState } from "react";
-import reactLogo from "./assets/react.svg";
-import { invoke } from "@tauri-apps/api/core";
-import "./App.css";
+import { useEffect, useState } from "react";
+import { Onboarding } from "./views/Onboarding";
+import { AiringGrid } from "./views/AiringGrid";
+import { Pending } from "./views/Pending";
+import { Settings } from "./views/Settings";
+import { listAiring, refresh } from "./api";
 
-function App() {
-  const [greetMsg, setGreetMsg] = useState("");
-  const [name, setName] = useState("");
+type View = "loading" | "onboarding" | "pending" | "airing" | "settings";
 
-  async function greet() {
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    setGreetMsg(await invoke("greet", { name }));
-  }
+export default function App() {
+  const [view, setView] = useState<View>("loading");
+
+  // Decide first screen: onboarding if no source yet, else pending.
+  useEffect(() => {
+    (async () => {
+      try {
+        await listAiring(); // throws if no source configured
+        await refresh().catch(() => 0); // refresh-on-open, best effort
+        setView("pending");
+      } catch {
+        setView("onboarding");
+      }
+    })();
+  }, []);
+
+  if (view === "loading") return <div style={{ padding: 16 }}>Loading…</div>;
+  if (view === "onboarding")
+    return <Onboarding onDone={() => setView("airing")} />;
 
   return (
-    <main className="container">
-      <h1>Welcome to Tauri + React</h1>
-
-      <div className="row">
-        <a href="https://vite.dev" target="_blank">
-          <img src="/vite.svg" className="logo vite" alt="Vite logo" />
-        </a>
-        <a href="https://tauri.app" target="_blank">
-          <img src="/tauri.svg" className="logo tauri" alt="Tauri logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
-      </div>
-      <p>Click on the Tauri, Vite, and React logos to learn more.</p>
-
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          greet();
-        }}
-      >
-        <input
-          id="greet-input"
-          onChange={(e) => setName(e.currentTarget.value)}
-          placeholder="Enter a name..."
-        />
-        <button type="submit">Greet</button>
-      </form>
-      <p>{greetMsg}</p>
-    </main>
+    <div>
+      <nav style={{ display: "flex", gap: 8, padding: 8, borderBottom: "1px solid #ccc" }}>
+        <button onClick={() => setView("pending")}>Pending</button>
+        <button onClick={() => setView("airing")}>Airing</button>
+        <button onClick={() => setView("settings")}>Settings</button>
+        <button onClick={async () => { await refresh(); setView("pending"); }}>Refresh</button>
+      </nav>
+      {view === "pending" && <Pending />}
+      {view === "airing" && <AiringGrid />}
+      {view === "settings" && <Settings />}
+    </div>
   );
 }
-
-export default App;
