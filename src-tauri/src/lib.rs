@@ -1,3 +1,4 @@
+mod adapter;
 mod db;
 mod diff;
 mod models;
