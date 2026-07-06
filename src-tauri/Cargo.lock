@@ -75,6 +75,8 @@ dependencies = [
  "tauri-plugin-shell",
  "tokio",
  "url",
+ "webview2-com",
+ "windows",
 ]
 
 [[package]]
