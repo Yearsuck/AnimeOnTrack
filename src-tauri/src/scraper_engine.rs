@@ -81,29 +81,60 @@ async fn extract_when_ready(window: &WebviewWindow) -> Result<ScrapeResult> {
 /// from inside the page itself (same-origin fetch, cookies included
 /// automatically). Returns an empty map on pages with no such images — this
 /// is a no-op on episode-list pages, so it's safe to call unconditionally.
+///
+/// WebView2's `ExecuteScript` does NOT await a returned promise for us (an
+/// unresolved promise just serializes to `null`), so this can't be a single
+/// "await the async work, return the result" script like the other `eval`
+/// calls here. Instead it kicks the async fetch work off in the page (fire
+/// and forget, no top-level `await`), then polls a JS global synchronously —
+/// the same condition-based-waiting pattern already proven for the
+/// Cloudflare-readiness check.
 async fn fetch_covers(window: &WebviewWindow) -> Result<HashMap<String, String>> {
-    const SCRIPT: &str = r#"JSON.stringify(await (async () => {
-        const imgs = [...document.querySelectorAll('.bsx img')];
-        const out = {};
-        await Promise.all(imgs.map(async (img) => {
-            const src = img.src;
-            if (!src || out[src]) return;
-            try {
-                const res = await fetch(src);
-                const blob = await res.blob();
-                const dataUri = await new Promise((resolve, reject) => {
-                    const r = new FileReader();
-                    r.onload = () => resolve(r.result);
-                    r.onerror = () => reject(new Error('read failed'));
-                    r.readAsDataURL(blob);
-                });
-                out[src] = dataUri;
-            } catch (e) { /* leave this one out; caller keeps the remote url */ }
-        }));
-        return out;
-    })())"#;
+    const START: &str = r#"(function(){
+        window.__aotCoversDone = false;
+        (async () => {
+            const imgs = [...document.querySelectorAll('.bsx img')];
+            const out = {};
+            await Promise.all(imgs.map(async (img) => {
+                const src = img.src;
+                if (!src || out[src]) return;
+                try {
+                    const res = await fetch(src);
+                    const blob = await res.blob();
+                    const dataUri = await new Promise((resolve, reject) => {
+                        const r = new FileReader();
+                        r.onload = () => resolve(r.result);
+                        r.onerror = () => reject(new Error('read failed'));
+                        r.readAsDataURL(blob);
+                    });
+                    out[src] = dataUri;
+                } catch (e) { /* leave this one out; caller keeps the remote url */ }
+            }));
+            window.__aotCovers = JSON.stringify(out);
+            window.__aotCoversDone = true;
+        })();
+        return true;
+    })()"#;
+    const IS_DONE: &str = "JSON.stringify(window.__aotCoversDone === true)";
+    const READ: &str = "window.__aotCovers";
 
-    let json = eval(window, SCRIPT, 30).await?;
+    eval(window, START, 10).await?;
+
+    let mut done = false;
+    for _ in 0..40 {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        if let Ok(json) = eval(window, IS_DONE, 5).await {
+            if serde_json::from_str::<bool>(&json).unwrap_or(false) {
+                done = true;
+                break;
+            }
+        }
+    }
+    if !done {
+        return Err(anyhow!("cover fetch did not finish within 20s"));
+    }
+
+    let json = eval(window, READ, 10).await?;
     let inner: String = serde_json::from_str(&json)?;
     let map: HashMap<String, String> = serde_json::from_str(&inner)?;
     Ok(map)

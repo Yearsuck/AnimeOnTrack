@@ -218,22 +218,26 @@ impl Db {
         Ok(rows)
     }
 
+    /// Unseen episodes of currently-followed series only — unfollowing a
+    /// series must drop its episodes out of the pending count immediately.
     pub fn pending_count(&self) -> Result<i64> {
         let n: i64 = self.conn.query_row(
-            "SELECT count(*) FROM episodes WHERE seen=0",
+            "SELECT count(*) FROM episodes e JOIN series s ON s.id = e.series_id
+             WHERE e.seen=0 AND s.followed=1",
             [],
             |r| r.get(0),
         )?;
         Ok(n)
     }
 
-    /// Unseen episodes joined with their series, newest first.
+    /// Unseen episodes of currently-followed series, joined with their
+    /// series, newest first.
     pub fn list_pending(&self) -> Result<Vec<(crate::models::Series, crate::models::Episode)>> {
         let mut stmt = self.conn.prepare(
             "SELECT s.id, s.slug, s.title, s.url, s.cover_url, s.is_airing, s.followed,
                     e.id, e.series_id, e.number, e.title, e.url, e.released_at, e.seen
              FROM episodes e JOIN series s ON s.id = e.series_id
-             WHERE e.seen=0
+             WHERE e.seen=0 AND s.followed=1
              ORDER BY s.title, e.added_at DESC",
         )?;
         let rows = stmt
@@ -314,9 +318,10 @@ mod tests {
         let src = db.upsert_source("AnimeYT", "https://wwv.animeytx.net").unwrap();
         let s = crate::models::Series {
             id: 0, slug: "x".into(), title: "X".into(),
-            url: "u".into(), cover_url: None, is_airing: true, followed: true,
+            url: "u".into(), cover_url: None, is_airing: true, followed: false,
         };
         let sid = db.upsert_series(src, &s).unwrap();
+        db.set_followed(sid, true).unwrap();
 
         let ep = crate::models::Episode {
             id: 0, series_id: sid, number: "1".into(), title: None,

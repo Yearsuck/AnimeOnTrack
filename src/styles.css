@@ -1,8 +1,10 @@
 :root {
+  /* Neutral ramp first (grayscale-first hierarchy), color layered on top. */
   --bg: #0b1521;
   --surface: #14212f;
   --surface-2: #1b2b3c;
   --surface-3: #223447;
+  --surface-4: #2b415699;
   --border: #24384a;
   --text: #e9eff5;
   --muted: #90a4b7;
@@ -11,11 +13,38 @@
   --accent-hover: #6fbcff;
   --accent-dim: rgba(74, 168, 255, 0.14);
   --success: #46d19e;
+  --success-dim: rgba(70, 209, 158, 0.16);
   --danger: #ff5c7c;
+
+  /* 4px spacing scale */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+
   --radius: 12px;
   --radius-sm: 8px;
-  --shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  --radius-round: 999px;
+
+  /* Elevation scale */
+  --shadow-sm: 0 2px 6px rgba(0, 0, 0, 0.25);
+  --shadow-md: 0 6px 20px rgba(0, 0, 0, 0.35);
+  --shadow-lg: 0 16px 40px rgba(0, 0, 0, 0.45);
+
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 
 * {
@@ -136,17 +165,25 @@ a:hover {
   font-weight: 600;
   font-size: 13px;
   cursor: pointer;
-  transition: background 0.12s, border-color 0.12s, transform 0.05s;
+  transition: background 0.15s var(--ease), border-color 0.15s var(--ease),
+    transform 0.1s var(--ease), box-shadow 0.15s var(--ease);
 }
 .btn:hover {
   background: var(--surface-3);
 }
 .btn:active {
-  transform: translateY(1px);
+  transform: scale(0.96);
 }
 .btn:disabled {
   opacity: 0.5;
   cursor: default;
+}
+.btn:focus-visible,
+.tab:focus-visible,
+.input:focus-visible,
+.check:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 .btn-primary {
   background: var(--accent);
@@ -156,6 +193,7 @@ a:hover {
 .btn-primary:hover {
   background: var(--accent-hover);
   border-color: var(--accent-hover);
+  box-shadow: 0 0 0 4px var(--accent-dim);
 }
 .btn-success {
   color: var(--success);
@@ -239,7 +277,7 @@ a:hover {
 .card:hover {
   transform: translateY(-3px);
   border-color: var(--surface-3);
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow-md);
 }
 .poster {
   position: relative;
@@ -329,12 +367,18 @@ a:hover {
   gap: 12px;
   padding: 10px 14px;
   border-bottom: 1px solid rgba(36, 56, 74, 0.5);
+  transition: background 0.15s var(--ease), opacity 0.25s var(--ease),
+    transform 0.25s var(--ease);
 }
 .ep-row:last-child {
   border-bottom: none;
 }
 .ep-row:hover {
   background: var(--surface-2);
+}
+.ep-row.removing {
+  opacity: 0;
+  transform: translateX(8px) scale(0.98);
 }
 .ep-num {
   min-width: 30px;
@@ -380,11 +424,12 @@ a:hover {
   color: var(--success);
 }
 
-/* seen checkbox */
+/* seen checkbox: interruptible transition for the base states, a one-shot
+   pop keyframe only for the moment it becomes checked. */
 .check {
-  width: 22px;
-  height: 22px;
-  border-radius: 6px;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-round);
   border: 2px solid var(--muted-2);
   background: transparent;
   cursor: pointer;
@@ -393,13 +438,35 @@ a:hover {
   justify-content: center;
   color: transparent;
   flex-shrink: 0;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 900;
+  transition: background 0.15s var(--ease), border-color 0.15s var(--ease),
+    color 0.15s var(--ease), transform 0.1s var(--ease), box-shadow 0.15s var(--ease);
+}
+.check:hover {
+  border-color: var(--success);
+  transform: scale(1.08);
+}
+.check:active {
+  transform: scale(0.9);
 }
 .check.on {
   background: var(--success);
   border-color: var(--success);
   color: #05121f;
+  box-shadow: 0 0 0 4px var(--success-dim);
+  animation: check-pop 0.3s var(--ease-out);
+}
+@keyframes check-pop {
+  0% {
+    transform: scale(0.65);
+  }
+  55% {
+    transform: scale(1.18);
+  }
+  100% {
+    transform: scale(1);
+  }
 }
 
 /* progress bar */
@@ -433,32 +500,4 @@ a:hover {
 .onboard .row {
   display: flex;
   gap: 8px;
-}
-
-/* ---------- Log panel ---------- */
-.logpanel {
-  position: fixed;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  max-height: 30vh;
-  overflow-y: auto;
-  background: #060d15;
-  border-top: 1px solid var(--border);
-  font-family: "SF Mono", "Cascadia Code", Consolas, monospace;
-  font-size: 11.5px;
-  line-height: 1.5;
-  padding: 8px 12px;
-  z-index: 9999;
-}
-.logpanel .log-head {
-  color: var(--muted-2);
-  margin-bottom: 4px;
-  display: flex;
-  justify-content: space-between;
-}
-.logpanel .log-line {
-  color: #7fd6a0;
-  white-space: pre-wrap;
-  word-break: break-word;
 }

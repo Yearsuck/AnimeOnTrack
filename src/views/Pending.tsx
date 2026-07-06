@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { listPending, openEpisode, setSeen } from "../api";
 import type { PendingItem, Series } from "../types";
 
+const REMOVE_MS = 220;
+
 export function Pending({
   onOpenSeries,
   onChanged,
@@ -10,6 +12,7 @@ export function Pending({
   onChanged: () => void;
 }) {
   const [items, setItems] = useState<PendingItem[]>([]);
+  const [removing, setRemoving] = useState<Set<number>>(new Set());
 
   async function load() {
     setItems(await listPending());
@@ -22,10 +25,13 @@ export function Pending({
     await openEpisode(it.episode.url);
   }
 
-  async function markSeen(it: PendingItem) {
-    await setSeen(it.episode.id, true);
-    await load();
-    onChanged();
+  function markSeen(it: PendingItem) {
+    setRemoving((r) => new Set(r).add(it.episode.id));
+    setTimeout(async () => {
+      await setSeen(it.episode.id, true);
+      await load();
+      onChanged();
+    }, REMOVE_MS);
   }
 
   const groups = new Map<string, PendingItem[]>();
@@ -60,7 +66,10 @@ export function Pending({
                 </div>
               </div>
               {eps.map((it) => (
-                <div key={it.episode.id} className="ep-row">
+                <div
+                  key={it.episode.id}
+                  className={`ep-row ${removing.has(it.episode.id) ? "removing" : ""}`}
+                >
                   <span className="ep-num">{it.episode.number}</span>
                   <div className="ep-main">
                     <div className="ep-title" onClick={() => watch(it)}>
@@ -75,7 +84,7 @@ export function Pending({
                       ▶ Ver
                     </button>
                     <button
-                      className="check"
+                      className={`check ${removing.has(it.episode.id) ? "on" : ""}`}
                       title="Marcar como visto"
                       onClick={() => markSeen(it)}
                     >
