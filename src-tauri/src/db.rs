@@ -26,6 +26,24 @@ fn parse_ep_number(s: &str) -> Option<f64> {
     }
 }
 
+/// Add `column` to `table` if it isn't already there. SQLite has no
+/// `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, so this checks `PRAGMA
+/// table_info` first — needed because `init_schema` runs on every `Db::open`
+/// and must be a no-op on a DB that already has the column (the codebase has
+/// no separate migration framework; `series`/`episodes` already shipped
+/// before this change, so evolving their schema in place is the existing idiom).
+fn ensure_column(conn: &Connection, table: &str, column: &str, coltype: &str) -> Result<()> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let has_column = stmt
+        .query_map([], |r| r.get::<_, String>(1))?
+        .filter_map(|r| r.ok())
+        .any(|name| name == column);
+    if !has_column {
+        conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {column} {coltype}"), [])?;
+    }
+    Ok(())
+}
+
 pub struct Db {
     pub conn: Connection,
 }
@@ -72,6 +90,21 @@ impl Db {
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
+            );
+            "#,
+        )?;
+        // series.backlog_status: NULL (normal row) | 'want' | 'discarded'.
+        // series.kind: free-text type badge ("TV"/"OVA"/"Movie"/etc), same
+        // vocabulary as the adapter's FinishedCard.kind — don't validate
+        // against an enum, the live site's own vocabulary is inconsistent.
+        ensure_column(&self.conn, "series", "backlog_status", "TEXT")?;
+        ensure_column(&self.conn, "series", "kind", "TEXT")?;
+        self.conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS series_genres (
+                series_id INTEGER NOT NULL REFERENCES series(id),
+                genre TEXT NOT NULL,
+                PRIMARY KEY(series_id, genre)
             );
             "#,
         )?;
@@ -390,12 +423,63 @@ mod tests {
         let count: i64 = db
             .conn
             .query_row(
-                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('sources','series','episodes','settings')",
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('sources','series','episodes','settings','series_genres')",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(count, 4);
+        assert_eq!(count, 5);
+    }
+
+    #[test]
+    fn schema_includes_series_genres_table() {
+        let db = Db::open(":memory:").unwrap();
+        let count: i64 = db
+            .conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('sources','series','episodes','settings','series_genres')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 5);
+    }
+
+    #[test]
+    fn series_table_has_backlog_status_and_kind_columns() {
+        let db = Db::open(":memory:").unwrap();
+        let mut stmt = db.conn.prepare("PRAGMA table_info(series)").unwrap();
+        let cols: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert!(cols.contains(&"backlog_status".to_string()));
+        assert!(cols.contains(&"kind".to_string()));
+    }
+
+    #[test]
+    fn migration_is_idempotent_on_an_existing_on_disk_db() {
+        let path = std::env::temp_dir().join(format!("aot_migration_test_{}.sqlite", std::process::id()));
+        let path_str = path.to_str().unwrap();
+        let _ = std::fs::remove_file(&path);
+        {
+            Db::open(path_str).unwrap();
+        }
+        // Second open must not error even though backlog_status/kind/series_genres
+        // already exist from the first open (ALTER TABLE ADD COLUMN errors if run
+        // twice unguarded).
+        let db = Db::open(path_str).unwrap();
+        let count: i64 = db
+            .conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='series_genres'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
