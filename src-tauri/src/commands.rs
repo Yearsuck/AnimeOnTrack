@@ -585,9 +585,9 @@ pub async fn start_watching(
             return Err("series is not in the 'want' backlog".into());
         }
         let url = db
-            .conn
-            .query_row("SELECT url FROM series WHERE id=?1", [series_id], |r| r.get::<_, String>(0))
-            .map_err(|e| e.to_string())?;
+            .get_series_url(series_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "series not found".to_string())?;
         (url, load_mirrors(&db)?)
     };
     let eps = fetch_episode_list_for(&app, &mirrors, &series_url).await?;

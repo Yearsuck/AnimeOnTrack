@@ -134,6 +134,15 @@ impl Db {
             .ok())
     }
 
+    pub fn get_series_url(&self, series_id: i64) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row("SELECT url FROM series WHERE id=?1", [series_id], |r| {
+                r.get::<_, String>(0)
+            })
+            .ok())
+    }
+
     pub fn upsert_series(&self, source_id: i64, s: &crate::models::Series) -> Result<i64> {
         self.conn.execute(
             "INSERT INTO series(source_id, slug, title, url, cover_url, is_airing)
