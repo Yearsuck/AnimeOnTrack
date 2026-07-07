@@ -22,3 +22,10 @@ export interface PendingItem {
   series: Series;
   episode: Episode;
 }
+
+export interface LibraryItem {
+  series: Series;
+  total_episodes: number;
+  seen_episodes: number;
+  last_added: string | null;
+}

@@ -11,6 +11,18 @@ pub struct Series {
     pub followed: bool,
 }
 
+/// A followed series plus its episode counts, for the library view.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LibraryItem {
+    pub series: Series,
+    pub total_episodes: i64,
+    pub seen_episodes: i64,
+    /// Insertion timestamp (`datetime('now')`, ISO 8601) of the most recently
+    /// scraped episode — used to sort "recently active" first. Not the
+    /// episode's air date (that's free-text and not reliably sortable).
+    pub last_added: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Episode {
     pub id: i64,

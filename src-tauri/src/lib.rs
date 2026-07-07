@@ -33,6 +33,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::scan_airing,
             commands::list_airing,
+            commands::list_library,
             commands::set_followed,
             commands::refresh,
             commands::list_pending,

@@ -145,6 +145,35 @@ impl Db {
         Ok(rows)
     }
 
+    /// Followed series with their episode counts (total, seen) and the most
+    /// recent episode's `added_at`, for the library view. Series with zero
+    /// scraped episodes still appear (`total=0`).
+    pub fn list_library(&self, source_id: i64) -> Result<Vec<crate::models::LibraryItem>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT s.id, s.slug, s.title, s.url, s.cover_url, s.is_airing, s.followed,
+                    COUNT(e.id) AS total,
+                    SUM(CASE WHEN e.seen=1 THEN 1 ELSE 0 END) AS seen,
+                    MAX(e.added_at) AS last_added
+             FROM series s
+             LEFT JOIN episodes e ON e.series_id = s.id
+             WHERE s.source_id=?1 AND s.followed=1
+             GROUP BY s.id
+             ORDER BY s.title",
+        )?;
+        let rows = stmt
+            .query_map([source_id], |r| {
+                let series = Self::row_to_series(r)?;
+                Ok(crate::models::LibraryItem {
+                    series,
+                    total_episodes: r.get("total")?,
+                    seen_episodes: r.get::<_, Option<i64>>("seen")?.unwrap_or(0),
+                    last_added: r.get("last_added")?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
     pub fn list_followed(&self, source_id: i64) -> Result<Vec<crate::models::Series>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, slug, title, url, cover_url, is_airing, followed

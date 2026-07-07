@@ -4,15 +4,17 @@ import { AiringGrid } from "./views/AiringGrid";
 import { Pending } from "./views/Pending";
 import { SeriesDetail } from "./views/SeriesDetail";
 import { Settings } from "./views/Settings";
+import { Library } from "./views/Library";
 import { ProgressBar } from "./views/ProgressBar";
 import { listAiring, refresh, pendingCount } from "./api";
 import type { Series } from "./types";
 
-type View = "loading" | "onboarding" | "pending" | "airing" | "settings" | "detail";
+type View = "loading" | "onboarding" | "pending" | "airing" | "library" | "settings" | "detail";
 
 export default function App() {
   const [view, setView] = useState<View>("loading");
   const [selected, setSelected] = useState<Series | null>(null);
+  const [cameFrom, setCameFrom] = useState<View>("airing");
   const [pending, setPending] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -57,6 +59,7 @@ export default function App() {
   }
 
   function openSeries(s: Series) {
+    setCameFrom(view === "detail" ? cameFrom : view);
     setSelected(s);
     setView("detail");
   }
@@ -96,6 +99,7 @@ export default function App() {
         <div className="tabs">
           <Tab id="pending" label="Pendientes" />
           <Tab id="airing" label="En emisión" />
+          <Tab id="library" label="Biblioteca" />
           <Tab id="settings" label="Ajustes" />
         </div>
         <div className="spacer" />
@@ -107,11 +111,12 @@ export default function App() {
 
       {view === "pending" && <Pending onOpenSeries={openSeries} onChanged={refreshBadge} />}
       {view === "airing" && <AiringGrid onOpenSeries={openSeries} />}
+      {view === "library" && <Library onOpenSeries={openSeries} />}
       {view === "settings" && <Settings />}
       {view === "detail" && selected && (
         <SeriesDetail
           series={selected}
-          onBack={() => setView("airing")}
+          onBack={() => setView(cameFrom)}
           onChanged={refreshBadge}
         />
       )}

@@ -39,7 +39,8 @@ pub async fn fetch_html(app: &AppHandle, url: &str) -> Result<ScrapeResult> {
     )
     .title("AnimeOnTrack scraper")
     .inner_size(1000.0, 800.0)
-    .visible(false)
+    .visible(true) // temporarily visible: lets you see/solve an interactive
+    // Cloudflare challenge if it ever escalates past the automatic JS one.
     .build()?;
 
     let result = extract_when_ready(app, &window).await;
@@ -95,79 +96,49 @@ async fn extract_when_ready(app: &AppHandle, window: &WebviewWindow) -> Result<S
 }
 
 /// Fetch every poster (`.bsx img`) on the current page as a base64 data URI,
-/// from inside the page itself (same-origin fetch, cookies included
+/// from inside the page itself (same-origin request, cookies included
 /// automatically). Returns an empty map on pages with no such images — this
 /// is a no-op on episode-list pages, so it's safe to call unconditionally.
 ///
-/// WebView2's `ExecuteScript` does NOT await a returned promise for us (an
-/// unresolved promise just serializes to `null`), so this can't be a single
-/// "await the async work, return the result" script like the other `eval`
-/// calls here. Instead it kicks the async fetch work off in the page (fire
-/// and forget, no top-level `await`), then polls a JS global synchronously —
-/// the same condition-based-waiting pattern already proven for the
-/// Cloudflare-readiness check.
+/// Two approaches were tried and rejected before this one:
+/// 1. `await` an async IIFE and return its resolved value — doesn't work,
+///    because WebView2's `ExecuteScript` does NOT await a returned promise;
+///    an unresolved promise just serializes to `null`.
+/// 2. Fire the async work off, then poll a JS global for completion — works
+///    in principle, but adds a slow multi-round-trip poll loop for something
+///    that doesn't need to be async at all.
+/// This version uses a *synchronous* `XMLHttpRequest` (the classic
+/// `overrideMimeType('text/plain; charset=x-user-defined')` + `btoa` trick to
+/// get raw bytes into a base64 string). The whole script blocks until every
+/// image is fetched and returns its final value directly — a single
+/// `ExecuteScript` round trip, no polling, no promise-awaiting assumptions.
 async fn fetch_covers(window: &WebviewWindow) -> Result<HashMap<String, String>> {
-    const START: &str = r#"(function(){
-        try {
-            window.__aotCoversDone = false;
-            window.__aotCoversErr = null;
-            var imgs = Array.prototype.slice.call(document.querySelectorAll('.bsx img'));
-            window.__aotCoversTotal = imgs.length;
-            (async () => {
-                const out = {};
-                await Promise.all(imgs.map(async (img) => {
-                    const src = img.src;
-                    if (!src || out[src]) return;
-                    try {
-                        const res = await fetch(src);
-                        const blob = await res.blob();
-                        const dataUri = await new Promise((resolve, reject) => {
-                            const r = new FileReader();
-                            r.onload = () => resolve(r.result);
-                            r.onerror = () => reject(new Error('read failed'));
-                            r.readAsDataURL(blob);
-                        });
-                        out[src] = dataUri;
-                    } catch (e) { /* leave this one out; caller keeps the remote url */ }
-                }));
-                window.__aotCovers = JSON.stringify(out);
-                window.__aotCoversDone = true;
-            })().catch((e) => {
-                window.__aotCoversErr = String(e);
-                window.__aotCoversDone = true;
-            });
-            return JSON.stringify({ started: true, imgCount: imgs.length });
-        } catch (e) {
-            return JSON.stringify({ started: false, error: String(e) });
+    const SCRIPT: &str = r#"JSON.stringify((function(){
+        var imgs = Array.prototype.slice.call(document.querySelectorAll('.bsx img'));
+        var out = {};
+        for (var i = 0; i < imgs.length; i++) {
+            var src = imgs[i].src;
+            if (!src || out[src]) continue;
+            try {
+                var xhr = new XMLHttpRequest();
+                xhr.open('GET', src, false);
+                xhr.overrideMimeType('text/plain; charset=x-user-defined');
+                xhr.send(null);
+                if (xhr.status === 200) {
+                    var binary = xhr.responseText;
+                    var base64 = btoa(binary);
+                    var mime = /\.png(\?|$)/i.test(src) ? 'image/png' : 'image/jpeg';
+                    out[src] = 'data:' + mime + ';base64,' + base64;
+                }
+            } catch (e) { /* skip this one; caller keeps the remote url as fallback */ }
         }
-    })()"#;
-    const IS_DONE: &str = "JSON.stringify(window.__aotCoversDone === true)";
-    const READ: &str = "window.__aotCovers";
+        return out;
+    })())"#;
 
-    let start_json = eval(window, START, 10).await?;
-    let start_info: String = serde_json::from_str(&start_json)?;
-    eprintln!("[covers] start: {start_info}");
-
-    let mut done = false;
-    for _ in 0..40 {
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        if let Ok(json) = eval(window, IS_DONE, 5).await {
-            if serde_json::from_str::<bool>(&json).unwrap_or(false) {
-                done = true;
-                break;
-            }
-        }
-    }
-    if !done {
-        return Err(anyhow!("cover fetch did not finish within 20s"));
-    }
-
-    let json = eval(window, READ, 10).await?;
+    let json = eval(window, SCRIPT, 60).await?;
     let inner: String = serde_json::from_str(&json)?;
-    if inner.is_empty() || inner == "null" {
-        return Err(anyhow!("cover fetch produced no data (window.__aotCovers empty)"));
-    }
     let map: HashMap<String, String> = serde_json::from_str(&inner)?;
+    eprintln!("[covers] fetched {} image(s)", map.len());
     Ok(map)
 }
 

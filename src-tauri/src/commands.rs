@@ -184,6 +184,14 @@ pub fn list_airing(state: State<'_, AppState>) -> Result<Vec<Series>, String> {
     db.list_airing(src).map_err(|e| e.to_string())
 }
 
+/// Followed series with episode counts, for the library view.
+#[tauri::command]
+pub fn list_library(state: State<'_, AppState>) -> Result<Vec<crate::models::LibraryItem>, String> {
+    let src = get_source_id(&state)?;
+    let db = state.db.lock().unwrap();
+    db.list_library(src).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn set_followed(
     state: State<'_, AppState>,

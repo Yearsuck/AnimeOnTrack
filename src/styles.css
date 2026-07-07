@@ -376,6 +376,47 @@ a:hover {
 .ep-row:hover {
   background: var(--surface-2);
 }
+/* ---------- Library ---------- */
+.lib-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 14px;
+  border-bottom: 1px solid rgba(36, 56, 74, 0.5);
+  cursor: pointer;
+  transition: background 0.15s var(--ease);
+}
+.lib-row:last-child {
+  border-bottom: none;
+}
+.lib-row:hover {
+  background: var(--surface-2);
+}
+.lib-row img {
+  width: 42px;
+  height: 60px;
+  object-fit: cover;
+  border-radius: 6px;
+  background: var(--surface-3);
+  flex-shrink: 0;
+}
+.lib-main {
+  flex: 1;
+  min-width: 0;
+}
+.lib-title {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.lib-count {
+  text-align: right;
+  font-weight: 700;
+  font-size: 13px;
+  flex-shrink: 0;
+}
+
 .ep-row.removing {
   opacity: 0;
   transform: translateX(8px) scale(0.98);
