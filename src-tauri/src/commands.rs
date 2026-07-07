@@ -72,27 +72,44 @@ fn with_mirror(mirrors: Vec<String>, url: &str) -> Vec<String> {
 }
 
 /// Try `path` (e.g. "/anime-en-emision/" or "/tv/some-series/") against each
-/// mirror in order, returning the first successful scrape along with the
-/// mirror that worked. Site mirrors are near-identical clones of the same
-/// content, so falling through to the next one on failure is a reasonable and
-/// cheap recovery strategy.
-async fn scrape_via_mirrors(
+/// mirror in order, returning the first scrape that ALSO parses to something
+/// non-empty via `parse`, along with the mirror that worked.
+///
+/// A mirror can fail two different ways: the page doesn't load at all (network
+/// error, Cloudflare doesn't clear), or the page loads fine but isn't actually
+/// this site (e.g. a URL that turns out to be a different, incompatible anime
+/// site rather than a same-layout clone) — our selectors then find nothing.
+/// Both must fall through to the next mirror, or one bad entry anywhere in the
+/// list can break every scan, even when a perfectly good mirror is right below
+/// it.
+async fn scrape_via_mirrors<T>(
     app: &AppHandle,
     mirrors: &[String],
     path: &str,
-) -> Result<(ScrapeResult, String), String> {
+    parse: impl Fn(&str) -> Result<Vec<T>, anyhow::Error>,
+) -> Result<(ScrapeResult, Vec<T>, String), String> {
     if mirrors.is_empty() {
-        return Err("no site URLs configured".into());
+        return Err("no hay ninguna web configurada".into());
     }
     let mut last_err = String::new();
     for mirror in mirrors {
         let url = format!("{mirror}{path}");
         match fetch_html(app, &url).await {
-            Ok(r) => return Ok((r, mirror.clone())),
-            Err(e) => last_err = e.to_string(),
+            Ok(scraped) => match parse(&scraped.html) {
+                Ok(items) if !items.is_empty() => {
+                    return Ok((scraped, items, mirror.clone()));
+                }
+                Ok(_) => {
+                    last_err = format!(
+                        "{mirror}: la página cargó pero no encajaba con este sitio (¿no es un mirror real?)"
+                    )
+                }
+                Err(e) => last_err = format!("{mirror}: {e}"),
+            },
+            Err(e) => last_err = format!("{mirror}: {e}"),
         }
     }
-    Err(format!("all mirrors failed; last error: {last_err}"))
+    Err(format!("ninguna web funcionó; último error: {last_err}"))
 }
 
 /// Apply any base64 cover images found during the scrape onto the parsed
@@ -117,12 +134,9 @@ async fn scan_airing_via_mirrors(
     emit_refresh_progress(app, 0, 1, "Escaneando listado de estrenos");
     // airing_url() just appends a fixed path; reuse it against an empty base to get that path alone.
     let path = a.airing_url("").to_string();
-    let (scraped, working_mirror) = scrape_via_mirrors(app, &mirrors, &path).await?;
+    let (scraped, series, working_mirror) =
+        scrape_via_mirrors(app, &mirrors, &path, |html| a.parse_airing(html)).await?;
     emit_refresh_progress(app, 1, 1, "Listado completo");
-    let series = a.parse_airing(&scraped.html).map_err(|e| e.to_string())?;
-    if series.is_empty() {
-        return Err("no series parsed; site layout may have changed".into());
-    }
     let series = apply_covers(series, &scraped.covers);
 
     let db = state.db.lock().unwrap();
@@ -223,14 +237,11 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>) -> Result<i64, 
             Ok(u) => format!("{}{}", u.path(), u.query().map(|q| format!("?{q}")).unwrap_or_default()),
             Err(_) => continue, // malformed stored url: skip, keep cached data
         };
-        let (scraped, working_mirror) = match scrape_via_mirrors(&app, &mirrors, &path).await {
-            Ok(r) => r,
-            Err(_) => continue, // unreachable on every mirror: skip, keep cached data
-        };
-        let eps = match a.parse_series(&scraped.html) {
-            Ok(eps) => eps,
-            Err(_) => continue, // layout change: skip, don't wipe
-        };
+        let (_scraped, eps, working_mirror) =
+            match scrape_via_mirrors(&app, &mirrors, &path, |html| a.parse_series(html)).await {
+                Ok(r) => r,
+                Err(_) => continue, // unreachable/incompatible on every mirror: skip, keep cached data
+            };
         {
             let db = state.db.lock().unwrap();
             let new_url = format!("{working_mirror}{path}");
