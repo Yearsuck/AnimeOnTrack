@@ -21,7 +21,7 @@ Captured live via browser (2026-07-07), same rigor as the existing `.bsx`/`.epli
 
 ## Data model changes (`src-tauri/src/db.rs`)
 
-1. `series` table: add nullable column `backlog_status TEXT` (`NULL` | `'want'` | `'discarded'`).
+1. `series` table: add nullable columns `backlog_status TEXT` (`NULL` | `'want'` | `'discarded'`) and `kind TEXT` (the type badge — "TV"/"OVA"/"Special"/"Movie"/etc, free text same as the adapter's `FinishedCard.kind`). `kind` is populated from the detail page's `Tipo:` field (`.spe` block, more authoritative than the listing card) whenever a detail fetch happens (want/seen), falling back to the listing card's `.typez` text for discard-only rows that never get a detail fetch. Added because piece 3 (genre stats) needs a per-type breakdown and this is the only place that data naturally lands.
    - `NULL` — normal (airing-catalog or already-followed) row, unchanged meaning.
    - `'want'` — swiped "quiero ver", not yet started: has a series row + genres, but no episodes, `followed=false`.
    - `'discarded'` — swiped no, exists purely to dedupe future swipe decks.
