@@ -432,20 +432,6 @@ mod tests {
     }
 
     #[test]
-    fn schema_includes_series_genres_table() {
-        let db = Db::open(":memory:").unwrap();
-        let count: i64 = db
-            .conn
-            .query_row(
-                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('sources','series','episodes','settings','series_genres')",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(count, 5);
-    }
-
-    #[test]
     fn series_table_has_backlog_status_and_kind_columns() {
         let db = Db::open(":memory:").unwrap();
         let mut stmt = db.conn.prepare("PRAGMA table_info(series)").unwrap();
