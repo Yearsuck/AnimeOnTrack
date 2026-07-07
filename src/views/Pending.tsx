@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { listPending, openEpisode, setSeen } from "../api";
+import { listPending, openEpisode, setSeenCascade } from "../api";
 import type { PendingItem, Series } from "../types";
 
 const REMOVE_MS = 220;
@@ -28,7 +28,7 @@ export function Pending({
   function markSeen(it: PendingItem) {
     setRemoving((r) => new Set(r).add(it.episode.id));
     setTimeout(async () => {
-      await setSeen(it.episode.id, true);
+      await setSeenCascade(it.series.id, it.episode.number, true);
       await load();
       onChanged();
     }, REMOVE_MS);

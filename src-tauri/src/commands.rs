@@ -323,6 +323,20 @@ pub fn set_seen(state: State<'_, AppState>, episode_id: i64, seen: bool) -> Resu
     db.set_seen(episode_id, seen).map_err(|e| e.to_string())
 }
 
+/// Mark an episode seen/unseen, cascading to keep watching gap-free: marking
+/// seen also marks every earlier episode of the series seen; marking unseen
+/// also marks every later one unseen.
+#[tauri::command]
+pub fn set_seen_cascade(
+    state: State<'_, AppState>,
+    series_id: i64,
+    number: String,
+    seen: bool,
+) -> Result<(), String> {
+    let db = state.db.lock().unwrap();
+    db.set_seen_cascade(series_id, &number, seen).map_err(|e| e.to_string())
+}
+
 /// All episodes of a series (progress view), oldest first.
 #[tauri::command]
 pub fn list_episodes(state: State<'_, AppState>, series_id: i64) -> Result<Vec<Episode>, String> {

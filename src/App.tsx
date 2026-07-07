@@ -6,7 +6,7 @@ import { SeriesDetail } from "./views/SeriesDetail";
 import { Settings } from "./views/Settings";
 import { Library } from "./views/Library";
 import { ProgressBar } from "./views/ProgressBar";
-import { listAiring, refresh, pendingCount } from "./api";
+import { listAiring, refresh, rescanAiring, pendingCount } from "./api";
 import type { Series } from "./types";
 
 type View = "loading" | "onboarding" | "pending" | "airing" | "library" | "settings" | "detail";
@@ -17,6 +17,7 @@ export default function App() {
   const [cameFrom, setCameFrom] = useState<View>("airing");
   const [pending, setPending] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
+  const [airingRefreshSignal, setAiringRefreshSignal] = useState(0);
 
   const refreshBadge = useCallback(async () => {
     try {
@@ -50,11 +51,17 @@ export default function App() {
   async function doRefresh() {
     setRefreshing(true);
     try {
+      // On the airing tab, also rescan the catalog for new/changed series,
+      // not just episodes of series you already follow.
+      if (view === "airing") {
+        await rescanAiring().catch(() => 0);
+        setAiringRefreshSignal((n) => n + 1);
+      }
       await refresh();
     } finally {
       setRefreshing(false);
       await refreshBadge();
-      setView("pending");
+      if (view !== "airing") setView("pending");
     }
   }
 
@@ -110,7 +117,9 @@ export default function App() {
       <ProgressBar />
 
       {view === "pending" && <Pending onOpenSeries={openSeries} onChanged={refreshBadge} />}
-      {view === "airing" && <AiringGrid onOpenSeries={openSeries} />}
+      {view === "airing" && (
+        <AiringGrid onOpenSeries={openSeries} refreshSignal={airingRefreshSignal} />
+      )}
       {view === "library" && <Library onOpenSeries={openSeries} />}
       {view === "settings" && <Settings />}
       {view === "detail" && selected && (

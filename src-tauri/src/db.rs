@@ -241,6 +241,26 @@ impl Db {
         Ok(())
     }
 
+    /// Enforce sequential watching: marking an episode seen also marks every
+    /// earlier episode of that series seen (no gaps like "watched 10 but not
+    /// 6-9"); un-marking an episode also un-marks every later one (you can't
+    /// have watched what comes after something you're un-marking).
+    pub fn set_seen_cascade(&self, series_id: i64, number: &str, seen: bool) -> Result<()> {
+        let n: i64 = number.parse().unwrap_or(0);
+        if seen {
+            self.conn.execute(
+                "UPDATE episodes SET seen=1 WHERE series_id=?1 AND CAST(number AS INTEGER) <= ?2",
+                (series_id, n),
+            )?;
+        } else {
+            self.conn.execute(
+                "UPDATE episodes SET seen=0 WHERE series_id=?1 AND CAST(number AS INTEGER) >= ?2",
+                (series_id, n),
+            )?;
+        }
+        Ok(())
+    }
+
     /// All episodes of a series (seen or not), oldest number first — the
     /// progress view for "which episode am I on".
     pub fn list_series_episodes(&self, series_id: i64) -> Result<Vec<crate::models::Episode>> {

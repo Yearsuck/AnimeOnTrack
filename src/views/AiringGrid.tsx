@@ -2,7 +2,13 @@ import { useEffect, useMemo, useState } from "react";
 import { listAiring, setFollowed } from "../api";
 import type { Series } from "../types";
 
-export function AiringGrid({ onOpenSeries }: { onOpenSeries: (s: Series) => void }) {
+export function AiringGrid({
+  onOpenSeries,
+  refreshSignal,
+}: {
+  onOpenSeries: (s: Series) => void;
+  refreshSignal?: number;
+}) {
   const [series, setSeries] = useState<Series[]>([]);
   const [query, setQuery] = useState("");
   const [onlyFollowed, setOnlyFollowed] = useState(false);
@@ -12,7 +18,8 @@ export function AiringGrid({ onOpenSeries }: { onOpenSeries: (s: Series) => void
   }
   useEffect(() => {
     load();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshSignal]);
 
   async function toggle(e: React.MouseEvent, s: Series) {
     e.stopPropagation();

@@ -47,20 +47,37 @@ pub async fn fetch_html(app: &AppHandle, url: &str) -> Result<ScrapeResult> {
 /// than a fixed sleep, because the challenge clears in a variable amount of
 /// time.
 async fn extract_when_ready(app: &AppHandle, window: &WebviewWindow) -> Result<ScrapeResult> {
-    const PROBE: &str = "JSON.stringify(document.readyState==='complete' \
+    // NOTE: does NOT require readyState==='complete' — pages on this site
+    // carry ad/tracker resources that can keep the load event from ever
+    // firing, leaving readyState stuck at 'interactive' indefinitely even
+    // though the real DOM content we need is already there. 'interactive'
+    // (DOM parsed, DOMContentLoaded fired) plus a real body size is enough.
+    const PROBE: &str = "JSON.stringify({\
+ready: (document.readyState==='interactive' || document.readyState==='complete') \
 && !!document.body && document.body.innerHTML.length>3000 \
-&& !/just a moment|un momento|checking your browser|verificando/i.test(document.title))";
+&& !/just a moment|un momento|checking your browser|verificando/i.test(document.title),\
+readyState: document.readyState,\
+title: document.title,\
+len: document.body ? document.body.innerHTML.length : -1})";
 
     emit_stage(app, "verifying");
     let mut ready = false;
-    for _ in 0..40 {
+    for i in 0..40 {
         tokio::time::sleep(Duration::from_secs(1)).await;
-        if let Ok(json) = eval(window, PROBE, 10).await {
-            let is_ready: bool = serde_json::from_str(&json).unwrap_or(false);
-            if is_ready {
-                ready = true;
-                break;
+        match eval(window, PROBE, 10).await {
+            Ok(json) => {
+                let inner: String = serde_json::from_str(&json).unwrap_or_default();
+                eprintln!("[scrape] poll {}: {inner}", i + 1);
+                let is_ready = serde_json::from_str::<serde_json::Value>(&inner)
+                    .ok()
+                    .and_then(|v| v.get("ready").and_then(|r| r.as_bool()))
+                    .unwrap_or(false);
+                if is_ready {
+                    ready = true;
+                    break;
+                }
             }
+            Err(e) => eprintln!("[scrape] poll {}: eval FAILED: {e}", i + 1),
         }
     }
     if !ready {

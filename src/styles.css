@@ -238,7 +238,7 @@ a:hover {
 .page {
   padding: 20px;
   padding-bottom: 40vh;
-  max-width: 1200px;
+  max-width: 1600px;
   margin: 0 auto;
 }
 .page-head {
@@ -341,21 +341,23 @@ a:hover {
 .series-head {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 14px;
   padding: 12px 14px;
   border-bottom: 1px solid var(--border);
   background: var(--surface-2);
 }
 .series-head img {
-  width: 40px;
-  height: 56px;
+  width: 110px;
+  height: 156px;
   object-fit: cover;
-  border-radius: 6px;
+  border-radius: 8px;
   background: var(--surface-3);
+  box-shadow: var(--shadow-sm);
+  flex-shrink: 0;
 }
 .series-head .name {
   font-weight: 700;
-  font-size: 15px;
+  font-size: 19px;
 }
 .series-head .count {
   color: var(--muted);

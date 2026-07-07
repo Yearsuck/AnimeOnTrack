@@ -21,6 +21,9 @@ export const openEpisode = (url: string) =>
 export const setSeen = (episodeId: number, seen: boolean) =>
   invoke<void>("set_seen", { episodeId, seen });
 
+export const setSeenCascade = (seriesId: number, number: string, seen: boolean) =>
+  invoke<void>("set_seen_cascade", { seriesId, number, seen });
+
 export const listEpisodes = (seriesId: number) =>
   invoke<Episode[]>("list_episodes", { seriesId });
 

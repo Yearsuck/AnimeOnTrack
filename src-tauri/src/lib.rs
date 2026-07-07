@@ -40,6 +40,7 @@ pub fn run() {
             commands::pending_count,
             commands::open_episode,
             commands::set_seen,
+            commands::set_seen_cascade,
             commands::list_episodes,
             commands::rescan_airing,
             commands::get_mirrors,
