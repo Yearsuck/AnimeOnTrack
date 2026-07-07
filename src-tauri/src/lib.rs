@@ -5,6 +5,7 @@ mod diff;
 mod models;
 mod player;
 mod scraper_engine;
+mod swipe;
 
 use commands::AppState;
 use std::sync::Mutex;
