@@ -3,7 +3,7 @@ use crate::db::Db;
 use crate::diff::new_episodes;
 use crate::models::{Episode, Series};
 use crate::player::{BrowserPlayer, EpisodePlayer};
-use crate::scraper_engine::{fetch_html, ScrapeResult};
+use crate::scraper_engine::{fetch_cover_image, fetch_html, ScrapeResult};
 use serde::Serialize;
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, State};
@@ -112,19 +112,6 @@ async fn scrape_via_mirrors<T>(
     Err(format!("ninguna web funcionó; último error: {last_err}"))
 }
 
-/// Apply any base64 cover images found during the scrape onto the parsed
-/// series list, replacing their (Cloudflare-blocked) remote poster URL.
-fn apply_covers(mut series: Vec<Series>, covers: &std::collections::HashMap<String, String>) -> Vec<Series> {
-    for s in &mut series {
-        if let Some(remote) = &s.cover_url {
-            if let Some(data_uri) = covers.get(remote) {
-                s.cover_url = Some(data_uri.clone());
-            }
-        }
-    }
-    series
-}
-
 async fn scan_airing_via_mirrors(
     app: &AppHandle,
     state: &State<'_, AppState>,
@@ -134,10 +121,13 @@ async fn scan_airing_via_mirrors(
     emit_refresh_progress(app, 0, 1, "Escaneando listado de estrenos");
     // airing_url() just appends a fixed path; reuse it against an empty base to get that path alone.
     let path = a.airing_url("").to_string();
-    let (scraped, series, working_mirror) =
+    let (_scraped, series, working_mirror) =
         scrape_via_mirrors(app, &mirrors, &path, |html| a.parse_airing(html)).await?;
     emit_refresh_progress(app, 1, 1, "Listado completo");
-    let series = apply_covers(series, &scraped.covers);
+    // Cover images are intentionally NOT fetched here: doing it for every
+    // series on the airing list (~150 at once) reads as scraping abuse to
+    // Cloudflare and gets rate-limited regardless of session validity. Covers
+    // are fetched one at a time in `refresh`, only for followed series.
 
     let db = state.db.lock().unwrap();
     save_mirrors(&db, &mirrors)?;
@@ -255,6 +245,20 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>) -> Result<i64, 
                 total_new += 1;
             }
         }
+
+        // One cover fetch per followed series per refresh — never in bulk.
+        // Skip once it's already a fetched data: URI so we don't re-fetch on
+        // every refresh; a failure here just leaves the remote (broken) url
+        // in place to retry next time, it never blocks episode updates above.
+        if let Some(remote) = &s.cover_url {
+            if !remote.starts_with("data:") {
+                if let Ok(data_uri) = fetch_cover_image(&app, remote).await {
+                    let db = state.db.lock().unwrap();
+                    let _ = db.update_series_cover(s.id, &data_uri);
+                }
+            }
+        }
+
         // polite delay between series
         tokio::time::sleep(std::time::Duration::from_millis(800)).await;
     }

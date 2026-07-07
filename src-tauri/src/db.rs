@@ -103,6 +103,15 @@ impl Db {
         Ok(())
     }
 
+    /// Replace a series' cover with a fetched base64 data URI.
+    pub fn update_series_cover(&self, series_id: i64, cover_url: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE series SET cover_url=?1 WHERE id=?2",
+            (cover_url, series_id),
+        )?;
+        Ok(())
+    }
+
     pub fn get_setting(&self, key: &str) -> Result<Option<String>> {
         let v = self
             .conn
