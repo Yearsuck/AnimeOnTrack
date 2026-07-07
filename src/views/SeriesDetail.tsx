@@ -2,6 +2,17 @@ import { useEffect, useRef, useState } from "react";
 import { listEpisodes, openEpisode, setSeenCascade } from "../api";
 import type { Episode, Series } from "../types";
 
+// Mirrors the backend's parse_ep_number (src-tauri/src/db.rs): leading
+// digits (+ optional decimal) only, e.g. "12" -> 12, "12.5" -> 12.5,
+// "1x05" -> 1. Numbers with no leading digit (e.g. "OVA") return null so
+// the optimistic update falls back to an exact-string match instead of
+// guessing an order — must stay in sync with the backend or the optimistic
+// UI will disagree with what actually got persisted.
+function epNum(number: string): number | null {
+  const m = number.trim().match(/^\d+(\.\d+)?/);
+  return m ? parseFloat(m[0]) : null;
+}
+
 export function SeriesDetail({
   series,
   onBack,
@@ -32,11 +43,13 @@ export function SeriesDetail({
   // episode seen also marks every earlier one seen; marking unseen also
   // un-marks every later one — watching stays gap-free.
   function toggleSeen(ep: Episode) {
-    const n = parseInt(ep.number, 10);
+    const n = epNum(ep.number);
     const nextSeen = !ep.seen;
     setEpisodes((prev) =>
       prev.map((e) => {
-        const en = parseInt(e.number, 10);
+        if (n === null) return e.number === ep.number ? { ...e, seen: nextSeen } : e;
+        const en = epNum(e.number);
+        if (en === null) return e;
         if (nextSeen && en <= n) return { ...e, seen: true };
         if (!nextSeen && en >= n) return { ...e, seen: false };
         return e;

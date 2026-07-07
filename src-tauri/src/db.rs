@@ -1,6 +1,31 @@
 use anyhow::Result;
 use rusqlite::Connection;
 
+/// Extract the leading numeric portion of an episode-number string, e.g.
+/// "12" -> 12.0, "12.5" -> 12.5 (OVA/special numbering), "1x05" -> 1.0
+/// (season-prefixed numbering seen on multi-cour series pages). Returns
+/// `None` when there are no leading digits at all (e.g. "OVA"), so callers
+/// can fall back to an exact-string match instead of guessing an ordering.
+fn parse_ep_number(s: &str) -> Option<f64> {
+    let trimmed = s.trim();
+    let mut end = 0;
+    let mut seen_dot = false;
+    for (i, c) in trimmed.char_indices() {
+        if c.is_ascii_digit() {
+            end = i + c.len_utf8();
+        } else if c == '.' && !seen_dot && end > 0 {
+            seen_dot = true;
+        } else {
+            break;
+        }
+    }
+    if end == 0 {
+        None
+    } else {
+        trimmed[..end].parse().ok()
+    }
+}
+
 pub struct Db {
     pub conn: Connection,
 }
@@ -245,18 +270,39 @@ impl Db {
     /// earlier episode of that series seen (no gaps like "watched 10 but not
     /// 6-9"); un-marking an episode also un-marks every later one (you can't
     /// have watched what comes after something you're un-marking).
+    ///
+    /// Comparison happens in Rust via `parse_ep_number`, not SQLite's
+    /// `CAST(... AS INTEGER)` — the two disagreed on numbers like "1x05"
+    /// (season-prefixed) or "12.5" (specials): SQLite's cast still read a
+    /// leading digit while Rust's old strict `i64::parse` failed to 0,
+    /// which made un-marking such an episode wipe the *whole series'*
+    /// watched history instead of just the later episodes.
     pub fn set_seen_cascade(&self, series_id: i64, number: &str, seen: bool) -> Result<()> {
-        let n: i64 = number.parse().unwrap_or(0);
-        if seen {
+        let Some(target) = parse_ep_number(number) else {
+            // No leading digits at all: ordering is meaningless, so just
+            // toggle the exact-matching episode(s) rather than cascade.
             self.conn.execute(
-                "UPDATE episodes SET seen=1 WHERE series_id=?1 AND CAST(number AS INTEGER) <= ?2",
-                (series_id, n),
+                "UPDATE episodes SET seen=?1 WHERE series_id=?2 AND number=?3",
+                (seen as i64, series_id, number),
             )?;
-        } else {
-            self.conn.execute(
-                "UPDATE episodes SET seen=0 WHERE series_id=?1 AND CAST(number AS INTEGER) >= ?2",
-                (series_id, n),
-            )?;
+            return Ok(());
+        };
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, number FROM episodes WHERE series_id=?1")?;
+        let rows: Vec<(i64, String)> = stmt
+            .query_map([series_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for (id, num) in rows {
+            let matches = match parse_ep_number(&num) {
+                Some(v) if seen => v <= target,
+                Some(v) => v >= target,
+                None => false,
+            };
+            if matches {
+                self.conn
+                    .execute("UPDATE episodes SET seen=?1 WHERE id=?2", (seen as i64, id))?;
+            }
         }
         Ok(())
     }
@@ -377,6 +423,43 @@ mod tests {
         assert_eq!(airing.len(), 1);
         assert!(airing[0].followed);
         assert_eq!(airing[0].title, "Baki-dou 2");
+    }
+
+    #[test]
+    fn seen_cascade_handles_non_integer_episode_numbers() {
+        // Regression: episode numbers like "1x05" (season-prefixed) used to
+        // fail Rust's strict i64 parse (-> 0) while SQLite's CAST still read
+        // the leading digit, so un-marking one used to wipe every episode's
+        // seen flag in the series instead of just the later ones.
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "https://wwv.animeytx.net").unwrap();
+        let s = crate::models::Series {
+            id: 0, slug: "x".into(), title: "X".into(),
+            url: "u".into(), cover_url: None, is_airing: true, followed: false,
+        };
+        let sid = db.upsert_series(src, &s).unwrap();
+
+        let mk = |n: &str, url: &str| crate::models::Episode {
+            id: 0, series_id: sid, number: n.into(), title: None,
+            url: url.into(), released_at: None, seen: false,
+        };
+        db.insert_episode(&mk("1x01", "https://site/e1")).unwrap();
+        db.insert_episode(&mk("1x02", "https://site/e2")).unwrap();
+        db.insert_episode(&mk("1x03", "https://site/e3")).unwrap();
+
+        // marking "1x02" seen cascades to "1x01" too, but not "1x03"
+        db.set_seen_cascade(sid, "1x02", true).unwrap();
+        let eps = db.list_series_episodes(sid).unwrap();
+        assert!(eps.iter().find(|e| e.number == "1x01").unwrap().seen);
+        assert!(eps.iter().find(|e| e.number == "1x02").unwrap().seen);
+        assert!(!eps.iter().find(|e| e.number == "1x03").unwrap().seen);
+
+        // un-marking "1x02" un-marks "1x02"/"1x03" but must leave "1x01" alone
+        db.set_seen_cascade(sid, "1x02", false).unwrap();
+        let eps = db.list_series_episodes(sid).unwrap();
+        assert!(eps.iter().find(|e| e.number == "1x01").unwrap().seen);
+        assert!(!eps.iter().find(|e| e.number == "1x02").unwrap().seen);
+        assert!(!eps.iter().find(|e| e.number == "1x03").unwrap().seen);
     }
 
     #[test]
