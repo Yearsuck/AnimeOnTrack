@@ -4,6 +4,7 @@ import { AiringGrid } from "./views/AiringGrid";
 import { Pending } from "./views/Pending";
 import { SeriesDetail } from "./views/SeriesDetail";
 import { Settings } from "./views/Settings";
+import { ProgressBar } from "./views/ProgressBar";
 import { listAiring, refresh, pendingCount } from "./api";
 import type { Series } from "./types";
 
@@ -64,12 +65,15 @@ export default function App() {
 
   if (view === "onboarding")
     return (
-      <Onboarding
-        onDone={async () => {
-          await refreshBadge();
-          setView("airing");
-        }}
-      />
+      <>
+        <Onboarding
+          onDone={async () => {
+            await refreshBadge();
+            setView("airing");
+          }}
+        />
+        <ProgressBar />
+      </>
     );
 
   const Tab = ({ id, label }: { id: View; label: string }) => (
@@ -99,6 +103,7 @@ export default function App() {
           {refreshing ? "Actualizando…" : "↻ Actualizar"}
         </button>
       </div>
+      <ProgressBar />
 
       {view === "pending" && <Pending onOpenSeries={openSeries} onChanged={refreshBadge} />}
       {view === "airing" && <AiringGrid onOpenSeries={openSeries} />}

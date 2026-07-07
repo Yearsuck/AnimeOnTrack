@@ -4,8 +4,23 @@ use crate::diff::new_episodes;
 use crate::models::{Episode, Series};
 use crate::player::{BrowserPlayer, EpisodePlayer};
 use crate::scraper_engine::{fetch_html, ScrapeResult};
+use serde::Serialize;
 use std::sync::Mutex;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, State};
+
+#[derive(Serialize, Clone)]
+struct RefreshProgress {
+    current: usize,
+    total: usize,
+    title: String,
+}
+
+fn emit_refresh_progress(app: &AppHandle, current: usize, total: usize, title: &str) {
+    let _ = app.emit(
+        "refresh-progress",
+        RefreshProgress { current, total, title: title.to_string() },
+    );
+}
 
 pub struct AppState {
     pub db: Mutex<Db>,
@@ -99,9 +114,11 @@ async fn scan_airing_via_mirrors(
     mirrors: Vec<String>,
 ) -> Result<Vec<Series>, String> {
     let a = adapter();
+    emit_refresh_progress(app, 0, 1, "Escaneando listado de estrenos");
     // airing_url() just appends a fixed path; reuse it against an empty base to get that path alone.
     let path = a.airing_url("").to_string();
     let (scraped, working_mirror) = scrape_via_mirrors(app, &mirrors, &path).await?;
+    emit_refresh_progress(app, 1, 1, "Listado completo");
     let series = a.parse_airing(&scraped.html).map_err(|e| e.to_string())?;
     if series.is_empty() {
         return Err("no series parsed; site layout may have changed".into());
@@ -191,7 +208,9 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>) -> Result<i64, 
     };
     let a = adapter();
     let mut total_new = 0i64;
-    for s in followed {
+    let total_series = followed.len();
+    for (idx, s) in followed.into_iter().enumerate() {
+        emit_refresh_progress(&app, idx, total_series, &s.title);
         let path = match url::Url::parse(&s.url) {
             Ok(u) => format!("{}{}", u.path(), u.query().map(|q| format!("?{q}")).unwrap_or_default()),
             Err(_) => continue, // malformed stored url: skip, keep cached data
@@ -220,6 +239,7 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>) -> Result<i64, 
         // polite delay between series
         tokio::time::sleep(std::time::Duration::from_millis(800)).await;
     }
+    emit_refresh_progress(&app, total_series, total_series, "Completado");
     Ok(total_new)
 }
 

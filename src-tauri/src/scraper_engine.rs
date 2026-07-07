@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 use std::collections::HashMap;
 use std::time::Duration;
-use tauri::{AppHandle, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
 /// Result of scraping a page: the rendered HTML, plus any poster images found
 /// on it, already fetched as base64 data URIs (keyed by their original remote
@@ -9,6 +9,10 @@ use tauri::{AppHandle, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 pub struct ScrapeResult {
     pub html: String,
     pub covers: HashMap<String, String>,
+}
+
+fn emit_stage(app: &AppHandle, stage: &str) {
+    let _ = app.emit("scrape-stage", stage);
 }
 
 /// Load `url` in a hidden webview, wait for Cloudflare/JS to settle, then
@@ -26,6 +30,7 @@ pub struct ScrapeResult {
 /// page (same-origin, cookies included automatically) works, so we do that
 /// once here and cache the result as a data URI instead of the remote URL.
 pub async fn fetch_html(app: &AppHandle, url: &str) -> Result<ScrapeResult> {
+    emit_stage(app, "opening");
     let label = format!("scraper-{}", uuid_like());
     let window = WebviewWindowBuilder::new(
         app,
@@ -37,7 +42,7 @@ pub async fn fetch_html(app: &AppHandle, url: &str) -> Result<ScrapeResult> {
     .visible(false)
     .build()?;
 
-    let result = extract_when_ready(&window).await;
+    let result = extract_when_ready(app, &window).await;
     window.close().ok();
     result
 }
@@ -46,11 +51,12 @@ pub async fn fetch_html(app: &AppHandle, url: &str) -> Result<ScrapeResult> {
 /// real content, then extract the full HTML and any poster images. Condition-
 /// based waiting rather than a fixed sleep, because the challenge clears in a
 /// variable amount of time.
-async fn extract_when_ready(window: &WebviewWindow) -> Result<ScrapeResult> {
+async fn extract_when_ready(app: &AppHandle, window: &WebviewWindow) -> Result<ScrapeResult> {
     const PROBE: &str = "JSON.stringify(document.readyState==='complete' \
 && !!document.body && document.body.innerHTML.length>3000 \
 && !/just a moment|un momento|checking your browser|verificando/i.test(document.title))";
 
+    emit_stage(app, "verifying");
     let mut ready = false;
     for _ in 0..40 {
         tokio::time::sleep(Duration::from_secs(1)).await;
@@ -68,11 +74,22 @@ async fn extract_when_ready(window: &WebviewWindow) -> Result<ScrapeResult> {
         ));
     }
 
+    emit_stage(app, "extracting");
     let json = eval(window, "document.documentElement.outerHTML", 15).await?;
     let html: String =
         serde_json::from_str(&json).map_err(|e| anyhow!("failed to decode page HTML: {e}"))?;
 
-    let covers = fetch_covers(window).await.unwrap_or_default();
+    emit_stage(app, "covers");
+    let covers = match fetch_covers(window).await {
+        Ok(m) => {
+            eprintln!("[covers] fetched {} image(s)", m.len());
+            m
+        }
+        Err(e) => {
+            eprintln!("[covers] failed: {e}");
+            HashMap::new()
+        }
+    };
 
     Ok(ScrapeResult { html, covers })
 }
@@ -91,34 +108,45 @@ async fn extract_when_ready(window: &WebviewWindow) -> Result<ScrapeResult> {
 /// Cloudflare-readiness check.
 async fn fetch_covers(window: &WebviewWindow) -> Result<HashMap<String, String>> {
     const START: &str = r#"(function(){
-        window.__aotCoversDone = false;
-        (async () => {
-            const imgs = [...document.querySelectorAll('.bsx img')];
-            const out = {};
-            await Promise.all(imgs.map(async (img) => {
-                const src = img.src;
-                if (!src || out[src]) return;
-                try {
-                    const res = await fetch(src);
-                    const blob = await res.blob();
-                    const dataUri = await new Promise((resolve, reject) => {
-                        const r = new FileReader();
-                        r.onload = () => resolve(r.result);
-                        r.onerror = () => reject(new Error('read failed'));
-                        r.readAsDataURL(blob);
-                    });
-                    out[src] = dataUri;
-                } catch (e) { /* leave this one out; caller keeps the remote url */ }
-            }));
-            window.__aotCovers = JSON.stringify(out);
-            window.__aotCoversDone = true;
-        })();
-        return true;
+        try {
+            window.__aotCoversDone = false;
+            window.__aotCoversErr = null;
+            var imgs = Array.prototype.slice.call(document.querySelectorAll('.bsx img'));
+            window.__aotCoversTotal = imgs.length;
+            (async () => {
+                const out = {};
+                await Promise.all(imgs.map(async (img) => {
+                    const src = img.src;
+                    if (!src || out[src]) return;
+                    try {
+                        const res = await fetch(src);
+                        const blob = await res.blob();
+                        const dataUri = await new Promise((resolve, reject) => {
+                            const r = new FileReader();
+                            r.onload = () => resolve(r.result);
+                            r.onerror = () => reject(new Error('read failed'));
+                            r.readAsDataURL(blob);
+                        });
+                        out[src] = dataUri;
+                    } catch (e) { /* leave this one out; caller keeps the remote url */ }
+                }));
+                window.__aotCovers = JSON.stringify(out);
+                window.__aotCoversDone = true;
+            })().catch((e) => {
+                window.__aotCoversErr = String(e);
+                window.__aotCoversDone = true;
+            });
+            return JSON.stringify({ started: true, imgCount: imgs.length });
+        } catch (e) {
+            return JSON.stringify({ started: false, error: String(e) });
+        }
     })()"#;
     const IS_DONE: &str = "JSON.stringify(window.__aotCoversDone === true)";
     const READ: &str = "window.__aotCovers";
 
-    eval(window, START, 10).await?;
+    let start_json = eval(window, START, 10).await?;
+    let start_info: String = serde_json::from_str(&start_json)?;
+    eprintln!("[covers] start: {start_info}");
 
     let mut done = false;
     for _ in 0..40 {
@@ -136,6 +164,9 @@ async fn fetch_covers(window: &WebviewWindow) -> Result<HashMap<String, String>>
 
     let json = eval(window, READ, 10).await?;
     let inner: String = serde_json::from_str(&json)?;
+    if inner.is_empty() || inner == "null" {
+        return Err(anyhow!("cover fetch produced no data (window.__aotCovers empty)"));
+    }
     let map: HashMap<String, String> = serde_json::from_str(&inner)?;
     Ok(map)
 }
