@@ -28,6 +28,9 @@ pub fn run() {
             app.manage(AppState {
                 db: Mutex::new(db),
                 source_id: Mutex::new(source_id),
+                swipe_buffer: Mutex::new(std::collections::HashMap::new()),
+                swipe_last_page: Mutex::new(std::collections::HashMap::new()),
+                swipe_served: Mutex::new(std::collections::HashMap::new()),
             });
             Ok(())
         })
@@ -46,6 +49,9 @@ pub fn run() {
             commands::rescan_airing,
             commands::get_mirrors,
             commands::set_mirrors,
+            commands::discover_swipe_card,
+            commands::decide_swipe,
+            commands::start_watching,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
