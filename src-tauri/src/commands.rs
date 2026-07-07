@@ -174,10 +174,22 @@ pub fn get_mirrors(state: State<'_, AppState>) -> Result<Vec<String>, String> {
     load_mirrors(&db)
 }
 
+/// Save the mirror list. If it would end up without the site the app is
+/// currently actually using (`sources.base_url`), that site is kept at the
+/// front regardless — otherwise a Settings edit can silently strand every
+/// future scan with no working entry at all.
 #[tauri::command]
 pub fn set_mirrors(state: State<'_, AppState>, urls: Vec<String>) -> Result<(), String> {
     let db = state.db.lock().unwrap();
-    let cleaned: Vec<String> = urls.iter().map(|u| normalize(u)).filter(|u| !u.is_empty()).collect();
+    let mut cleaned: Vec<String> = urls.iter().map(|u| normalize(u)).filter(|u| !u.is_empty()).collect();
+    if let Ok(Some(src_id)) = state.source_id.lock().map(|g| *g) {
+        if let Ok(Some(base_url)) = db.get_source_base_url(src_id) {
+            let base_url = normalize(&base_url);
+            if !cleaned.iter().any(|m| m.eq_ignore_ascii_case(&base_url)) {
+                cleaned.insert(0, base_url);
+            }
+        }
+    }
     save_mirrors(&db, &cleaned)
 }
 
