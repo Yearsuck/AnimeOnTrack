@@ -27,6 +27,35 @@ fn text_of(el: scraper::ElementRef, sel: &Selector) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// Extract (title, url, poster_url) from a `.bsx` card's anchor + img.
+/// Shared by `parse_airing` and `parse_finished_page` — both cards carry the
+/// clean title in the anchor's `title` attribute (with `.tt` as a fallback,
+/// and finally the URL slug), and the poster in an `img`'s `data-src`/`src`.
+/// Returns `None` if the card has no anchor `href` at all (nothing to link to).
+fn card_basics(
+    card: scraper::ElementRef,
+    a_sel: &Selector,
+    tt_sel: &Selector,
+    img_sel: &Selector,
+) -> Option<(String, String, Option<String>)> {
+    let anchor = card.select(a_sel).next()?;
+    let url = anchor.value().attr("href")?.to_string();
+    let title = anchor
+        .value()
+        .attr("title")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| text_of(card, tt_sel))
+        .unwrap_or_else(|| slug_from_url(&url));
+    let poster_url = card.select(img_sel).next().and_then(|i| {
+        i.value()
+            .attr("data-src")
+            .or_else(|| i.value().attr("src"))
+            .map(|s| s.to_string())
+    });
+    Some((title, url, poster_url))
+}
+
 impl SiteAdapter for AnimeytxAdapter {
     fn airing_url(&self, base_url: &str) -> String {
         format!("{}/anime-en-emision/", base_url.trim_end_matches('/'))
@@ -41,28 +70,10 @@ impl SiteAdapter for AnimeytxAdapter {
 
         let mut out = Vec::new();
         for card in doc.select(&card_sel) {
-            let anchor = match card.select(&a_sel).next() {
-                Some(a) => a,
+            let (title, url, cover_url) = match card_basics(card, &a_sel, &tt_sel, &img_sel) {
+                Some(b) => b,
                 None => continue,
             };
-            let url = match anchor.value().attr("href") {
-                Some(h) => h.to_string(),
-                None => continue,
-            };
-            // Prefer the anchor's `title` attribute; fall back to `.tt`, then slug.
-            let title = anchor
-                .value()
-                .attr("title")
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .or_else(|| text_of(card, &tt_sel))
-                .unwrap_or_else(|| slug_from_url(&url));
-            let cover_url = card.select(&img_sel).next().and_then(|i| {
-                i.value()
-                    .attr("data-src")
-                    .or_else(|| i.value().attr("src"))
-                    .map(|s| s.to_string())
-            });
             out.push(Series {
                 id: 0,
                 slug: slug_from_url(&url),
@@ -147,6 +158,7 @@ impl SiteAdapter for AnimeytxAdapter {
         let doc = Html::parse_document(html);
         let card_sel = Selector::parse(AIRING_CARD).unwrap();
         let a_sel = Selector::parse("a").unwrap();
+        let tt_sel = Selector::parse(".tt").unwrap();
         let status_sel = Selector::parse(".status.Completed").unwrap();
         let typez_sel = Selector::parse(".typez").unwrap();
         let img_sel = Selector::parse("img").unwrap();
@@ -156,26 +168,10 @@ impl SiteAdapter for AnimeytxAdapter {
             if card.select(&status_sel).next().is_none() {
                 continue; // no .status.Completed => not finished, skip
             }
-            let anchor = match card.select(&a_sel).next() {
-                Some(a) => a,
+            let (title, url, poster_url) = match card_basics(card, &a_sel, &tt_sel, &img_sel) {
+                Some(b) => b,
                 None => continue,
             };
-            let url = match anchor.value().attr("href") {
-                Some(h) => h.to_string(),
-                None => continue,
-            };
-            let title = anchor
-                .value()
-                .attr("title")
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| slug_from_url(&url));
-            let poster_url = card.select(&img_sel).next().and_then(|i| {
-                i.value()
-                    .attr("data-src")
-                    .or_else(|| i.value().attr("src"))
-                    .map(|s| s.to_string())
-            });
             // .typez's text is the actual type badge; its 2nd CSS class does
             // NOT reliably match (e.g. class="typez Music" with text
             // "Donghua" observed live), so this must read text, never class.
