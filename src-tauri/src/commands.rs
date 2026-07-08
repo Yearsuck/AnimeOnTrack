@@ -469,9 +469,14 @@ pub async fn discover_swipe_card(
     let last_page = state.swipe_last_page.lock().unwrap().get(slug).copied().unwrap_or(1);
     let page = pick_index(last_page as usize).map(|i| i as u32 + 1).unwrap_or(1);
 
+    let known = {
+        let db = state.db.lock().unwrap();
+        db.known_series_urls(src).map_err(|e| e.to_string())?
+    };
+
     let buffered = state.swipe_buffer.lock().unwrap().remove(&(slug.clone(), page));
     let mut cards = match buffered {
-        Some(cards) => cards,
+        Some(cards) => undecided_cards(cards, &known),
         None => {
             let a = adapter();
             let path = a.genre_page_url("", slug, page);
@@ -482,10 +487,6 @@ pub async fn discover_swipe_card(
                 .lock()
                 .unwrap()
                 .insert(slug.clone(), a.parse_pagination_last_page(&scraped.html));
-            let known = {
-                let db = state.db.lock().unwrap();
-                db.known_series_urls(src).map_err(|e| e.to_string())?
-            };
             let mut fresh = undecided_cards(raw_cards, &known);
             shuffle(&mut fresh);
             fresh
