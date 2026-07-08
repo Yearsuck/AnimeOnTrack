@@ -59,6 +59,40 @@ pub struct SeriesDetail {
     pub synopsis: Option<String>,
 }
 
+/// Aggregate watch counts for the stats dashboard, all scoped to a single
+/// `source_id` and to `followed=1` series (except `backlog_want`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WatchSummary {
+    pub followed_series: i64,
+    pub episodes_watched: i64,
+    pub episodes_total: i64,
+    pub backlog_want: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GenreStat {
+    pub genre: String,
+    pub count: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TypeStat {
+    pub kind: String,
+    pub count: i64,
+}
+
+/// One followed series' graph-relevant fields, for the 3D relationship graph
+/// (`get_stats_graph`) — the frontend builds the root/hub/link structure from
+/// this flat list itself, no hub-aggregation duplicated here.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SeriesGraphNode {
+    pub id: i64,
+    pub title: String,
+    pub cover_url: Option<String>,
+    pub genres: Vec<String>,
+    pub kind: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -106,6 +140,20 @@ mod tests {
         let j = serde_json::to_string(&c).unwrap();
         let back: FinishedCard = serde_json::from_str(&j).unwrap();
         assert_eq!(c, back);
+    }
+
+    #[test]
+    fn series_graph_node_json_roundtrips() {
+        let n = SeriesGraphNode {
+            id: 1,
+            title: "Baki-dou".into(),
+            cover_url: Some("data:image/png;base64,abc".into()),
+            genres: vec!["Seinen".into(), "Drama".into()],
+            kind: Some("TV".into()),
+        };
+        let j = serde_json::to_string(&n).unwrap();
+        let back: SeriesGraphNode = serde_json::from_str(&j).unwrap();
+        assert_eq!(n, back);
     }
 
     #[test]

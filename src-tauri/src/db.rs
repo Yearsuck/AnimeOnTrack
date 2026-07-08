@@ -260,6 +260,103 @@ impl Db {
         Ok(rows)
     }
 
+    /// Followed-series count per genre, descending. Only covers series that
+    /// have `series_genres` rows (see `refresh()`'s backfill step).
+    pub fn get_genre_stats(&self, source_id: i64) -> Result<Vec<crate::models::GenreStat>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT g.genre, COUNT(DISTINCT g.series_id) AS cnt
+             FROM series_genres g
+             JOIN series s ON s.id = g.series_id
+             WHERE s.source_id=?1 AND s.followed=1
+             GROUP BY g.genre
+             ORDER BY cnt DESC, g.genre",
+        )?;
+        let rows = stmt
+            .query_map([source_id], |r| {
+                Ok(crate::models::GenreStat { genre: r.get(0)?, count: r.get(1)? })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Followed-series count per `kind` ("TV"/"OVA"/...), descending. Series
+    /// with no `kind` set are excluded.
+    pub fn get_type_stats(&self, source_id: i64) -> Result<Vec<crate::models::TypeStat>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT s.kind, COUNT(*) AS cnt
+             FROM series s
+             WHERE s.source_id=?1 AND s.followed=1 AND s.kind IS NOT NULL AND s.kind <> ''
+             GROUP BY s.kind
+             ORDER BY cnt DESC, s.kind",
+        )?;
+        let rows = stmt
+            .query_map([source_id], |r| {
+                Ok(crate::models::TypeStat { kind: r.get(0)?, count: r.get(1)? })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// `true` if this series has no `series_genres` rows yet (needs a
+    /// detail-page fetch to backfill). Split out as a plain sync check so the
+    /// async fetch decision can be unit-tested without a scraper/AppHandle.
+    pub fn series_needs_genre_backfill(&self, series_id: i64) -> Result<bool> {
+        Ok(self.list_series_genres(series_id)?.is_empty())
+    }
+
+    /// Followed series with their genres (aggregated) and kind, for the 3D
+    /// relationship graph. One follow-up `list_series_genres` query per
+    /// series — simplest option given that helper already exists, and the
+    /// followed-series count here is small (never bulk-scraped).
+    pub fn get_stats_graph_data(&self, source_id: i64) -> Result<Vec<crate::models::SeriesGraphNode>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, title, cover_url, kind FROM series
+             WHERE source_id=?1 AND followed=1 ORDER BY title",
+        )?;
+        let rows: Vec<(i64, String, Option<String>, Option<String>)> = stmt
+            .query_map([source_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows.into_iter()
+            .map(|(id, title, cover_url, kind)| {
+                Ok(crate::models::SeriesGraphNode {
+                    id,
+                    title,
+                    cover_url,
+                    genres: self.list_series_genres(id)?,
+                    kind,
+                })
+            })
+            .collect()
+    }
+
+    /// Scalar watch totals for the stats dashboard.
+    pub fn get_watch_summary(&self, source_id: i64) -> Result<crate::models::WatchSummary> {
+        let followed_series: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM series WHERE source_id=?1 AND followed=1",
+            [source_id],
+            |r| r.get(0),
+        )?;
+        let (episodes_watched, episodes_total): (i64, i64) = self.conn.query_row(
+            "SELECT COALESCE(SUM(CASE WHEN e.seen=1 THEN 1 ELSE 0 END), 0), COUNT(e.id)
+             FROM episodes e
+             JOIN series s ON s.id = e.series_id
+             WHERE s.source_id=?1 AND s.followed=1",
+            [source_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        let backlog_want: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM series WHERE source_id=?1 AND backlog_status='want'",
+            [source_id],
+            |r| r.get(0),
+        )?;
+        Ok(crate::models::WatchSummary {
+            followed_series,
+            episodes_watched,
+            episodes_total,
+            backlog_want,
+        })
+    }
+
     /// Every URL that already has a `series` row for this source — any
     /// `backlog_status` or `followed` value counts as "already decided", so
     /// the swipe deck never re-offers a card the user has already acted on.
@@ -702,5 +799,63 @@ mod tests {
         let known = db.known_series_urls(src).unwrap();
         assert!(known.contains("https://site/tv/x/"));
         assert_eq!(known.len(), 1);
+    }
+
+    #[test]
+    fn series_needs_genre_backfill_reflects_series_genres_rows() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b").unwrap();
+        let s = crate::models::Series {
+            id: 0, slug: "x".into(), title: "X".into(),
+            url: "u".into(), cover_url: None, is_airing: false, followed: true,
+        };
+        let sid = db.upsert_series(src, &s).unwrap();
+
+        assert!(db.series_needs_genre_backfill(sid).unwrap());
+        db.insert_series_genres(sid, &["Seinen".to_string()]).unwrap();
+        assert!(!db.series_needs_genre_backfill(sid).unwrap());
+    }
+
+    #[test]
+    fn get_stats_graph_data_returns_genres_kind_and_cover_for_followed_series() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b").unwrap();
+
+        let full = crate::models::Series {
+            id: 0, slug: "full".into(), title: "Full".into(),
+            url: "u1".into(), cover_url: Some("data:image/png;base64,x".into()),
+            is_airing: false, followed: true,
+        };
+        let sid_full = db.upsert_series(src, &full).unwrap();
+        db.set_followed(sid_full, true).unwrap();
+        db.insert_series_genres(sid_full, &["Seinen".to_string(), "Drama".to_string()]).unwrap();
+        db.set_kind(sid_full, "TV").unwrap();
+
+        let bare = crate::models::Series {
+            id: 0, slug: "bare".into(), title: "Bare".into(),
+            url: "u2".into(), cover_url: None, is_airing: false, followed: true,
+        };
+        let sid_bare = db.upsert_series(src, &bare).unwrap();
+        db.set_followed(sid_bare, true).unwrap();
+
+        // not followed => excluded
+        let other = crate::models::Series {
+            id: 0, slug: "other".into(), title: "Other".into(),
+            url: "u3".into(), cover_url: None, is_airing: false, followed: false,
+        };
+        db.upsert_series(src, &other).unwrap();
+
+        let rows = db.get_stats_graph_data(src).unwrap();
+        assert_eq!(rows.len(), 2);
+
+        let full_row = rows.iter().find(|r| r.id == sid_full).unwrap();
+        assert_eq!(full_row.genres, vec!["Drama".to_string(), "Seinen".to_string()]);
+        assert_eq!(full_row.kind.as_deref(), Some("TV"));
+        assert_eq!(full_row.cover_url.as_deref(), Some("data:image/png;base64,x"));
+
+        let bare_row = rows.iter().find(|r| r.id == sid_bare).unwrap();
+        assert!(bare_row.genres.is_empty());
+        assert_eq!(bare_row.kind, None);
+        assert_eq!(bare_row.cover_url, None);
     }
 }

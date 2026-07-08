@@ -1,7 +1,9 @@
 use crate::adapter::{animeytx::AnimeytxAdapter, SiteAdapter};
 use crate::db::Db;
 use crate::diff::new_episodes;
-use crate::models::{Episode, FinishedCard, Series, SeriesDetail};
+use crate::models::{
+    Episode, FinishedCard, GenreStat, Series, SeriesDetail, SeriesGraphNode, TypeStat, WatchSummary,
+};
 use crate::player::{BrowserPlayer, EpisodePlayer};
 use crate::scraper_engine::{fetch_cover_image, fetch_html, ScrapeResult};
 use crate::swipe::{pick_index, shuffle, undecided_cards};
@@ -133,6 +135,34 @@ async fn fetch_series_detail(
     })
     .await?;
     details.into_iter().next().ok_or_else(|| "empty series detail page".to_string())
+}
+
+/// Backfill one series' genres/kind if it has no `series_genres` rows yet.
+/// Returns true if a fetch was attempted (regardless of success) — used by
+/// the caller to decide whether to apply the polite inter-series delay.
+/// Locks `db` only for the short sync checks/writes, never across the
+/// network `.await`, same discipline `refresh()`'s loop already follows.
+async fn backfill_series_genre_if_missing(
+    app: &AppHandle,
+    db: &Mutex<Db>,
+    mirrors: &[String],
+    series: &Series,
+) -> bool {
+    let needs = {
+        let db = db.lock().unwrap();
+        db.series_needs_genre_backfill(series.id).unwrap_or(false)
+    };
+    if !needs {
+        return false;
+    }
+    if let Ok(detail) = fetch_series_detail(app, mirrors, &series.url).await {
+        let db = db.lock().unwrap();
+        let _ = db.insert_series_genres(series.id, &detail.genres);
+        if let Some(kind) = &detail.kind {
+            let _ = db.set_kind(series.id, kind);
+        }
+    }
+    true
 }
 
 async fn fetch_episode_list_for(
@@ -302,6 +332,73 @@ pub fn list_library(state: State<'_, AppState>) -> Result<Vec<crate::models::Lib
 }
 
 #[tauri::command]
+pub fn get_genre_stats(state: State<'_, AppState>) -> Result<Vec<GenreStat>, String> {
+    let src = get_source_id(&state)?;
+    let db = state.db.lock().unwrap();
+    db.get_genre_stats(src).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_type_stats(state: State<'_, AppState>) -> Result<Vec<TypeStat>, String> {
+    let src = get_source_id(&state)?;
+    let db = state.db.lock().unwrap();
+    db.get_type_stats(src).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_watch_summary(state: State<'_, AppState>) -> Result<WatchSummary, String> {
+    let src = get_source_id(&state)?;
+    let db = state.db.lock().unwrap();
+    db.get_watch_summary(src).map_err(|e| e.to_string())
+}
+
+/// Followed series with genres/kind/cover, for the 3D relationship graph.
+/// The frontend builds the root/hub/link structure from this flat list.
+#[tauri::command]
+pub fn get_stats_graph(state: State<'_, AppState>) -> Result<Vec<SeriesGraphNode>, String> {
+    let src = get_source_id(&state)?;
+    let db = state.db.lock().unwrap();
+    db.get_stats_graph_data(src).map_err(|e| e.to_string())
+}
+
+/// Backfill genres/kind for every followed series still missing
+/// `series_genres` rows (not just the one-per-refresh-cycle `refresh()`
+/// does). Same politeness delay between series as `refresh()`. Returns the
+/// count of series that actually gained genres.
+#[tauri::command]
+pub async fn backfill_genres(app: AppHandle, state: State<'_, AppState>) -> Result<i64, String> {
+    let src = get_source_id(&state)?;
+    let (candidates, mirrors) = {
+        let db = state.db.lock().unwrap();
+        let followed = db.list_followed(src).map_err(|e| e.to_string())?;
+        let mut candidates = Vec::new();
+        for s in followed {
+            if db.series_needs_genre_backfill(s.id).map_err(|e| e.to_string())? {
+                candidates.push(s);
+            }
+        }
+        (candidates, load_mirrors(&db)?)
+    };
+    let total = candidates.len();
+    let mut filled = 0i64;
+    for (idx, s) in candidates.into_iter().enumerate() {
+        emit_refresh_progress(&app, idx, total, &s.title);
+        if backfill_series_genre_if_missing(&app, &state.db, &mirrors, &s).await {
+            let got = {
+                let db = state.db.lock().unwrap();
+                !db.series_needs_genre_backfill(s.id).map_err(|e| e.to_string())?
+            };
+            if got {
+                filled += 1;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+        }
+    }
+    emit_refresh_progress(&app, total, total, "Completado");
+    Ok(filled)
+}
+
+#[tauri::command]
 pub fn set_followed(
     state: State<'_, AppState>,
     series_id: i64,
@@ -363,6 +460,13 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>) -> Result<i64, 
                 }
             }
         }
+
+        // One genre/kind backfill per followed series per refresh — same
+        // politeness rule as the cover fetch above, and only for series that
+        // don't already have series_genres rows (normal-flow-followed series
+        // never got a detail-page fetch, unlike swipe-added ones). A failure
+        // here is silent and never blocks the episode-scan step above.
+        backfill_series_genre_if_missing(&app, &state.db, &mirrors, &s).await;
 
         // polite delay between series
         tokio::time::sleep(std::time::Duration::from_millis(800)).await;
