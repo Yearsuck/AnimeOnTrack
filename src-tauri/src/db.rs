@@ -1,13 +1,23 @@
 use anyhow::Result;
 use rusqlite::Connection;
 
-/// Extract the leading numeric portion of an episode-number string, e.g.
-/// "12" -> 12.0, "12.5" -> 12.5 (OVA/special numbering), "1x05" -> 1.0
-/// (season-prefixed numbering seen on multi-cour series pages). Returns
-/// `None` when there are no leading digits at all (e.g. "OVA"), so callers
-/// can fall back to an exact-string match instead of guessing an ordering.
+/// Extract a comparable numeric value from an episode-number string, e.g.
+/// "12" -> 12.0, "12.5" -> 12.5 (OVA/special numbering), "1x05" -> season 1
+/// episode 5 packed as 100005.0 (season-prefixed numbering seen on
+/// multi-cour series pages) so cascade comparisons order by (season,
+/// episode) instead of just the season digit — packing just the season
+/// would make every episode in the same season parse identically, and
+/// un-marking one used to wipe every other episode in that season too.
+/// Returns `None` when there are no leading digits at all (e.g. "OVA"), so
+/// callers can fall back to an exact-string match instead of guessing an
+/// ordering.
 fn parse_ep_number(s: &str) -> Option<f64> {
     let trimmed = s.trim();
+    if let Some((season, ep)) = trimmed.split_once(['x', 'X']) {
+        if let (Ok(season), Ok(ep)) = (season.trim().parse::<f64>(), ep.trim().parse::<f64>()) {
+            return Some(season * 100_000.0 + ep);
+        }
+    }
     let mut end = 0;
     let mut seen_dot = false;
     for (i, c) in trimmed.char_indices() {
