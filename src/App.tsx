@@ -5,11 +5,20 @@ import { Pending } from "./views/Pending";
 import { SeriesDetail } from "./views/SeriesDetail";
 import { Settings } from "./views/Settings";
 import { Library } from "./views/Library";
+import { Stats } from "./views/Stats";
 import { ProgressBar } from "./views/ProgressBar";
 import { listAiring, refresh, rescanAiring, pendingCount } from "./api";
 import type { Series } from "./types";
 
-type View = "loading" | "onboarding" | "pending" | "airing" | "library" | "settings" | "detail";
+type View =
+  | "loading"
+  | "onboarding"
+  | "pending"
+  | "airing"
+  | "library"
+  | "stats"
+  | "settings"
+  | "detail";
 
 export default function App() {
   const [view, setView] = useState<View>("loading");
@@ -107,6 +116,7 @@ export default function App() {
           <Tab id="pending" label="Pendientes" />
           <Tab id="airing" label="En emisión" />
           <Tab id="library" label="Biblioteca" />
+          <Tab id="stats" label="Estadísticas" />
           <Tab id="settings" label="Ajustes" />
         </div>
         <div className="spacer" />
@@ -121,6 +131,7 @@ export default function App() {
         <AiringGrid onOpenSeries={openSeries} refreshSignal={airingRefreshSignal} />
       )}
       {view === "library" && <Library onOpenSeries={openSeries} />}
+      {view === "stats" && <Stats />}
       {view === "settings" && <Settings />}
       {view === "detail" && selected && (
         <SeriesDetail
