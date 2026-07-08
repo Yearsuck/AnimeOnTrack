@@ -31,6 +31,7 @@ pub fn run() {
                 swipe_buffer: Mutex::new(std::collections::HashMap::new()),
                 swipe_last_page: Mutex::new(std::collections::HashMap::new()),
                 swipe_served: Mutex::new(std::collections::HashMap::new()),
+                last_swiped_series_id: Mutex::new(None),
             });
             Ok(())
         })
@@ -38,6 +39,11 @@ pub fn run() {
             commands::scan_airing,
             commands::list_airing,
             commands::list_library,
+            commands::get_genre_stats,
+            commands::get_type_stats,
+            commands::get_watch_summary,
+            commands::get_stats_graph,
+            commands::backfill_genres,
             commands::set_followed,
             commands::refresh,
             commands::list_pending,
@@ -52,6 +58,13 @@ pub fn run() {
             commands::discover_swipe_card,
             commands::decide_swipe,
             commands::start_watching,
+            commands::undo_last_swipe,
+            commands::list_backlog,
+            commands::promote_discarded,
+            commands::delete_series,
+            commands::set_backlog_status,
+            commands::get_series_genres,
+            commands::get_top_genres,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

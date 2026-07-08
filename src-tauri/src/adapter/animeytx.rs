@@ -176,7 +176,7 @@ impl SiteAdapter for AnimeytxAdapter {
             // NOT reliably match (e.g. class="typez Music" with text
             // "Donghua" observed live), so this must read text, never class.
             let kind = text_of(card, &typez_sel).unwrap_or_default();
-            out.push(FinishedCard { title, url, poster_url, kind });
+            out.push(FinishedCard { title, url, poster_url, kind, matched_genre: None });
         }
         Ok(out)
     }

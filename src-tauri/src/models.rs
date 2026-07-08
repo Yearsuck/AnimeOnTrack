@@ -44,6 +44,11 @@ pub struct FinishedCard {
     pub url: String,
     pub poster_url: Option<String>,
     pub kind: String,
+    /// Which genre archive this card was found under — only known/set by
+    /// `discover_swipe_card` (which is the one place a genre is picked
+    /// before scraping), `None` everywhere else `FinishedCard` is built.
+    #[serde(default)]
+    pub matched_genre: Option<String>,
 }
 
 pub type SwipeCard = FinishedCard;
@@ -57,6 +62,48 @@ pub struct SeriesDetail {
     pub genres: Vec<String>,
     pub kind: Option<String>,
     pub synopsis: Option<String>,
+}
+
+/// Aggregate watch counts for the stats dashboard, all scoped to a single
+/// `source_id` and to `followed=1` series (except `backlog_want`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WatchSummary {
+    pub followed_series: i64,
+    pub episodes_watched: i64,
+    pub episodes_total: i64,
+    pub backlog_want: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GenreStat {
+    pub genre: String,
+    pub count: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TypeStat {
+    pub kind: String,
+    pub count: i64,
+}
+
+/// One genre's affinity score (see `Db::get_genre_affinity`), for surfacing
+/// "your favorite genres" in the swipe UI.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GenreAffinity {
+    pub genre: String,
+    pub score: f64,
+}
+
+/// One followed series' graph-relevant fields, for the 3D relationship graph
+/// (`get_stats_graph`) — the frontend builds the root/hub/link structure from
+/// this flat list itself, no hub-aggregation duplicated here.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SeriesGraphNode {
+    pub id: i64,
+    pub title: String,
+    pub cover_url: Option<String>,
+    pub genres: Vec<String>,
+    pub kind: Option<String>,
 }
 
 #[cfg(test)]
@@ -102,10 +149,25 @@ mod tests {
             url: "https://wwv.animeytx.net/tv/liar-game/".into(),
             poster_url: Some("https://x/img.jpg".into()),
             kind: "TV".into(),
+            matched_genre: Some("Drama".into()),
         };
         let j = serde_json::to_string(&c).unwrap();
         let back: FinishedCard = serde_json::from_str(&j).unwrap();
         assert_eq!(c, back);
+    }
+
+    #[test]
+    fn series_graph_node_json_roundtrips() {
+        let n = SeriesGraphNode {
+            id: 1,
+            title: "Baki-dou".into(),
+            cover_url: Some("data:image/png;base64,abc".into()),
+            genres: vec!["Seinen".into(), "Drama".into()],
+            kind: Some("TV".into()),
+        };
+        let j = serde_json::to_string(&n).unwrap();
+        let back: SeriesGraphNode = serde_json::from_str(&j).unwrap();
+        assert_eq!(n, back);
     }
 
     #[test]

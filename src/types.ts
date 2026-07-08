@@ -29,3 +29,43 @@ export interface LibraryItem {
   seen_episodes: number;
   last_added: string | null;
 }
+
+export interface GenreStat {
+  genre: string;
+  count: number;
+}
+
+export interface TypeStat {
+  kind: string;
+  count: number;
+}
+
+export interface WatchSummary {
+  followed_series: number;
+  episodes_watched: number;
+  episodes_total: number;
+  backlog_want: number;
+}
+
+export interface SeriesGraphNode {
+  id: number;
+  title: string;
+  cover_url: string | null;
+  genres: string[];
+  kind: string | null;
+}
+
+export interface SwipeCard {
+  title: string;
+  url: string;
+  poster_url: string | null;
+  kind: string;
+  matched_genre: string | null;
+}
+
+export type SwipeDecision = "Seen" | "Want" | "Discard";
+
+export interface GenreAffinity {
+  genre: string;
+  score: number;
+}

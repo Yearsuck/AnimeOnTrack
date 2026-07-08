@@ -1,10 +1,13 @@
 use crate::adapter::{animeytx::AnimeytxAdapter, SiteAdapter};
 use crate::db::Db;
 use crate::diff::new_episodes;
-use crate::models::{Episode, FinishedCard, Series, SeriesDetail};
+use crate::models::{
+    Episode, FinishedCard, GenreAffinity, GenreStat, Series, SeriesDetail, SeriesGraphNode, TypeStat,
+    WatchSummary,
+};
 use crate::player::{BrowserPlayer, EpisodePlayer};
 use crate::scraper_engine::{fetch_cover_image, fetch_html, ScrapeResult};
-use crate::swipe::{pick_index, shuffle, undecided_cards};
+use crate::swipe::{pick_index, shuffle, undecided_cards, weighted_pick_index};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -36,6 +39,10 @@ pub struct AppState {
     /// Cards handed out by discover_swipe_card, keyed by url, so decide_swipe
     /// (which only receives a url) can look up the card data to persist.
     pub swipe_served: Mutex<HashMap<String, FinishedCard>>,
+    /// series.id written by the most recent decide_swipe call, consumed by
+    /// undo_last_swipe. Session-only "fix my last misclick" safety net, not
+    /// a persisted multi-level history.
+    pub last_swiped_series_id: Mutex<Option<i64>>,
 }
 
 const SOURCE_NAME: &str = "AnimeYT";
@@ -133,6 +140,34 @@ async fn fetch_series_detail(
     })
     .await?;
     details.into_iter().next().ok_or_else(|| "empty series detail page".to_string())
+}
+
+/// Backfill one series' genres/kind if it has no `series_genres` rows yet.
+/// Returns true if a fetch was attempted (regardless of success) — used by
+/// the caller to decide whether to apply the polite inter-series delay.
+/// Locks `db` only for the short sync checks/writes, never across the
+/// network `.await`, same discipline `refresh()`'s loop already follows.
+async fn backfill_series_genre_if_missing(
+    app: &AppHandle,
+    db: &Mutex<Db>,
+    mirrors: &[String],
+    series: &Series,
+) -> bool {
+    let needs = {
+        let db = db.lock().unwrap();
+        db.series_needs_genre_backfill(series.id).unwrap_or(false)
+    };
+    if !needs {
+        return false;
+    }
+    if let Ok(detail) = fetch_series_detail(app, mirrors, &series.url).await {
+        let db = db.lock().unwrap();
+        let _ = db.insert_series_genres(series.id, &detail.genres);
+        if let Some(kind) = &detail.kind {
+            let _ = db.set_kind(series.id, kind);
+        }
+    }
+    true
 }
 
 async fn fetch_episode_list_for(
@@ -302,6 +337,73 @@ pub fn list_library(state: State<'_, AppState>) -> Result<Vec<crate::models::Lib
 }
 
 #[tauri::command]
+pub fn get_genre_stats(state: State<'_, AppState>) -> Result<Vec<GenreStat>, String> {
+    let src = get_source_id(&state)?;
+    let db = state.db.lock().unwrap();
+    db.get_genre_stats(src).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_type_stats(state: State<'_, AppState>) -> Result<Vec<TypeStat>, String> {
+    let src = get_source_id(&state)?;
+    let db = state.db.lock().unwrap();
+    db.get_type_stats(src).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_watch_summary(state: State<'_, AppState>) -> Result<WatchSummary, String> {
+    let src = get_source_id(&state)?;
+    let db = state.db.lock().unwrap();
+    db.get_watch_summary(src).map_err(|e| e.to_string())
+}
+
+/// Followed series with genres/kind/cover, for the 3D relationship graph.
+/// The frontend builds the root/hub/link structure from this flat list.
+#[tauri::command]
+pub fn get_stats_graph(state: State<'_, AppState>) -> Result<Vec<SeriesGraphNode>, String> {
+    let src = get_source_id(&state)?;
+    let db = state.db.lock().unwrap();
+    db.get_stats_graph_data(src).map_err(|e| e.to_string())
+}
+
+/// Backfill genres/kind for every followed series still missing
+/// `series_genres` rows (not just the one-per-refresh-cycle `refresh()`
+/// does). Same politeness delay between series as `refresh()`. Returns the
+/// count of series that actually gained genres.
+#[tauri::command]
+pub async fn backfill_genres(app: AppHandle, state: State<'_, AppState>) -> Result<i64, String> {
+    let src = get_source_id(&state)?;
+    let (candidates, mirrors) = {
+        let db = state.db.lock().unwrap();
+        let followed = db.list_followed(src).map_err(|e| e.to_string())?;
+        let mut candidates = Vec::new();
+        for s in followed {
+            if db.series_needs_genre_backfill(s.id).map_err(|e| e.to_string())? {
+                candidates.push(s);
+            }
+        }
+        (candidates, load_mirrors(&db)?)
+    };
+    let total = candidates.len();
+    let mut filled = 0i64;
+    for (idx, s) in candidates.into_iter().enumerate() {
+        emit_refresh_progress(&app, idx, total, &s.title);
+        if backfill_series_genre_if_missing(&app, &state.db, &mirrors, &s).await {
+            let got = {
+                let db = state.db.lock().unwrap();
+                !db.series_needs_genre_backfill(s.id).map_err(|e| e.to_string())?
+            };
+            if got {
+                filled += 1;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+        }
+    }
+    emit_refresh_progress(&app, total, total, "Completado");
+    Ok(filled)
+}
+
+#[tauri::command]
 pub fn set_followed(
     state: State<'_, AppState>,
     series_id: i64,
@@ -309,6 +411,31 @@ pub fn set_followed(
 ) -> Result<(), String> {
     let db = state.db.lock().unwrap();
     db.set_followed(series_id, followed).map_err(|e| e.to_string())
+}
+
+/// How many series' episode-list pages to fetch concurrently in refresh().
+/// Cover images stay strictly one-at-a-time regardless (see the cover-fetch
+/// comment below) — this only parallelizes the plain HTML episode-list
+/// fetch, not the thing CLAUDE.md specifically calls out as abuse-prone.
+const REFRESH_CONCURRENCY: usize = 2;
+
+/// Fetch one series' episode list across mirrors. `None` means "skip, keep
+/// cached data" (malformed stored URL, or every mirror failed/mismatched) —
+/// same not-an-error semantics `refresh()`'s loop always had here.
+async fn fetch_series_episodes(
+    app: &AppHandle,
+    mirrors: &[String],
+    a: &AnimeytxAdapter,
+    series_url: &str,
+) -> Option<(Vec<Episode>, String, String)> {
+    let path = match url::Url::parse(series_url) {
+        Ok(u) => format!("{}{}", u.path(), u.query().map(|q| format!("?{q}")).unwrap_or_default()),
+        Err(_) => return None,
+    };
+    match scrape_via_mirrors(app, mirrors, &path, |html| a.parse_series(html)).await {
+        Ok((_scraped, eps, working_mirror)) => Some((eps, working_mirror, path)),
+        Err(_) => None,
+    }
 }
 
 /// For each followed series: scrape its page (falling back across mirrors),
@@ -326,46 +453,77 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>) -> Result<i64, 
     let a = adapter();
     let mut total_new = 0i64;
     let total_series = followed.len();
-    for (idx, s) in followed.into_iter().enumerate() {
-        emit_refresh_progress(&app, idx, total_series, &s.title);
-        let path = match url::Url::parse(&s.url) {
-            Ok(u) => format!("{}{}", u.path(), u.query().map(|q| format!("?{q}")).unwrap_or_default()),
-            Err(_) => continue, // malformed stored url: skip, keep cached data
-        };
-        let (_scraped, eps, working_mirror) =
-            match scrape_via_mirrors(&app, &mirrors, &path, |html| a.parse_series(html)).await {
-                Ok(r) => r,
-                Err(_) => continue, // unreachable/incompatible on every mirror: skip, keep cached data
-            };
-        {
-            let db = state.db.lock().unwrap();
-            let new_url = format!("{working_mirror}{path}");
-            if new_url != s.url {
-                db.update_series_url(s.id, &new_url).map_err(|e| e.to_string())?;
-            }
-            let known = db.existing_episode_urls(s.id).map_err(|e| e.to_string())?;
-            for mut e in new_episodes(&eps, &known) {
-                e.series_id = s.id;
-                db.insert_episode(&e).map_err(|e| e.to_string())?;
-                total_new += 1;
-            }
+    let mut idx = 0usize;
+
+    for chunk in followed.chunks(REFRESH_CONCURRENCY) {
+        for s in chunk {
+            emit_refresh_progress(&app, idx, total_series, &s.title);
+            idx += 1;
         }
 
-        // One cover fetch per followed series per refresh — never in bulk.
-        // Skip once it's already a fetched data: URI so we don't re-fetch on
-        // every refresh; a failure here just leaves the remote (broken) url
-        // in place to retry next time, it never blocks episode updates above.
-        if let Some(remote) = &s.cover_url {
-            if !remote.starts_with("data:") {
-                if let Ok(data_uri) = fetch_cover_image(&app, remote).await {
-                    let db = state.db.lock().unwrap();
-                    let _ = db.update_series_cover(s.id, &data_uri);
+        // Fetch this chunk's episode-list pages concurrently (plain HTML,
+        // not the image-bulk case CLAUDE.md warns about) — everything after
+        // this (DB writes, cover fetch, genre backfill) stays sequential
+        // per series below, so cover images never overlap.
+        let fetched: Vec<Option<(Vec<Episode>, String, String)>> = match chunk {
+            [s0, s1] => {
+                let (r0, r1) = tokio::join!(
+                    fetch_series_episodes(&app, &mirrors, &a, &s0.url),
+                    fetch_series_episodes(&app, &mirrors, &a, &s1.url),
+                );
+                vec![r0, r1]
+            }
+            _ => {
+                let mut v = Vec::with_capacity(chunk.len());
+                for s in chunk {
+                    v.push(fetch_series_episodes(&app, &mirrors, &a, &s.url).await);
+                }
+                v
+            }
+        };
+
+        for (s, result) in chunk.iter().zip(fetched) {
+            let Some((eps, working_mirror, path)) = result else { continue };
+            {
+                let db = state.db.lock().unwrap();
+                let new_url = format!("{working_mirror}{path}");
+                if new_url != s.url {
+                    db.update_series_url(s.id, &new_url).map_err(|e| e.to_string())?;
+                }
+                let known = db.existing_episode_urls(s.id).map_err(|e| e.to_string())?;
+                for mut e in new_episodes(&eps, &known) {
+                    e.series_id = s.id;
+                    db.insert_episode(&e).map_err(|e| e.to_string())?;
+                    total_new += 1;
                 }
             }
+
+            // One cover fetch per followed series per refresh — never in
+            // bulk, never concurrent with another cover fetch (this inner
+            // loop is sequential). Skip once it's already a fetched data:
+            // URI; a failure here just leaves the remote (broken) url in
+            // place to retry next time, it never blocks episode updates.
+            if let Some(remote) = &s.cover_url {
+                if !remote.starts_with("data:") {
+                    if let Ok(data_uri) = fetch_cover_image(&app, remote).await {
+                        let db = state.db.lock().unwrap();
+                        let _ = db.update_series_cover(s.id, &data_uri);
+                    }
+                }
+            }
+
+            // One genre/kind backfill per followed series per refresh —
+            // only for series that don't already have series_genres rows.
+            // A failure here is silent and never blocks episode updates.
+            backfill_series_genre_if_missing(&app, &state.db, &mirrors, s).await;
         }
 
-        // polite delay between series
-        tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+        // Polite delay once per chunk rather than once per series — a chunk
+        // already spaces its own concurrent requests out with real work
+        // (page parse, DB writes, cover fetch), so this is deliberately not
+        // simply "old delay ÷ concurrency"; halving it keeps a comparable
+        // pace to before while trimming the fixed idle time in half.
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
     }
     emit_refresh_progress(&app, total_series, total_series, "Completado");
     Ok(total_new)
@@ -464,7 +622,20 @@ pub async fn discover_swipe_card(
     if genres.is_empty() {
         return Err("no se encontraron géneros; reintenta el escaneo".into());
     }
-    let (slug, _name) = &genres[pick_index(genres.len()).unwrap()];
+    // Taste-weighted genre pick: bias toward genres this user actually
+    // follows/wants over ones they've discarded, instead of picking
+    // uniformly at random. Falls back to uniform whenever every genre nets
+    // <= 0 (nothing decided yet), so a fresh profile still discovers freely.
+    let affinity = {
+        let db = state.db.lock().unwrap();
+        db.get_genre_affinity(src).map_err(|e| e.to_string())?
+    };
+    let weights: Vec<f64> = genres
+        .iter()
+        .map(|(_, name)| *affinity.get(name).unwrap_or(&0.0))
+        .collect();
+    let pick = weighted_pick_index(&weights).unwrap();
+    let (slug, name) = &genres[pick];
 
     let last_page = state.swipe_last_page.lock().unwrap().get(slug).copied().unwrap_or(1);
     let page = pick_index(last_page as usize).map(|i| i as u32 + 1).unwrap_or(1);
@@ -493,12 +664,13 @@ pub async fn discover_swipe_card(
         }
     };
 
-    let Some(card) = cards.pop() else {
+    let Some(mut card) = cards.pop() else {
         return Ok(None);
     };
     if !cards.is_empty() {
         state.swipe_buffer.lock().unwrap().insert((slug.clone(), page), cards);
     }
+    card.matched_genre = Some(name.clone());
     state.swipe_served.lock().unwrap().insert(card.url.clone(), card.clone());
     Ok(Some(card))
 }
@@ -528,12 +700,13 @@ pub async fn decide_swipe(
         followed: false,
     };
 
-    match decision {
+    let sid = match decision {
         SwipeDecision::Discard => {
             let db = state.db.lock().unwrap();
             let sid = db.upsert_series(src, &series).map_err(|e| e.to_string())?;
             db.set_kind(sid, &card.kind).map_err(|e| e.to_string())?;
             db.set_backlog_status(sid, Some("discarded")).map_err(|e| e.to_string())?;
+            sid
         }
         SwipeDecision::Want => {
             let mirrors = {
@@ -546,6 +719,7 @@ pub async fn decide_swipe(
             db.set_kind(sid, detail.kind.as_deref().unwrap_or(&card.kind)).map_err(|e| e.to_string())?;
             db.insert_series_genres(sid, &detail.genres).map_err(|e| e.to_string())?;
             db.set_backlog_status(sid, Some("want")).map_err(|e| e.to_string())?;
+            sid
         }
         SwipeDecision::Seen => {
             let mirrors = {
@@ -564,9 +738,76 @@ pub async fn decide_swipe(
                 e.seen = true;
                 db.insert_episode(&e).map_err(|e| e.to_string())?;
             }
+            sid
         }
+    };
+    *state.last_swiped_series_id.lock().unwrap() = Some(sid);
+    Ok(())
+}
+
+/// Undo the most recent decide_swipe call by hard-deleting the series row it
+/// created. Calling this twice in a row (nothing left to undo) is a no-op,
+/// not an error — it's a "fix my last misclick" safety net, not an audit
+/// log, so there's no multi-level history to walk back through.
+#[tauri::command]
+pub fn undo_last_swipe(state: State<'_, AppState>) -> Result<(), String> {
+    let sid = state.last_swiped_series_id.lock().unwrap().take();
+    if let Some(sid) = sid {
+        let db = state.db.lock().unwrap();
+        db.delete_series(sid).map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+/// Series with the given backlog status ('want' or 'discarded'), for the
+/// swipe mode's "Listas" sub-view.
+#[tauri::command]
+pub fn list_backlog(state: State<'_, AppState>, status: String) -> Result<Vec<Series>, String> {
+    let src = get_source_id(&state)?;
+    let db = state.db.lock().unwrap();
+    db.list_backlog(src, &status).map_err(|e| e.to_string())
+}
+
+/// Move a discarded row back to 'want'. If it never had its detail page
+/// fetched (the common case — discard never fetches), fetch it now so the
+/// row has genres before it shows up as a normal "want" backlog item; if it
+/// already has genres (e.g. a previously-"want" row that got discarded),
+/// just flip the status.
+#[tauri::command]
+pub async fn promote_discarded(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    series_id: i64,
+) -> Result<(), String> {
+    let (needs_detail, series_url, mirrors) = {
+        let db = state.db.lock().unwrap();
+        let needs_detail = db.series_needs_genre_backfill(series_id).map_err(|e| e.to_string())?;
+        let url = db
+            .get_series_url(series_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "series not found".to_string())?;
+        (needs_detail, url, load_mirrors(&db)?)
+    };
+    if needs_detail {
+        let detail = fetch_series_detail(&app, &mirrors, &series_url).await?;
+        let db = state.db.lock().unwrap();
+        db.insert_series_genres(series_id, &detail.genres).map_err(|e| e.to_string())?;
+        if let Some(kind) = &detail.kind {
+            db.set_kind(series_id, kind).map_err(|e| e.to_string())?;
+        }
+    }
+    let db = state.db.lock().unwrap();
+    db.set_backlog_status(series_id, Some("want")).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Hard-delete a series row outright — used for "Eliminar del todo" on
+/// discarded backlog rows, which never have episodes so this is always
+/// safe there.
+#[tauri::command]
+pub fn delete_series(state: State<'_, AppState>, series_id: i64) -> Result<(), String> {
+    let db = state.db.lock().unwrap();
+    db.delete_series(series_id).map_err(|e| e.to_string())
 }
 
 /// Promote a `backlog_status='want'` row to an ordinary followed series:
@@ -601,4 +842,45 @@ pub async fn start_watching(
     db.set_followed(series_id, true).map_err(|e| e.to_string())?;
     db.set_backlog_status(series_id, None).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Set (or clear, with `status: None`) a series' backlog status directly —
+/// used by the Listas view's "Descartar" action on a "want" row, which
+/// (unlike decide_swipe) is transitioning a series already in the DB, not
+/// inserting a fresh one from a swipe card.
+#[tauri::command]
+pub fn set_backlog_status(
+    state: State<'_, AppState>,
+    series_id: i64,
+    status: Option<String>,
+) -> Result<(), String> {
+    let db = state.db.lock().unwrap();
+    db.set_backlog_status(series_id, status.as_deref()).map_err(|e| e.to_string())
+}
+
+/// Full genre list for one series, for the Listas view's "Quiero ver" rows.
+#[tauri::command]
+pub fn get_series_genres(state: State<'_, AppState>, series_id: i64) -> Result<Vec<String>, String> {
+    let db = state.db.lock().unwrap();
+    db.list_series_genres(series_id).map_err(|e| e.to_string())
+}
+
+/// This user's top `limit` genres by affinity score (positive only), for
+/// the "Tus géneros favoritos" chip row in the swipe UI — makes the
+/// otherwise-invisible taste-weighting in `discover_swipe_card` visible.
+#[tauri::command]
+pub fn get_top_genres(state: State<'_, AppState>, limit: usize) -> Result<Vec<GenreAffinity>, String> {
+    let src = get_source_id(&state)?;
+    let db = state.db.lock().unwrap();
+    let mut scored: Vec<(String, f64)> = db
+        .get_genre_affinity(src)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .filter(|(_, score)| *score > 0.0)
+        .collect();
+    // Tie-break alphabetically: scores come out of a HashMap, so without a
+    // secondary key equal-scored genres would reorder from call to call.
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal).then_with(|| a.0.cmp(&b.0)));
+    scored.truncate(limit);
+    Ok(scored.into_iter().map(|(genre, score)| GenreAffinity { genre, score }).collect())
 }

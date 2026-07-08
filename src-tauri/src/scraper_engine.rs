@@ -33,8 +33,15 @@ pub async fn fetch_html(app: &AppHandle, url: &str) -> Result<ScrapeResult> {
     )
     .title("AnimeOnTrack scraper")
     .inner_size(1000.0, 800.0)
-    .visible(true) // temporarily visible: lets you see/solve an interactive
-    // Cloudflare challenge if it ever escalates past the automatic JS one.
+    // Hidden: a visible popup stealing focus/screen space on every series
+    // scraped was too disruptive during refresh. The poll-based readiness
+    // check in extract_when_ready handles the normal case with no user
+    // interaction; same invisible pattern fetch_cover_image already uses
+    // safely. Trade-off: if Cloudflare ever escalates to a challenge that
+    // needs a human click (not just a timed JS check), there's no visible
+    // window to solve it in — that shows up as a 40s "did not become ready"
+    // error instead of a stuck window waiting on you.
+    .visible(false)
     .build()?;
 
     let result = extract_when_ready(app, &window).await;
@@ -61,24 +68,42 @@ title: document.title,\
 len: document.body ? document.body.innerHTML.length : -1})";
 
     emit_stage(app, "verifying");
+    // eval() introspects the already-loaded page's DOM via WebView2's script
+    // host — it issues zero network requests, so polling frequency has no
+    // bearing on how the site sees this client (unlike the fetch itself,
+    // which stays paced by the caller's between-series delay). Most pages
+    // are ready on the very first check, so start fast (150ms) to catch
+    // that common case, then back off toward 1s for pages that genuinely
+    // need longer (a real Cloudflare JS challenge to clear), capped at the
+    // same ~40s ceiling as before.
+    const MAX_WAIT: Duration = Duration::from_secs(40);
+    const MIN_INTERVAL: Duration = Duration::from_millis(150);
+    const MAX_INTERVAL: Duration = Duration::from_secs(1);
+    let started = std::time::Instant::now();
+    let mut interval = MIN_INTERVAL;
+    let mut poll_num = 0u32;
     let mut ready = false;
-    for i in 0..40 {
-        tokio::time::sleep(Duration::from_secs(1)).await;
+    while started.elapsed() < MAX_WAIT {
+        tokio::time::sleep(interval).await;
+        poll_num += 1;
         match eval(window, PROBE, 10).await {
             Ok(json) => {
                 let inner: String = serde_json::from_str(&json).unwrap_or_default();
-                eprintln!("[scrape] poll {}: {inner}", i + 1);
                 let is_ready = serde_json::from_str::<serde_json::Value>(&inner)
                     .ok()
                     .and_then(|v| v.get("ready").and_then(|r| r.as_bool()))
                     .unwrap_or(false);
                 if is_ready {
+                    eprintln!("[scrape] poll {poll_num} ({:?} elapsed): {inner}", started.elapsed());
                     ready = true;
                     break;
                 }
+                // Only log the slow-path polls (fast-path success above always logs).
+                eprintln!("[scrape] poll {poll_num}: {inner}");
             }
-            Err(e) => eprintln!("[scrape] poll {}: eval FAILED: {e}", i + 1),
+            Err(e) => eprintln!("[scrape] poll {poll_num}: eval FAILED: {e}"),
         }
+        interval = std::cmp::min(interval + interval / 2, MAX_INTERVAL);
     }
     if !ready {
         return Err(anyhow!(

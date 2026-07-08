@@ -596,3 +596,96 @@ progress.scanbar-track::-webkit-progress-value {
   border-radius: var(--radius-round);
   transition: width 0.2s var(--ease);
 }
+
+/* ---------- Descubrir (swipe mode) ---------- */
+.swipe-stage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+  padding-top: 8px;
+}
+.swipe-card {
+  width: 280px;
+  transition: opacity 0.18s var(--ease-out), transform 0.18s var(--ease-out);
+}
+.swipe-card.swipe-out-discard {
+  opacity: 0;
+  transform: translateX(-60px) rotate(-6deg);
+}
+.swipe-card.swipe-out-want {
+  opacity: 0;
+  transform: translateY(-40px) scale(0.96);
+}
+.swipe-card.swipe-out-seen {
+  opacity: 0;
+  transform: translateX(60px) rotate(6deg);
+}
+.swipe-actions {
+  display: flex;
+  gap: 12px;
+}
+.swipe-actions .btn {
+  width: 56px;
+  height: 56px;
+  border-radius: var(--radius-round);
+  font-size: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.swipe-actions .btn-discard {
+  color: var(--danger);
+  border-color: rgba(255, 92, 124, 0.4);
+}
+.swipe-actions .btn-discard:hover {
+  background: rgba(255, 92, 124, 0.12);
+}
+.swipe-actions .btn-want {
+  color: var(--accent);
+  border-color: rgba(74, 168, 255, 0.4);
+}
+.swipe-actions .btn-want:hover {
+  background: var(--accent-dim);
+}
+.swipe-hint {
+  font-size: 12px;
+  color: var(--muted-2);
+  text-align: center;
+}
+.backlog-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.backlog-row:last-child {
+  border-bottom: none;
+}
+.backlog-row img {
+  width: 42px;
+  height: 60px;
+  object-fit: cover;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  flex-shrink: 0;
+}
+.backlog-main {
+  flex: 1;
+  min-width: 0;
+}
+.backlog-title {
+  font-weight: 600;
+  font-size: 13.5px;
+}
+.backlog-genres {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 2px;
+}
+.backlog-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
