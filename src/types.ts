@@ -54,3 +54,12 @@ export interface SeriesGraphNode {
   genres: string[];
   kind: string | null;
 }
+
+export interface SwipeCard {
+  title: string;
+  url: string;
+  poster_url: string | null;
+  kind: string;
+}
+
+export type SwipeDecision = "Seen" | "Want" | "Discard";
