@@ -412,6 +412,31 @@ pub fn set_followed(
     db.set_followed(series_id, followed).map_err(|e| e.to_string())
 }
 
+/// How many series' episode-list pages to fetch concurrently in refresh().
+/// Cover images stay strictly one-at-a-time regardless (see the cover-fetch
+/// comment below) — this only parallelizes the plain HTML episode-list
+/// fetch, not the thing CLAUDE.md specifically calls out as abuse-prone.
+const REFRESH_CONCURRENCY: usize = 2;
+
+/// Fetch one series' episode list across mirrors. `None` means "skip, keep
+/// cached data" (malformed stored URL, or every mirror failed/mismatched) —
+/// same not-an-error semantics `refresh()`'s loop always had here.
+async fn fetch_series_episodes(
+    app: &AppHandle,
+    mirrors: &[String],
+    a: &AnimeytxAdapter,
+    series_url: &str,
+) -> Option<(Vec<Episode>, String, String)> {
+    let path = match url::Url::parse(series_url) {
+        Ok(u) => format!("{}{}", u.path(), u.query().map(|q| format!("?{q}")).unwrap_or_default()),
+        Err(_) => return None,
+    };
+    match scrape_via_mirrors(app, mirrors, &path, |html| a.parse_series(html)).await {
+        Ok((_scraped, eps, working_mirror)) => Some((eps, working_mirror, path)),
+        Err(_) => None,
+    }
+}
+
 /// For each followed series: scrape its page (falling back across mirrors),
 /// insert new episodes. Returns count of new episodes.
 #[tauri::command]
@@ -427,53 +452,77 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>) -> Result<i64, 
     let a = adapter();
     let mut total_new = 0i64;
     let total_series = followed.len();
-    for (idx, s) in followed.into_iter().enumerate() {
-        emit_refresh_progress(&app, idx, total_series, &s.title);
-        let path = match url::Url::parse(&s.url) {
-            Ok(u) => format!("{}{}", u.path(), u.query().map(|q| format!("?{q}")).unwrap_or_default()),
-            Err(_) => continue, // malformed stored url: skip, keep cached data
-        };
-        let (_scraped, eps, working_mirror) =
-            match scrape_via_mirrors(&app, &mirrors, &path, |html| a.parse_series(html)).await {
-                Ok(r) => r,
-                Err(_) => continue, // unreachable/incompatible on every mirror: skip, keep cached data
-            };
-        {
-            let db = state.db.lock().unwrap();
-            let new_url = format!("{working_mirror}{path}");
-            if new_url != s.url {
-                db.update_series_url(s.id, &new_url).map_err(|e| e.to_string())?;
-            }
-            let known = db.existing_episode_urls(s.id).map_err(|e| e.to_string())?;
-            for mut e in new_episodes(&eps, &known) {
-                e.series_id = s.id;
-                db.insert_episode(&e).map_err(|e| e.to_string())?;
-                total_new += 1;
-            }
+    let mut idx = 0usize;
+
+    for chunk in followed.chunks(REFRESH_CONCURRENCY) {
+        for s in chunk {
+            emit_refresh_progress(&app, idx, total_series, &s.title);
+            idx += 1;
         }
 
-        // One cover fetch per followed series per refresh — never in bulk.
-        // Skip once it's already a fetched data: URI so we don't re-fetch on
-        // every refresh; a failure here just leaves the remote (broken) url
-        // in place to retry next time, it never blocks episode updates above.
-        if let Some(remote) = &s.cover_url {
-            if !remote.starts_with("data:") {
-                if let Ok(data_uri) = fetch_cover_image(&app, remote).await {
-                    let db = state.db.lock().unwrap();
-                    let _ = db.update_series_cover(s.id, &data_uri);
+        // Fetch this chunk's episode-list pages concurrently (plain HTML,
+        // not the image-bulk case CLAUDE.md warns about) — everything after
+        // this (DB writes, cover fetch, genre backfill) stays sequential
+        // per series below, so cover images never overlap.
+        let fetched: Vec<Option<(Vec<Episode>, String, String)>> = match chunk {
+            [s0, s1] => {
+                let (r0, r1) = tokio::join!(
+                    fetch_series_episodes(&app, &mirrors, &a, &s0.url),
+                    fetch_series_episodes(&app, &mirrors, &a, &s1.url),
+                );
+                vec![r0, r1]
+            }
+            _ => {
+                let mut v = Vec::with_capacity(chunk.len());
+                for s in chunk {
+                    v.push(fetch_series_episodes(&app, &mirrors, &a, &s.url).await);
+                }
+                v
+            }
+        };
+
+        for (s, result) in chunk.iter().zip(fetched) {
+            let Some((eps, working_mirror, path)) = result else { continue };
+            {
+                let db = state.db.lock().unwrap();
+                let new_url = format!("{working_mirror}{path}");
+                if new_url != s.url {
+                    db.update_series_url(s.id, &new_url).map_err(|e| e.to_string())?;
+                }
+                let known = db.existing_episode_urls(s.id).map_err(|e| e.to_string())?;
+                for mut e in new_episodes(&eps, &known) {
+                    e.series_id = s.id;
+                    db.insert_episode(&e).map_err(|e| e.to_string())?;
+                    total_new += 1;
                 }
             }
+
+            // One cover fetch per followed series per refresh — never in
+            // bulk, never concurrent with another cover fetch (this inner
+            // loop is sequential). Skip once it's already a fetched data:
+            // URI; a failure here just leaves the remote (broken) url in
+            // place to retry next time, it never blocks episode updates.
+            if let Some(remote) = &s.cover_url {
+                if !remote.starts_with("data:") {
+                    if let Ok(data_uri) = fetch_cover_image(&app, remote).await {
+                        let db = state.db.lock().unwrap();
+                        let _ = db.update_series_cover(s.id, &data_uri);
+                    }
+                }
+            }
+
+            // One genre/kind backfill per followed series per refresh —
+            // only for series that don't already have series_genres rows.
+            // A failure here is silent and never blocks episode updates.
+            backfill_series_genre_if_missing(&app, &state.db, &mirrors, s).await;
         }
 
-        // One genre/kind backfill per followed series per refresh — same
-        // politeness rule as the cover fetch above, and only for series that
-        // don't already have series_genres rows (normal-flow-followed series
-        // never got a detail-page fetch, unlike swipe-added ones). A failure
-        // here is silent and never blocks the episode-scan step above.
-        backfill_series_genre_if_missing(&app, &state.db, &mirrors, &s).await;
-
-        // polite delay between series
-        tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+        // Polite delay once per chunk rather than once per series — a chunk
+        // already spaces its own concurrent requests out with real work
+        // (page parse, DB writes, cover fetch), so this is deliberately not
+        // simply "old delay ÷ concurrency"; halving it keeps a comparable
+        // pace to before while trimming the fixed idle time in half.
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
     }
     emit_refresh_progress(&app, total_series, total_series, "Completado");
     Ok(total_new)
