@@ -38,6 +38,10 @@ pub struct AppState {
     /// Cards handed out by discover_swipe_card, keyed by url, so decide_swipe
     /// (which only receives a url) can look up the card data to persist.
     pub swipe_served: Mutex<HashMap<String, FinishedCard>>,
+    /// series.id written by the most recent decide_swipe call, consumed by
+    /// undo_last_swipe. Session-only "fix my last misclick" safety net, not
+    /// a persisted multi-level history.
+    pub last_swiped_series_id: Mutex<Option<i64>>,
 }
 
 const SOURCE_NAME: &str = "AnimeYT";
@@ -632,12 +636,13 @@ pub async fn decide_swipe(
         followed: false,
     };
 
-    match decision {
+    let sid = match decision {
         SwipeDecision::Discard => {
             let db = state.db.lock().unwrap();
             let sid = db.upsert_series(src, &series).map_err(|e| e.to_string())?;
             db.set_kind(sid, &card.kind).map_err(|e| e.to_string())?;
             db.set_backlog_status(sid, Some("discarded")).map_err(|e| e.to_string())?;
+            sid
         }
         SwipeDecision::Want => {
             let mirrors = {
@@ -650,6 +655,7 @@ pub async fn decide_swipe(
             db.set_kind(sid, detail.kind.as_deref().unwrap_or(&card.kind)).map_err(|e| e.to_string())?;
             db.insert_series_genres(sid, &detail.genres).map_err(|e| e.to_string())?;
             db.set_backlog_status(sid, Some("want")).map_err(|e| e.to_string())?;
+            sid
         }
         SwipeDecision::Seen => {
             let mirrors = {
@@ -668,9 +674,76 @@ pub async fn decide_swipe(
                 e.seen = true;
                 db.insert_episode(&e).map_err(|e| e.to_string())?;
             }
+            sid
         }
+    };
+    *state.last_swiped_series_id.lock().unwrap() = Some(sid);
+    Ok(())
+}
+
+/// Undo the most recent decide_swipe call by hard-deleting the series row it
+/// created. Calling this twice in a row (nothing left to undo) is a no-op,
+/// not an error — it's a "fix my last misclick" safety net, not an audit
+/// log, so there's no multi-level history to walk back through.
+#[tauri::command]
+pub fn undo_last_swipe(state: State<'_, AppState>) -> Result<(), String> {
+    let sid = state.last_swiped_series_id.lock().unwrap().take();
+    if let Some(sid) = sid {
+        let db = state.db.lock().unwrap();
+        db.delete_series(sid).map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+/// Series with the given backlog status ('want' or 'discarded'), for the
+/// swipe mode's "Listas" sub-view.
+#[tauri::command]
+pub fn list_backlog(state: State<'_, AppState>, status: String) -> Result<Vec<Series>, String> {
+    let src = get_source_id(&state)?;
+    let db = state.db.lock().unwrap();
+    db.list_backlog(src, &status).map_err(|e| e.to_string())
+}
+
+/// Move a discarded row back to 'want'. If it never had its detail page
+/// fetched (the common case — discard never fetches), fetch it now so the
+/// row has genres before it shows up as a normal "want" backlog item; if it
+/// already has genres (e.g. a previously-"want" row that got discarded),
+/// just flip the status.
+#[tauri::command]
+pub async fn promote_discarded(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    series_id: i64,
+) -> Result<(), String> {
+    let (needs_detail, series_url, mirrors) = {
+        let db = state.db.lock().unwrap();
+        let needs_detail = db.series_needs_genre_backfill(series_id).map_err(|e| e.to_string())?;
+        let url = db
+            .get_series_url(series_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "series not found".to_string())?;
+        (needs_detail, url, load_mirrors(&db)?)
+    };
+    if needs_detail {
+        let detail = fetch_series_detail(&app, &mirrors, &series_url).await?;
+        let db = state.db.lock().unwrap();
+        db.insert_series_genres(series_id, &detail.genres).map_err(|e| e.to_string())?;
+        if let Some(kind) = &detail.kind {
+            db.set_kind(series_id, kind).map_err(|e| e.to_string())?;
+        }
+    }
+    let db = state.db.lock().unwrap();
+    db.set_backlog_status(series_id, Some("want")).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Hard-delete a series row outright — used for "Eliminar del todo" on
+/// discarded backlog rows, which never have episodes so this is always
+/// safe there.
+#[tauri::command]
+pub fn delete_series(state: State<'_, AppState>, series_id: i64) -> Result<(), String> {
+    let db = state.db.lock().unwrap();
+    db.delete_series(series_id).map_err(|e| e.to_string())
 }
 
 /// Promote a `backlog_status='want'` row to an ordinary followed series:
@@ -705,4 +778,25 @@ pub async fn start_watching(
     db.set_followed(series_id, true).map_err(|e| e.to_string())?;
     db.set_backlog_status(series_id, None).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Set (or clear, with `status: None`) a series' backlog status directly —
+/// used by the Listas view's "Descartar" action on a "want" row, which
+/// (unlike decide_swipe) is transitioning a series already in the DB, not
+/// inserting a fresh one from a swipe card.
+#[tauri::command]
+pub fn set_backlog_status(
+    state: State<'_, AppState>,
+    series_id: i64,
+    status: Option<String>,
+) -> Result<(), String> {
+    let db = state.db.lock().unwrap();
+    db.set_backlog_status(series_id, status.as_deref()).map_err(|e| e.to_string())
+}
+
+/// Full genre list for one series, for the Listas view's "Quiero ver" rows.
+#[tauri::command]
+pub fn get_series_genres(state: State<'_, AppState>, series_id: i64) -> Result<Vec<String>, String> {
+    let db = state.db.lock().unwrap();
+    db.list_series_genres(series_id).map_err(|e| e.to_string())
 }

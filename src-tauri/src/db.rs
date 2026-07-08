@@ -420,6 +420,31 @@ impl Db {
         Ok(rows)
     }
 
+    /// Series with the given `backlog_status` ('want' or 'discarded'), for
+    /// the swipe mode's "Listas" sub-view.
+    pub fn list_backlog(&self, source_id: i64, status: &str) -> Result<Vec<crate::models::Series>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, slug, title, url, cover_url, is_airing, followed
+             FROM series WHERE source_id=?1 AND backlog_status=?2 ORDER BY title",
+        )?;
+        let rows = stmt
+            .query_map((source_id, status), Self::row_to_series)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Hard-delete a series and everything referencing it (episodes,
+    /// genres). No `ON DELETE CASCADE` is declared on the schema, so this
+    /// deletes children first. Safe to call on any series — used both by
+    /// swipe undo (fresh row, nothing else references it yet) and "Eliminar
+    /// del todo" on discarded backlog rows (which never have episodes).
+    pub fn delete_series(&self, series_id: i64) -> Result<()> {
+        self.conn.execute("DELETE FROM episodes WHERE series_id=?1", [series_id])?;
+        self.conn.execute("DELETE FROM series_genres WHERE series_id=?1", [series_id])?;
+        self.conn.execute("DELETE FROM series WHERE id=?1", [series_id])?;
+        Ok(())
+    }
+
     pub fn list_followed(&self, source_id: i64) -> Result<Vec<crate::models::Series>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, slug, title, url, cover_url, is_airing, followed
@@ -783,6 +808,55 @@ mod tests {
         db.set_backlog_status(sid, None).unwrap();
         assert_eq!(db.get_backlog_status(sid).unwrap(), None);
         assert!(db.list_followed(src).unwrap().iter().any(|f| f.id == sid));
+    }
+
+    #[test]
+    fn list_backlog_filters_by_status() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b").unwrap();
+        let want = crate::models::Series {
+            id: 0, slug: "want".into(), title: "Want".into(),
+            url: "u1".into(), cover_url: None, is_airing: false, followed: false,
+        };
+        let sid_want = db.upsert_series(src, &want).unwrap();
+        db.set_backlog_status(sid_want, Some("want")).unwrap();
+
+        let discarded = crate::models::Series {
+            id: 0, slug: "disc".into(), title: "Disc".into(),
+            url: "u2".into(), cover_url: None, is_airing: false, followed: false,
+        };
+        let sid_disc = db.upsert_series(src, &discarded).unwrap();
+        db.set_backlog_status(sid_disc, Some("discarded")).unwrap();
+
+        let wants = db.list_backlog(src, "want").unwrap();
+        assert_eq!(wants.len(), 1);
+        assert_eq!(wants[0].id, sid_want);
+
+        let discards = db.list_backlog(src, "discarded").unwrap();
+        assert_eq!(discards.len(), 1);
+        assert_eq!(discards[0].id, sid_disc);
+    }
+
+    #[test]
+    fn delete_series_cascades_episodes_and_genres() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b").unwrap();
+        let s = crate::models::Series {
+            id: 0, slug: "x".into(), title: "X".into(),
+            url: "u".into(), cover_url: None, is_airing: false, followed: true,
+        };
+        let sid = db.upsert_series(src, &s).unwrap();
+        db.insert_series_genres(sid, &["Seinen".to_string()]).unwrap();
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: sid, number: "1".into(), title: None,
+            url: "e1".into(), released_at: None, seen: false,
+        }).unwrap();
+
+        db.delete_series(sid).unwrap();
+
+        assert!(db.list_followed(src).unwrap().iter().all(|f| f.id != sid));
+        assert!(db.list_series_genres(sid).unwrap().is_empty());
+        assert!(db.list_series_episodes(sid).unwrap().is_empty());
     }
 
     #[test]
