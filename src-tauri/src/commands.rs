@@ -878,7 +878,9 @@ pub fn get_top_genres(state: State<'_, AppState>, limit: usize) -> Result<Vec<Ge
         .into_iter()
         .filter(|(_, score)| *score > 0.0)
         .collect();
-    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    // Tie-break alphabetically: scores come out of a HashMap, so without a
+    // secondary key equal-scored genres would reorder from call to call.
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal).then_with(|| a.0.cmp(&b.0)));
     scored.truncate(limit);
     Ok(scored.into_iter().map(|(genre, score)| GenreAffinity { genre, score }).collect())
 }
