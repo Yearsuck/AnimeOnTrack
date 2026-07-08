@@ -33,8 +33,15 @@ pub async fn fetch_html(app: &AppHandle, url: &str) -> Result<ScrapeResult> {
     )
     .title("AnimeOnTrack scraper")
     .inner_size(1000.0, 800.0)
-    .visible(true) // temporarily visible: lets you see/solve an interactive
-    // Cloudflare challenge if it ever escalates past the automatic JS one.
+    // Hidden: a visible popup stealing focus/screen space on every series
+    // scraped was too disruptive during refresh. The poll-based readiness
+    // check in extract_when_ready handles the normal case with no user
+    // interaction; same invisible pattern fetch_cover_image already uses
+    // safely. Trade-off: if Cloudflare ever escalates to a challenge that
+    // needs a human click (not just a timed JS check), there's no visible
+    // window to solve it in — that shows up as a 40s "did not become ready"
+    // error instead of a stuck window waiting on you.
+    .visible(false)
     .build()?;
 
     let result = extract_when_ready(app, &window).await;
