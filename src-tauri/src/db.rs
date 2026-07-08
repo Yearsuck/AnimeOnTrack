@@ -26,6 +26,24 @@ fn parse_ep_number(s: &str) -> Option<f64> {
     }
 }
 
+/// Add `column` to `table` if it isn't already there. SQLite has no
+/// `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, so this checks `PRAGMA
+/// table_info` first — needed because `init_schema` runs on every `Db::open`
+/// and must be a no-op on a DB that already has the column (the codebase has
+/// no separate migration framework; `series`/`episodes` already shipped
+/// before this change, so evolving their schema in place is the existing idiom).
+fn ensure_column(conn: &Connection, table: &str, column: &str, coltype: &str) -> Result<()> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let has_column = stmt
+        .query_map([], |r| r.get::<_, String>(1))?
+        .filter_map(|r| r.ok())
+        .any(|name| name == column);
+    if !has_column {
+        conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {column} {coltype}"), [])?;
+    }
+    Ok(())
+}
+
 pub struct Db {
     pub conn: Connection,
 }
@@ -75,6 +93,21 @@ impl Db {
             );
             "#,
         )?;
+        // series.backlog_status: NULL (normal row) | 'want' | 'discarded'.
+        // series.kind: free-text type badge ("TV"/"OVA"/"Movie"/etc), same
+        // vocabulary as the adapter's FinishedCard.kind — don't validate
+        // against an enum, the live site's own vocabulary is inconsistent.
+        ensure_column(&self.conn, "series", "backlog_status", "TEXT")?;
+        ensure_column(&self.conn, "series", "kind", "TEXT")?;
+        self.conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS series_genres (
+                series_id INTEGER NOT NULL REFERENCES series(id),
+                genre TEXT NOT NULL,
+                PRIMARY KEY(series_id, genre)
+            );
+            "#,
+        )?;
         Ok(())
     }
 
@@ -96,6 +129,15 @@ impl Db {
         Ok(self
             .conn
             .query_row("SELECT base_url FROM sources WHERE id=?1", [source_id], |r| {
+                r.get::<_, String>(0)
+            })
+            .ok())
+    }
+
+    pub fn get_series_url(&self, series_id: i64) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row("SELECT url FROM series WHERE id=?1", [series_id], |r| {
                 r.get::<_, String>(0)
             })
             .ok())
@@ -163,6 +205,60 @@ impl Db {
             (key, value),
         )?;
         Ok(())
+    }
+
+    pub fn set_backlog_status(&self, series_id: i64, status: Option<&str>) -> Result<()> {
+        self.conn
+            .execute("UPDATE series SET backlog_status=?1 WHERE id=?2", (status, series_id))?;
+        Ok(())
+    }
+
+    pub fn get_backlog_status(&self, series_id: i64) -> Result<Option<String>> {
+        Ok(self.conn.query_row(
+            "SELECT backlog_status FROM series WHERE id=?1",
+            [series_id],
+            |r| r.get::<_, Option<String>>(0),
+        )?)
+    }
+
+    pub fn set_kind(&self, series_id: i64, kind: &str) -> Result<()> {
+        self.conn
+            .execute("UPDATE series SET kind=?1 WHERE id=?2", (kind, series_id))?;
+        Ok(())
+    }
+
+    /// Insert genres for a series; already-present (series_id, genre) pairs
+    /// are left alone (genres are static once fetched, no need to delete).
+    pub fn insert_series_genres(&self, series_id: i64, genres: &[String]) -> Result<()> {
+        for g in genres {
+            self.conn.execute(
+                "INSERT INTO series_genres(series_id, genre) VALUES(?1, ?2)
+                 ON CONFLICT(series_id, genre) DO NOTHING",
+                (series_id, g),
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn list_series_genres(&self, series_id: i64) -> Result<Vec<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT genre FROM series_genres WHERE series_id=?1 ORDER BY genre")?;
+        let rows = stmt
+            .query_map([series_id], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Every URL that already has a `series` row for this source — any
+    /// `backlog_status` or `followed` value counts as "already decided", so
+    /// the swipe deck never re-offers a card the user has already acted on.
+    pub fn known_series_urls(&self, source_id: i64) -> Result<std::collections::HashSet<String>> {
+        let mut stmt = self.conn.prepare("SELECT url FROM series WHERE source_id=?1")?;
+        let urls = stmt
+            .query_map([source_id], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<std::collections::HashSet<_>>>()?;
+        Ok(urls)
     }
 
     fn row_to_series(r: &rusqlite::Row) -> rusqlite::Result<crate::models::Series> {
@@ -390,12 +486,49 @@ mod tests {
         let count: i64 = db
             .conn
             .query_row(
-                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('sources','series','episodes','settings')",
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('sources','series','episodes','settings','series_genres')",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(count, 4);
+        assert_eq!(count, 5);
+    }
+
+    #[test]
+    fn series_table_has_backlog_status_and_kind_columns() {
+        let db = Db::open(":memory:").unwrap();
+        let mut stmt = db.conn.prepare("PRAGMA table_info(series)").unwrap();
+        let cols: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert!(cols.contains(&"backlog_status".to_string()));
+        assert!(cols.contains(&"kind".to_string()));
+    }
+
+    #[test]
+    fn migration_is_idempotent_on_an_existing_on_disk_db() {
+        let path = std::env::temp_dir().join(format!("aot_migration_test_{}.sqlite", std::process::id()));
+        let path_str = path.to_str().unwrap();
+        let _ = std::fs::remove_file(&path);
+        {
+            Db::open(path_str).unwrap();
+        }
+        // Second open must not error even though backlog_status/kind/series_genres
+        // already exist from the first open (ALTER TABLE ADD COLUMN errors if run
+        // twice unguarded).
+        let db = Db::open(path_str).unwrap();
+        let count: i64 = db
+            .conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='series_genres'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
@@ -503,5 +636,61 @@ mod tests {
         let urls = db.existing_episode_urls(sid).unwrap();
         assert!(urls.contains("https://site/ep1"));
         assert_eq!(urls.len(), 1);
+    }
+
+    #[test]
+    fn series_genres_insert_is_idempotent_and_lists_sorted() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b").unwrap();
+        let s = crate::models::Series {
+            id: 0, slug: "x".into(), title: "X".into(),
+            url: "u".into(), cover_url: None, is_airing: false, followed: false,
+        };
+        let sid = db.upsert_series(src, &s).unwrap();
+
+        db.insert_series_genres(sid, &["Seinen".to_string(), "Drama".to_string()]).unwrap();
+        // inserting the same genres again must not error or duplicate
+        db.insert_series_genres(sid, &["Drama".to_string()]).unwrap();
+
+        let genres = db.list_series_genres(sid).unwrap();
+        assert_eq!(genres, vec!["Drama".to_string(), "Seinen".to_string()]);
+    }
+
+    #[test]
+    fn backlog_status_and_kind_round_trip() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b").unwrap();
+        let s = crate::models::Series {
+            id: 0, slug: "x".into(), title: "X".into(),
+            url: "u".into(), cover_url: None, is_airing: false, followed: false,
+        };
+        let sid = db.upsert_series(src, &s).unwrap();
+
+        assert_eq!(db.get_backlog_status(sid).unwrap(), None);
+        db.set_backlog_status(sid, Some("want")).unwrap();
+        assert_eq!(db.get_backlog_status(sid).unwrap(), Some("want".to_string()));
+        db.set_kind(sid, "TV").unwrap();
+
+        // start_watching's transition: 'want' -> followed, backlog_status cleared
+        db.set_followed(sid, true).unwrap();
+        db.set_backlog_status(sid, None).unwrap();
+        assert_eq!(db.get_backlog_status(sid).unwrap(), None);
+        assert!(db.list_followed(src).unwrap().iter().any(|f| f.id == sid));
+    }
+
+    #[test]
+    fn known_series_urls_reflects_any_decided_row() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b").unwrap();
+        let s = crate::models::Series {
+            id: 0, slug: "x".into(), title: "X".into(),
+            url: "https://site/tv/x/".into(), cover_url: None, is_airing: false, followed: false,
+        };
+        let sid = db.upsert_series(src, &s).unwrap();
+        db.set_backlog_status(sid, Some("discarded")).unwrap();
+
+        let known = db.known_series_urls(src).unwrap();
+        assert!(known.contains("https://site/tv/x/"));
+        assert_eq!(known.len(), 1);
     }
 }

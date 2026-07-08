@@ -34,6 +34,31 @@ pub struct Episode {
     pub seen: bool,
 }
 
+/// A completed-anime card scraped off a genre-listing page (a `.bsx` card
+/// carrying a `.status.Completed` div). Also doubles as the swipe-mode UI's
+/// card payload as-is (see `SwipeCard`) — the swipe deck shows exactly what
+/// the adapter parses off the listing page, no separate shape needed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FinishedCard {
+    pub title: String,
+    pub url: String,
+    pub poster_url: Option<String>,
+    pub kind: String,
+}
+
+pub type SwipeCard = FinishedCard;
+
+/// Parsed from a series detail page (`/tv/{slug}/`) — the only place a
+/// series' *complete* genre set and authoritative type ("Tipo:") are
+/// available; listing cards only imply the one genre archive they were
+/// found under.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SeriesDetail {
+    pub genres: Vec<String>,
+    pub kind: Option<String>,
+    pub synopsis: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -68,5 +93,30 @@ mod tests {
         let j = serde_json::to_string(&e).unwrap();
         let back: Episode = serde_json::from_str(&j).unwrap();
         assert_eq!(e, back);
+    }
+
+    #[test]
+    fn finished_card_json_roundtrips() {
+        let c = FinishedCard {
+            title: "Liar Game".into(),
+            url: "https://wwv.animeytx.net/tv/liar-game/".into(),
+            poster_url: Some("https://x/img.jpg".into()),
+            kind: "TV".into(),
+        };
+        let j = serde_json::to_string(&c).unwrap();
+        let back: FinishedCard = serde_json::from_str(&j).unwrap();
+        assert_eq!(c, back);
+    }
+
+    #[test]
+    fn series_detail_json_roundtrips() {
+        let d = SeriesDetail {
+            genres: vec!["Drama".into(), "Seinen".into()],
+            kind: Some("TV".into()),
+            synopsis: Some("...".into()),
+        };
+        let j = serde_json::to_string(&d).unwrap();
+        let back: SeriesDetail = serde_json::from_str(&j).unwrap();
+        assert_eq!(d, back);
     }
 }

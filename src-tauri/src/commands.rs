@@ -1,10 +1,12 @@
 use crate::adapter::{animeytx::AnimeytxAdapter, SiteAdapter};
 use crate::db::Db;
 use crate::diff::new_episodes;
-use crate::models::{Episode, Series};
+use crate::models::{Episode, FinishedCard, Series, SeriesDetail};
 use crate::player::{BrowserPlayer, EpisodePlayer};
 use crate::scraper_engine::{fetch_cover_image, fetch_html, ScrapeResult};
+use crate::swipe::{pick_index, shuffle, undecided_cards};
 use serde::Serialize;
+use std::collections::HashMap;
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, State};
 
@@ -25,6 +27,15 @@ fn emit_refresh_progress(app: &AppHandle, current: usize, total: usize, title: &
 pub struct AppState {
     pub db: Mutex<Db>,
     pub source_id: Mutex<Option<i64>>,
+    /// Cards from a (genre, page) fetch not yet shown this session — lets
+    /// discover_swipe_card serve ~10 swipes off one HTTP fetch instead of one
+    /// fetch per swipe.
+    pub swipe_buffer: Mutex<HashMap<(String, u32), Vec<FinishedCard>>>,
+    /// Highest page number seen so far for each genre slug this session.
+    pub swipe_last_page: Mutex<HashMap<String, u32>>,
+    /// Cards handed out by discover_swipe_card, keyed by url, so decide_swipe
+    /// (which only receives a url) can look up the card data to persist.
+    pub swipe_served: Mutex<HashMap<String, FinishedCard>>,
 }
 
 const SOURCE_NAME: &str = "AnimeYT";
@@ -56,6 +67,88 @@ fn load_mirrors(db: &Db) -> Result<Vec<String>, String> {
 fn save_mirrors(db: &Db, mirrors: &[String]) -> Result<(), String> {
     db.set_setting(MIRRORS_KEY, &mirrors.join("\n"))
         .map_err(|e| e.to_string())
+}
+
+const GENRE_LIST_KEY: &str = "genre_list";
+
+fn load_genre_list(db: &Db) -> Result<Vec<(String, String)>, String> {
+    let raw = db.get_setting(GENRE_LIST_KEY).map_err(|e| e.to_string())?;
+    match raw {
+        Some(s) => serde_json::from_str(&s).map_err(|e| e.to_string()),
+        None => Ok(Vec::new()),
+    }
+}
+
+fn save_genre_list(db: &Db, list: &[(String, String)]) -> Result<(), String> {
+    let raw = serde_json::to_string(list).map_err(|e| e.to_string())?;
+    db.set_setting(GENRE_LIST_KEY, &raw).map_err(|e| e.to_string())
+}
+
+/// Cached genre (slug, name) list, scraped once per install and reused after
+/// (mirrors the `mirror_urls` settings-cache pattern already used elsewhere).
+async fn ensure_genre_list(
+    app: &AppHandle,
+    db_mirrors: &[String],
+    state: &State<'_, AppState>,
+) -> Result<Vec<(String, String)>, String> {
+    let cached = {
+        let db = state.db.lock().unwrap();
+        load_genre_list(&db)?
+    };
+    if !cached.is_empty() {
+        return Ok(cached);
+    }
+    let a = adapter();
+    let (_scraped, pairs, _mirror) =
+        scrape_via_mirrors(app, db_mirrors, &a.genre_list_url(""), |html| a.parse_genre_list(html)).await?;
+    let db = state.db.lock().unwrap();
+    save_genre_list(&db, &pairs)?;
+    Ok(pairs)
+}
+
+fn path_of(url: &str) -> Result<String, String> {
+    let u = url::Url::parse(url).map_err(|_| format!("url inválida: {url}"))?;
+    Ok(format!("{}{}", u.path(), u.query().map(|q| format!("?{q}")).unwrap_or_default()))
+}
+
+/// Fetch and parse a series detail page, falling through mirrors the same
+/// way every other scrape does. An empty genre list is treated the same as
+/// "page loaded but didn't parse" (see `scrape_via_mirrors`'s doc comment) —
+/// it means this mirror's detail-page markup didn't match, not that the
+/// series genuinely has zero genres.
+async fn fetch_series_detail(
+    app: &AppHandle,
+    mirrors: &[String],
+    series_url: &str,
+) -> Result<SeriesDetail, String> {
+    let a = adapter();
+    let path = path_of(series_url)?;
+    let (_scraped, details, _mirror) = scrape_via_mirrors(app, mirrors, &path, |html| {
+        let d = a.parse_series_detail(html)?;
+        if d.genres.is_empty() {
+            Err(anyhow::anyhow!("no genres parsed (likely wrong/incompatible mirror)"))
+        } else {
+            Ok(vec![d])
+        }
+    })
+    .await?;
+    details.into_iter().next().ok_or_else(|| "empty series detail page".to_string())
+}
+
+async fn fetch_episode_list_for(
+    app: &AppHandle,
+    mirrors: &[String],
+    series_url: &str,
+) -> Result<Vec<Episode>, String> {
+    let a = adapter();
+    let path = path_of(series_url)?;
+    let (_scraped, eps, _mirror) =
+        scrape_via_mirrors(app, mirrors, &path, |html| a.parse_series(html)).await?;
+    Ok(eps)
+}
+
+fn slug_from_url(url: &str) -> String {
+    url.trim_end_matches('/').rsplit('/').next().unwrap_or("").to_string()
 }
 
 /// Add `url` to the front of `mirrors` if not already present (case-insensitive),
@@ -342,4 +435,170 @@ pub fn set_seen_cascade(
 pub fn list_episodes(state: State<'_, AppState>, series_id: i64) -> Result<Vec<Episode>, String> {
     let db = state.db.lock().unwrap();
     db.list_series_episodes(series_id).map_err(|e| e.to_string())
+}
+
+#[derive(serde::Deserialize)]
+pub enum SwipeDecision {
+    Seen,
+    Want,
+    Discard,
+}
+
+/// Pick a random cached-or-fresh (genre, page) pair, scrape it if not
+/// already buffered this session, filter out anything already decided,
+/// shuffle, and pop one card. `Ok(None)` means the freshly-scraped page (or
+/// buffer) had nothing left after filtering — a normal "everything on this
+/// page was already decided" case, not an error; the frontend just calls
+/// again.
+#[tauri::command]
+pub async fn discover_swipe_card(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Option<FinishedCard>, String> {
+    let src = get_source_id(&state)?;
+    let mirrors = {
+        let db = state.db.lock().unwrap();
+        load_mirrors(&db)?
+    };
+    let genres = ensure_genre_list(&app, &mirrors, &state).await?;
+    if genres.is_empty() {
+        return Err("no se encontraron géneros; reintenta el escaneo".into());
+    }
+    let (slug, _name) = &genres[pick_index(genres.len()).unwrap()];
+
+    let last_page = state.swipe_last_page.lock().unwrap().get(slug).copied().unwrap_or(1);
+    let page = pick_index(last_page as usize).map(|i| i as u32 + 1).unwrap_or(1);
+
+    let known = {
+        let db = state.db.lock().unwrap();
+        db.known_series_urls(src).map_err(|e| e.to_string())?
+    };
+
+    let buffered = state.swipe_buffer.lock().unwrap().remove(&(slug.clone(), page));
+    let mut cards = match buffered {
+        Some(cards) => undecided_cards(cards, &known),
+        None => {
+            let a = adapter();
+            let path = a.genre_page_url("", slug, page);
+            let (scraped, raw_cards, _mirror) =
+                scrape_via_mirrors(&app, &mirrors, &path, |html| a.parse_finished_page(html)).await?;
+            state
+                .swipe_last_page
+                .lock()
+                .unwrap()
+                .insert(slug.clone(), a.parse_pagination_last_page(&scraped.html));
+            let mut fresh = undecided_cards(raw_cards, &known);
+            shuffle(&mut fresh);
+            fresh
+        }
+    };
+
+    let Some(card) = cards.pop() else {
+        return Ok(None);
+    };
+    if !cards.is_empty() {
+        state.swipe_buffer.lock().unwrap().insert((slug.clone(), page), cards);
+    }
+    state.swipe_served.lock().unwrap().insert(card.url.clone(), card.clone());
+    Ok(Some(card))
+}
+
+#[tauri::command]
+pub async fn decide_swipe(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    series_url: String,
+    decision: SwipeDecision,
+) -> Result<(), String> {
+    let src = get_source_id(&state)?;
+    let card = state
+        .swipe_served
+        .lock()
+        .unwrap()
+        .remove(&series_url)
+        .ok_or_else(|| "unknown swipe card; call discover_swipe_card first".to_string())?;
+
+    let series = Series {
+        id: 0,
+        slug: slug_from_url(&card.url),
+        title: card.title.clone(),
+        url: card.url.clone(),
+        cover_url: card.poster_url.clone(),
+        is_airing: false,
+        followed: false,
+    };
+
+    match decision {
+        SwipeDecision::Discard => {
+            let db = state.db.lock().unwrap();
+            let sid = db.upsert_series(src, &series).map_err(|e| e.to_string())?;
+            db.set_kind(sid, &card.kind).map_err(|e| e.to_string())?;
+            db.set_backlog_status(sid, Some("discarded")).map_err(|e| e.to_string())?;
+        }
+        SwipeDecision::Want => {
+            let mirrors = {
+                let db = state.db.lock().unwrap();
+                load_mirrors(&db)?
+            };
+            let detail = fetch_series_detail(&app, &mirrors, &card.url).await?;
+            let db = state.db.lock().unwrap();
+            let sid = db.upsert_series(src, &series).map_err(|e| e.to_string())?;
+            db.set_kind(sid, detail.kind.as_deref().unwrap_or(&card.kind)).map_err(|e| e.to_string())?;
+            db.insert_series_genres(sid, &detail.genres).map_err(|e| e.to_string())?;
+            db.set_backlog_status(sid, Some("want")).map_err(|e| e.to_string())?;
+        }
+        SwipeDecision::Seen => {
+            let mirrors = {
+                let db = state.db.lock().unwrap();
+                load_mirrors(&db)?
+            };
+            let detail = fetch_series_detail(&app, &mirrors, &card.url).await?;
+            let eps = fetch_episode_list_for(&app, &mirrors, &card.url).await?;
+            let db = state.db.lock().unwrap();
+            let sid = db.upsert_series(src, &series).map_err(|e| e.to_string())?;
+            db.set_followed(sid, true).map_err(|e| e.to_string())?;
+            db.set_kind(sid, detail.kind.as_deref().unwrap_or(&card.kind)).map_err(|e| e.to_string())?;
+            db.insert_series_genres(sid, &detail.genres).map_err(|e| e.to_string())?;
+            for mut e in eps {
+                e.series_id = sid;
+                e.seen = true;
+                db.insert_episode(&e).map_err(|e| e.to_string())?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Promote a `backlog_status='want'` row to an ordinary followed series:
+/// fetch its episode list (all unseen), start following it, clear the
+/// backlog status. `refresh()` already scans all followed rows regardless
+/// of `is_airing`, so no changes are needed there.
+#[tauri::command]
+pub async fn start_watching(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    series_id: i64,
+) -> Result<(), String> {
+    let (series_url, mirrors) = {
+        let db = state.db.lock().unwrap();
+        let status = db.get_backlog_status(series_id).map_err(|e| e.to_string())?;
+        if status.as_deref() != Some("want") {
+            return Err("series is not in the 'want' backlog".into());
+        }
+        let url = db
+            .get_series_url(series_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "series not found".to_string())?;
+        (url, load_mirrors(&db)?)
+    };
+    let eps = fetch_episode_list_for(&app, &mirrors, &series_url).await?;
+    let db = state.db.lock().unwrap();
+    for mut e in eps {
+        e.series_id = series_id;
+        e.seen = false;
+        db.insert_episode(&e).map_err(|e| e.to_string())?;
+    }
+    db.set_followed(series_id, true).map_err(|e| e.to_string())?;
+    db.set_backlog_status(series_id, None).map_err(|e| e.to_string())?;
+    Ok(())
 }
