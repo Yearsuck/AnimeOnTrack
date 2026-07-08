@@ -60,6 +60,12 @@ export interface SwipeCard {
   url: string;
   poster_url: string | null;
   kind: string;
+  matched_genre: string | null;
 }
 
 export type SwipeDecision = "Seen" | "Want" | "Discard";
+
+export interface GenreAffinity {
+  genre: string;
+  score: number;
+}

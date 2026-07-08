@@ -64,6 +64,7 @@ pub fn run() {
             commands::delete_series,
             commands::set_backlog_status,
             commands::get_series_genres,
+            commands::get_top_genres,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

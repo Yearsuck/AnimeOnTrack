@@ -4,18 +4,51 @@ import {
   deleteSeries,
   discoverSwipeCard,
   getSeriesGenres,
+  getTopGenres,
   listBacklog,
   promoteDiscarded,
   setBacklogStatus,
   startWatching,
   undoLastSwipe,
 } from "../api";
-import type { Series, SwipeCard, SwipeDecision } from "../types";
+import { categoryColor } from "../lib/categoryColor";
+import type { GenreAffinity, Series, SwipeCard, SwipeDecision } from "../types";
 
 type SubView = "swipe" | "listas";
 type SwipeOutDirection = "discard" | "want" | "seen" | null;
 
 const MAX_SILENT_RETRIES = 5;
+const TOP_GENRES_LIMIT = 5;
+
+function TasteChips() {
+  const [genres, setGenres] = useState<GenreAffinity[]>([]);
+  useEffect(() => {
+    getTopGenres(TOP_GENRES_LIMIT).then(setGenres);
+  }, []);
+  if (genres.length === 0) return null;
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
+      <span className="muted" style={{ fontSize: 12 }}>
+        Tus géneros favoritos:
+      </span>
+      {genres.map((g) => (
+        <span
+          key={g.genre}
+          style={{
+            fontSize: 12,
+            fontWeight: 600,
+            padding: "3px 10px",
+            borderRadius: "var(--radius-round)",
+            background: categoryColor(g.genre),
+            color: "#05121f",
+          }}
+        >
+          {g.genre}
+        </span>
+      ))}
+    </div>
+  );
+}
 
 function SwipeView() {
   const [card, setCard] = useState<SwipeCard | null>(null);
@@ -104,6 +137,7 @@ function SwipeView() {
 
   return (
     <div className="swipe-stage">
+      <TasteChips />
       {card ? (
         <div className={`card swipe-card ${outDirection ? `swipe-out-${outDirection}` : ""}`}>
           <div className="poster">
@@ -114,6 +148,11 @@ function SwipeView() {
             <div className="card-title" style={{ minHeight: "auto" }}>
               {card.title}
             </div>
+            {card.matched_genre && (
+              <div className="muted" style={{ fontSize: 12 }}>
+                Género: {card.matched_genre}
+              </div>
+            )}
           </div>
         </div>
       ) : (

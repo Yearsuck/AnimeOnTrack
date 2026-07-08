@@ -44,6 +44,11 @@ pub struct FinishedCard {
     pub url: String,
     pub poster_url: Option<String>,
     pub kind: String,
+    /// Which genre archive this card was found under — only known/set by
+    /// `discover_swipe_card` (which is the one place a genre is picked
+    /// before scraping), `None` everywhere else `FinishedCard` is built.
+    #[serde(default)]
+    pub matched_genre: Option<String>,
 }
 
 pub type SwipeCard = FinishedCard;
@@ -79,6 +84,14 @@ pub struct GenreStat {
 pub struct TypeStat {
     pub kind: String,
     pub count: i64,
+}
+
+/// One genre's affinity score (see `Db::get_genre_affinity`), for surfacing
+/// "your favorite genres" in the swipe UI.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GenreAffinity {
+    pub genre: String,
+    pub score: f64,
 }
 
 /// One followed series' graph-relevant fields, for the 3D relationship graph
@@ -136,6 +149,7 @@ mod tests {
             url: "https://wwv.animeytx.net/tv/liar-game/".into(),
             poster_url: Some("https://x/img.jpg".into()),
             kind: "TV".into(),
+            matched_genre: Some("Drama".into()),
         };
         let j = serde_json::to_string(&c).unwrap();
         let back: FinishedCard = serde_json::from_str(&j).unwrap();

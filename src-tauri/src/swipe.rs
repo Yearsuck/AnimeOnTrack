@@ -21,6 +21,32 @@ pub fn pick_index(len: usize) -> Option<usize> {
     Some((nanos as usize) % len)
 }
 
+/// Weighted random index, biased toward higher `weights` — powers the swipe
+/// deck's taste-weighted genre pick. Falls back to a uniform `pick_index`
+/// over the same length whenever every weight is <= 0 (cold start: nothing
+/// followed/decided yet, or every candidate genre nets non-positive), so
+/// discovery never goes silent on a genre just because it has no signal —
+/// only decisions actively push it up or down.
+pub fn weighted_pick_index(weights: &[f64]) -> Option<usize> {
+    let total: f64 = weights.iter().filter(|w| **w > 0.0).sum();
+    if total <= 0.0 {
+        return pick_index(weights.len());
+    }
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let r = (nanos % 1_000_000) as f64 / 1_000_000.0 * total;
+    let mut acc = 0.0;
+    for (i, w) in weights.iter().enumerate() {
+        if *w > 0.0 {
+            acc += w;
+            if r < acc {
+                return Some(i);
+            }
+        }
+    }
+    weights.iter().rposition(|w| *w > 0.0)
+}
+
 /// Fisher-Yates shuffle driven by `pick_index`.
 pub fn shuffle<T>(items: &mut Vec<T>) {
     for i in (1..items.len()).rev() {
@@ -35,7 +61,13 @@ mod tests {
     use super::*;
 
     fn card(url: &str) -> FinishedCard {
-        FinishedCard { title: url.into(), url: url.into(), poster_url: None, kind: "TV".into() }
+        FinishedCard {
+            title: url.into(),
+            url: url.into(),
+            poster_url: None,
+            kind: "TV".into(),
+            matched_genre: None,
+        }
     }
 
     #[test]
@@ -76,5 +108,25 @@ mod tests {
             assert!(i < 7);
         }
         assert_eq!(pick_index(0), None);
+    }
+
+    #[test]
+    fn weighted_pick_index_only_ever_picks_the_sole_positive_weight() {
+        for _ in 0..20 {
+            assert_eq!(weighted_pick_index(&[0.0, 0.0, 5.0]), Some(2));
+        }
+    }
+
+    #[test]
+    fn weighted_pick_index_falls_back_to_uniform_when_all_non_positive() {
+        for _ in 0..20 {
+            let i = weighted_pick_index(&[0.0, -1.0, 0.0]).unwrap();
+            assert!(i < 3);
+        }
+    }
+
+    #[test]
+    fn weighted_pick_index_none_for_empty() {
+        assert_eq!(weighted_pick_index(&[]), None);
     }
 }

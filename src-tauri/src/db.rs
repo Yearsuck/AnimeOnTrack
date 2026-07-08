@@ -304,6 +304,44 @@ impl Db {
         Ok(self.list_series_genres(series_id)?.is_empty())
     }
 
+    /// Per-genre affinity score, used to weight the swipe deck's genre pick
+    /// toward what this user actually likes instead of picking uniformly at
+    /// random. +2 per followed series in that genre (actively watching or
+    /// already watched — the strongest signal), +1 per 'want' backlog series
+    /// (interested, not started yet), -1.5 per 'discarded' series (explicit
+    /// pass). Genres with no signal simply don't appear in the map — the
+    /// caller treats a missing entry as 0, and `weighted_pick_index` falls
+    /// back to uniform whenever every candidate nets <= 0, so a new user (or
+    /// a genre nobody's decided on yet) never gets a silently empty deck.
+    pub fn get_genre_affinity(&self, source_id: i64) -> Result<std::collections::HashMap<String, f64>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT sg.genre, s.followed, s.backlog_status
+             FROM series_genres sg
+             JOIN series s ON s.id = sg.series_id
+             WHERE s.source_id=?1",
+        )?;
+        let rows: Vec<(String, bool, Option<String>)> = stmt
+            .query_map([source_id], |r| {
+                Ok((r.get(0)?, r.get::<_, i64>(1)? != 0, r.get(2)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        let mut scores: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+        for (genre, followed, backlog_status) in rows {
+            let delta = if followed {
+                2.0
+            } else {
+                match backlog_status.as_deref() {
+                    Some("want") => 1.0,
+                    Some("discarded") => -1.5,
+                    _ => 0.0,
+                }
+            };
+            *scores.entry(genre).or_insert(0.0) += delta;
+        }
+        Ok(scores)
+    }
+
     /// Followed series with their genres (aggregated) and kind, for the 3D
     /// relationship graph. One follow-up `list_series_genres` query per
     /// series — simplest option given that helper already exists, and the
@@ -808,6 +846,43 @@ mod tests {
         db.set_backlog_status(sid, None).unwrap();
         assert_eq!(db.get_backlog_status(sid).unwrap(), None);
         assert!(db.list_followed(src).unwrap().iter().any(|f| f.id == sid));
+    }
+
+    #[test]
+    fn get_genre_affinity_weighs_followed_want_discarded_correctly() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b").unwrap();
+
+        let followed = crate::models::Series {
+            id: 0, slug: "f".into(), title: "F".into(),
+            url: "u1".into(), cover_url: None, is_airing: false, followed: true,
+        };
+        let sid_f = db.upsert_series(src, &followed).unwrap();
+        db.set_followed(sid_f, true).unwrap();
+        db.insert_series_genres(sid_f, &["Seinen".to_string(), "Shared".to_string()]).unwrap();
+
+        let want = crate::models::Series {
+            id: 0, slug: "w".into(), title: "W".into(),
+            url: "u2".into(), cover_url: None, is_airing: false, followed: false,
+        };
+        let sid_w = db.upsert_series(src, &want).unwrap();
+        db.set_backlog_status(sid_w, Some("want")).unwrap();
+        db.insert_series_genres(sid_w, &["Romance".to_string(), "Shared".to_string()]).unwrap();
+
+        let discarded = crate::models::Series {
+            id: 0, slug: "d".into(), title: "D".into(),
+            url: "u3".into(), cover_url: None, is_airing: false, followed: false,
+        };
+        let sid_d = db.upsert_series(src, &discarded).unwrap();
+        db.set_backlog_status(sid_d, Some("discarded")).unwrap();
+        db.insert_series_genres(sid_d, &["Horror".to_string()]).unwrap();
+
+        let scores = db.get_genre_affinity(src).unwrap();
+        assert_eq!(scores.get("Seinen"), Some(&2.0));
+        assert_eq!(scores.get("Romance"), Some(&1.0));
+        assert_eq!(scores.get("Horror"), Some(&-1.5));
+        assert_eq!(scores.get("Shared"), Some(&3.0)); // 2.0 (followed) + 1.0 (want)
+        assert_eq!(scores.get("Unseen"), None);
     }
 
     #[test]

@@ -2,11 +2,12 @@ use crate::adapter::{animeytx::AnimeytxAdapter, SiteAdapter};
 use crate::db::Db;
 use crate::diff::new_episodes;
 use crate::models::{
-    Episode, FinishedCard, GenreStat, Series, SeriesDetail, SeriesGraphNode, TypeStat, WatchSummary,
+    Episode, FinishedCard, GenreAffinity, GenreStat, Series, SeriesDetail, SeriesGraphNode, TypeStat,
+    WatchSummary,
 };
 use crate::player::{BrowserPlayer, EpisodePlayer};
 use crate::scraper_engine::{fetch_cover_image, fetch_html, ScrapeResult};
-use crate::swipe::{pick_index, shuffle, undecided_cards};
+use crate::swipe::{pick_index, shuffle, undecided_cards, weighted_pick_index};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -621,7 +622,20 @@ pub async fn discover_swipe_card(
     if genres.is_empty() {
         return Err("no se encontraron géneros; reintenta el escaneo".into());
     }
-    let (slug, _name) = &genres[pick_index(genres.len()).unwrap()];
+    // Taste-weighted genre pick: bias toward genres this user actually
+    // follows/wants over ones they've discarded, instead of picking
+    // uniformly at random. Falls back to uniform whenever every genre nets
+    // <= 0 (nothing decided yet), so a fresh profile still discovers freely.
+    let affinity = {
+        let db = state.db.lock().unwrap();
+        db.get_genre_affinity(src).map_err(|e| e.to_string())?
+    };
+    let weights: Vec<f64> = genres
+        .iter()
+        .map(|(_, name)| *affinity.get(name).unwrap_or(&0.0))
+        .collect();
+    let pick = weighted_pick_index(&weights).unwrap();
+    let (slug, name) = &genres[pick];
 
     let last_page = state.swipe_last_page.lock().unwrap().get(slug).copied().unwrap_or(1);
     let page = pick_index(last_page as usize).map(|i| i as u32 + 1).unwrap_or(1);
@@ -650,12 +664,13 @@ pub async fn discover_swipe_card(
         }
     };
 
-    let Some(card) = cards.pop() else {
+    let Some(mut card) = cards.pop() else {
         return Ok(None);
     };
     if !cards.is_empty() {
         state.swipe_buffer.lock().unwrap().insert((slug.clone(), page), cards);
     }
+    card.matched_genre = Some(name.clone());
     state.swipe_served.lock().unwrap().insert(card.url.clone(), card.clone());
     Ok(Some(card))
 }
@@ -848,4 +863,22 @@ pub fn set_backlog_status(
 pub fn get_series_genres(state: State<'_, AppState>, series_id: i64) -> Result<Vec<String>, String> {
     let db = state.db.lock().unwrap();
     db.list_series_genres(series_id).map_err(|e| e.to_string())
+}
+
+/// This user's top `limit` genres by affinity score (positive only), for
+/// the "Tus géneros favoritos" chip row in the swipe UI — makes the
+/// otherwise-invisible taste-weighting in `discover_swipe_card` visible.
+#[tauri::command]
+pub fn get_top_genres(state: State<'_, AppState>, limit: usize) -> Result<Vec<GenreAffinity>, String> {
+    let src = get_source_id(&state)?;
+    let db = state.db.lock().unwrap();
+    let mut scored: Vec<(String, f64)> = db
+        .get_genre_affinity(src)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .filter(|(_, score)| *score > 0.0)
+        .collect();
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    scored.truncate(limit);
+    Ok(scored.into_iter().map(|(genre, score)| GenreAffinity { genre, score }).collect())
 }

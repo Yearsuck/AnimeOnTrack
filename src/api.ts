@@ -10,6 +10,7 @@ import type {
   SeriesGraphNode,
   SwipeCard,
   SwipeDecision,
+  GenreAffinity,
 } from "./types";
 
 export const scanAiring = (baseUrl: string) =>
@@ -80,3 +81,6 @@ export const setBacklogStatus = (seriesId: number, status: "want" | "discarded" 
 
 export const getSeriesGenres = (seriesId: number) =>
   invoke<string[]>("get_series_genres", { seriesId });
+
+export const getTopGenres = (limit: number) =>
+  invoke<GenreAffinity[]>("get_top_genres", { limit });
