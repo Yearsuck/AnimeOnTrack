@@ -84,5 +84,10 @@ export interface CatalogAnime {
 export interface CatalogPage {
   items: CatalogAnime[];
   has_next_page: boolean;
-  last_page: number;
+  total_synced: number;
+}
+
+export interface CatalogSyncProgress {
+  synced: number;
+  total: number;
 }

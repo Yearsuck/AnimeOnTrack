@@ -889,46 +889,87 @@ pub fn get_top_genres(state: State<'_, AppState>, limit: usize) -> Result<Vec<Ge
 pub struct CatalogPage {
     pub items: Vec<crate::anilist::CatalogAnime>,
     pub has_next_page: bool,
-    pub last_page: i64,
+    pub total_synced: i64,
 }
 
-/// One page of the full AniList anime catalog — the "Catálogo" tab's data
-/// source, independent of anything scraped off the tracked site.
+/// One page of the locally-synced AniList catalog — the "Catálogo" tab's
+/// data source, independent of anything scraped off the tracked site. Reads
+/// the local `anilist_catalog` table (see `sync_anime_catalog`), not
+/// AniList live — instant, no rate-limit exposure, works with whatever's
+/// been synced so far even mid-sync.
 #[tauri::command]
-pub async fn get_anime_catalog(page: i64) -> Result<CatalogPage, String> {
-    let (items, has_next_page, last_page) =
-        crate::anilist::fetch_catalog_page(page, 30).await.map_err(|e| e.to_string())?;
-    Ok(CatalogPage { items, has_next_page, last_page })
+pub fn get_anime_catalog(state: State<'_, AppState>, page: i64) -> Result<CatalogPage, String> {
+    let db = state.db.lock().unwrap();
+    let per_page = 30;
+    let items = db.list_catalog(page, per_page).map_err(|e| e.to_string())?;
+    let total_synced = db.catalog_count().map_err(|e| e.to_string())?;
+    let has_next_page = page * per_page < total_synced;
+    Ok(CatalogPage { items, has_next_page, total_synced })
 }
 
-/// How many AniList catalog pages (of 20) `discover_catalog_card` picks
-/// from — 100 pages * 20 = 2000 titles, deep enough for variety while
-/// staying within recognizable/popular territory (catalog is sorted by
-/// popularity) rather than reaching into obscure page-1000+ depths.
-const CATALOG_RANDOM_PAGE_BOUND: usize = 100;
-const CATALOG_PAGE_SIZE: i64 = 20;
+#[derive(Serialize, Clone)]
+struct CatalogSyncProgress {
+    synced: i64,
+    total: i64,
+}
 
-/// A random card from the AniList catalog, in the same shape as the
+/// Fetch AniList's full anime catalog (popularity-sorted) and store it
+/// locally, paginating 50 at a time and pacing requests to stay under the
+/// unauthenticated 30 req/min rate limit (2.2s between requests — safely
+/// under the 2s/request that limit implies). This is a real multi-minute
+/// job for the full ~5000-title catalog, so it's user-triggered from the
+/// Catálogo tab, not run automatically on every app launch.
+#[tauri::command]
+pub async fn sync_anime_catalog(app: AppHandle, state: State<'_, AppState>) -> Result<i64, String> {
+    const PAGE_SIZE: i64 = 50;
+    const REQUEST_DELAY: std::time::Duration = std::time::Duration::from_millis(2200);
+
+    let mut page = 1i64;
+    let mut synced = 0i64;
+    let mut estimated_total = 0i64;
+    loop {
+        let (items, has_next_page, last_page) = crate::anilist::fetch_catalog_page(page, PAGE_SIZE)
+            .await
+            .map_err(|e| e.to_string())?;
+        if page == 1 {
+            estimated_total = last_page * PAGE_SIZE;
+        }
+        {
+            let db = state.db.lock().unwrap();
+            for (idx, anime) in items.iter().enumerate() {
+                let sort_order = (page - 1) * PAGE_SIZE + idx as i64;
+                db.upsert_catalog_anime(anime, sort_order).map_err(|e| e.to_string())?;
+            }
+            synced = db.catalog_count().map_err(|e| e.to_string())?;
+        }
+        let _ = app.emit("catalog-sync-progress", CatalogSyncProgress { synced, total: estimated_total });
+        if !has_next_page {
+            break;
+        }
+        page += 1;
+        tokio::time::sleep(REQUEST_DELAY).await;
+    }
+    Ok(synced)
+}
+
+/// A random card from the locally-synced catalog, in the same shape as the
 /// scraped-site swipe deck — lets Descubrir's Swipe view draw from either
-/// source through the same UI. Catalog cards carry no episode data (AniList
-/// is metadata-only), so they're decided through `decide_catalog_card`
-/// rather than `decide_swipe`, which assumes a scraped-site URL it can
-/// fetch an episode list from.
+/// source through the same UI. Local + instant once synced (no live AniList
+/// call per swipe, so no rate-limit exposure from normal browsing). Catalog
+/// cards carry no episode data (AniList is metadata-only), so they're
+/// decided through `decide_catalog_card` rather than `decide_swipe`, which
+/// assumes a scraped-site URL it can fetch an episode list from.
 #[tauri::command]
-pub async fn discover_catalog_card() -> Result<Option<FinishedCard>, String> {
-    let page = pick_index(CATALOG_RANDOM_PAGE_BOUND).map(|i| i as i64 + 1).unwrap_or(1);
-    let (items, _has_next, _last) = crate::anilist::fetch_catalog_page(page, CATALOG_PAGE_SIZE)
-        .await
-        .map_err(|e| e.to_string())?;
-    let Some(idx) = pick_index(items.len()) else {
+pub fn discover_catalog_card(state: State<'_, AppState>) -> Result<Option<FinishedCard>, String> {
+    let db = state.db.lock().unwrap();
+    let Some(anime) = db.random_catalog_anime().map_err(|e| e.to_string())? else {
         return Ok(None);
     };
-    let anime = &items[idx];
     Ok(Some(FinishedCard {
-        title: anime.title.clone(),
-        url: anime.url.clone(),
-        poster_url: anime.cover_url.clone(),
-        kind: anime.format.clone().unwrap_or_default(),
+        title: anime.title,
+        url: anime.url,
+        poster_url: anime.cover_url,
+        kind: anime.format.unwrap_or_default(),
         matched_genre: anime.genres.first().cloned(),
     }))
 }

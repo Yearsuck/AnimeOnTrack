@@ -1,13 +1,18 @@
-import { useCallback, useEffect, useState } from "react";
-import { getAnimeCatalog, openEpisode } from "../api";
-import type { CatalogAnime } from "../types";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
+import { getAnimeCatalog, openEpisode, syncAnimeCatalog } from "../api";
+import type { CatalogAnime, CatalogSyncProgress } from "../types";
 
 export function Catalog() {
   const [items, setItems] = useState<CatalogAnime[]>([]);
   const [page, setPage] = useState(1);
   const [hasNextPage, setHasNextPage] = useState(true);
+  const [totalSynced, setTotalSynced] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [syncing, setSyncing] = useState(false);
+  const [syncProgress, setSyncProgress] = useState<CatalogSyncProgress | null>(null);
+  const syncingRef = useRef(false);
 
   const loadPage = useCallback(async (targetPage: number) => {
     setLoading(true);
@@ -16,6 +21,7 @@ export function Catalog() {
       const result = await getAnimeCatalog(targetPage);
       setItems((prev) => (targetPage === 1 ? result.items : [...prev, ...result.items]));
       setHasNextPage(result.has_next_page);
+      setTotalSynced(result.total_synced);
       setPage(targetPage);
     } catch (e) {
       setError(String(e));
@@ -29,19 +35,78 @@ export function Catalog() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    const un = listen<CatalogSyncProgress>("catalog-sync-progress", (e) => {
+      setSyncProgress(e.payload);
+    });
+    return () => {
+      un.then((f) => f());
+    };
+  }, []);
+
+  const runSync = useCallback(async () => {
+    if (syncingRef.current) return;
+    syncingRef.current = true;
+    setSyncing(true);
+    setSyncProgress(null);
+    try {
+      await syncAnimeCatalog();
+      await loadPage(1);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setSyncing(false);
+      syncingRef.current = false;
+    }
+  }, [loadPage]);
+
   return (
     <div className="page">
       <div className="page-head">
         <h2 className="page-title">Catálogo</h2>
         <span className="muted">
-          Catálogo completo de anime vía AniList — {items.length} cargados
+          {totalSynced !== null
+            ? `${totalSynced} animes guardados en local (AniList)`
+            : "Catálogo completo de anime vía AniList"}
         </span>
+        <div className="spacer" />
+        <button className="btn btn-primary" onClick={runSync} disabled={syncing}>
+          {syncing ? "Sincronizando…" : "Sincronizar catálogo completo"}
+        </button>
       </div>
+
+      {syncing && (
+        <div className="series-block" style={{ marginBottom: 20, padding: "12px 16px" }}>
+          <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>
+            Descargando el catálogo de AniList y guardándolo en local — puede tardar varios
+            minutos (limitado a ~1 petición cada 2s para no pasarnos con el rate limit de la
+            API).
+          </div>
+          {syncProgress && (
+            <progress
+              className="scanbar-track"
+              value={syncProgress.synced}
+              max={Math.max(syncProgress.total, syncProgress.synced, 1)}
+              aria-label="Progreso de sincronización"
+            />
+          )}
+          {syncProgress && (
+            <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+              {syncProgress.synced} sincronizados
+            </div>
+          )}
+        </div>
+      )}
 
       {error && <div className="empty">No se pudo cargar el catálogo: {error}</div>}
 
       {items.length === 0 && loading ? (
         <div className="empty">Cargando…</div>
+      ) : items.length === 0 ? (
+        <div className="empty">
+          Nada sincronizado todavía. Dale a "Sincronizar catálogo completo" para descargar el
+          catálogo de AniList.
+        </div>
       ) : (
         <>
           <div className="grid">

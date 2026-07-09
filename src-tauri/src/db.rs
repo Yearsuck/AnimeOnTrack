@@ -118,6 +118,30 @@ impl Db {
             );
             "#,
         )?;
+        // Local mirror of AniList's catalog (see anilist.rs / sync_anime_catalog)
+        // — browsing and Descubrir's "Catálogo completo" source read from this
+        // table, not from AniList live, once synced. `sort_order` preserves
+        // AniList's popularity ordering (the sequence items were synced in)
+        // since local pagination has no live API response to sort by.
+        self.conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS anilist_catalog (
+                id INTEGER PRIMARY KEY,
+                title TEXT NOT NULL,
+                cover_url TEXT,
+                format TEXT,
+                episodes INTEGER,
+                average_score INTEGER,
+                url TEXT NOT NULL,
+                sort_order INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS anilist_catalog_genres (
+                anilist_id INTEGER NOT NULL REFERENCES anilist_catalog(id),
+                genre TEXT NOT NULL,
+                PRIMARY KEY(anilist_id, genre)
+            );
+            "#,
+        )?;
         Ok(())
     }
 
@@ -644,6 +668,102 @@ impl Db {
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
+
+    /// Insert or refresh one AniList catalog entry, keyed by AniList's own
+    /// numeric id (reused as our primary key — no reason to mint a separate
+    /// one). `sort_order` is the position in the popularity-sorted sync
+    /// sequence, so local pagination preserves the same ordering AniList's
+    /// own `POPULARITY_DESC` sort gave it.
+    pub fn upsert_catalog_anime(
+        &self,
+        anime: &crate::anilist::CatalogAnime,
+        sort_order: i64,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO anilist_catalog(id, title, cover_url, format, episodes, average_score, url, sort_order)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(id) DO UPDATE SET
+                title=excluded.title, cover_url=excluded.cover_url, format=excluded.format,
+                episodes=excluded.episodes, average_score=excluded.average_score,
+                url=excluded.url, sort_order=excluded.sort_order",
+            (
+                anime.id, &anime.title, &anime.cover_url, &anime.format,
+                anime.episodes, anime.average_score, &anime.url, sort_order,
+            ),
+        )?;
+        self.conn.execute("DELETE FROM anilist_catalog_genres WHERE anilist_id=?1", [anime.id])?;
+        for genre in &anime.genres {
+            self.conn.execute(
+                "INSERT OR IGNORE INTO anilist_catalog_genres(anilist_id, genre) VALUES(?1, ?2)",
+                (anime.id, genre),
+            )?;
+        }
+        Ok(())
+    }
+
+    /// How many entries are synced locally — lets the frontend show sync
+    /// progress and decide whether a first-time sync is needed.
+    pub fn catalog_count(&self) -> Result<i64> {
+        Ok(self.conn.query_row("SELECT COUNT(*) FROM anilist_catalog", [], |r| r.get(0))?)
+    }
+
+    fn row_to_catalog_anime(r: &rusqlite::Row) -> rusqlite::Result<crate::anilist::CatalogAnime> {
+        let id: i64 = r.get("id")?;
+        Ok(crate::anilist::CatalogAnime {
+            id,
+            title: r.get("title")?,
+            cover_url: r.get("cover_url")?,
+            format: r.get("format")?,
+            episodes: r.get("episodes")?,
+            average_score: r.get("average_score")?,
+            url: r.get("url")?,
+            genres: Vec::new(), // filled in by callers that need it — see list_catalog
+        })
+    }
+
+    /// One page of the locally-synced catalog, in the same popularity order
+    /// it was synced in. Genres aren't joined in bulk here (kept to the
+    /// simple per-row `list_catalog_genres` pattern already used for
+    /// `series_genres` elsewhere) — fine at page-sized (30ish) result sets.
+    pub fn list_catalog(&self, page: i64, per_page: i64) -> Result<Vec<crate::anilist::CatalogAnime>> {
+        let offset = (page.max(1) - 1) * per_page;
+        let mut stmt = self.conn.prepare(
+            "SELECT id, title, cover_url, format, episodes, average_score, url
+             FROM anilist_catalog ORDER BY sort_order LIMIT ?1 OFFSET ?2",
+        )?;
+        let mut rows = stmt
+            .query_map((per_page, offset), Self::row_to_catalog_anime)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for anime in &mut rows {
+            anime.genres = self.list_catalog_genres(anime.id)?;
+        }
+        Ok(rows)
+    }
+
+    pub fn list_catalog_genres(&self, anilist_id: i64) -> Result<Vec<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT genre FROM anilist_catalog_genres WHERE anilist_id=?1 ORDER BY genre")?;
+        let genres = stmt
+            .query_map([anilist_id], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(genres)
+    }
+
+    /// One random synced entry — powers Descubrir's "Catálogo completo"
+    /// swipe source. Local + instant once synced, no live AniList call (and
+    /// so no per-swipe rate-limit exposure) needed for normal browsing.
+    pub fn random_catalog_anime(&self) -> Result<Option<crate::anilist::CatalogAnime>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, title, cover_url, format, episodes, average_score, url
+             FROM anilist_catalog ORDER BY RANDOM() LIMIT 1",
+        )?;
+        let mut rows = stmt.query_map([], Self::row_to_catalog_anime)?;
+        let Some(row) = rows.next() else { return Ok(None) };
+        let mut anime = row?;
+        anime.genres = self.list_catalog_genres(anime.id)?;
+        Ok(Some(anime))
+    }
 }
 
 #[cfg(test)]
@@ -1006,5 +1126,68 @@ mod tests {
         assert!(bare_row.genres.is_empty());
         assert_eq!(bare_row.kind, None);
         assert_eq!(bare_row.cover_url, None);
+    }
+
+    fn catalog_anime(id: i64, title: &str, genres: &[&str]) -> crate::anilist::CatalogAnime {
+        crate::anilist::CatalogAnime {
+            id,
+            title: title.into(),
+            cover_url: Some(format!("https://cdn/{id}.jpg")),
+            format: Some("TV".into()),
+            genres: genres.iter().map(|g| g.to_string()).collect(),
+            episodes: Some(12),
+            average_score: Some(80),
+            url: format!("https://anilist.co/anime/{id}"),
+        }
+    }
+
+    #[test]
+    fn catalog_upsert_and_list_preserves_sort_order() {
+        let db = Db::open(":memory:").unwrap();
+        db.upsert_catalog_anime(&catalog_anime(3, "Third", &["Drama"]), 2).unwrap();
+        db.upsert_catalog_anime(&catalog_anime(1, "First", &["Action", "Fantasy"]), 0).unwrap();
+        db.upsert_catalog_anime(&catalog_anime(2, "Second", &[]), 1).unwrap();
+
+        assert_eq!(db.catalog_count().unwrap(), 3);
+
+        let page = db.list_catalog(1, 10).unwrap();
+        assert_eq!(page.iter().map(|a| a.title.as_str()).collect::<Vec<_>>(), vec!["First", "Second", "Third"]);
+        assert_eq!(page[0].genres, vec!["Action".to_string(), "Fantasy".to_string()]);
+        assert!(page[1].genres.is_empty());
+    }
+
+    #[test]
+    fn catalog_upsert_is_idempotent_and_refreshes_genres() {
+        let db = Db::open(":memory:").unwrap();
+        db.upsert_catalog_anime(&catalog_anime(1, "First", &["Action"]), 0).unwrap();
+        db.upsert_catalog_anime(&catalog_anime(1, "First (updated)", &["Comedy"]), 0).unwrap();
+
+        assert_eq!(db.catalog_count().unwrap(), 1);
+        let page = db.list_catalog(1, 10).unwrap();
+        assert_eq!(page.len(), 1);
+        assert_eq!(page[0].title, "First (updated)");
+        assert_eq!(page[0].genres, vec!["Comedy".to_string()]);
+    }
+
+    #[test]
+    fn catalog_pagination_offsets_correctly() {
+        let db = Db::open(":memory:").unwrap();
+        for i in 0..5 {
+            db.upsert_catalog_anime(&catalog_anime(i, &format!("Anime {i}"), &[]), i).unwrap();
+        }
+        let page1 = db.list_catalog(1, 2).unwrap();
+        let page2 = db.list_catalog(2, 2).unwrap();
+        assert_eq!(page1.iter().map(|a| a.id).collect::<Vec<_>>(), vec![0, 1]);
+        assert_eq!(page2.iter().map(|a| a.id).collect::<Vec<_>>(), vec![2, 3]);
+    }
+
+    #[test]
+    fn random_catalog_anime_none_when_empty_some_when_populated() {
+        let db = Db::open(":memory:").unwrap();
+        assert!(db.random_catalog_anime().unwrap().is_none());
+        db.upsert_catalog_anime(&catalog_anime(1, "Only", &["Drama"]), 0).unwrap();
+        let picked = db.random_catalog_anime().unwrap().unwrap();
+        assert_eq!(picked.id, 1);
+        assert_eq!(picked.genres, vec!["Drama".to_string()]);
     }
 }
