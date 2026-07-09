@@ -190,9 +190,15 @@ export function StatsGraph({ seriesList }: { seriesList: SeriesGraphNode[] }) {
             }
             const color = node.kind === "root" ? ROOT_COLOR : node.color ?? "#4aa8ff";
             const radius = node.kind === "root" ? HUB_MAX_R * 1.1 : hubRadius(node.count ?? 0, maxHubCount);
+            // MeshBasicMaterial (unlit) rather than MeshLambertMaterial: a
+            // lit material renders pure black without a scene light hitting
+            // it, and this graph doesn't add one (react-force-graph-3d's
+            // default lighting isn't guaranteed) — flat, always-visible
+            // color is also just the right look for a data-viz sphere, not
+            // realistic shading.
             return new THREE.Mesh(
               new THREE.SphereGeometry(radius, 16, 16),
-              new THREE.MeshLambertMaterial({ color })
+              new THREE.MeshBasicMaterial({ color })
             );
           } catch (e) {
             // A malformed cover_url or texture-decode failure shouldn't take
