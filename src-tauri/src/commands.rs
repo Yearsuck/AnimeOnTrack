@@ -884,3 +884,88 @@ pub fn get_top_genres(state: State<'_, AppState>, limit: usize) -> Result<Vec<Ge
     scored.truncate(limit);
     Ok(scored.into_iter().map(|(genre, score)| GenreAffinity { genre, score }).collect())
 }
+
+#[derive(Serialize)]
+pub struct CatalogPage {
+    pub items: Vec<crate::anilist::CatalogAnime>,
+    pub has_next_page: bool,
+    pub last_page: i64,
+}
+
+/// One page of the full AniList anime catalog — the "Catálogo" tab's data
+/// source, independent of anything scraped off the tracked site.
+#[tauri::command]
+pub async fn get_anime_catalog(page: i64) -> Result<CatalogPage, String> {
+    let (items, has_next_page, last_page) =
+        crate::anilist::fetch_catalog_page(page, 30).await.map_err(|e| e.to_string())?;
+    Ok(CatalogPage { items, has_next_page, last_page })
+}
+
+/// How many AniList catalog pages (of 20) `discover_catalog_card` picks
+/// from — 100 pages * 20 = 2000 titles, deep enough for variety while
+/// staying within recognizable/popular territory (catalog is sorted by
+/// popularity) rather than reaching into obscure page-1000+ depths.
+const CATALOG_RANDOM_PAGE_BOUND: usize = 100;
+const CATALOG_PAGE_SIZE: i64 = 20;
+
+/// A random card from the AniList catalog, in the same shape as the
+/// scraped-site swipe deck — lets Descubrir's Swipe view draw from either
+/// source through the same UI. Catalog cards carry no episode data (AniList
+/// is metadata-only), so they're decided through `decide_catalog_card`
+/// rather than `decide_swipe`, which assumes a scraped-site URL it can
+/// fetch an episode list from.
+#[tauri::command]
+pub async fn discover_catalog_card() -> Result<Option<FinishedCard>, String> {
+    let page = pick_index(CATALOG_RANDOM_PAGE_BOUND).map(|i| i as i64 + 1).unwrap_or(1);
+    let (items, _has_next, _last) = crate::anilist::fetch_catalog_page(page, CATALOG_PAGE_SIZE)
+        .await
+        .map_err(|e| e.to_string())?;
+    let Some(idx) = pick_index(items.len()) else {
+        return Ok(None);
+    };
+    let anime = &items[idx];
+    Ok(Some(FinishedCard {
+        title: anime.title.clone(),
+        url: anime.url.clone(),
+        poster_url: anime.cover_url.clone(),
+        kind: anime.format.clone().unwrap_or_default(),
+        matched_genre: anime.genres.first().cloned(),
+    }))
+}
+
+/// Decide on a catalog-sourced card: Discard or Want only (no "Seen" — we
+/// have no episode data to validate or mark, since AniList never hosts
+/// video). Stores a `series` row keyed by a synthetic `anilist-{id}` slug
+/// so it coexists with scraped-site rows without colliding, and sets
+/// `last_swiped_series_id` the same way `decide_swipe` does so the
+/// existing `undo_last_swipe` works uniformly across both sources.
+#[tauri::command]
+pub fn decide_catalog_card(
+    state: State<'_, AppState>,
+    anilist_id: i64,
+    title: String,
+    url: String,
+    poster_url: Option<String>,
+    genres: Vec<String>,
+    format: String,
+    discard: bool,
+) -> Result<(), String> {
+    let src = get_source_id(&state)?;
+    let db = state.db.lock().unwrap();
+    let series = Series {
+        id: 0,
+        slug: format!("anilist-{anilist_id}"),
+        title,
+        url,
+        cover_url: poster_url,
+        is_airing: false,
+        followed: false,
+    };
+    let sid = db.upsert_series(src, &series).map_err(|e| e.to_string())?;
+    db.set_kind(sid, &format).map_err(|e| e.to_string())?;
+    db.insert_series_genres(sid, &genres).map_err(|e| e.to_string())?;
+    db.set_backlog_status(sid, Some(if discard { "discarded" } else { "want" }))
+        .map_err(|e| e.to_string())?;
+    *state.last_swiped_series_id.lock().unwrap() = Some(sid);
+    Ok(())
+}

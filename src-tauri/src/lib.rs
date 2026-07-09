@@ -1,4 +1,5 @@
 mod adapter;
+mod anilist;
 mod commands;
 mod db;
 mod diff;
@@ -65,6 +66,9 @@ pub fn run() {
             commands::set_backlog_status,
             commands::get_series_genres,
             commands::get_top_genres,
+            commands::get_anime_catalog,
+            commands::discover_catalog_card,
+            commands::decide_catalog_card,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
