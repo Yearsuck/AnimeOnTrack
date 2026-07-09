@@ -1,6 +1,22 @@
 use anyhow::{anyhow, Result};
+use std::sync::LazyLock;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+
+/// Process-wide cap on concurrent scraper windows, shared by every caller
+/// (refresh()'s own chunking, discover_swipe_card, decide_swipe, etc). Each
+/// of those previously gated its OWN concurrency independently (e.g.
+/// refresh() fetching 2 series at a time) with no awareness of any other
+/// command doing the same thing at the same time — so a refresh running
+/// while the user swiped through the discovery deck could pile up well
+/// beyond 2 simultaneous WebView2 windows, which is what was actually
+/// causing the multi-second stalls and the occasional `ExecuteScript timed
+/// out` failure, not the per-fetch poll timing. A single shared semaphore
+/// here means "2 concurrent scraper windows" is a real app-wide ceiling,
+/// not a per-caller one that different commands can stack on top of.
+const SCRAPE_CONCURRENCY: usize = 2;
+static SCRAPE_PERMITS: LazyLock<tokio::sync::Semaphore> =
+    LazyLock::new(|| tokio::sync::Semaphore::new(SCRAPE_CONCURRENCY));
 
 /// Result of scraping a page: just the rendered HTML. Cover images are NOT
 /// fetched here (see `fetch_cover_image`) — doing it in bulk for every series
@@ -24,6 +40,7 @@ fn emit_stage(app: &AppHandle, stage: &str) {
 /// remote pages (and exposing it to an untrusted scraped site would be a
 /// security hole), so the host-driven approach is the only correct one here.
 pub async fn fetch_html(app: &AppHandle, url: &str) -> Result<ScrapeResult> {
+    let _permit = SCRAPE_PERMITS.acquire().await;
     emit_stage(app, "opening");
     let label = format!("scraper-{}", uuid_like());
     let window = WebviewWindowBuilder::new(
@@ -59,10 +76,17 @@ async fn extract_when_ready(app: &AppHandle, window: &WebviewWindow) -> Result<S
     // firing, leaving readyState stuck at 'interactive' indefinitely even
     // though the real DOM content we need is already there. 'interactive'
     // (DOM parsed, DOMContentLoaded fired) plus a real body size is enough.
+    // Also excludes transient gateway-error titles (observed live:
+    // "animeytx.net | 502: Bad gateway") — those aren't a Cloudflare
+    // challenge, but they're just as much "not really ready" and, unlike a
+    // 404, often clear on their own within a few seconds. Accepting one as
+    // "ready" previously meant extracting an error page as if it were real
+    // content, which parses to zero results and cascades into trying every
+    // configured mirror (even unrelated ones) for nothing.
     const PROBE: &str = "JSON.stringify({\
 ready: (document.readyState==='interactive' || document.readyState==='complete') \
 && !!document.body && document.body.innerHTML.length>3000 \
-&& !/just a moment|un momento|checking your browser|verificando/i.test(document.title),\
+&& !/just a moment|un momento|checking your browser|verificando|502|503|504|bad gateway|gateway time-out|service unavailable/i.test(document.title),\
 readyState: document.readyState,\
 title: document.title,\
 len: document.body ? document.body.innerHTML.length : -1})";
@@ -127,6 +151,7 @@ len: document.body ? document.body.innerHTML.length : -1})";
 /// Call this sparingly (once per followed series per refresh, not in bulk —
 /// see `ScrapeResult`'s doc comment for why).
 pub async fn fetch_cover_image(app: &AppHandle, image_url: &str) -> Result<String> {
+    let _permit = SCRAPE_PERMITS.acquire().await;
     let label = format!("cover-{}", uuid_like());
     let window = WebviewWindowBuilder::new(
         app,
