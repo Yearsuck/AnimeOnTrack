@@ -31,6 +31,9 @@ tokio = { version = "1", features = ["time", "sync", "macros"] }
 # (unlike the scraped site) — plain HTTP via reqwest is fine here, no need
 # for the WebView2 scraping dance.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# Only used for current-year partition math (catalog sync) and the
+# full_sync_completed_at timestamp — already pulled in transitively.
+chrono = "0.4"
 
 # Windows-only: drive WebView2 ExecuteScript host-side to extract rendered HTML
 # from external (Cloudflare-protected) pages without exposing app IPC to them.

@@ -120,9 +120,11 @@ impl Db {
         )?;
         // Local mirror of AniList's catalog (see anilist.rs / sync_anime_catalog)
         // — browsing and Descubrir's "Catálogo completo" source read from this
-        // table, not from AniList live, once synced. `sort_order` preserves
-        // AniList's popularity ordering (the sequence items were synced in)
-        // since local pagination has no live API response to sort by.
+        // table, not from AniList live, once synced. `sort_order` is kept as
+        // the within-sync sequence items were written in, but display
+        // ordering reads `popularity` instead — the sync now crawls
+        // partitioned by id/date, not by popularity, so `sort_order` no
+        // longer encodes popularity (see anilist.rs module docs).
         self.conn.execute_batch(
             r#"
             CREATE TABLE IF NOT EXISTS anilist_catalog (
@@ -141,6 +143,10 @@ impl Db {
                 PRIMARY KEY(anilist_id, genre)
             );
             "#,
+        )?;
+        ensure_column(&self.conn, "anilist_catalog", "popularity", "INTEGER")?;
+        self.conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_catalog_popularity ON anilist_catalog(popularity DESC);",
         )?;
         Ok(())
     }
@@ -680,15 +686,15 @@ impl Db {
         sort_order: i64,
     ) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO anilist_catalog(id, title, cover_url, format, episodes, average_score, url, sort_order)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "INSERT INTO anilist_catalog(id, title, cover_url, format, episodes, average_score, popularity, url, sort_order)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT(id) DO UPDATE SET
                 title=excluded.title, cover_url=excluded.cover_url, format=excluded.format,
                 episodes=excluded.episodes, average_score=excluded.average_score,
-                url=excluded.url, sort_order=excluded.sort_order",
+                popularity=excluded.popularity, url=excluded.url, sort_order=excluded.sort_order",
             (
                 anime.id, &anime.title, &anime.cover_url, &anime.format,
-                anime.episodes, anime.average_score, &anime.url, sort_order,
+                anime.episodes, anime.average_score, anime.popularity, &anime.url, sort_order,
             ),
         )?;
         self.conn.execute("DELETE FROM anilist_catalog_genres WHERE anilist_id=?1", [anime.id])?;
@@ -716,20 +722,25 @@ impl Db {
             format: r.get("format")?,
             episodes: r.get("episodes")?,
             average_score: r.get("average_score")?,
+            popularity: r.get("popularity")?,
             url: r.get("url")?,
             genres: Vec::new(), // filled in by callers that need it — see list_catalog
         })
     }
 
-    /// One page of the locally-synced catalog, in the same popularity order
-    /// it was synced in. Genres aren't joined in bulk here (kept to the
-    /// simple per-row `list_catalog_genres` pattern already used for
+    /// One page of the locally-synced catalog, most-popular first. Popularity
+    /// (not `sort_order`) drives ordering because the sync no longer crawls
+    /// in popularity order (it's partitioned by id/date for completeness —
+    /// see anilist.rs) — entries with no synced popularity (partial sync,
+    /// or a title AniList reports no popularity for) sort last, tie-broken
+    /// by id for stable pagination. Genres aren't joined in bulk here (kept
+    /// to the simple per-row `list_catalog_genres` pattern already used for
     /// `series_genres` elsewhere) — fine at page-sized (30ish) result sets.
     pub fn list_catalog(&self, page: i64, per_page: i64) -> Result<Vec<crate::anilist::CatalogAnime>> {
         let offset = (page.max(1) - 1) * per_page;
         let mut stmt = self.conn.prepare(
-            "SELECT id, title, cover_url, format, episodes, average_score, url
-             FROM anilist_catalog ORDER BY sort_order LIMIT ?1 OFFSET ?2",
+            "SELECT id, title, cover_url, format, episodes, average_score, popularity, url
+             FROM anilist_catalog ORDER BY popularity DESC NULLS LAST, id LIMIT ?1 OFFSET ?2",
         )?;
         let mut rows = stmt
             .query_map((per_page, offset), Self::row_to_catalog_anime)?
@@ -755,7 +766,7 @@ impl Db {
     /// so no per-swipe rate-limit exposure) needed for normal browsing.
     pub fn random_catalog_anime(&self) -> Result<Option<crate::anilist::CatalogAnime>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, title, cover_url, format, episodes, average_score, url
+            "SELECT id, title, cover_url, format, episodes, average_score, popularity, url
              FROM anilist_catalog ORDER BY RANDOM() LIMIT 1",
         )?;
         let mut rows = stmt.query_map([], Self::row_to_catalog_anime)?;
@@ -1129,6 +1140,15 @@ mod tests {
     }
 
     fn catalog_anime(id: i64, title: &str, genres: &[&str]) -> crate::anilist::CatalogAnime {
+        catalog_anime_with_popularity(id, title, genres, None)
+    }
+
+    fn catalog_anime_with_popularity(
+        id: i64,
+        title: &str,
+        genres: &[&str],
+        popularity: Option<i64>,
+    ) -> crate::anilist::CatalogAnime {
         crate::anilist::CatalogAnime {
             id,
             title: title.into(),
@@ -1137,23 +1157,56 @@ mod tests {
             genres: genres.iter().map(|g| g.to_string()).collect(),
             episodes: Some(12),
             average_score: Some(80),
+            popularity,
             url: format!("https://anilist.co/anime/{id}"),
         }
     }
 
     #[test]
-    fn catalog_upsert_and_list_preserves_sort_order() {
+    fn catalog_upsert_and_list_orders_by_popularity_desc() {
         let db = Db::open(":memory:").unwrap();
-        db.upsert_catalog_anime(&catalog_anime(3, "Third", &["Drama"]), 2).unwrap();
-        db.upsert_catalog_anime(&catalog_anime(1, "First", &["Action", "Fantasy"]), 0).unwrap();
-        db.upsert_catalog_anime(&catalog_anime(2, "Second", &[]), 1).unwrap();
+        // Inserted out of popularity order and out of sort_order too, to
+        // prove ordering follows `popularity`, not insertion or sort_order.
+        db.upsert_catalog_anime(&catalog_anime_with_popularity(3, "LowPop", &["Drama"], Some(10)), 0).unwrap();
+        db.upsert_catalog_anime(&catalog_anime_with_popularity(1, "HighPop", &["Action", "Fantasy"], Some(9000)), 1).unwrap();
+        db.upsert_catalog_anime(&catalog_anime_with_popularity(2, "MidPop", &[], Some(500)), 2).unwrap();
 
         assert_eq!(db.catalog_count().unwrap(), 3);
 
         let page = db.list_catalog(1, 10).unwrap();
-        assert_eq!(page.iter().map(|a| a.title.as_str()).collect::<Vec<_>>(), vec!["First", "Second", "Third"]);
+        assert_eq!(
+            page.iter().map(|a| a.title.as_str()).collect::<Vec<_>>(),
+            vec!["HighPop", "MidPop", "LowPop"]
+        );
         assert_eq!(page[0].genres, vec!["Action".to_string(), "Fantasy".to_string()]);
-        assert!(page[1].genres.is_empty());
+    }
+
+    #[test]
+    fn catalog_list_puts_null_popularity_last_and_tie_breaks_by_id() {
+        let db = Db::open(":memory:").unwrap();
+        db.upsert_catalog_anime(&catalog_anime_with_popularity(5, "NoPopB", &[], None), 0).unwrap();
+        db.upsert_catalog_anime(&catalog_anime_with_popularity(2, "NoPopA", &[], None), 1).unwrap();
+        db.upsert_catalog_anime(&catalog_anime_with_popularity(1, "HasPop", &[], Some(50)), 2).unwrap();
+
+        let page = db.list_catalog(1, 10).unwrap();
+        assert_eq!(
+            page.iter().map(|a| a.title.as_str()).collect::<Vec<_>>(),
+            vec!["HasPop", "NoPopA", "NoPopB"]
+        );
+    }
+
+    #[test]
+    fn catalog_popularity_index_exists() {
+        let db = Db::open(":memory:").unwrap();
+        let name: String = db
+            .conn
+            .query_row(
+                "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_catalog_popularity'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(name, "idx_catalog_popularity");
     }
 
     #[test]

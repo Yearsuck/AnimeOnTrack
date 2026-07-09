@@ -913,42 +913,125 @@ struct CatalogSyncProgress {
     total: i64,
 }
 
-/// Fetch AniList's full anime catalog (popularity-sorted) and store it
-/// locally, paginating 50 at a time and pacing requests to stay under the
-/// unauthenticated 30 req/min rate limit (2.2s between requests — safely
-/// under the 2s/request that limit implies). This is a real multi-minute
-/// job for the full ~5000-title catalog, so it's user-triggered from the
-/// Catálogo tab, not run automatically on every app launch.
+/// Fetch AniList's full anime catalog and store it locally. Replaces a
+/// single popularity-sorted crawl (which silently capped out around 5000
+/// titles — AniList hard-limits `page * perPage <= 5000`, and
+/// `pageInfo.total`/`lastPage` always report a fake fixed value, verified
+/// live) with a list of date/status **partitions** each guaranteed to stay
+/// under that cap, crawled to exhaustion via the one reliable signal,
+/// `pageInfo.hasNextPage` — see `anilist::build_partitions` for the
+/// partition scheme and why (year buckets, not `seasonYear` or a cursor
+/// that doesn't exist on this API).
+///
+/// State (`settings` key `catalog_sync_state`) persists which partitions
+/// have finished so an interrupted sync resumes instead of restarting, and
+/// once a full sync has completed once, subsequent syncs only re-run the
+/// window where titles actually change (current year ± a couple, plus
+/// upcoming) — see `anilist::{build_partitions, incremental_partitions}`.
+/// `force_full=true` clears that state and redoes everything from scratch.
+///
+/// Pacing: no fixed per-request sleep. AniList reports remaining requests
+/// in the current rate-limit window (`X-Ratelimit-Remaining`, 30/min
+/// unauthenticated) on every response — burst through while there's
+/// headroom, only sleep (~2.1s) once it's nearly exhausted. A 429 is
+/// honored via `Retry-After` inside `fetch_partition_page` itself.
+///
+/// This is a real multi-minute job for the ~21,000-title full catalog, so
+/// it's user-triggered from the Catálogo tab, not run automatically on
+/// every app launch.
 #[tauri::command]
-pub async fn sync_anime_catalog(app: AppHandle, state: State<'_, AppState>) -> Result<i64, String> {
-    const PAGE_SIZE: i64 = 50;
-    const REQUEST_DELAY: std::time::Duration = std::time::Duration::from_millis(2200);
+pub async fn sync_anime_catalog(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    force_full: bool,
+) -> Result<i64, String> {
+    use crate::anilist::{build_partitions, incremental_partitions, pending_partitions, CatalogSyncState};
+    use chrono::Datelike;
 
-    let mut page = 1i64;
-    let mut synced = 0i64;
-    let mut estimated_total = 0i64;
-    loop {
-        let (items, has_next_page, last_page) = crate::anilist::fetch_catalog_page(page, PAGE_SIZE)
-            .await
-            .map_err(|e| e.to_string())?;
-        if page == 1 {
-            estimated_total = last_page * PAGE_SIZE;
-        }
-        {
-            let db = state.db.lock().unwrap();
-            for (idx, anime) in items.iter().enumerate() {
-                let sort_order = (page - 1) * PAGE_SIZE + idx as i64;
-                db.upsert_catalog_anime(anime, sort_order).map_err(|e| e.to_string())?;
+    const PAGE_SIZE: i64 = 50;
+    // Real total (~21,000) can't be known up front (AniList's own totals
+    // are fake) — this is a stable baseline for the progress bar's `max`,
+    // not a claim of precision. Clamped up if synced ever exceeds it so the
+    // bar can't show >100%.
+    const FULL_SYNC_ESTIMATE: i64 = 21_000;
+    // Sleep once headroom in the current rate-limit window gets this low;
+    // burst through requests otherwise. Never go below this floor even if
+    // `remaining` reports comfortable numbers right after a burst.
+    const RATE_HEADROOM_FLOOR: i64 = 3;
+    const PACED_SLEEP: std::time::Duration = std::time::Duration::from_millis(2100);
+
+    let current_year = chrono::Utc::now().year();
+
+    let mut sync_state = if force_full {
+        CatalogSyncState::default()
+    } else {
+        let db = state.db.lock().unwrap();
+        db.get_setting("catalog_sync_state")
+            .map_err(|e| e.to_string())?
+            .map(|raw| CatalogSyncState::from_json(&raw))
+            .unwrap_or_default()
+    };
+
+    let is_incremental = sync_state.full_sync_completed_at.is_some();
+    let partitions_to_run: Vec<_> = if is_incremental {
+        incremental_partitions(current_year)
+    } else {
+        pending_partitions(&build_partitions(current_year), &sync_state.completed)
+    };
+
+    let mut synced = {
+        let db = state.db.lock().unwrap();
+        db.catalog_count().map_err(|e| e.to_string())?
+    };
+
+    for partition in &partitions_to_run {
+        let mut page = 1i64;
+        loop {
+            let result = crate::anilist::fetch_partition_page(partition, page, PAGE_SIZE)
+                .await
+                .map_err(|e| e.to_string())?;
+
+            {
+                let db = state.db.lock().unwrap();
+                for (idx, anime) in result.items.iter().enumerate() {
+                    let sort_order = synced + idx as i64;
+                    db.upsert_catalog_anime(anime, sort_order).map_err(|e| e.to_string())?;
+                }
+                synced = db.catalog_count().map_err(|e| e.to_string())?;
             }
-            synced = db.catalog_count().map_err(|e| e.to_string())?;
+            let total = FULL_SYNC_ESTIMATE.max(synced);
+            let _ = app.emit("catalog-sync-progress", CatalogSyncProgress { synced, total });
+
+            let reached_page_cap = partition.max_pages.is_some_and(|cap| page >= cap);
+            if !result.has_next_page || reached_page_cap {
+                break;
+            }
+            page += 1;
+            let should_pace = result.rate_remaining.map(|r| r < RATE_HEADROOM_FLOOR).unwrap_or(true);
+            if should_pace {
+                tokio::time::sleep(PACED_SLEEP).await;
+            }
         }
-        let _ = app.emit("catalog-sync-progress", CatalogSyncProgress { synced, total: estimated_total });
-        if !has_next_page {
-            break;
+
+        // Only a from-scratch/resuming full sync tracks per-partition
+        // completion — incremental syncs always re-run their fixed window
+        // and don't consult this list, so there's nothing useful to record.
+        if !is_incremental {
+            sync_state.completed.push(partition.label.clone());
+            let db = state.db.lock().unwrap();
+            db.set_setting("catalog_sync_state", &sync_state.to_json())
+                .map_err(|e| e.to_string())?;
         }
-        page += 1;
-        tokio::time::sleep(REQUEST_DELAY).await;
     }
+
+    if !is_incremental {
+        sync_state.full_sync_completed_at = Some(chrono::Utc::now().to_rfc3339());
+        let db = state.db.lock().unwrap();
+        db.set_setting("catalog_sync_state", &sync_state.to_json())
+            .map_err(|e| e.to_string())?;
+    }
+
+    let _ = app.emit("catalog-sync-progress", CatalogSyncProgress { synced, total: synced });
     Ok(synced)
 }
 
