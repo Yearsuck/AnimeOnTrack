@@ -201,7 +201,12 @@ function SwipeView() {
             className="poster"
             style={{ cursor: "pointer" }}
             title="Abrir página del anime"
-            onClick={() => openEpisode(card.url)}
+            onClick={(e) => {
+              e.stopPropagation();
+              openEpisode(card.url).catch((err) =>
+                console.error("openEpisode failed for", card.url, err)
+              );
+            }}
           >
             <span className="chip">{card.kind}</span>
             {card.poster_url ? <img src={card.poster_url} alt={card.title} /> : null}
