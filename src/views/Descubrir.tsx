@@ -6,6 +6,7 @@ import {
   getSeriesGenres,
   getTopGenres,
   listBacklog,
+  openEpisode,
   promoteDiscarded,
   setBacklogStatus,
   startWatching,
@@ -17,8 +18,18 @@ import type { GenreAffinity, Series, SwipeCard, SwipeDecision } from "../types";
 type SubView = "swipe" | "listas";
 type SwipeOutDirection = "discard" | "want" | "seen" | null;
 
-const MAX_SILENT_RETRIES = 5;
 const TOP_GENRES_LIMIT = 5;
+// Prefetch buffer: keep this many cards ready locally so a decision shows
+// the next card instantly instead of waiting on a fresh discover_swipe_card
+// round-trip (that command re-picks a random genre/page most of the time,
+// so it's a real network fetch far more often than the "~1 fetch per 10
+// swipes" the buffer keying alone provides). Backend scrape fetches are
+// still globally capped at 2 concurrent (see scraper_engine.rs), so firing
+// several discover_swipe_card calls at once to fill this is safe — they
+// just queue up server-side instead of stacking on top of each other.
+const PREFETCH_TARGET = 10;
+const REFILL_THRESHOLD = 4;
+const MAX_FILL_ROUNDS = 5;
 
 function TasteChips() {
   const [genres, setGenres] = useState<GenreAffinity[]>([]);
@@ -57,26 +68,75 @@ function SwipeView() {
   const [exhausted, setExhausted] = useState(false);
   const [loading, setLoading] = useState(true);
   const busyRef = useRef(false);
+  const queueRef = useRef<SwipeCard[]>([]);
+  const fillingRef = useRef(false);
+  const cardUrlRef = useRef<string | null>(null);
 
-  const loadNext = useCallback(async () => {
-    setLoading(true);
-    setExhausted(false);
-    for (let attempt = 0; attempt < MAX_SILENT_RETRIES; attempt++) {
-      const next = await discoverSwipeCard();
-      if (next) {
-        setCard(next);
-        setLoading(false);
-        return;
+  // Top the local queue back up to PREFETCH_TARGET, deduping against
+  // whatever's already queued or on screen (discover_swipe_card can hand
+  // out the same not-yet-decided card twice — it only excludes cards
+  // already persisted to the DB, and a prefetched card isn't persisted
+  // until the user actually decides on it).
+  const fillQueue = useCallback(async () => {
+    if (fillingRef.current) return;
+    fillingRef.current = true;
+    try {
+      for (let round = 0; round < MAX_FILL_ROUNDS && queueRef.current.length < PREFETCH_TARGET; round++) {
+        const need = PREFETCH_TARGET - queueRef.current.length;
+        const results = await Promise.all(Array.from({ length: need }, () => discoverSwipeCard()));
+        const seen = new Set(queueRef.current.map((c) => c.url));
+        if (cardUrlRef.current) seen.add(cardUrlRef.current);
+        const fresh = results.filter((c): c is SwipeCard => c !== null && !seen.has(c.url));
+        // No forward progress this round (either truly empty, or every hit
+        // was a duplicate of something already queued) — stop rather than
+        // burning more rounds of concurrent fetches chasing the same
+        // handful of not-yet-decided cards.
+        if (fresh.length === 0) break;
+        queueRef.current = [...queueRef.current, ...fresh];
       }
+    } finally {
+      fillingRef.current = false;
     }
-    setCard(null);
-    setExhausted(true);
-    setLoading(false);
   }, []);
 
+  // Pop the next card off the local queue (instant, no network wait in the
+  // common case) and kick off a background refill once the buffer runs
+  // low. If the queue is genuinely dry right now, fall back to an async
+  // fill-then-retry instead of immediately declaring the deck exhausted —
+  // that's only true once a real fill attempt comes back empty.
+  const popNext = useCallback(() => {
+    const next = queueRef.current[0];
+    if (next) {
+      queueRef.current = queueRef.current.slice(1);
+      cardUrlRef.current = next.url;
+      setCard(next);
+      setExhausted(false);
+      if (queueRef.current.length <= REFILL_THRESHOLD) {
+        fillQueue();
+      }
+      return;
+    }
+    cardUrlRef.current = null;
+    setCard(null);
+    setLoading(true);
+    fillQueue().then(() => {
+      setLoading(false);
+      if (queueRef.current.length > 0) {
+        popNext();
+      } else {
+        setExhausted(true);
+      }
+    });
+  }, [fillQueue]);
+
   useEffect(() => {
-    loadNext();
-  }, [loadNext]);
+    (async () => {
+      await fillQueue();
+      popNext();
+      setLoading(false);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const decide = useCallback(
     async (decision: SwipeDecision, direction: Exclude<SwipeOutDirection, null>) => {
@@ -85,18 +145,15 @@ function SwipeView() {
       const url = card.url;
       setOutDirection(direction);
       setCanUndo(false);
-      // Optimistic: fire the decision + fetch the next card without waiting
-      // for the animation, so the deck feels instant in the common case.
       const decidePromise = decideSwipe(url, decision);
-      setTimeout(async () => {
-        await decidePromise;
-        setCanUndo(true);
+      setTimeout(() => {
         setOutDirection(null);
+        popNext(); // instant — already prefetched, no round-trip to wait on
         busyRef.current = false;
-        loadNext();
+        decidePromise.then(() => setCanUndo(true));
       }, 160);
     },
-    [card, loadNext]
+    [card, popNext]
   );
 
   const undo = useCallback(async () => {
@@ -140,7 +197,12 @@ function SwipeView() {
       <TasteChips />
       {card ? (
         <div className={`card swipe-card ${outDirection ? `swipe-out-${outDirection}` : ""}`}>
-          <div className="poster">
+          <div
+            className="poster"
+            style={{ cursor: "pointer" }}
+            title="Abrir página del anime"
+            onClick={() => openEpisode(card.url)}
+          >
             <span className="chip">{card.kind}</span>
             {card.poster_url ? <img src={card.poster_url} alt={card.title} /> : null}
           </div>
