@@ -156,12 +156,18 @@ export function StatsGraph({ seriesList }: { seriesList: SeriesGraphNode[] }) {
     fg.d3ReheatSimulation();
   }, [nodes, links]);
 
-  if (seriesList.length === 0) {
-    return <div className="empty">Sin series seguidas todavía.</div>;
-  }
-
+  // The ref-bearing div below must always mount, even while seriesList is
+  // still empty (the normal state on first render — data loads async, so
+  // this is briefly true on every real app launch, not just the true-empty
+  // case). The one-shot mount effect above measures containerRef.current
+  // exactly once; if the empty case returned a differently-shaped tree
+  // instead of this same div, the ref would be null on that first pass and
+  // never get a second chance to attach, permanently starving the graph.
   return (
     <div ref={containerRef} style={{ borderRadius: "var(--radius-sm)", overflow: "hidden" }}>
+      {seriesList.length === 0 ? (
+        <div className="empty">Sin series seguidas todavía.</div>
+      ) : (
       <ForceGraph3D<GNode, GLink>
         ref={graphRef}
         width={width || undefined}
@@ -172,21 +178,29 @@ export function StatsGraph({ seriesList }: { seriesList: SeriesGraphNode[] }) {
           node.kind === "series" ? node.label : `${node.label} (${node.count ?? 0})`
         }
         nodeThreeObject={(node) => {
-          if (node.kind === "series") {
-            const hasCover = !!node.coverUrl && node.coverUrl.startsWith("data:");
-            const texture = hasCover
-              ? new THREE.TextureLoader().load(node.coverUrl as string)
-              : new THREE.CanvasTexture(fallbackCircleCanvas(node.color ?? categoryColor(SIN_GENERO_LABEL)));
-            const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, transparent: true }));
-            sprite.scale.set(SERIES_SPRITE_SIZE, SERIES_SPRITE_SIZE, 1);
-            return sprite;
+          try {
+            if (node.kind === "series") {
+              const hasCover = !!node.coverUrl && node.coverUrl.startsWith("data:");
+              const texture = hasCover
+                ? new THREE.TextureLoader().load(node.coverUrl as string)
+                : new THREE.CanvasTexture(fallbackCircleCanvas(node.color ?? categoryColor(SIN_GENERO_LABEL)));
+              const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, transparent: true }));
+              sprite.scale.set(SERIES_SPRITE_SIZE, SERIES_SPRITE_SIZE, 1);
+              return sprite;
+            }
+            const color = node.kind === "root" ? ROOT_COLOR : node.color ?? "#4aa8ff";
+            const radius = node.kind === "root" ? HUB_MAX_R * 1.1 : hubRadius(node.count ?? 0, maxHubCount);
+            return new THREE.Mesh(
+              new THREE.SphereGeometry(radius, 16, 16),
+              new THREE.MeshLambertMaterial({ color })
+            );
+          } catch (e) {
+            // A malformed cover_url or texture-decode failure shouldn't take
+            // down the whole graph — fall back to a visible marker for just
+            // this node instead of an uncaught exception mid-render.
+            console.error("nodeThreeObject failed for", node.id, e);
+            return new THREE.Mesh(new THREE.SphereGeometry(5, 8, 8), new THREE.MeshBasicMaterial({ color: "red" }));
           }
-          const color = node.kind === "root" ? ROOT_COLOR : node.color ?? "#4aa8ff";
-          const radius = node.kind === "root" ? HUB_MAX_R * 1.1 : hubRadius(node.count ?? 0, maxHubCount);
-          return new THREE.Mesh(
-            new THREE.SphereGeometry(radius, 16, 16),
-            new THREE.MeshLambertMaterial({ color })
-          );
         }}
         onNodeClick={(node) => {
           const fg = graphRef.current;
@@ -200,6 +214,7 @@ export function StatsGraph({ seriesList }: { seriesList: SeriesGraphNode[] }) {
           );
         }}
       />
+      )}
     </div>
   );
 }
