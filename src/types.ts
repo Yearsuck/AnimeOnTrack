@@ -69,3 +69,20 @@ export interface GenreAffinity {
   genre: string;
   score: number;
 }
+
+export interface CatalogAnime {
+  id: number;
+  title: string;
+  cover_url: string | null;
+  format: string | null;
+  genres: string[];
+  episodes: number | null;
+  average_score: number | null;
+  url: string;
+}
+
+export interface CatalogPage {
+  items: CatalogAnime[];
+  has_next_page: boolean;
+  last_page: number;
+}

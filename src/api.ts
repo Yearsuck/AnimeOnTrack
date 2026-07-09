@@ -11,6 +11,7 @@ import type {
   SwipeCard,
   SwipeDecision,
   GenreAffinity,
+  CatalogPage,
 } from "./types";
 
 export const scanAiring = (baseUrl: string) =>
@@ -84,3 +85,18 @@ export const getSeriesGenres = (seriesId: number) =>
 
 export const getTopGenres = (limit: number) =>
   invoke<GenreAffinity[]>("get_top_genres", { limit });
+
+export const getAnimeCatalog = (page: number) =>
+  invoke<CatalogPage>("get_anime_catalog", { page });
+
+export const discoverCatalogCard = () => invoke<SwipeCard | null>("discover_catalog_card");
+
+export const decideCatalogCard = (params: {
+  anilistId: number;
+  title: string;
+  url: string;
+  posterUrl: string | null;
+  genres: string[];
+  format: string;
+  discard: boolean;
+}) => invoke<void>("decide_catalog_card", params);

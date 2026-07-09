@@ -7,6 +7,7 @@ import { Settings } from "./views/Settings";
 import { Library } from "./views/Library";
 import { Stats } from "./views/Stats";
 import { Descubrir } from "./views/Descubrir";
+import { Catalog } from "./views/Catalog";
 import { ProgressBar } from "./views/ProgressBar";
 import { listAiring, refresh, rescanAiring, pendingCount } from "./api";
 import type { Series } from "./types";
@@ -19,6 +20,7 @@ type View =
   | "library"
   | "stats"
   | "descubrir"
+  | "catalog"
   | "settings"
   | "detail";
 
@@ -119,6 +121,7 @@ export default function App() {
           <Tab id="airing" label="En emisión" />
           <Tab id="library" label="Biblioteca" />
           <Tab id="descubrir" label="Descubrir" />
+          <Tab id="catalog" label="Catálogo" />
           <Tab id="stats" label="Estadísticas" />
           <Tab id="settings" label="Ajustes" />
         </div>
@@ -135,6 +138,7 @@ export default function App() {
       )}
       {view === "library" && <Library onOpenSeries={openSeries} />}
       {view === "descubrir" && <Descubrir />}
+      {view === "catalog" && <Catalog />}
       {view === "stats" && <Stats />}
       {view === "settings" && <Settings />}
       {view === "detail" && selected && (
