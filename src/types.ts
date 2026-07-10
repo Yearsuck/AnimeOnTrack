@@ -78,6 +78,7 @@ export interface CatalogAnime {
   genres: string[];
   episodes: number | null;
   average_score: number | null;
+  popularity: number | null;
   url: string;
 }
 

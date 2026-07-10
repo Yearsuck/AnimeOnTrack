@@ -89,7 +89,8 @@ export const getTopGenres = (limit: number) =>
 export const getAnimeCatalog = (page: number) =>
   invoke<CatalogPage>("get_anime_catalog", { page });
 
-export const syncAnimeCatalog = () => invoke<number>("sync_anime_catalog");
+export const syncAnimeCatalog = (forceFull = false) =>
+  invoke<number>("sync_anime_catalog", { forceFull });
 
 export const discoverCatalogCard = () => invoke<SwipeCard | null>("discover_catalog_card");
 
