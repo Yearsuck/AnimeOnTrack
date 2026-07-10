@@ -133,6 +133,24 @@ impl Db {
         // against an enum, the live site's own vocabulary is inconsistent.
         ensure_column(&self.conn, "series", "backlog_status", "TEXT")?;
         ensure_column(&self.conn, "series", "kind", "TEXT")?;
+        // anilist_id: real numeric AniList id for `series` rows created from
+        // a catalog swipe decision (slug `anilist-{id}`). Added so the
+        // catalog swipe picker can exclude already-decided titles with a
+        // plain indexed-friendly `NOT IN` instead of parsing it back out of
+        // the slug on every query. Backfilled below from any pre-existing
+        // `anilist-{id}` slug so rows written before this column existed
+        // still get excluded correctly.
+        ensure_column(&self.conn, "series", "anilist_id", "INTEGER")?;
+        self.conn.execute(
+            "UPDATE series SET anilist_id = CAST(SUBSTR(slug, 9) AS INTEGER)
+             WHERE slug LIKE 'anilist-%' AND anilist_id IS NULL",
+            [],
+        )?;
+        // watched_externally: set by decide_catalog_card's "seen" decision —
+        // "I've watched this outside the app, don't show it to me again,
+        // don't put it in my backlog." No episode data backs this (AniList
+        // never hosts video), so it's a flag, not real progress tracking.
+        ensure_column(&self.conn, "series", "watched_externally", "INTEGER DEFAULT 0")?;
         self.conn.execute_batch(
             r#"
             CREATE TABLE IF NOT EXISTS series_genres (
@@ -292,6 +310,25 @@ impl Db {
         Ok(())
     }
 
+    /// Set the real numeric AniList id on a `series` row created from a
+    /// catalog swipe decision — see the `anilist_id` column comment in
+    /// `init_schema`.
+    pub fn set_anilist_id(&self, series_id: i64, anilist_id: i64) -> Result<()> {
+        self.conn
+            .execute("UPDATE series SET anilist_id=?1 WHERE id=?2", (anilist_id, series_id))?;
+        Ok(())
+    }
+
+    /// Set (or clear) the "watched outside the app" flag — see
+    /// `watched_externally`'s column comment in `init_schema`.
+    pub fn set_watched_externally(&self, series_id: i64, watched: bool) -> Result<()> {
+        self.conn.execute(
+            "UPDATE series SET watched_externally=?1 WHERE id=?2",
+            (watched as i64, series_id),
+        )?;
+        Ok(())
+    }
+
     /// Insert genres for a series; already-present (series_id, genre) pairs
     /// are left alone (genres are static once fetched, no need to delete).
     pub fn insert_series_genres(&self, series_id: i64, genres: &[String]) -> Result<()> {
@@ -392,7 +429,16 @@ impl Db {
                     _ => 0.0,
                 }
             };
-            *scores.entry(genre).or_insert(0.0) += delta;
+            // Fold onto AniList's canonical genre name when this raw tag has
+            // one (e.g. site's "Acción" and catalog's "Action" both become
+            // "Action"), so the same taste signal from either source lands
+            // in one bucket instead of two unrelated ones. Tags with no
+            // AniList equivalent (e.g. "Isekai") keep their raw name — they
+            // still carry real signal for the site path's genre pages.
+            let key = crate::genres::canonical_genre(&genre)
+                .map(|s| s.to_string())
+                .unwrap_or(genre);
+            *scores.entry(key).or_insert(0.0) += delta;
         }
         Ok(scores)
     }
@@ -903,15 +949,36 @@ impl Db {
         Ok(genres)
     }
 
-    /// One random synced entry — powers Descubrir's "Catálogo completo"
-    /// swipe source. Local + instant once synced, no live AniList call (and
-    /// so no per-swipe rate-limit exposure) needed for normal browsing.
-    pub fn random_catalog_anime(&self) -> Result<Option<crate::anilist::CatalogAnime>> {
+    /// A random synced entry carrying `genre`, subject to a quality floor —
+    /// powers Descubrir's catalog-only swipe deck. The command layer
+    /// (`discover_catalog_card`) owns the taste-weighted *genre* pick (via
+    /// `get_genre_affinity` + `weighted_pick_index`, mirroring the site
+    /// path); this just does the uniform-random pick *within* that genre,
+    /// same division of labor `random_catalog_anime`'s callers already used.
+    ///
+    /// Quality floor: `format` restricted to the "real anime" formats
+    /// (drops `MUSIC` and manga-side formats like `TV_SHORT` isn't excluded
+    /// by name but is excluded implicitly by not being in this list), and
+    /// `popularity >= 500` to cut the long tail of essentially-unknown
+    /// entries. Already-decided titles (a `series` row with this
+    /// `anilist_id`) are excluded so the deck never re-offers a decided
+    /// card — see the `anilist_id` column comment in `init_schema`.
+    pub fn random_catalog_anime_in_genre(
+        &self,
+        genre: &str,
+    ) -> Result<Option<crate::anilist::CatalogAnime>> {
+        const MIN_POPULARITY: i64 = 500;
         let mut stmt = self.conn.prepare(
-            "SELECT id, title, cover_url, format, episodes, average_score, popularity, url
-             FROM anilist_catalog ORDER BY RANDOM() LIMIT 1",
+            "SELECT c.id, c.title, c.cover_url, c.format, c.episodes, c.average_score, c.popularity, c.url
+             FROM anilist_catalog c
+             JOIN anilist_catalog_genres g ON g.anilist_id = c.id
+             WHERE g.genre = ?1
+               AND c.format IN ('TV', 'MOVIE', 'OVA', 'ONA', 'SPECIAL')
+               AND c.popularity >= ?2
+               AND c.id NOT IN (SELECT anilist_id FROM series WHERE anilist_id IS NOT NULL)
+             ORDER BY RANDOM() LIMIT 1",
         )?;
-        let mut rows = stmt.query_map([], Self::row_to_catalog_anime)?;
+        let mut rows = stmt.query_map((genre, MIN_POPULARITY), Self::row_to_catalog_anime)?;
         let Some(row) = rows.next() else { return Ok(None) };
         let mut anime = row?;
         anime.genres = self.list_catalog_genres(anime.id)?;
@@ -1391,13 +1458,160 @@ mod tests {
     }
 
     #[test]
-    fn random_catalog_anime_none_when_empty_some_when_populated() {
+    fn random_catalog_anime_in_genre_none_when_empty_some_when_populated() {
         let db = Db::open(":memory:").unwrap();
-        assert!(db.random_catalog_anime().unwrap().is_none());
-        db.upsert_catalog_anime(&catalog_anime(1, "Only", &["Drama"]), 0).unwrap();
-        let picked = db.random_catalog_anime().unwrap().unwrap();
+        assert!(db.random_catalog_anime_in_genre("Drama").unwrap().is_none());
+        db.upsert_catalog_anime(
+            &catalog_anime_with_popularity(1, "Only", &["Drama"], Some(1000)),
+            0,
+        )
+        .unwrap();
+        let picked = db.random_catalog_anime_in_genre("Drama").unwrap().unwrap();
         assert_eq!(picked.id, 1);
         assert_eq!(picked.genres, vec!["Drama".to_string()]);
+    }
+
+    #[test]
+    fn random_catalog_anime_in_genre_only_matches_requested_genre() {
+        let db = Db::open(":memory:").unwrap();
+        db.upsert_catalog_anime(&catalog_anime_with_popularity(1, "Dramatic", &["Drama"], Some(1000)), 0).unwrap();
+        db.upsert_catalog_anime(&catalog_anime_with_popularity(2, "Actiony", &["Action"], Some(1000)), 1).unwrap();
+        let picked = db.random_catalog_anime_in_genre("Action").unwrap().unwrap();
+        assert_eq!(picked.title, "Actiony");
+    }
+
+    #[test]
+    fn random_catalog_anime_in_genre_excludes_low_popularity_and_wrong_format() {
+        let db = Db::open(":memory:").unwrap();
+        // Below the 500 popularity floor -> excluded.
+        db.upsert_catalog_anime(&catalog_anime_with_popularity(1, "TooObscure", &["Drama"], Some(50)), 0).unwrap();
+        // MUSIC format -> excluded regardless of popularity.
+        let mut music = catalog_anime_with_popularity(2, "MusicVideo", &["Drama"], Some(9000));
+        music.format = Some("MUSIC".into());
+        db.upsert_catalog_anime(&music, 1).unwrap();
+        // Qualifies on both counts.
+        db.upsert_catalog_anime(&catalog_anime_with_popularity(3, "Qualifies", &["Drama"], Some(1000)), 2).unwrap();
+
+        let picked = db.random_catalog_anime_in_genre("Drama").unwrap().unwrap();
+        assert_eq!(picked.title, "Qualifies");
+    }
+
+    #[test]
+    fn random_catalog_anime_in_genre_excludes_already_decided_titles() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b").unwrap();
+        db.upsert_catalog_anime(&catalog_anime_with_popularity(1, "Decided", &["Drama"], Some(1000)), 0).unwrap();
+        db.upsert_catalog_anime(&catalog_anime_with_popularity(2, "Undecided", &["Drama"], Some(1000)), 1).unwrap();
+
+        let series = crate::models::Series {
+            id: 0, slug: "anilist-1".into(), title: "Decided".into(),
+            url: "https://anilist.co/anime/1".into(), cover_url: None,
+            is_airing: false, followed: false,
+        };
+        let sid = db.upsert_series(src, &series).unwrap();
+        db.set_anilist_id(sid, 1).unwrap();
+        db.set_backlog_status(sid, Some("discarded")).unwrap();
+
+        for _ in 0..10 {
+            let picked = db.random_catalog_anime_in_genre("Drama").unwrap().unwrap();
+            assert_eq!(picked.title, "Undecided");
+        }
+    }
+
+    #[test]
+    fn random_catalog_anime_in_genre_returns_none_when_all_decided() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b").unwrap();
+        db.upsert_catalog_anime(&catalog_anime_with_popularity(1, "OnlyOne", &["Drama"], Some(1000)), 0).unwrap();
+        let series = crate::models::Series {
+            id: 0, slug: "anilist-1".into(), title: "OnlyOne".into(),
+            url: "https://anilist.co/anime/1".into(), cover_url: None,
+            is_airing: false, followed: false,
+        };
+        let sid = db.upsert_series(src, &series).unwrap();
+        db.set_anilist_id(sid, 1).unwrap();
+        db.set_backlog_status(sid, Some("want")).unwrap();
+
+        assert!(db.random_catalog_anime_in_genre("Drama").unwrap().is_none());
+    }
+
+    #[test]
+    fn anilist_id_and_watched_externally_round_trip() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b").unwrap();
+        let s = crate::models::Series {
+            id: 0, slug: "anilist-42".into(), title: "X".into(),
+            url: "u".into(), cover_url: None, is_airing: false, followed: false,
+        };
+        let sid = db.upsert_series(src, &s).unwrap();
+
+        db.set_anilist_id(sid, 42).unwrap();
+        db.set_watched_externally(sid, true).unwrap();
+
+        let (anilist_id, watched): (Option<i64>, i64) = db.conn.query_row(
+            "SELECT anilist_id, watched_externally FROM series WHERE id=?1",
+            [sid],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        ).unwrap();
+        assert_eq!(anilist_id, Some(42));
+        assert_eq!(watched, 1);
+    }
+
+    #[test]
+    fn anilist_id_is_backfilled_from_synthetic_slug_on_migration() {
+        let path = std::env::temp_dir().join(format!("aot_anilist_id_migration_test_{}.sqlite", std::process::id()));
+        let path_str = path.to_str().unwrap();
+        let _ = std::fs::remove_file(&path);
+        {
+            let db = Db::open(path_str).unwrap();
+            let src = db.upsert_source("AnimeYT", "b").unwrap();
+            // Simulate a pre-migration row: slug carries the anilist id but
+            // the anilist_id column (added by this migration) is unset.
+            let s = crate::models::Series {
+                id: 0, slug: "anilist-777".into(), title: "Legacy".into(),
+                url: "u".into(), cover_url: None, is_airing: false, followed: false,
+            };
+            db.upsert_series(src, &s).unwrap();
+        }
+        // Re-opening re-runs init_schema/migration on the same on-disk DB.
+        let db = Db::open(path_str).unwrap();
+        let anilist_id: Option<i64> = db
+            .conn
+            .query_row("SELECT anilist_id FROM series WHERE slug='anilist-777'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(anilist_id, Some(777));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn get_genre_affinity_folds_spanish_and_english_genre_into_one_canonical_key() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b").unwrap();
+
+        // A followed series tagged with the site's Spanish genre "Acción".
+        let followed = crate::models::Series {
+            id: 0, slug: "f".into(), title: "F".into(),
+            url: "u1".into(), cover_url: None, is_airing: false, followed: true,
+        };
+        let sid_f = db.upsert_series(src, &followed).unwrap();
+        db.set_followed(sid_f, true).unwrap();
+        db.insert_series_genres(sid_f, &["Acción".to_string(), "Isekai".to_string()]).unwrap();
+
+        // A 'want' series tagged with the catalog's English genre "Action".
+        let want = crate::models::Series {
+            id: 0, slug: "w".into(), title: "W".into(),
+            url: "u2".into(), cover_url: None, is_airing: false, followed: false,
+        };
+        let sid_w = db.upsert_series(src, &want).unwrap();
+        db.set_backlog_status(sid_w, Some("want")).unwrap();
+        db.insert_series_genres(sid_w, &["Action".to_string()]).unwrap();
+
+        let scores = db.get_genre_affinity(src).unwrap();
+        // 2.0 (followed, "Acción" normalized to "Action") + 1.0 (want, "Action") = 3.0
+        assert_eq!(scores.get("Action"), Some(&3.0));
+        assert_eq!(scores.get("Acción"), None);
+        // Site-only tag with no AniList equivalent keeps its raw name.
+        assert_eq!(scores.get("Isekai"), Some(&2.0));
     }
 
     fn catalog_anime_full(

@@ -1081,34 +1081,92 @@ pub async fn sync_anime_catalog(
     Ok(synced)
 }
 
-/// A random card from the locally-synced catalog, in the same shape as the
-/// scraped-site swipe deck — lets Descubrir's Swipe view draw from either
-/// source through the same UI. Local + instant once synced (no live AniList
+/// Genres never offered by the catalog swipe deck, regardless of taste
+/// weighting — hardcoded, not a setting (see spec). `Hentai` alone is 1,652
+/// of the ~22,400 synced rows (~7%); left in, a uniform-ish deck would show
+/// it disproportionately often relative to how any real user wants to
+/// browse. `Ecchi` is excluded alongside it for the same reason (adjacent
+/// content policy, not a taste signal worth surfacing here).
+const EXCLUDED_CATALOG_GENRES: &[&str] = &["Hentai", "Ecchi"];
+
+/// Bounded retry count for `discover_catalog_card`'s genre pick: if the
+/// weighted-picked genre turns out to have no undecided candidate left
+/// (everything in it already decided), try the next-best genre instead of
+/// immediately declaring the deck exhausted.
+const MAX_GENRE_ATTEMPTS: usize = 5;
+
+/// Pick a taste-weighted genre (mirroring `discover_swipe_card`'s scheme:
+/// `get_genre_affinity` + `weighted_pick_index`, uniform fallback when
+/// nothing's been decided yet) and ask the DB for a random undecided,
+/// quality-floored catalog entry in it. Local + instant (no live AniList
 /// call per swipe, so no rate-limit exposure from normal browsing). Catalog
 /// cards carry no episode data (AniList is metadata-only), so they're
 /// decided through `decide_catalog_card` rather than `decide_swipe`, which
 /// assumes a scraped-site URL it can fetch an episode list from.
+///
+/// `Ok(None)` means the deck is genuinely exhausted: every candidate genre
+/// (after excluding Hentai/Ecchi) either has zero synced titles passing the
+/// quality floor or every one of them has already been decided, and
+/// `MAX_GENRE_ATTEMPTS` genre picks in a row all came up empty.
 #[tauri::command]
 pub fn discover_catalog_card(state: State<'_, AppState>) -> Result<Option<FinishedCard>, String> {
+    let src = get_source_id(&state)?;
     let db = state.db.lock().unwrap();
-    let Some(anime) = db.random_catalog_anime().map_err(|e| e.to_string())? else {
+
+    let affinity = db.get_genre_affinity(src).map_err(|e| e.to_string())?;
+    let candidates: Vec<String> = db
+        .distinct_catalog_genres()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .filter(|g| !EXCLUDED_CATALOG_GENRES.iter().any(|ex| ex.eq_ignore_ascii_case(g)))
+        .collect();
+    if candidates.is_empty() {
         return Ok(None);
-    };
-    Ok(Some(FinishedCard {
-        title: anime.title,
-        url: anime.url,
-        poster_url: anime.cover_url,
-        kind: anime.format.unwrap_or_default(),
-        matched_genre: anime.genres.first().cloned(),
-    }))
+    }
+
+    // Pool of candidate-genre indices still worth trying this call; a genre
+    // that yields no undecided candidate is removed from the pool so a
+    // retry never re-picks the same exhausted genre.
+    let mut pool: Vec<usize> = (0..candidates.len()).collect();
+    for _ in 0..MAX_GENRE_ATTEMPTS.min(candidates.len()) {
+        if pool.is_empty() {
+            break;
+        }
+        let pool_weights: Vec<f64> = pool
+            .iter()
+            .map(|&i| *affinity.get(&candidates[i]).unwrap_or(&0.0))
+            .collect();
+        let Some(pick_in_pool) = weighted_pick_index(&pool_weights) else { break };
+        let genre_idx = pool[pick_in_pool];
+        let genre = &candidates[genre_idx];
+
+        if let Some(anime) = db.random_catalog_anime_in_genre(genre).map_err(|e| e.to_string())? {
+            return Ok(Some(FinishedCard {
+                title: anime.title,
+                url: anime.url,
+                poster_url: anime.cover_url,
+                kind: anime.format.unwrap_or_default(),
+                matched_genre: Some(genre.clone()),
+            }));
+        }
+        pool.remove(pick_in_pool);
+    }
+    Ok(None)
 }
 
-/// Decide on a catalog-sourced card: Discard or Want only (no "Seen" — we
-/// have no episode data to validate or mark, since AniList never hosts
-/// video). Stores a `series` row keyed by a synthetic `anilist-{id}` slug
-/// so it coexists with scraped-site rows without colliding, and sets
-/// `last_swiped_series_id` the same way `decide_swipe` does so the
-/// existing `undo_last_swipe` works uniformly across both sources.
+/// Decide on a catalog-sourced card: Discard, Want, or Seen. Stores a
+/// `series` row keyed by a synthetic `anilist-{id}` slug so it coexists with
+/// scraped-site rows without colliding, and records the real numeric
+/// `anilist_id` too (see its column comment in `db::init_schema`) so the
+/// catalog picker can exclude it directly. Sets `last_swiped_series_id` the
+/// same way `decide_swipe` does so the existing `undo_last_swipe` works
+/// uniformly across both sources.
+///
+/// `Seen` means "I've watched this outside the app" — AniList has no
+/// episode list to mark, so unlike `decide_swipe`'s `Seen` (which fetches
+/// and marks every episode watched) this just sets `watched_externally=1`
+/// and clears `followed`/`backlog_status`, so the title is excluded from
+/// future decks without pretending we have real watch progress for it.
 #[tauri::command]
 pub fn decide_catalog_card(
     state: State<'_, AppState>,
@@ -1118,7 +1176,7 @@ pub fn decide_catalog_card(
     poster_url: Option<String>,
     genres: Vec<String>,
     format: String,
-    discard: bool,
+    decision: SwipeDecision,
 ) -> Result<(), String> {
     let src = get_source_id(&state)?;
     let db = state.db.lock().unwrap();
@@ -1132,10 +1190,22 @@ pub fn decide_catalog_card(
         followed: false,
     };
     let sid = db.upsert_series(src, &series).map_err(|e| e.to_string())?;
+    db.set_anilist_id(sid, anilist_id).map_err(|e| e.to_string())?;
     db.set_kind(sid, &format).map_err(|e| e.to_string())?;
     db.insert_series_genres(sid, &genres).map_err(|e| e.to_string())?;
-    db.set_backlog_status(sid, Some(if discard { "discarded" } else { "want" }))
-        .map_err(|e| e.to_string())?;
+    match decision {
+        SwipeDecision::Discard => {
+            db.set_backlog_status(sid, Some("discarded")).map_err(|e| e.to_string())?;
+        }
+        SwipeDecision::Want => {
+            db.set_backlog_status(sid, Some("want")).map_err(|e| e.to_string())?;
+        }
+        SwipeDecision::Seen => {
+            db.set_backlog_status(sid, None).map_err(|e| e.to_string())?;
+            db.set_followed(sid, false).map_err(|e| e.to_string())?;
+            db.set_watched_externally(sid, true).map_err(|e| e.to_string())?;
+        }
+    }
     *state.last_swiped_series_id.lock().unwrap() = Some(sid);
     Ok(())
 }

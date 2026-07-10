@@ -3,6 +3,7 @@ mod anilist;
 mod commands;
 mod db;
 mod diff;
+mod genres;
 mod models;
 mod player;
 mod scraper_engine;
