@@ -12,6 +12,8 @@ import type {
   SwipeDecision,
   GenreAffinity,
   CatalogPage,
+  CatalogFilter,
+  CatalogFacets,
 } from "./types";
 
 export const scanAiring = (baseUrl: string) =>
@@ -86,8 +88,10 @@ export const getSeriesGenres = (seriesId: number) =>
 export const getTopGenres = (limit: number) =>
   invoke<GenreAffinity[]>("get_top_genres", { limit });
 
-export const getAnimeCatalog = (page: number) =>
-  invoke<CatalogPage>("get_anime_catalog", { page });
+export const getAnimeCatalog = (page: number, filter?: CatalogFilter) =>
+  invoke<CatalogPage>("get_anime_catalog", { page, filter: filter ?? null });
+
+export const getCatalogFacets = () => invoke<CatalogFacets>("get_catalog_facets");
 
 export const syncAnimeCatalog = (forceFull = false) =>
   invoke<number>("sync_anime_catalog", { forceFull });

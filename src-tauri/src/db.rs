@@ -1,5 +1,29 @@
 use anyhow::Result;
+use rusqlite::types::Value;
 use rusqlite::Connection;
+use serde::Deserialize;
+
+/// Filters for browsing the locally-synced AniList catalog (`Catalog.tsx`'s
+/// search/filter bar). All fields are optional/empty-by-default so
+/// `CatalogFilter::default()` is a no-op filter — see
+/// `list_catalog`/`catalog_count`, which are thin wrappers over the
+/// `_filtered` versions with the default filter, so unfiltered behavior is
+/// unchanged.
+#[derive(Debug, Default, Clone, Deserialize)]
+#[serde(default)]
+pub struct CatalogFilter {
+    /// Title substring match, case-insensitive (`LIKE ... COLLATE NOCASE`).
+    pub search: Option<String>,
+    /// AND semantics — a matching title must carry every listed genre.
+    pub genres: Vec<String>,
+    /// Exact match against `anilist_catalog.format` (e.g. "TV", "MOVIE").
+    pub format: Option<String>,
+    /// Inclusive floor on `average_score` (0-100 scale).
+    pub min_score: Option<i64>,
+    /// Episode-count bucket: "1" | "2-12" | "13-26" | "27+" | "unknown"
+    /// (`unknown` = `episodes IS NULL`). Unrecognized values are ignored.
+    pub episodes: Option<String>,
+}
 
 /// Extract a comparable numeric value from an episode-number string, e.g.
 /// "12" -> 12.0, "12.5" -> 12.5 (OVA/special numbering), "1x05" -> season 1
@@ -146,7 +170,8 @@ impl Db {
         )?;
         ensure_column(&self.conn, "anilist_catalog", "popularity", "INTEGER")?;
         self.conn.execute_batch(
-            "CREATE INDEX IF NOT EXISTS idx_catalog_popularity ON anilist_catalog(popularity DESC);",
+            "CREATE INDEX IF NOT EXISTS idx_catalog_popularity ON anilist_catalog(popularity DESC);
+             CREATE INDEX IF NOT EXISTS idx_catalog_genre ON anilist_catalog_genres(genre);",
         )?;
         Ok(())
     }
@@ -708,9 +733,137 @@ impl Db {
     }
 
     /// How many entries are synced locally — lets the frontend show sync
-    /// progress and decide whether a first-time sync is needed.
+    /// progress and decide whether a first-time sync is needed. Always the
+    /// *unfiltered* total (header text); see `catalog_count_filtered` for a
+    /// search/filter-scoped count.
     pub fn catalog_count(&self) -> Result<i64> {
-        Ok(self.conn.query_row("SELECT COUNT(*) FROM anilist_catalog", [], |r| r.get(0))?)
+        self.catalog_count_filtered(&CatalogFilter::default())
+    }
+
+    /// Builds the `WHERE` clause (always non-empty — starts from `1=1`) and
+    /// positional params shared by `list_catalog_filtered` and
+    /// `catalog_count_filtered`, so the two never drift out of sync with
+    /// each other. Anonymous `?` placeholders are bound in the order pushed.
+    fn build_catalog_where(filter: &CatalogFilter) -> (String, Vec<Value>) {
+        let mut conditions: Vec<String> = vec!["1=1".to_string()];
+        let mut params: Vec<Value> = Vec::new();
+
+        let search = filter.search.as_deref().map(str::trim).filter(|s| !s.is_empty());
+        if let Some(search) = search {
+            conditions.push("title LIKE '%' || ? || '%' COLLATE NOCASE".to_string());
+            params.push(Value::Text(search.to_string()));
+        }
+
+        let format = filter.format.as_deref().map(str::trim).filter(|s| !s.is_empty());
+        if let Some(format) = format {
+            conditions.push("format = ?".to_string());
+            params.push(Value::Text(format.to_string()));
+        }
+
+        if let Some(min_score) = filter.min_score {
+            conditions.push("average_score >= ?".to_string());
+            params.push(Value::Integer(min_score));
+        }
+
+        let bucket = filter.episodes.as_deref().map(str::trim).filter(|s| !s.is_empty());
+        if let Some(bucket) = bucket {
+            match bucket {
+                "1" => conditions.push("episodes = 1".to_string()),
+                "2-12" => conditions.push("episodes BETWEEN 2 AND 12".to_string()),
+                "13-26" => conditions.push("episodes BETWEEN 13 AND 26".to_string()),
+                "27+" => conditions.push("episodes >= 27".to_string()),
+                "unknown" => conditions.push("episodes IS NULL".to_string()),
+                // Unrecognized bucket value: ignore rather than error, the
+                // frontend only ever sends the five known values.
+                _ => {}
+            }
+        }
+
+        let genres: Vec<&str> = filter
+            .genres
+            .iter()
+            .map(|g| g.trim())
+            .filter(|g| !g.is_empty())
+            .collect();
+        if !genres.is_empty() {
+            let placeholders = genres.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+            conditions.push(format!(
+                "id IN (SELECT anilist_id FROM anilist_catalog_genres \
+                 WHERE genre IN ({placeholders}) GROUP BY anilist_id \
+                 HAVING COUNT(DISTINCT genre) = ?)"
+            ));
+            for genre in &genres {
+                params.push(Value::Text((*genre).to_string()));
+            }
+            params.push(Value::Integer(genres.len() as i64));
+        }
+
+        (conditions.join(" AND "), params)
+    }
+
+    /// Filtered + paginated variant of `list_catalog` — same popularity
+    /// ordering, narrowed by `filter`. See `CatalogFilter` for field
+    /// semantics and `build_catalog_where` for the query construction
+    /// shared with `catalog_count_filtered`.
+    pub fn list_catalog_filtered(
+        &self,
+        page: i64,
+        per_page: i64,
+        filter: &CatalogFilter,
+    ) -> Result<Vec<crate::anilist::CatalogAnime>> {
+        let offset = (page.max(1) - 1) * per_page;
+        let (where_sql, mut params) = Self::build_catalog_where(filter);
+        let sql = format!(
+            "SELECT id, title, cover_url, format, episodes, average_score, popularity, url
+             FROM anilist_catalog WHERE {where_sql}
+             ORDER BY popularity DESC NULLS LAST, id LIMIT ? OFFSET ?"
+        );
+        params.push(Value::Integer(per_page));
+        params.push(Value::Integer(offset));
+
+        let mut stmt = self.conn.prepare(&sql)?;
+        let mut rows = stmt
+            .query_map(rusqlite::params_from_iter(params.iter()), Self::row_to_catalog_anime)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for anime in &mut rows {
+            anime.genres = self.list_catalog_genres(anime.id)?;
+        }
+        Ok(rows)
+    }
+
+    /// Row count for a given filter — same `WHERE` as `list_catalog_filtered`,
+    /// so paging through all pages of a filter always sums to this.
+    pub fn catalog_count_filtered(&self, filter: &CatalogFilter) -> Result<i64> {
+        let (where_sql, params) = Self::build_catalog_where(filter);
+        let sql = format!("SELECT COUNT(*) FROM anilist_catalog WHERE {where_sql}");
+        let mut stmt = self.conn.prepare(&sql)?;
+        let count: i64 = stmt.query_row(rusqlite::params_from_iter(params.iter()), |r| r.get(0))?;
+        Ok(count)
+    }
+
+    /// Distinct genre vocabulary from the synced catalog, alphabetical —
+    /// drives the Catálogo filter bar's genre chips without hardcoding
+    /// AniList's genre list.
+    pub fn distinct_catalog_genres(&self) -> Result<Vec<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT DISTINCT genre FROM anilist_catalog_genres ORDER BY genre COLLATE NOCASE")?;
+        let genres = stmt
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(genres)
+    }
+
+    /// Distinct, non-null format vocabulary from the synced catalog,
+    /// alphabetical — drives the Catálogo filter bar's format select.
+    pub fn distinct_catalog_formats(&self) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT format FROM anilist_catalog WHERE format IS NOT NULL ORDER BY format COLLATE NOCASE",
+        )?;
+        let formats = stmt
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(formats)
     }
 
     fn row_to_catalog_anime(r: &rusqlite::Row) -> rusqlite::Result<crate::anilist::CatalogAnime> {
@@ -737,18 +890,7 @@ impl Db {
     /// to the simple per-row `list_catalog_genres` pattern already used for
     /// `series_genres` elsewhere) — fine at page-sized (30ish) result sets.
     pub fn list_catalog(&self, page: i64, per_page: i64) -> Result<Vec<crate::anilist::CatalogAnime>> {
-        let offset = (page.max(1) - 1) * per_page;
-        let mut stmt = self.conn.prepare(
-            "SELECT id, title, cover_url, format, episodes, average_score, popularity, url
-             FROM anilist_catalog ORDER BY popularity DESC NULLS LAST, id LIMIT ?1 OFFSET ?2",
-        )?;
-        let mut rows = stmt
-            .query_map((per_page, offset), Self::row_to_catalog_anime)?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        for anime in &mut rows {
-            anime.genres = self.list_catalog_genres(anime.id)?;
-        }
-        Ok(rows)
+        self.list_catalog_filtered(page, per_page, &CatalogFilter::default())
     }
 
     pub fn list_catalog_genres(&self, anilist_id: i64) -> Result<Vec<String>> {
@@ -1210,6 +1352,20 @@ mod tests {
     }
 
     #[test]
+    fn catalog_genre_index_exists() {
+        let db = Db::open(":memory:").unwrap();
+        let name: String = db
+            .conn
+            .query_row(
+                "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_catalog_genre'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(name, "idx_catalog_genre");
+    }
+
+    #[test]
     fn catalog_upsert_is_idempotent_and_refreshes_genres() {
         let db = Db::open(":memory:").unwrap();
         db.upsert_catalog_anime(&catalog_anime(1, "First", &["Action"]), 0).unwrap();
@@ -1242,5 +1398,205 @@ mod tests {
         let picked = db.random_catalog_anime().unwrap().unwrap();
         assert_eq!(picked.id, 1);
         assert_eq!(picked.genres, vec!["Drama".to_string()]);
+    }
+
+    fn catalog_anime_full(
+        id: i64,
+        title: &str,
+        genres: &[&str],
+        format: &str,
+        episodes: Option<i64>,
+        average_score: Option<i64>,
+    ) -> crate::anilist::CatalogAnime {
+        crate::anilist::CatalogAnime {
+            id,
+            title: title.into(),
+            cover_url: None,
+            format: Some(format.into()),
+            genres: genres.iter().map(|g| g.to_string()).collect(),
+            episodes,
+            average_score,
+            popularity: Some(100 - id),
+            url: format!("https://anilist.co/anime/{id}"),
+        }
+    }
+
+    fn seed_filter_catalog(db: &Db) {
+        db.upsert_catalog_anime(
+            &catalog_anime_full(1, "Monster", &["Drama", "Mystery"], "TV", Some(74), Some(90)),
+            0,
+        )
+        .unwrap();
+        db.upsert_catalog_anime(
+            &catalog_anime_full(2, "Monster Girl", &["Comedy"], "TV", Some(12), Some(65)),
+            1,
+        )
+        .unwrap();
+        db.upsert_catalog_anime(
+            &catalog_anime_full(3, "Fullmetal Alchemist", &["Drama", "Action"], "TV", Some(64), Some(88)),
+            2,
+        )
+        .unwrap();
+        db.upsert_catalog_anime(
+            &catalog_anime_full(4, "OnlyOne", &["Drama"], "MOVIE", Some(1), Some(70)),
+            3,
+        )
+        .unwrap();
+        db.upsert_catalog_anime(
+            &catalog_anime_full(5, "ShortRun", &["Action"], "OVA", Some(6), Some(55)),
+            4,
+        )
+        .unwrap();
+        db.upsert_catalog_anime(
+            &catalog_anime_full(6, "MidRun", &["Action"], "TV", Some(24), Some(72)),
+            5,
+        )
+        .unwrap();
+        db.upsert_catalog_anime(
+            &catalog_anime_full(7, "LongRun", &["Action"], "TV", Some(500), Some(60)),
+            6,
+        )
+        .unwrap();
+        db.upsert_catalog_anime(
+            &catalog_anime_full(8, "Unknown Length", &["Drama", "Action"], "TV", None, Some(50)),
+            7,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn list_catalog_filtered_with_default_filter_matches_list_catalog() {
+        let db = Db::open(":memory:").unwrap();
+        seed_filter_catalog(&db);
+
+        let default_filter = db.list_catalog_filtered(1, 100, &CatalogFilter::default()).unwrap();
+        let legacy = db.list_catalog(1, 100).unwrap();
+        assert_eq!(
+            default_filter.iter().map(|a| a.id).collect::<Vec<_>>(),
+            legacy.iter().map(|a| a.id).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            db.catalog_count_filtered(&CatalogFilter::default()).unwrap(),
+            db.catalog_count().unwrap()
+        );
+    }
+
+    #[test]
+    fn list_catalog_filtered_search_is_case_insensitive_substring() {
+        let db = Db::open(":memory:").unwrap();
+        seed_filter_catalog(&db);
+
+        let filter = CatalogFilter { search: Some("mONSteR".into()), ..Default::default() };
+        let rows = db.list_catalog_filtered(1, 100, &filter).unwrap();
+        assert_eq!(
+            rows.iter().map(|a| a.title.as_str()).collect::<Vec<_>>(),
+            vec!["Monster", "Monster Girl"]
+        );
+        assert_eq!(db.catalog_count_filtered(&filter).unwrap(), 2);
+    }
+
+    #[test]
+    fn list_catalog_filtered_multi_genre_uses_and_semantics() {
+        let db = Db::open(":memory:").unwrap();
+        seed_filter_catalog(&db);
+
+        // "Fullmetal Alchemist" (Drama+Action) and "Unknown Length" (Drama+Action)
+        // have both genres; "Monster" (Drama+Mystery) and "ShortRun" (Action only)
+        // have only one of the two and must be excluded.
+        let filter = CatalogFilter {
+            genres: vec!["Drama".into(), "Action".into()],
+            ..Default::default()
+        };
+        let rows = db.list_catalog_filtered(1, 100, &filter).unwrap();
+        let titles: Vec<&str> = rows.iter().map(|a| a.title.as_str()).collect();
+        assert_eq!(titles, vec!["Fullmetal Alchemist", "Unknown Length"]);
+        assert_eq!(db.catalog_count_filtered(&filter).unwrap(), 2);
+    }
+
+    #[test]
+    fn list_catalog_filtered_format_exact_match() {
+        let db = Db::open(":memory:").unwrap();
+        seed_filter_catalog(&db);
+
+        let filter = CatalogFilter { format: Some("MOVIE".into()), ..Default::default() };
+        let rows = db.list_catalog_filtered(1, 100, &filter).unwrap();
+        assert_eq!(rows.iter().map(|a| a.title.as_str()).collect::<Vec<_>>(), vec!["OnlyOne"]);
+    }
+
+    #[test]
+    fn list_catalog_filtered_min_score_is_inclusive_floor() {
+        let db = Db::open(":memory:").unwrap();
+        seed_filter_catalog(&db);
+
+        let filter = CatalogFilter { min_score: Some(70), ..Default::default() };
+        let rows = db.list_catalog_filtered(1, 100, &filter).unwrap();
+        // scores >= 70: Monster(90), Fullmetal(88), OnlyOne(70), MidRun(72)
+        let mut titles: Vec<&str> = rows.iter().map(|a| a.title.as_str()).collect();
+        titles.sort();
+        assert_eq!(titles, vec!["Fullmetal Alchemist", "MidRun", "Monster", "OnlyOne"]);
+    }
+
+    #[test]
+    fn list_catalog_filtered_episode_bucket_boundaries() {
+        let db = Db::open(":memory:").unwrap();
+        seed_filter_catalog(&db);
+
+        let bucket = |b: &str| {
+            let filter = CatalogFilter { episodes: Some(b.into()), ..Default::default() };
+            let mut titles: Vec<String> = db
+                .list_catalog_filtered(1, 100, &filter)
+                .unwrap()
+                .iter()
+                .map(|a| a.title.clone())
+                .collect();
+            titles.sort();
+            titles
+        };
+
+        assert_eq!(bucket("1"), vec!["OnlyOne".to_string()]);
+        assert_eq!(bucket("2-12"), vec!["Monster Girl".to_string(), "ShortRun".to_string()]);
+        assert_eq!(bucket("13-26"), vec!["MidRun".to_string()]);
+        assert_eq!(bucket("27+"), vec!["Fullmetal Alchemist".to_string(), "LongRun".to_string(), "Monster".to_string()]);
+        assert_eq!(bucket("unknown"), vec!["Unknown Length".to_string()]);
+    }
+
+    #[test]
+    fn list_catalog_filtered_combines_all_filters() {
+        let db = Db::open(":memory:").unwrap();
+        seed_filter_catalog(&db);
+
+        let filter = CatalogFilter {
+            search: Some("run".into()),
+            genres: vec!["Action".into()],
+            format: Some("TV".into()),
+            min_score: Some(60),
+            episodes: Some("13-26".into()),
+        };
+        let rows = db.list_catalog_filtered(1, 100, &filter).unwrap();
+        assert_eq!(rows.iter().map(|a| a.title.as_str()).collect::<Vec<_>>(), vec!["MidRun"]);
+        assert_eq!(db.catalog_count_filtered(&filter).unwrap(), 1);
+    }
+
+    #[test]
+    fn catalog_count_filtered_agrees_with_paginated_totals() {
+        let db = Db::open(":memory:").unwrap();
+        seed_filter_catalog(&db);
+
+        let filter = CatalogFilter { genres: vec!["Action".into()], ..Default::default() };
+        let total = db.catalog_count_filtered(&filter).unwrap();
+
+        let mut seen = std::collections::HashSet::new();
+        let mut page = 1;
+        loop {
+            let rows = db.list_catalog_filtered(page, 2, &filter).unwrap();
+            if rows.is_empty() {
+                break;
+            }
+            for r in &rows {
+                seen.insert(r.id);
+            }
+            page += 1;
+        }
+        assert_eq!(seen.len() as i64, total);
     }
 }

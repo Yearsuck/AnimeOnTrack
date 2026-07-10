@@ -890,21 +890,51 @@ pub struct CatalogPage {
     pub items: Vec<crate::anilist::CatalogAnime>,
     pub has_next_page: bool,
     pub total_synced: i64,
+    pub total_matching: i64,
 }
 
 /// One page of the locally-synced AniList catalog — the "Catálogo" tab's
 /// data source, independent of anything scraped off the tracked site. Reads
 /// the local `anilist_catalog` table (see `sync_anime_catalog`), not
 /// AniList live — instant, no rate-limit exposure, works with whatever's
-/// been synced so far even mid-sync.
+/// been synced so far even mid-sync. `filter` narrows the result (search,
+/// genres, format, score, episode bucket — see `crate::db::CatalogFilter`);
+/// `total_synced` stays the unfiltered grand total (header text) while
+/// `total_matching` reflects `filter` and drives `has_next_page` / the
+/// "N resultados" label.
 #[tauri::command]
-pub fn get_anime_catalog(state: State<'_, AppState>, page: i64) -> Result<CatalogPage, String> {
+pub fn get_anime_catalog(
+    state: State<'_, AppState>,
+    page: i64,
+    filter: Option<crate::db::CatalogFilter>,
+) -> Result<CatalogPage, String> {
     let db = state.db.lock().unwrap();
     let per_page = 30;
-    let items = db.list_catalog(page, per_page).map_err(|e| e.to_string())?;
+    let filter = filter.unwrap_or_default();
+    let items = db.list_catalog_filtered(page, per_page, &filter).map_err(|e| e.to_string())?;
     let total_synced = db.catalog_count().map_err(|e| e.to_string())?;
-    let has_next_page = page * per_page < total_synced;
-    Ok(CatalogPage { items, has_next_page, total_synced })
+    let total_matching = db.catalog_count_filtered(&filter).map_err(|e| e.to_string())?;
+    let has_next_page = page * per_page < total_matching;
+    Ok(CatalogPage { items, has_next_page, total_synced, total_matching })
+}
+
+#[derive(Serialize)]
+pub struct CatalogFacets {
+    pub genres: Vec<String>,
+    pub formats: Vec<String>,
+}
+
+/// Distinct genre/format vocabularies from the synced catalog — drives the
+/// Catálogo filter bar's chips/select without hardcoding AniList's own
+/// vocabulary (which can grow over time). Cheap `SELECT DISTINCT`s; the
+/// frontend loads this once per mount, tolerating staleness until the next
+/// sync (facets only change after a re-sync).
+#[tauri::command]
+pub fn get_catalog_facets(state: State<'_, AppState>) -> Result<CatalogFacets, String> {
+    let db = state.db.lock().unwrap();
+    let genres = db.distinct_catalog_genres().map_err(|e| e.to_string())?;
+    let formats = db.distinct_catalog_formats().map_err(|e| e.to_string())?;
+    Ok(CatalogFacets { genres, formats })
 }
 
 #[derive(Serialize, Clone)]
