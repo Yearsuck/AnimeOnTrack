@@ -930,11 +930,17 @@ struct CatalogSyncProgress {
 /// upcoming) — see `anilist::{build_partitions, incremental_partitions}`.
 /// `force_full=true` clears that state and redoes everything from scratch.
 ///
-/// Pacing: no fixed per-request sleep. AniList reports remaining requests
-/// in the current rate-limit window (`X-Ratelimit-Remaining`, 30/min
-/// unauthenticated) on every response — burst through while there's
-/// headroom, only sleep (~2.1s) once it's nearly exhausted. A 429 is
-/// honored via `Retry-After` inside `fetch_partition_page` itself.
+/// Pacing: paces almost every request (~2.1s apart, ~28.6 req/min) and only
+/// skips the sleep for the handful of requests right after AniList's
+/// rate-limit window (`X-Ratelimit-Remaining`, 30/min unauthenticated) has
+/// just reset. An earlier version skipped sleeping whenever `remaining >= 3`
+/// to "burst through headroom" — live testing (2026-07-10) showed this
+/// blows through most of a window in a few seconds of request/response
+/// round-trips, then stays rate-limited for the rest of that ~60s window
+/// regardless of per-request sleep length (the window doesn't refill
+/// per-request like a token bucket), which surfaced as a partition failing
+/// after exhausting its 429 retries. A 429 is still honored via
+/// `Retry-After` inside `fetch_partition_page` as a safety net.
 ///
 /// This is a real multi-minute job for the ~21,000-title full catalog, so
 /// it's user-triggered from the Catálogo tab, not run automatically on
@@ -954,10 +960,20 @@ pub async fn sync_anime_catalog(
     // not a claim of precision. Clamped up if synced ever exceeds it so the
     // bar can't show >100%.
     const FULL_SYNC_ESTIMATE: i64 = 21_000;
-    // Sleep once headroom in the current rate-limit window gets this low;
-    // burst through requests otherwise. Never go below this floor even if
-    // `remaining` reports comfortable numbers right after a burst.
-    const RATE_HEADROOM_FLOOR: i64 = 3;
+    // Only skip the pacing sleep when headroom is still near a fully-fresh
+    // window (>= this many of the 30 requests/min still available) — a live
+    // run (2026-07-10) with a low burst threshold (skip-sleep whenever
+    // remaining >= 3) blew through a whole window in a few seconds of RTT
+    // and then stayed rate-limited for the next ~50s of the rolling window
+    // regardless of pacing, because AniList's window doesn't refill per
+    // request the way a token bucket would — it's closer to a rolling
+    // 60s window, so burning most of it in a handful of seconds means the
+    // next ~30 requests are blocked no matter how long a *per-request*
+    // sleep is, until that whole window ages out. Raising the floor close
+    // to the window size means we pace almost every request (~2.1s apart,
+    // ~28.6 req/min, safely under the 30/min cap) and only skip sleeping
+    // for the handful of requests right after a window resets.
+    const RATE_HEADROOM_FLOOR: i64 = 27;
     const PACED_SLEEP: std::time::Duration = std::time::Duration::from_millis(2100);
 
     let current_year = chrono::Utc::now().year();
