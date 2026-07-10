@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ForceGraph3D, { type ForceGraphMethods, type NodeObject } from "react-force-graph-3d";
 import * as THREE from "three";
 import { categoryColor, SIN_GENERO_LABEL } from "../lib/categoryColor";
@@ -12,6 +12,28 @@ const MIN_HEIGHT = 500;
 const BOTTOM_MARGIN = 24;
 const CHARGE_STRENGTH = -260;
 const LINK_DISTANCE = 90;
+// Bound the initial layout run instead of letting it simulate indefinitely
+// (the library's own cooldownTime default is 15s of wall time). Once the
+// engine stops (or this many ticks pass), onEngineStop below snapshots
+// positions so a later rebuild can reuse them instead of re-scrambling.
+const COOLDOWN_TICKS = 200;
+
+interface Vec3 {
+  x: number;
+  y: number;
+  z: number;
+}
+
+function disposeNodeObject(obj: THREE.Object3D): void {
+  const anyObj = obj as unknown as { material?: unknown; geometry?: { dispose?: () => void } };
+  const materials = Array.isArray(anyObj.material) ? anyObj.material : [anyObj.material];
+  for (const m of materials) {
+    const mat = m as { map?: { dispose?: () => void }; dispose?: () => void } | undefined;
+    mat?.map?.dispose?.();
+    mat?.dispose?.();
+  }
+  anyObj.geometry?.dispose?.();
+}
 
 type GNodeKind = "root" | "genreHub" | "kindHub" | "series";
 
@@ -109,7 +131,35 @@ export function StatsGraph({
   const [height, setHeight] = useState(MIN_HEIGHT);
   const [width, setWidth] = useState(0);
 
-  const { nodes, links } = useMemo(() => buildGraphData(seriesList), [seriesList]);
+  // Last settled layout, snapshotted on onEngineStop and keyed by node id —
+  // survives graphData rebuilds (a fresh seriesList prop produces brand new
+  // node/link objects every time) so re-following/backfilling doesn't
+  // re-scramble nodes that were already laid out.
+  const positionsRef = useRef<Map<string, Vec3>>(new Map());
+  // Structural key of the layout currently reflected in positionsRef —
+  // sorted node ids + link count, a cheap value comparison. useMemo returns
+  // a new nodes/links array on every rebuild even when the data is
+  // identical, so object identity can't be used to detect "did anything
+  // actually change".
+  const layoutKeyRef = useRef<string | null>(null);
+  // Registry of the three.js object currently representing each node, so a
+  // replaced or removed node's material/texture/geometry can be disposed
+  // explicitly. The graph now stays mounted indefinitely, so nothing else
+  // ever garbage-collects these.
+  const nodeObjectsRef = useRef<Map<string, THREE.Object3D>>(new Map());
+
+  const { nodes, links } = useMemo(() => {
+    const built = buildGraphData(seriesList);
+    for (const n of built.nodes) {
+      const saved = positionsRef.current.get(n.id);
+      if (saved) Object.assign(n as NodeObject<GNode>, saved);
+    }
+    return built;
+  }, [seriesList]);
+  const structuralKey = useMemo(
+    () => `${nodes.map((n) => n.id).sort().join(",")}|${links.length}`,
+    [nodes, links]
+  );
   const maxHubCount = useMemo(
     () =>
       Math.max(
@@ -172,13 +222,85 @@ export function StatsGraph({
 
   // Spread nodes out further apart — default d3-force charge/link settings
   // packed hubs and series so tightly the connecting edges were unreadable.
+  // Reheating restarts the physics (alpha back to 1), which is what makes
+  // the layout visibly move/re-settle — only do that when the node/link set
+  // actually changed structurally, not on every rebuild of the same data
+  // (the previous unconditional call here was why switching tabs — which
+  // used to force a remount and thus a fresh nodes/links object — always
+  // re-scrambled the graph).
   useEffect(() => {
     const fg = graphRef.current;
     if (!fg) return;
     (fg.d3Force("charge") as { strength?: (v: number) => void } | undefined)?.strength?.(CHARGE_STRENGTH);
     (fg.d3Force("link") as { distance?: (v: number) => void } | undefined)?.distance?.(LINK_DISTANCE);
-    fg.d3ReheatSimulation();
-  }, [nodes, links]);
+    if (layoutKeyRef.current !== null && layoutKeyRef.current !== structuralKey) {
+      fg.d3ReheatSimulation();
+    }
+  }, [structuralKey]);
+
+  // Drop three.js objects for nodes that no longer exist (unfollowed
+  // series, a genre hub that emptied out) — nodeThreeObject only fires
+  // again for ids still present, so removals need an explicit sweep.
+  useEffect(() => {
+    const currentIds = new Set(nodes.map((n) => n.id));
+    for (const [id, obj] of nodeObjectsRef.current) {
+      if (!currentIds.has(id)) {
+        disposeNodeObject(obj);
+        nodeObjectsRef.current.delete(id);
+      }
+    }
+  }, [nodes]);
+
+  const handleEngineStop = useCallback(() => {
+    const snapshot = positionsRef.current;
+    for (const n of nodes as NodeObject<GNode>[]) {
+      if (n.x !== undefined && n.y !== undefined && n.z !== undefined) {
+        snapshot.set(n.id as string, { x: n.x, y: n.y, z: n.z });
+      }
+    }
+    layoutKeyRef.current = structuralKey;
+  }, [nodes, structuralKey]);
+
+  const handleNodeThreeObject = useCallback(
+    (node: NodeObject<GNode>) => {
+      const existing = nodeObjectsRef.current.get(node.id as string);
+      if (existing) disposeNodeObject(existing);
+      let obj: THREE.Object3D;
+      try {
+        if (node.kind === "series") {
+          const hasCover = !!node.coverUrl && node.coverUrl.startsWith("data:");
+          const texture = hasCover
+            ? new THREE.TextureLoader().load(node.coverUrl as string)
+            : new THREE.CanvasTexture(fallbackCircleCanvas(node.color ?? categoryColor(SIN_GENERO_LABEL)));
+          const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, transparent: true }));
+          sprite.scale.set(SERIES_SPRITE_SIZE, SERIES_SPRITE_SIZE, 1);
+          obj = sprite;
+        } else {
+          const color = node.kind === "root" ? ROOT_COLOR : node.color ?? "#4aa8ff";
+          const radius = node.kind === "root" ? HUB_MAX_R * 1.1 : hubRadius(node.count ?? 0, maxHubCount);
+          // MeshBasicMaterial (unlit) rather than MeshLambertMaterial: a
+          // lit material renders pure black without a scene light hitting
+          // it, and this graph doesn't add one (react-force-graph-3d's
+          // default lighting isn't guaranteed) — flat, always-visible
+          // color is also just the right look for a data-viz sphere, not
+          // realistic shading.
+          obj = new THREE.Mesh(
+            new THREE.SphereGeometry(radius, 16, 16),
+            new THREE.MeshBasicMaterial({ color })
+          );
+        }
+      } catch (e) {
+        // A malformed cover_url or texture-decode failure shouldn't take
+        // down the whole graph — fall back to a visible marker for just
+        // this node instead of an uncaught exception mid-render.
+        console.error("nodeThreeObject failed for", node.id, e);
+        obj = new THREE.Mesh(new THREE.SphereGeometry(5, 8, 8), new THREE.MeshBasicMaterial({ color: "red" }));
+      }
+      nodeObjectsRef.current.set(node.id as string, obj);
+      return obj;
+    },
+    [maxHubCount]
+  );
 
   // The ref-bearing div below must always mount, even while seriesList is
   // still empty (the normal state on first render — data loads async, so
@@ -198,40 +320,12 @@ export function StatsGraph({
         height={height}
         graphData={{ nodes, links }}
         backgroundColor="#00000000"
+        cooldownTicks={COOLDOWN_TICKS}
+        onEngineStop={handleEngineStop}
         nodeLabel={(node) =>
           node.kind === "series" ? node.label : `${node.label} (${node.count ?? 0})`
         }
-        nodeThreeObject={(node) => {
-          try {
-            if (node.kind === "series") {
-              const hasCover = !!node.coverUrl && node.coverUrl.startsWith("data:");
-              const texture = hasCover
-                ? new THREE.TextureLoader().load(node.coverUrl as string)
-                : new THREE.CanvasTexture(fallbackCircleCanvas(node.color ?? categoryColor(SIN_GENERO_LABEL)));
-              const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, transparent: true }));
-              sprite.scale.set(SERIES_SPRITE_SIZE, SERIES_SPRITE_SIZE, 1);
-              return sprite;
-            }
-            const color = node.kind === "root" ? ROOT_COLOR : node.color ?? "#4aa8ff";
-            const radius = node.kind === "root" ? HUB_MAX_R * 1.1 : hubRadius(node.count ?? 0, maxHubCount);
-            // MeshBasicMaterial (unlit) rather than MeshLambertMaterial: a
-            // lit material renders pure black without a scene light hitting
-            // it, and this graph doesn't add one (react-force-graph-3d's
-            // default lighting isn't guaranteed) — flat, always-visible
-            // color is also just the right look for a data-viz sphere, not
-            // realistic shading.
-            return new THREE.Mesh(
-              new THREE.SphereGeometry(radius, 16, 16),
-              new THREE.MeshBasicMaterial({ color })
-            );
-          } catch (e) {
-            // A malformed cover_url or texture-decode failure shouldn't take
-            // down the whole graph — fall back to a visible marker for just
-            // this node instead of an uncaught exception mid-render.
-            console.error("nodeThreeObject failed for", node.id, e);
-            return new THREE.Mesh(new THREE.SphereGeometry(5, 8, 8), new THREE.MeshBasicMaterial({ color: "red" }));
-          }
-        }}
+        nodeThreeObject={handleNodeThreeObject}
         onNodeClick={(node) => {
           const fg = graphRef.current;
           if (!fg || node.x === undefined || node.y === undefined || node.z === undefined) return;
