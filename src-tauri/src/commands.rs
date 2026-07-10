@@ -453,10 +453,17 @@ pub fn set_followed(
 /// fetch, not the thing CLAUDE.md specifically calls out as abuse-prone.
 const REFRESH_CONCURRENCY: usize = 2;
 
-/// How long a followed series that is *absent* from the airing listing (a
-/// finished show) goes between episode-list rechecks. A completed series
-/// does not sprout episodes; once a week is plenty.
-const FINISHED_RECHECK_SECS: i64 = 7 * 24 * 3600;
+/// How long a followed series that is *absent* from the airing listing goes
+/// between episode-list rechecks. The spec drafted this as 7 days on the
+/// assumption "absent from the listing = finished", but live verification
+/// (2026-07-10) disproved that: the schedule listing only carries ~77 series
+/// while 114 are marked airing, and two followed shows absent from it
+/// (Tensei Slime T4, Ryoumin 0-nin) got real new episodes the same day. So
+/// absent series are rechecked daily — new episodes there arrive at most
+/// ~24h late instead of ~7 days, at the cost of one full off-listing sweep
+/// per day (first refresh of the day), with every later refresh that day
+/// still hitting the 1-fetch fast path.
+const OFF_LISTING_RECHECK_SECS: i64 = 24 * 3600;
 
 /// The skip decision at the heart of refresh()'s optimization A (see
 /// docs/superpowers/specs/2026-07-10-scraper-performance-design.md): given a
@@ -465,24 +472,31 @@ const FINISHED_RECHECK_SECS: i64 = 7 * 24 * 3600;
 /// scraper or DB — a bug here silently stops detecting new episodes, which
 /// is the app's entire purpose.
 ///
+/// Live-verified semantics of the card metadata (2026-07-10, real site):
+/// the `.sb` badge is the **upcoming episode's number**, not the count of
+/// posted episodes — 8/8 followed series that were provably up to date
+/// (fetched moments earlier, no new episodes) all showed `.sb == db+1`, and
+/// the fixture agrees (Liar Game: `.sb`=14, newest posted episode 13). And
+/// no live card (0/77) carried a past `data-rlsdt`; just-aired series
+/// either roll to next week's timestamp or leave the listing entirely.
+///
 /// Rules, in order:
 /// - `force` (the Settings "Forzar recomprobación completa" escape hatch)
 ///   always fetches.
 /// - `listing_scanned == false` (the airing-listing scan itself failed, so
 ///   there is no fresh metadata) always fetches — behave exactly like the
 ///   pre-skip-logic refresh rather than trusting stale signals.
-/// - Off the listing (finished show): fetch only when never checked or the
-///   last check is older than `FINISHED_RECHECK_SECS`.
-/// - On the listing, the site's own episode count (`.sb` badge) is the
-///   primary signal when present: a mismatch with the DB count always
-///   fetches — deliberately *not* a plain OR of the spec's two skip rules,
-///   because if the site posts an episode and rolls the countdown to next
-///   week in the same update, "future `next_episode_at`" alone would skip
-///   forever and the episode would never be detected. Agreement always
-///   skips (even with the countdown in the past: aired-but-not-yet-posted
-///   means there is nothing new on the site to fetch).
-/// - Count unknown (`"??"`): fall back to the countdown — future skips,
-///   past/absent fetches.
+/// - Off the listing: fetch only when never checked or the last check is
+///   older than `OFF_LISTING_RECHECK_SECS` (see its comment — absent does
+///   NOT mean finished on this site).
+/// - On the listing with a past countdown: the episode aired and the card
+///   hasn't rolled over — fetch, whatever the badge says.
+/// - Badge present: fetch iff `badge > db+1` (site has posted something we
+///   don't have). `db+1` (up to date) and `<= db` (our numbering equal or
+///   ahead) both skip. Deliberately *not* the spec's literal "badge == db
+///   skips": that rule assumed badge = posted count, which the live data
+///   disproves — under it, every current weekly series re-fetches forever.
+/// - Badge unknown (`"??"`): future countdown skips, absent fetches.
 #[allow(clippy::too_many_arguments)]
 fn should_fetch_series(
     force: bool,
@@ -500,15 +514,15 @@ fn should_fetch_series(
     if !on_listing {
         return match last_checked_age_secs {
             None => true,
-            Some(age) => age >= FINISHED_RECHECK_SECS,
+            Some(age) => age >= OFF_LISTING_RECHECK_SECS,
         };
     }
+    if next_episode_at.is_some_and(|t| t <= now_unix) {
+        return true;
+    }
     match site_episode_count {
-        Some(n) => n != db_episode_count,
-        None => match next_episode_at {
-            Some(t) => t <= now_unix,
-            None => true,
-        },
+        Some(next_number) => next_number > db_episode_count + 1,
+        None => next_episode_at.is_none(),
     }
 }
 
@@ -1607,13 +1621,21 @@ mod tests {
     const NOW: i64 = 1_783_400_000;
     const DAY: i64 = 86_400;
 
-    /// Baseline "quiet week" listing series: counts agree, next episode in
-    /// the future — the case that must skip for the 119→1 win to exist.
+    /// Baseline "quiet week" listing series: next episode in the future and
+    /// the site's badge shows the *upcoming* episode's number (db+1, the
+    /// live-verified up-to-date pattern) — the case that must skip for the
+    /// big win to exist.
     #[test]
     fn skip_when_next_episode_in_future_and_no_count_conflict() {
         assert!(!should_fetch_series(
             false, true, true, Some(NOW + DAY), None, 5, None, NOW
         ));
+        // .sb = db+1: up to date under the verified next-episode-number
+        // semantics (8/8 provably-current live series showed exactly this).
+        assert!(!should_fetch_series(
+            false, true, true, Some(NOW + DAY), Some(6), 5, None, NOW
+        ));
+        // .sb = db: db numbering equal/ahead of the badge — also nothing new.
         assert!(!should_fetch_series(
             false, true, true, Some(NOW + DAY), Some(5), 5, None, NOW
         ));
@@ -1626,26 +1648,28 @@ mod tests {
         ));
     }
 
+    /// A countdown sitting in the past means the episode aired and the card
+    /// hasn't rolled over — always fetch, regardless of what the badge says
+    /// (the badge may not have rolled yet either).
     #[test]
-    fn skip_when_site_episode_count_matches_db() {
-        // Count agreement alone is enough to skip, even with the countdown
-        // sitting in the past (episode aired but the site hasn't posted it
-        // yet — there is nothing new to fetch).
-        assert!(!should_fetch_series(
+    fn fetch_when_countdown_in_past_even_if_badge_looks_current() {
+        assert!(should_fetch_series(
+            false, true, true, Some(NOW - 3600), Some(6), 5, None, NOW
+        ));
+        assert!(should_fetch_series(
             false, true, true, Some(NOW - 3600), Some(5), 5, None, NOW
         ));
-        assert!(!should_fetch_series(false, true, true, None, Some(5), 5, None, NOW));
     }
 
-    /// Deliberate deviation from a literal OR of the spec's two skip rules:
-    /// if the site posts an episode AND rolls the countdown to next week in
-    /// the same update, "future next_episode_at" alone would skip forever and
-    /// the new episode would never be detected. A count mismatch must always
-    /// win over a future countdown.
+    /// .sb greater than db+1 means the site has posted episodes we don't
+    /// have (badge = next episode's number, so badge > db+1 ⇒ posted > db).
+    /// This must win even over a future countdown: the site rolls the
+    /// countdown to next week when it posts, so "future next_episode_at"
+    /// alone would skip a freshly-posted episode forever.
     #[test]
-    fn fetch_when_site_count_disagrees_even_with_future_countdown() {
+    fn fetch_when_badge_says_site_is_ahead_even_with_future_countdown() {
         assert!(should_fetch_series(
-            false, true, true, Some(NOW + DAY), Some(6), 5, None, NOW
+            false, true, true, Some(NOW + DAY), Some(7), 5, None, NOW
         ));
     }
 
@@ -1656,19 +1680,22 @@ mod tests {
         assert!(should_fetch_series(false, true, true, None, None, 5, None, NOW));
     }
 
-    /// Followed series absent from the airing listing (finished show): fetch
-    /// at most once per FINISHED_RECHECK interval.
+    /// Followed series absent from the airing listing: fetch at most once
+    /// per OFF_LISTING_RECHECK interval (24h — live verification showed the
+    /// listing only carries ~77 series and genuinely-airing followed shows
+    /// can be absent from it, so "absent = finished" is false and a 7-day
+    /// interval would delay real episodes up to a week).
     #[test]
     fn off_listing_series_fetches_only_when_recheck_interval_elapsed() {
         // Never checked → fetch.
         assert!(should_fetch_series(false, true, false, None, None, 5, None, NOW));
-        // Checked 2 days ago → skip.
+        // Checked 1 hour ago → skip.
         assert!(!should_fetch_series(
-            false, true, false, None, None, 5, Some(2 * DAY), NOW
+            false, true, false, None, None, 5, Some(3600), NOW
         ));
-        // Checked 8 days ago → fetch again.
+        // Checked 25 hours ago → fetch again.
         assert!(should_fetch_series(
-            false, true, false, None, None, 5, Some(8 * DAY), NOW
+            false, true, false, None, None, 5, Some(25 * 3600), NOW
         ));
     }
 
