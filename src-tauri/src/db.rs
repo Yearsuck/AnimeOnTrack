@@ -183,6 +183,22 @@ impl Db {
         // don't put it in my backlog." No episode data backs this (AniList
         // never hosts video), so it's a flag, not real progress tracking.
         ensure_column(&self.conn, "series", "watched_externally", "INTEGER DEFAULT 0")?;
+        // next_episode_at: unix timestamp of the next episode's release,
+        // parsed from the airing listing's `data-rlsdt`; site_episode_count:
+        // the site's own reported episode count (`.sb` badge), NULL when
+        // non-numeric (e.g. "??"). Both scan-owned (see `upsert_series`) —
+        // added for the scraper-performance skip logic (optimization A) and
+        // the airing grid's newest-first default sort. last_checked_at: ISO
+        // 8601 timestamp of the last time a followed series NOT on the
+        // current airing listing (a finished show) had its episode list
+        // actually fetched — gates the `FINISHED_RECHECK` interval in
+        // `refresh()` so a completed series isn't re-fetched every refresh.
+        ensure_column(&self.conn, "series", "next_episode_at", "INTEGER")?;
+        ensure_column(&self.conn, "series", "site_episode_count", "INTEGER")?;
+        ensure_column(&self.conn, "series", "last_checked_at", "TEXT")?;
+        self.conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_series_next_ep ON series(source_id, is_airing, next_episode_at);",
+        )?;
         self.conn.execute_batch(
             r#"
             CREATE TABLE IF NOT EXISTS series_genres (
@@ -395,16 +411,27 @@ impl Db {
         Ok(())
     }
 
+    /// `next_episode_at`/`site_episode_count` are written here just like the
+    /// rest of the scanned fields (unlike `followed`, which is deliberately
+    /// excluded from the UPDATE so re-scanning never un-follows anything) —
+    /// see the scraper-performance design doc. Every real caller besides the
+    /// airing scan (`decide_swipe`, `decide_catalog_card`) always passes
+    /// `None` for both, and never collides with an already-scanned airing
+    /// row's `(source_id, slug)` in practice (the swipe/catalog decks only
+    /// ever offer titles not already known — see `known_series_urls`), so
+    /// this can't silently clobber real scanned data in the normal flow.
     pub fn upsert_series(&self, source_id: i64, s: &crate::models::Series) -> Result<i64> {
         self.conn.execute(
-            "INSERT INTO series(source_id, slug, title, url, cover_url, is_airing)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6)
+            "INSERT INTO series(source_id, slug, title, url, cover_url, is_airing, next_episode_at, site_episode_count)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT(source_id, slug) DO UPDATE SET
                 title=excluded.title, url=excluded.url,
-                cover_url=excluded.cover_url, is_airing=excluded.is_airing",
+                cover_url=excluded.cover_url, is_airing=excluded.is_airing,
+                next_episode_at=excluded.next_episode_at, site_episode_count=excluded.site_episode_count",
             (
                 source_id, &s.slug, &s.title, &s.url,
                 &s.cover_url, s.is_airing as i64,
+                s.next_episode_at, s.site_episode_count,
             ),
         )?;
         let id: i64 = self.conn.query_row(
@@ -685,13 +712,25 @@ impl Db {
             cover_url: r.get("cover_url")?,
             is_airing: r.get::<_, i64>("is_airing")? != 0,
             followed: r.get::<_, i64>("followed")? != 0,
+            next_episode_at: r.get("next_episode_at")?,
+            site_episode_count: r.get("site_episode_count")?,
         })
     }
 
+    /// "En emisión" default order: most-recently-released first.
+    /// `next_episode_at` is the *next* episode's release time; for a weekly
+    /// series that's roughly "last release + 7 days", so the series whose
+    /// episode dropped most recently has the furthest-away next episode —
+    /// descending order therefore reads as newest-release-first (see the
+    /// airing-sort-order design doc; non-weekly series break the inference
+    /// and that's accepted). NULLs (no countdown on the card / never seen on
+    /// the airing listing) sort last; `title` is a stable tie-break so
+    /// equal/NULL timestamps never reorder run to run.
     pub fn list_airing(&self, source_id: i64) -> Result<Vec<crate::models::Series>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, slug, title, url, cover_url, is_airing, followed
-             FROM series WHERE source_id=?1 AND is_airing=1 ORDER BY title",
+            "SELECT id, slug, title, url, cover_url, is_airing, followed, next_episode_at, site_episode_count
+             FROM series WHERE source_id=?1 AND is_airing=1
+             ORDER BY next_episode_at IS NULL, next_episode_at DESC, title",
         )?;
         let rows = stmt
             .query_map([source_id], Self::row_to_series)?
@@ -705,6 +744,7 @@ impl Db {
     pub fn list_library(&self, source_id: i64) -> Result<Vec<crate::models::LibraryItem>> {
         let mut stmt = self.conn.prepare(
             "SELECT s.id, s.slug, s.title, s.url, s.cover_url, s.is_airing, s.followed,
+                    s.next_episode_at, s.site_episode_count,
                     COUNT(e.id) AS total,
                     SUM(CASE WHEN e.seen=1 THEN 1 ELSE 0 END) AS seen,
                     MAX(e.added_at) AS last_added
@@ -732,7 +772,7 @@ impl Db {
     /// the swipe mode's "Listas" sub-view.
     pub fn list_backlog(&self, source_id: i64, status: &str) -> Result<Vec<crate::models::Series>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, slug, title, url, cover_url, is_airing, followed
+            "SELECT id, slug, title, url, cover_url, is_airing, followed, next_episode_at, site_episode_count
              FROM series WHERE source_id=?1 AND backlog_status=?2 ORDER BY title",
         )?;
         let rows = stmt
@@ -755,13 +795,46 @@ impl Db {
 
     pub fn list_followed(&self, source_id: i64) -> Result<Vec<crate::models::Series>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, slug, title, url, cover_url, is_airing, followed
+            "SELECT id, slug, title, url, cover_url, is_airing, followed, next_episode_at, site_episode_count
              FROM series WHERE source_id=?1 AND followed=1 ORDER BY title",
         )?;
         let rows = stmt
             .query_map([source_id], Self::row_to_series)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
+    }
+
+    /// Episode-row count for one series — the DB side of refresh()'s skip
+    /// decision (compared against the airing card's `.sb` badge).
+    pub fn episode_count(&self, series_id: i64) -> Result<i64> {
+        Ok(self.conn.query_row(
+            "SELECT COUNT(*) FROM episodes WHERE series_id=?1",
+            [series_id],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// Record "this series' episode list was actually fetched just now" —
+    /// gates the FINISHED_RECHECK interval for followed series absent from
+    /// the airing listing (see `commands::should_fetch_series`).
+    pub fn set_last_checked_at(&self, series_id: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE series SET last_checked_at=datetime('now') WHERE id=?1",
+            [series_id],
+        )?;
+        Ok(())
+    }
+
+    /// Seconds since the last recorded episode-list fetch, or `None` if the
+    /// series has never had one recorded. Computed in SQL so the stored ISO
+    /// 8601 text never needs parsing in Rust.
+    pub fn last_checked_age_secs(&self, series_id: i64) -> Result<Option<i64>> {
+        Ok(self.conn.query_row(
+            "SELECT strftime('%s','now') - strftime('%s', last_checked_at)
+             FROM series WHERE id=?1",
+            [series_id],
+            |r| r.get(0),
+        )?)
     }
 
     pub fn existing_episode_urls(&self, series_id: i64) -> Result<std::collections::HashSet<String>> {
@@ -884,7 +957,8 @@ impl Db {
     pub fn list_pending(&self) -> Result<Vec<(crate::models::Series, crate::models::Episode)>> {
         let mut stmt = self.conn.prepare(
             "SELECT s.id, s.slug, s.title, s.url, s.cover_url, s.is_airing, s.followed,
-                    e.id, e.series_id, e.number, e.title, e.url, e.released_at, e.seen
+                    e.id, e.series_id, e.number, e.title, e.url, e.released_at, e.seen,
+                    s.next_episode_at, s.site_episode_count
              FROM episodes e JOIN series s ON s.id = e.series_id
              WHERE e.seen=0 AND s.followed=1
              ORDER BY s.title, e.added_at DESC",
@@ -899,6 +973,8 @@ impl Db {
                     cover_url: r.get(4)?,
                     is_airing: r.get::<_, i64>(5)? != 0,
                     followed: r.get::<_, i64>(6)? != 0,
+                    next_episode_at: r.get("next_episode_at")?,
+                    site_episode_count: r.get("site_episode_count")?,
                 };
                 let ep = crate::models::Episode {
                     id: r.get(7)?,
@@ -1213,6 +1289,84 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    /// Minimal airing-row builder for the sort/skip-metadata tests below.
+    fn mk_airing(slug: &str, title: &str, next_episode_at: Option<i64>) -> crate::models::Series {
+        crate::models::Series {
+            id: 0,
+            slug: slug.into(),
+            title: title.into(),
+            url: format!("https://site/tv/{slug}/"),
+            cover_url: None,
+            is_airing: true,
+            followed: false,
+            next_episode_at,
+            site_episode_count: None,
+        }
+    }
+
+    #[test]
+    fn upsert_series_writes_and_updates_scan_owned_airing_metadata() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b").unwrap();
+        let mut s = mk_airing("x", "X", Some(1_783_350_140));
+        s.site_episode_count = Some(2);
+        let sid = db.upsert_series(src, &s).unwrap();
+        let got = db.list_airing(src).unwrap().into_iter().find(|r| r.id == sid).unwrap();
+        assert_eq!(got.next_episode_at, Some(1_783_350_140));
+        assert_eq!(got.site_episode_count, Some(2));
+
+        // A re-scan with fresh values overwrites both (scan-owned fields).
+        let mut s2 = mk_airing("x", "X", Some(1_783_954_940));
+        s2.site_episode_count = Some(3);
+        db.upsert_series(src, &s2).unwrap();
+        let got = db.list_airing(src).unwrap().into_iter().find(|r| r.id == sid).unwrap();
+        assert_eq!(got.next_episode_at, Some(1_783_954_940));
+        assert_eq!(got.site_episode_count, Some(3));
+    }
+
+    #[test]
+    fn episode_count_counts_only_this_series() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b").unwrap();
+        let sid_a = db.upsert_series(src, &mk_airing("a", "A", None)).unwrap();
+        let sid_b = db.upsert_series(src, &mk_airing("b", "B", None)).unwrap();
+        for i in 1..=3 {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: sid_a, number: i.to_string(), title: None,
+                url: format!("https://site/a-{i}"), released_at: None, seen: false,
+            }).unwrap();
+        }
+        assert_eq!(db.episode_count(sid_a).unwrap(), 3);
+        assert_eq!(db.episode_count(sid_b).unwrap(), 0);
+    }
+
+    #[test]
+    fn last_checked_age_none_until_set_then_small() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b").unwrap();
+        let sid = db.upsert_series(src, &mk_airing("a", "A", None)).unwrap();
+        assert_eq!(db.last_checked_age_secs(sid).unwrap(), None);
+        db.set_last_checked_at(sid).unwrap();
+        let age = db.last_checked_age_secs(sid).unwrap().expect("age after set");
+        assert!((0..60).contains(&age), "freshly-set age should be ~0s, got {age}");
+    }
+
+    /// Airing-sort acceptance test (see the airing-sort-order design doc):
+    /// newest-first by next_episode_at, NULLs last, title as the stable
+    /// tie-break for equal timestamps.
+    #[test]
+    fn list_airing_orders_newest_first_nulls_last_title_tiebreak() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b").unwrap();
+        db.upsert_series(src, &mk_airing("older", "Older", Some(1_000_000))).unwrap();
+        db.upsert_series(src, &mk_airing("newer", "Newer", Some(2_000_000))).unwrap();
+        db.upsert_series(src, &mk_airing("nodate", "NoDate", None)).unwrap();
+        db.upsert_series(src, &mk_airing("tie-b", "Tie B", Some(1_000_000))).unwrap();
+
+        let titles: Vec<String> = db.list_airing(src).unwrap().into_iter().map(|s| s.title).collect();
+        assert_eq!(titles, vec!["Newer", "Older", "Tie B", "NoDate"]);
+    }
+
     #[test]
     fn upsert_source_and_series_then_follow() {
         let db = Db::open(":memory:").unwrap();
@@ -1225,7 +1379,7 @@ mod tests {
             url: "https://wwv.animeytx.net/tv/baki-dou/".into(),
             cover_url: None,
             is_airing: true,
-            followed: false,
+            followed: false, next_episode_at: None, site_episode_count: None,
         };
         let sid = db.upsert_series(src, &s).unwrap();
         // upsert again with new title => same row updated, not duplicated
@@ -1250,7 +1404,7 @@ mod tests {
         let src = db.upsert_source("AnimeYT", "https://wwv.animeytx.net").unwrap();
         let s = crate::models::Series {
             id: 0, slug: "x".into(), title: "X".into(),
-            url: "u".into(), cover_url: None, is_airing: true, followed: false,
+            url: "u".into(), cover_url: None, is_airing: true, followed: false, next_episode_at: None, site_episode_count: None,
         };
         let sid = db.upsert_series(src, &s).unwrap();
 
@@ -1283,7 +1437,7 @@ mod tests {
         let src = db.upsert_source("AnimeYT", "https://wwv.animeytx.net").unwrap();
         let s = crate::models::Series {
             id: 0, slug: "x".into(), title: "X".into(),
-            url: "u".into(), cover_url: None, is_airing: true, followed: false,
+            url: "u".into(), cover_url: None, is_airing: true, followed: false, next_episode_at: None, site_episode_count: None,
         };
         let sid = db.upsert_series(src, &s).unwrap();
         db.set_followed(sid, true).unwrap();
@@ -1308,7 +1462,7 @@ mod tests {
         let src = db.upsert_source("AnimeYT", "b").unwrap();
         let s = crate::models::Series {
             id: 0, slug: "x".into(), title: "X".into(),
-            url: "u".into(), cover_url: None, is_airing: true, followed: true,
+            url: "u".into(), cover_url: None, is_airing: true, followed: true, next_episode_at: None, site_episode_count: None,
         };
         let sid = db.upsert_series(src, &s).unwrap();
         db.insert_episode(&crate::models::Episode {
@@ -1326,7 +1480,7 @@ mod tests {
         let src = db.upsert_source("AnimeYT", "b").unwrap();
         let s = crate::models::Series {
             id: 0, slug: "x".into(), title: "X".into(),
-            url: "u".into(), cover_url: None, is_airing: false, followed: false,
+            url: "u".into(), cover_url: None, is_airing: false, followed: false, next_episode_at: None, site_episode_count: None,
         };
         let sid = db.upsert_series(src, &s).unwrap();
 
@@ -1344,7 +1498,7 @@ mod tests {
         let src = db.upsert_source("AnimeYT", "b").unwrap();
         let s = crate::models::Series {
             id: 0, slug: "x".into(), title: "X".into(),
-            url: "u".into(), cover_url: None, is_airing: false, followed: false,
+            url: "u".into(), cover_url: None, is_airing: false, followed: false, next_episode_at: None, site_episode_count: None,
         };
         let sid = db.upsert_series(src, &s).unwrap();
 
@@ -1367,7 +1521,7 @@ mod tests {
 
         let followed = crate::models::Series {
             id: 0, slug: "f".into(), title: "F".into(),
-            url: "u1".into(), cover_url: None, is_airing: false, followed: true,
+            url: "u1".into(), cover_url: None, is_airing: false, followed: true, next_episode_at: None, site_episode_count: None,
         };
         let sid_f = db.upsert_series(src, &followed).unwrap();
         db.set_followed(sid_f, true).unwrap();
@@ -1375,7 +1529,7 @@ mod tests {
 
         let want = crate::models::Series {
             id: 0, slug: "w".into(), title: "W".into(),
-            url: "u2".into(), cover_url: None, is_airing: false, followed: false,
+            url: "u2".into(), cover_url: None, is_airing: false, followed: false, next_episode_at: None, site_episode_count: None,
         };
         let sid_w = db.upsert_series(src, &want).unwrap();
         db.set_backlog_status(sid_w, Some("want")).unwrap();
@@ -1383,7 +1537,7 @@ mod tests {
 
         let discarded = crate::models::Series {
             id: 0, slug: "d".into(), title: "D".into(),
-            url: "u3".into(), cover_url: None, is_airing: false, followed: false,
+            url: "u3".into(), cover_url: None, is_airing: false, followed: false, next_episode_at: None, site_episode_count: None,
         };
         let sid_d = db.upsert_series(src, &discarded).unwrap();
         db.set_backlog_status(sid_d, Some("discarded")).unwrap();
@@ -1403,14 +1557,14 @@ mod tests {
         let src = db.upsert_source("AnimeYT", "b").unwrap();
         let want = crate::models::Series {
             id: 0, slug: "want".into(), title: "Want".into(),
-            url: "u1".into(), cover_url: None, is_airing: false, followed: false,
+            url: "u1".into(), cover_url: None, is_airing: false, followed: false, next_episode_at: None, site_episode_count: None,
         };
         let sid_want = db.upsert_series(src, &want).unwrap();
         db.set_backlog_status(sid_want, Some("want")).unwrap();
 
         let discarded = crate::models::Series {
             id: 0, slug: "disc".into(), title: "Disc".into(),
-            url: "u2".into(), cover_url: None, is_airing: false, followed: false,
+            url: "u2".into(), cover_url: None, is_airing: false, followed: false, next_episode_at: None, site_episode_count: None,
         };
         let sid_disc = db.upsert_series(src, &discarded).unwrap();
         db.set_backlog_status(sid_disc, Some("discarded")).unwrap();
@@ -1430,7 +1584,7 @@ mod tests {
         let src = db.upsert_source("AnimeYT", "b").unwrap();
         let s = crate::models::Series {
             id: 0, slug: "x".into(), title: "X".into(),
-            url: "u".into(), cover_url: None, is_airing: false, followed: true,
+            url: "u".into(), cover_url: None, is_airing: false, followed: true, next_episode_at: None, site_episode_count: None,
         };
         let sid = db.upsert_series(src, &s).unwrap();
         db.insert_series_genres(sid, &["Seinen".to_string()]).unwrap();
@@ -1452,7 +1606,7 @@ mod tests {
         let src = db.upsert_source("AnimeYT", "b").unwrap();
         let s = crate::models::Series {
             id: 0, slug: "anilist-42".into(), title: "X".into(),
-            url: "https://anilist.co/anime/42".into(), cover_url: None, is_airing: false, followed: false,
+            url: "https://anilist.co/anime/42".into(), cover_url: None, is_airing: false, followed: false, next_episode_at: None, site_episode_count: None,
         };
         let sid = db.upsert_series(src, &s).unwrap();
         db.set_anilist_id(sid, 42).unwrap();
@@ -1535,12 +1689,12 @@ mod tests {
         let src = db.upsert_source("AnimeYT", "b").unwrap();
         let real = crate::models::Series {
             id: 0, slug: "baki-dou".into(), title: "Baki-dou".into(),
-            url: "u1".into(), cover_url: None, is_airing: true, followed: false,
+            url: "u1".into(), cover_url: None, is_airing: true, followed: false, next_episode_at: None, site_episode_count: None,
         };
         let real_id = db.upsert_series(src, &real).unwrap();
         let synthetic = crate::models::Series {
             id: 0, slug: "anilist-7".into(), title: "Baki-dou".into(),
-            url: "https://anilist.co/anime/7".into(), cover_url: None, is_airing: false, followed: false,
+            url: "https://anilist.co/anime/7".into(), cover_url: None, is_airing: false, followed: false, next_episode_at: None, site_episode_count: None,
         };
         let synthetic_id = db.upsert_series(src, &synthetic).unwrap();
 
@@ -1564,13 +1718,13 @@ mod tests {
         let src = db.upsert_source("AnimeYT", "b").unwrap();
         let existing = crate::models::Series {
             id: 0, slug: "baki-dou".into(), title: "Baki-dou".into(),
-            url: "https://site/tv/baki-dou/".into(), cover_url: None, is_airing: true, followed: false,
+            url: "https://site/tv/baki-dou/".into(), cover_url: None, is_airing: true, followed: false, next_episode_at: None, site_episode_count: None,
         };
         let existing_id = db.upsert_series(src, &existing).unwrap();
 
         let synthetic = crate::models::Series {
             id: 0, slug: "anilist-7".into(), title: "Baki-dou".into(),
-            url: "https://anilist.co/anime/7".into(), cover_url: None, is_airing: false, followed: false,
+            url: "https://anilist.co/anime/7".into(), cover_url: None, is_airing: false, followed: false, next_episode_at: None, site_episode_count: None,
         };
         let synthetic_id = db.upsert_series(src, &synthetic).unwrap();
         db.set_anilist_id(synthetic_id, 7).unwrap();
@@ -1595,14 +1749,14 @@ mod tests {
         let src = db.upsert_source("AnimeYT", "b").unwrap();
         let existing = crate::models::Series {
             id: 0, slug: "baki-dou".into(), title: "Baki-dou".into(),
-            url: "https://site/tv/baki-dou/".into(), cover_url: None, is_airing: true, followed: false,
+            url: "https://site/tv/baki-dou/".into(), cover_url: None, is_airing: true, followed: false, next_episode_at: None, site_episode_count: None,
         };
         let existing_id = db.upsert_series(src, &existing).unwrap();
         db.set_backlog_status(existing_id, Some("discarded")).unwrap();
 
         let synthetic = crate::models::Series {
             id: 0, slug: "anilist-7".into(), title: "Baki-dou".into(),
-            url: "https://anilist.co/anime/7".into(), cover_url: None, is_airing: false, followed: false,
+            url: "https://anilist.co/anime/7".into(), cover_url: None, is_airing: false, followed: false, next_episode_at: None, site_episode_count: None,
         };
         let synthetic_id = db.upsert_series(src, &synthetic).unwrap();
         db.set_backlog_status(synthetic_id, Some("want")).unwrap();
@@ -1621,7 +1775,7 @@ mod tests {
         let synthetic = crate::models::Series {
             id: 0, slug: "anilist-7".into(), title: "Baki-dou".into(),
             url: "https://anilist.co/anime/7".into(), cover_url: Some("https://anilist-cdn/7.jpg".into()),
-            is_airing: false, followed: true,
+            is_airing: false, followed: true, next_episode_at: None, site_episode_count: None,
         };
         let sid = db.upsert_series(src, &synthetic).unwrap();
         db.set_anilist_id(sid, 7).unwrap();
@@ -1646,7 +1800,7 @@ mod tests {
         let src = db.upsert_source("AnimeYT", "b").unwrap();
         let s = crate::models::Series {
             id: 0, slug: "x".into(), title: "X".into(),
-            url: "u".into(), cover_url: None, is_airing: false, followed: false,
+            url: "u".into(), cover_url: None, is_airing: false, followed: false, next_episode_at: None, site_episode_count: None,
         };
         let sid = db.upsert_series(src, &s).unwrap();
         db.insert_series_genres(sid, &["Action".to_string(), "Isekai".to_string()]).unwrap();
@@ -1667,7 +1821,7 @@ mod tests {
         let src = db.upsert_source("AnimeYT", "b").unwrap();
         let s = crate::models::Series {
             id: 0, slug: "x".into(), title: "X".into(),
-            url: "u".into(), cover_url: None, is_airing: false, followed: false,
+            url: "u".into(), cover_url: None, is_airing: false, followed: false, next_episode_at: None, site_episode_count: None,
         };
         let sid = db.upsert_series(src, &s).unwrap();
         for n in ["1", "2", "3"] {
@@ -1690,7 +1844,7 @@ mod tests {
         let src = db.upsert_source("AnimeYT", "b").unwrap();
         let s = crate::models::Series {
             id: 0, slug: "x".into(), title: "X".into(),
-            url: "u".into(), cover_url: None, is_airing: false, followed: false,
+            url: "u".into(), cover_url: None, is_airing: false, followed: false, next_episode_at: None, site_episode_count: None,
         };
         let sid = db.upsert_series(src, &s).unwrap();
         db.mark_all_episodes_seen(sid).unwrap(); // must not error on zero episodes
@@ -1703,7 +1857,7 @@ mod tests {
         let src = db.upsert_source("AnimeYT", "b").unwrap();
         let s = crate::models::Series {
             id: 0, slug: "x".into(), title: "X".into(),
-            url: "https://site/tv/x/".into(), cover_url: None, is_airing: false, followed: false,
+            url: "https://site/tv/x/".into(), cover_url: None, is_airing: false, followed: false, next_episode_at: None, site_episode_count: None,
         };
         let sid = db.upsert_series(src, &s).unwrap();
         db.set_backlog_status(sid, Some("discarded")).unwrap();
@@ -1719,7 +1873,7 @@ mod tests {
         let src = db.upsert_source("AnimeYT", "b").unwrap();
         let s = crate::models::Series {
             id: 0, slug: "x".into(), title: "X".into(),
-            url: "u".into(), cover_url: None, is_airing: false, followed: true,
+            url: "u".into(), cover_url: None, is_airing: false, followed: true, next_episode_at: None, site_episode_count: None,
         };
         let sid = db.upsert_series(src, &s).unwrap();
 
@@ -1736,7 +1890,7 @@ mod tests {
         let full = crate::models::Series {
             id: 0, slug: "full".into(), title: "Full".into(),
             url: "u1".into(), cover_url: Some("data:image/png;base64,x".into()),
-            is_airing: false, followed: true,
+            is_airing: false, followed: true, next_episode_at: None, site_episode_count: None,
         };
         let sid_full = db.upsert_series(src, &full).unwrap();
         db.set_followed(sid_full, true).unwrap();
@@ -1745,7 +1899,7 @@ mod tests {
 
         let bare = crate::models::Series {
             id: 0, slug: "bare".into(), title: "Bare".into(),
-            url: "u2".into(), cover_url: None, is_airing: false, followed: true,
+            url: "u2".into(), cover_url: None, is_airing: false, followed: true, next_episode_at: None, site_episode_count: None,
         };
         let sid_bare = db.upsert_series(src, &bare).unwrap();
         db.set_followed(sid_bare, true).unwrap();
@@ -1753,7 +1907,7 @@ mod tests {
         // not followed => excluded
         let other = crate::models::Series {
             id: 0, slug: "other".into(), title: "Other".into(),
-            url: "u3".into(), cover_url: None, is_airing: false, followed: false,
+            url: "u3".into(), cover_url: None, is_airing: false, followed: false, next_episode_at: None, site_episode_count: None,
         };
         db.upsert_series(src, &other).unwrap();
 
@@ -1931,7 +2085,7 @@ mod tests {
         let series = crate::models::Series {
             id: 0, slug: "anilist-1".into(), title: "Decided".into(),
             url: "https://anilist.co/anime/1".into(), cover_url: None,
-            is_airing: false, followed: false,
+            is_airing: false, followed: false, next_episode_at: None, site_episode_count: None,
         };
         let sid = db.upsert_series(src, &series).unwrap();
         db.set_anilist_id(sid, 1).unwrap();
@@ -1951,7 +2105,7 @@ mod tests {
         let series = crate::models::Series {
             id: 0, slug: "anilist-1".into(), title: "OnlyOne".into(),
             url: "https://anilist.co/anime/1".into(), cover_url: None,
-            is_airing: false, followed: false,
+            is_airing: false, followed: false, next_episode_at: None, site_episode_count: None,
         };
         let sid = db.upsert_series(src, &series).unwrap();
         db.set_anilist_id(sid, 1).unwrap();
@@ -1966,7 +2120,7 @@ mod tests {
         let src = db.upsert_source("AnimeYT", "b").unwrap();
         let s = crate::models::Series {
             id: 0, slug: "anilist-42".into(), title: "X".into(),
-            url: "u".into(), cover_url: None, is_airing: false, followed: false,
+            url: "u".into(), cover_url: None, is_airing: false, followed: false, next_episode_at: None, site_episode_count: None,
         };
         let sid = db.upsert_series(src, &s).unwrap();
 
@@ -1994,7 +2148,7 @@ mod tests {
             // the anilist_id column (added by this migration) is unset.
             let s = crate::models::Series {
                 id: 0, slug: "anilist-777".into(), title: "Legacy".into(),
-                url: "u".into(), cover_url: None, is_airing: false, followed: false,
+                url: "u".into(), cover_url: None, is_airing: false, followed: false, next_episode_at: None, site_episode_count: None,
             };
             db.upsert_series(src, &s).unwrap();
         }
@@ -2016,7 +2170,7 @@ mod tests {
         // A followed series tagged with the site's Spanish genre "Acción".
         let followed = crate::models::Series {
             id: 0, slug: "f".into(), title: "F".into(),
-            url: "u1".into(), cover_url: None, is_airing: false, followed: true,
+            url: "u1".into(), cover_url: None, is_airing: false, followed: true, next_episode_at: None, site_episode_count: None,
         };
         let sid_f = db.upsert_series(src, &followed).unwrap();
         db.set_followed(sid_f, true).unwrap();
@@ -2025,7 +2179,7 @@ mod tests {
         // A 'want' series tagged with the catalog's English genre "Action".
         let want = crate::models::Series {
             id: 0, slug: "w".into(), title: "W".into(),
-            url: "u2".into(), cover_url: None, is_airing: false, followed: false,
+            url: "u2".into(), cover_url: None, is_airing: false, followed: false, next_episode_at: None, site_episode_count: None,
         };
         let sid_w = db.upsert_series(src, &want).unwrap();
         db.set_backlog_status(sid_w, Some("want")).unwrap();

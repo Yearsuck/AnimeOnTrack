@@ -11,7 +11,7 @@ use crate::swipe::{pick_index, shuffle, undecided_cards, weighted_pick_index};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Mutex;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 #[derive(Serialize, Clone)]
 struct RefreshProgress {
@@ -30,6 +30,12 @@ fn emit_refresh_progress(app: &AppHandle, current: usize, total: usize, title: &
 pub struct AppState {
     pub db: Mutex<Db>,
     pub source_id: Mutex<Option<i64>>,
+    /// Short-TTL rendered-HTML cache (optimization C, see `html_cache.rs`)
+    /// consulted by `scrape_via_mirrors` — makes re-scraping a page just
+    /// fetched by another flow (refresh → discover/link/backfill) free
+    /// within the TTL. Never used for refresh()'s own fetches, whose whole
+    /// point is checking for *changes*.
+    pub html_cache: Mutex<crate::html_cache::HtmlCache>,
     /// Cards from a (genre, page) fetch not yet shown this session — lets
     /// discover_swipe_card serve ~10 swipes off one HTTP fetch instead of one
     /// fetch per swipe.
@@ -107,7 +113,7 @@ async fn ensure_genre_list(
     }
     let a = adapter();
     let (_scraped, pairs, _mirror) =
-        scrape_via_mirrors(app, db_mirrors, &a.genre_list_url(""), |html| a.parse_genre_list(html)).await?;
+        scrape_via_mirrors(app, db_mirrors, &a.genre_list_url(""), true, |html| a.parse_genre_list(html)).await?;
     let db = state.db.lock().unwrap();
     save_genre_list(&db, &pairs)?;
     Ok(pairs)
@@ -130,7 +136,7 @@ async fn fetch_series_detail(
 ) -> Result<SeriesDetail, String> {
     let a = adapter();
     let path = path_of(series_url)?;
-    let (_scraped, details, _mirror) = scrape_via_mirrors(app, mirrors, &path, |html| {
+    let (_scraped, details, _mirror) = scrape_via_mirrors(app, mirrors, &path, true, |html| {
         let d = a.parse_series_detail(html)?;
         if d.genres.is_empty() {
             Err(anyhow::anyhow!("no genres parsed (likely wrong/incompatible mirror)"))
@@ -178,7 +184,7 @@ async fn fetch_episode_list_for(
     let a = adapter();
     let path = path_of(series_url)?;
     let (_scraped, eps, _mirror) =
-        scrape_via_mirrors(app, mirrors, &path, |html| a.parse_series(html)).await?;
+        scrape_via_mirrors(app, mirrors, &path, true, |html| a.parse_series(html)).await?;
     Ok(eps)
 }
 
@@ -210,10 +216,19 @@ fn with_mirror(mirrors: Vec<String>, url: &str) -> Vec<String> {
 /// Both must fall through to the next mirror, or one bad entry anywhere in the
 /// list can break every scan, even when a perfectly good mirror is right below
 /// it.
+///
+/// `use_cache: true` consults the app-wide short-TTL HTML cache before
+/// opening a scraper window (and every successful fetch populates it either
+/// way). Callers whose purpose is *detecting change* — refresh()'s listing
+/// scan and per-series fetches, the user-triggered airing rescan — must pass
+/// `false`: serving them minutes-old HTML would silently defeat the check
+/// they exist to perform. A cached page that no longer parses non-empty
+/// falls through to a real fetch rather than failing the mirror.
 async fn scrape_via_mirrors<T>(
     app: &AppHandle,
     mirrors: &[String],
     path: &str,
+    use_cache: bool,
     parse: impl Fn(&str) -> Result<Vec<T>, anyhow::Error>,
 ) -> Result<(ScrapeResult, Vec<T>, String), String> {
     if mirrors.is_empty() {
@@ -222,9 +237,28 @@ async fn scrape_via_mirrors<T>(
     let mut last_err = String::new();
     for mirror in mirrors {
         let url = format!("{mirror}{path}");
+        if use_cache {
+            let cached = {
+                let state = app.state::<AppState>();
+                let mut cache = state.html_cache.lock().unwrap();
+                cache.get(&url, std::time::Instant::now())
+            };
+            if let Some(html) = cached {
+                if let Ok(items) = parse(&html) {
+                    if !items.is_empty() {
+                        return Ok((ScrapeResult { html }, items, mirror.clone()));
+                    }
+                }
+                // Cached HTML didn't satisfy this parse — fall through to a
+                // real fetch below instead of treating the mirror as broken.
+            }
+        }
         match fetch_html(app, &url).await {
             Ok(scraped) => match parse(&scraped.html) {
                 Ok(items) if !items.is_empty() => {
+                    let state = app.state::<AppState>();
+                    let mut cache = state.html_cache.lock().unwrap();
+                    cache.put(&url, scraped.html.clone(), std::time::Instant::now());
                     return Ok((scraped, items, mirror.clone()));
                 }
                 Ok(_) => {
@@ -250,7 +284,7 @@ async fn scan_airing_via_mirrors(
     // airing_url() just appends a fixed path; reuse it against an empty base to get that path alone.
     let path = a.airing_url("").to_string();
     let (_scraped, series, working_mirror) =
-        scrape_via_mirrors(app, &mirrors, &path, |html| a.parse_airing(html)).await?;
+        scrape_via_mirrors(app, &mirrors, &path, false, |html| a.parse_airing(html)).await?;
     emit_refresh_progress(app, 1, 1, "Listado completo");
     // Cover images are intentionally NOT fetched here: doing it for every
     // series on the airing list (~150 at once) reads as scraping abuse to
@@ -419,6 +453,79 @@ pub fn set_followed(
 /// fetch, not the thing CLAUDE.md specifically calls out as abuse-prone.
 const REFRESH_CONCURRENCY: usize = 2;
 
+/// How long a followed series that is *absent* from the airing listing goes
+/// between episode-list rechecks. The spec drafted this as 7 days on the
+/// assumption "absent from the listing = finished", but live verification
+/// (2026-07-10) disproved that: the schedule listing only carries ~77 series
+/// while 114 are marked airing, and two followed shows absent from it
+/// (Tensei Slime T4, Ryoumin 0-nin) got real new episodes the same day. So
+/// absent series are rechecked daily — new episodes there arrive at most
+/// ~24h late instead of ~7 days, at the cost of one full off-listing sweep
+/// per day (first refresh of the day), with every later refresh that day
+/// still hitting the 1-fetch fast path.
+const OFF_LISTING_RECHECK_SECS: i64 = 24 * 3600;
+
+/// The skip decision at the heart of refresh()'s optimization A (see
+/// docs/superpowers/specs/2026-07-10-scraper-performance-design.md): given a
+/// followed series' fresh airing-listing metadata, does its episode-list
+/// page need fetching this cycle? Pure so it can be unit-tested without a
+/// scraper or DB — a bug here silently stops detecting new episodes, which
+/// is the app's entire purpose.
+///
+/// Live-verified semantics of the card metadata (2026-07-10, real site):
+/// the `.sb` badge is the **upcoming episode's number**, not the count of
+/// posted episodes — 8/8 followed series that were provably up to date
+/// (fetched moments earlier, no new episodes) all showed `.sb == db+1`, and
+/// the fixture agrees (Liar Game: `.sb`=14, newest posted episode 13). And
+/// no live card (0/77) carried a past `data-rlsdt`; just-aired series
+/// either roll to next week's timestamp or leave the listing entirely.
+///
+/// Rules, in order:
+/// - `force` (the Settings "Forzar recomprobación completa" escape hatch)
+///   always fetches.
+/// - `listing_scanned == false` (the airing-listing scan itself failed, so
+///   there is no fresh metadata) always fetches — behave exactly like the
+///   pre-skip-logic refresh rather than trusting stale signals.
+/// - Off the listing: fetch only when never checked or the last check is
+///   older than `OFF_LISTING_RECHECK_SECS` (see its comment — absent does
+///   NOT mean finished on this site).
+/// - On the listing with a past countdown: the episode aired and the card
+///   hasn't rolled over — fetch, whatever the badge says.
+/// - Badge present: fetch iff `badge > db+1` (site has posted something we
+///   don't have). `db+1` (up to date) and `<= db` (our numbering equal or
+///   ahead) both skip. Deliberately *not* the spec's literal "badge == db
+///   skips": that rule assumed badge = posted count, which the live data
+///   disproves — under it, every current weekly series re-fetches forever.
+/// - Badge unknown (`"??"`): future countdown skips, absent fetches.
+#[allow(clippy::too_many_arguments)]
+fn should_fetch_series(
+    force: bool,
+    listing_scanned: bool,
+    on_listing: bool,
+    next_episode_at: Option<i64>,
+    site_episode_count: Option<i64>,
+    db_episode_count: i64,
+    last_checked_age_secs: Option<i64>,
+    now_unix: i64,
+) -> bool {
+    if force || !listing_scanned {
+        return true;
+    }
+    if !on_listing {
+        return match last_checked_age_secs {
+            None => true,
+            Some(age) => age >= OFF_LISTING_RECHECK_SECS,
+        };
+    }
+    if next_episode_at.is_some_and(|t| t <= now_unix) {
+        return true;
+    }
+    match site_episode_count {
+        Some(next_number) => next_number > db_episode_count + 1,
+        None => next_episode_at.is_none(),
+    }
+}
+
 /// Fetch one series' episode list across mirrors. `None` means "skip, keep
 /// cached data" (malformed stored URL, or every mirror failed/mismatched) —
 /// same not-an-error semantics `refresh()`'s loop always had here.
@@ -432,30 +539,105 @@ async fn fetch_series_episodes(
         Ok(u) => format!("{}{}", u.path(), u.query().map(|q| format!("?{q}")).unwrap_or_default()),
         Err(_) => return None,
     };
-    match scrape_via_mirrors(app, mirrors, &path, |html| a.parse_series(html)).await {
+    match scrape_via_mirrors(app, mirrors, &path, false, |html| a.parse_series(html)).await {
         Ok((_scraped, eps, working_mirror)) => Some((eps, working_mirror, path)),
         Err(_) => None,
     }
 }
 
-/// For each followed series: scrape its page (falling back across mirrors),
-/// insert new episodes. Returns count of new episodes.
+/// For each followed series: decide (from one fresh airing-listing fetch)
+/// whether its episode page can even have changed, and scrape only the ones
+/// that can (falling back across mirrors), inserting new episodes. Returns
+/// count of new episodes.
+///
+/// Optimization A of the scraper-performance design: the airing listing
+/// already carries, for every series on it, the next-release timestamp
+/// (`data-rlsdt`) and the site's episode count (`.sb`), so a refresh with no
+/// new episodes anywhere needs 1 page fetch instead of ~119. See
+/// `should_fetch_series` for the exact skip rules and their correctness
+/// reasoning. `force: true` (the "Forzar recomprobación completa" Settings
+/// action) ignores every skip rule — the user's escape hatch, and the
+/// A/B-verification path for the skip logic itself.
 #[tauri::command]
-pub async fn refresh(app: AppHandle, state: State<'_, AppState>) -> Result<i64, String> {
+pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) -> Result<i64, String> {
+    let refresh_started = std::time::Instant::now();
     let src = get_source_id(&state)?;
-    let (followed, mirrors) = {
+    let mirrors = {
         let db = state.db.lock().unwrap();
-        (
-            db.list_followed(src).map_err(|e| e.to_string())?,
-            load_mirrors(&db)?,
-        )
+        load_mirrors(&db)?
     };
     let a = adapter();
-    let mut total_new = 0i64;
-    let total_series = followed.len();
-    let mut idx = 0usize;
 
-    for chunk in followed.chunks(REFRESH_CONCURRENCY) {
+    // One fresh airing-listing fetch up front — the skip decisions below are
+    // only sound against metadata from *this* scan, never a stale one, so
+    // this scan deliberately doesn't consult any cache. On failure (all
+    // mirrors down) fall back to fetching every followed series, exactly
+    // like the pre-skip-logic refresh.
+    emit_refresh_progress(&app, 0, 1, "Escaneando listado de estrenos");
+    let listing_path = a.airing_url("").to_string();
+    let listing_slugs: Option<std::collections::HashSet<String>> =
+        match scrape_via_mirrors(&app, &mirrors, &listing_path, false, |html| a.parse_airing(html)).await {
+            Ok((_scraped, series, _mirror)) => {
+                let db = state.db.lock().unwrap();
+                for s in &series {
+                    db.upsert_series(src, s).map_err(|e| e.to_string())?;
+                }
+                Some(series.into_iter().map(|s| s.slug).collect())
+            }
+            Err(e) => {
+                eprintln!("[scrape] refresh: airing-listing scan failed ({e}); falling back to fetching every followed series");
+                None
+            }
+        };
+
+    // Re-read followed AFTER the listing upserts so next_episode_at /
+    // site_episode_count are this scan's values, not last week's.
+    let followed = {
+        let db = state.db.lock().unwrap();
+        db.list_followed(src).map_err(|e| e.to_string())?
+    };
+    let total_series = followed.len();
+    let now_unix = chrono::Utc::now().timestamp();
+
+    // Partition into skip/fetch. Skipped series are reported to the progress
+    // bar immediately (the bar visibly races through them) so X/Y still
+    // covers ALL followed series, not just the fetched ones.
+    let mut to_fetch: Vec<Series> = Vec::new();
+    let mut idx = 0usize;
+    for s in followed {
+        let (db_count, checked_age) = {
+            let db = state.db.lock().unwrap();
+            (
+                db.episode_count(s.id).map_err(|e| e.to_string())?,
+                db.last_checked_age_secs(s.id).map_err(|e| e.to_string())?,
+            )
+        };
+        let on_listing = listing_slugs.as_ref().is_some_and(|set| set.contains(&s.slug));
+        if should_fetch_series(
+            force,
+            listing_slugs.is_some(),
+            on_listing,
+            s.next_episode_at,
+            s.site_episode_count,
+            db_count,
+            checked_age,
+            now_unix,
+        ) {
+            to_fetch.push(s);
+        } else {
+            idx += 1;
+            emit_refresh_progress(&app, idx, total_series, &s.title);
+        }
+    }
+    let skipped = total_series - to_fetch.len();
+    eprintln!(
+        "[scrape] refresh: {skipped} skipped, {} to fetch (force={force}, listing_scanned={})",
+        to_fetch.len(),
+        listing_slugs.is_some()
+    );
+
+    let mut total_new = 0i64;
+    for chunk in to_fetch.chunks(REFRESH_CONCURRENCY) {
         for s in chunk {
             emit_refresh_progress(&app, idx, total_series, &s.title);
             idx += 1;
@@ -496,6 +678,9 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>) -> Result<i64, 
                     db.insert_episode(&e).map_err(|e| e.to_string())?;
                     total_new += 1;
                 }
+                // Only on a *successful* fetch — a failed one leaves the old
+                // timestamp so the finished-show recheck retries next cycle.
+                db.set_last_checked_at(s.id).map_err(|e| e.to_string())?;
             }
 
             // One cover fetch per followed series per refresh — never in
@@ -526,6 +711,10 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>) -> Result<i64, 
         tokio::time::sleep(std::time::Duration::from_millis(400)).await;
     }
     emit_refresh_progress(&app, total_series, total_series, "Completado");
+    eprintln!(
+        "[scrape] refresh() wall time: {:?} for {total_series} followed series ({skipped} skipped), {total_new} new episodes",
+        refresh_started.elapsed()
+    );
     Ok(total_new)
 }
 
@@ -652,7 +841,7 @@ pub async fn discover_swipe_card(
             let a = adapter();
             let path = a.genre_page_url("", slug, page);
             let (scraped, raw_cards, _mirror) =
-                scrape_via_mirrors(&app, &mirrors, &path, |html| a.parse_finished_page(html)).await?;
+                scrape_via_mirrors(&app, &mirrors, &path, true, |html| a.parse_finished_page(html)).await?;
             state
                 .swipe_last_page
                 .lock()
@@ -697,7 +886,7 @@ pub async fn decide_swipe(
         url: card.url.clone(),
         cover_url: card.poster_url.clone(),
         is_airing: false,
-        followed: false,
+        followed: false, next_episode_at: None, site_episode_count: None,
     };
 
     let sid = match decision {
@@ -1231,7 +1420,7 @@ pub fn decide_catalog_card(
         url,
         cover_url: poster_url,
         is_airing: false,
-        followed: false,
+        followed: false, next_episode_at: None, site_episode_count: None,
     };
     let sid = db.upsert_series(src, &series).map_err(|e| e.to_string())?;
     db.set_anilist_id(sid, anilist_id).map_err(|e| e.to_string())?;
@@ -1286,7 +1475,7 @@ async fn search_site(
 ) -> Result<Vec<FinishedCard>, String> {
     let a = adapter();
     let path = a.search_url("", query);
-    let (_scraped, mut outcomes, _mirror) = scrape_via_mirrors(app, mirrors, &path, |html| {
+    let (_scraped, mut outcomes, _mirror) = scrape_via_mirrors(app, mirrors, &path, true, |html| {
         a.parse_search_results(html).map(|cards| vec![SearchOutcome { cards }])
     })
     .await?;
@@ -1423,4 +1612,109 @@ async fn link_series_core(
     }
 
     Ok((LinkOutcome::Linked { url: matched.url, episodes: episode_count }, Some(series_id)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const NOW: i64 = 1_783_400_000;
+    const DAY: i64 = 86_400;
+
+    /// Baseline "quiet week" listing series: next episode in the future and
+    /// the site's badge shows the *upcoming* episode's number (db+1, the
+    /// live-verified up-to-date pattern) — the case that must skip for the
+    /// big win to exist.
+    #[test]
+    fn skip_when_next_episode_in_future_and_no_count_conflict() {
+        assert!(!should_fetch_series(
+            false, true, true, Some(NOW + DAY), None, 5, None, NOW
+        ));
+        // .sb = db+1: up to date under the verified next-episode-number
+        // semantics (8/8 provably-current live series showed exactly this).
+        assert!(!should_fetch_series(
+            false, true, true, Some(NOW + DAY), Some(6), 5, None, NOW
+        ));
+        // .sb = db: db numbering equal/ahead of the badge — also nothing new.
+        assert!(!should_fetch_series(
+            false, true, true, Some(NOW + DAY), Some(5), 5, None, NOW
+        ));
+    }
+
+    #[test]
+    fn fetch_when_next_episode_in_past_and_count_unknown() {
+        assert!(should_fetch_series(
+            false, true, true, Some(NOW - 3600), None, 5, None, NOW
+        ));
+    }
+
+    /// A countdown sitting in the past means the episode aired and the card
+    /// hasn't rolled over — always fetch, regardless of what the badge says
+    /// (the badge may not have rolled yet either).
+    #[test]
+    fn fetch_when_countdown_in_past_even_if_badge_looks_current() {
+        assert!(should_fetch_series(
+            false, true, true, Some(NOW - 3600), Some(6), 5, None, NOW
+        ));
+        assert!(should_fetch_series(
+            false, true, true, Some(NOW - 3600), Some(5), 5, None, NOW
+        ));
+    }
+
+    /// .sb greater than db+1 means the site has posted episodes we don't
+    /// have (badge = next episode's number, so badge > db+1 ⇒ posted > db).
+    /// This must win even over a future countdown: the site rolls the
+    /// countdown to next week when it posts, so "future next_episode_at"
+    /// alone would skip a freshly-posted episode forever.
+    #[test]
+    fn fetch_when_badge_says_site_is_ahead_even_with_future_countdown() {
+        assert!(should_fetch_series(
+            false, true, true, Some(NOW + DAY), Some(7), 5, None, NOW
+        ));
+    }
+
+    #[test]
+    fn fetch_when_no_signal_at_all_on_listing() {
+        // On the listing but no countdown span and a non-numeric count
+        // ("??") — no basis to skip.
+        assert!(should_fetch_series(false, true, true, None, None, 5, None, NOW));
+    }
+
+    /// Followed series absent from the airing listing: fetch at most once
+    /// per OFF_LISTING_RECHECK interval (24h — live verification showed the
+    /// listing only carries ~77 series and genuinely-airing followed shows
+    /// can be absent from it, so "absent = finished" is false and a 7-day
+    /// interval would delay real episodes up to a week).
+    #[test]
+    fn off_listing_series_fetches_only_when_recheck_interval_elapsed() {
+        // Never checked → fetch.
+        assert!(should_fetch_series(false, true, false, None, None, 5, None, NOW));
+        // Checked 1 hour ago → skip.
+        assert!(!should_fetch_series(
+            false, true, false, None, None, 5, Some(3600), NOW
+        ));
+        // Checked 25 hours ago → fetch again.
+        assert!(should_fetch_series(
+            false, true, false, None, None, 5, Some(25 * 3600), NOW
+        ));
+    }
+
+    #[test]
+    fn force_always_fetches() {
+        // force=true overrides every skip rule, including the strongest ones.
+        assert!(should_fetch_series(
+            true, true, true, Some(NOW + DAY), Some(5), 5, Some(0), NOW
+        ));
+        assert!(should_fetch_series(true, true, false, None, None, 5, Some(0), NOW));
+    }
+
+    #[test]
+    fn listing_scan_failure_falls_back_to_fetching_everything() {
+        // If the airing-listing scan failed there is no fresh metadata; the
+        // refresh must behave exactly like the pre-skip-logic code and fetch
+        // every followed series rather than trusting stale skip signals.
+        assert!(should_fetch_series(
+            false, false, true, Some(NOW + DAY), Some(5), 5, Some(0), NOW
+        ));
+    }
 }

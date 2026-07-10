@@ -350,6 +350,15 @@ a:hover {
   color: var(--accent);
   backdrop-filter: blur(4px);
 }
+/* Next-episode countdown ("en 2 h" / "hace 5 h") — same chip treatment as
+   SIGUIENDO but anchored to the opposite corner so both can coexist, and in
+   the neutral text color: it's schedule info, not a followed-state accent. */
+.poster .chip.chip-countdown {
+  left: auto;
+  right: 8px;
+  color: var(--text);
+  font-weight: 600;
+}
 .card-body {
   padding: 10px 10px 12px;
 }

@@ -25,7 +25,9 @@ export const listAiring = () => invoke<Series[]>("list_airing");
 export const setFollowed = (seriesId: number, followed: boolean) =>
   invoke<void>("set_followed", { seriesId, followed });
 
-export const refresh = () => invoke<number>("refresh");
+// force=true ignores the skip rules and re-fetches every followed series
+// (Settings' "Forzar recomprobación completa" escape hatch).
+export const refresh = (force = false) => invoke<number>("refresh", { force });
 
 export const listPending = () => invoke<PendingItem[]>("list_pending");
 
