@@ -794,6 +794,39 @@ impl Db {
         Ok(rows)
     }
 
+    /// Episode-row count for one series — the DB side of refresh()'s skip
+    /// decision (compared against the airing card's `.sb` badge).
+    pub fn episode_count(&self, series_id: i64) -> Result<i64> {
+        Ok(self.conn.query_row(
+            "SELECT COUNT(*) FROM episodes WHERE series_id=?1",
+            [series_id],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// Record "this series' episode list was actually fetched just now" —
+    /// gates the FINISHED_RECHECK interval for followed series absent from
+    /// the airing listing (see `commands::should_fetch_series`).
+    pub fn set_last_checked_at(&self, series_id: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE series SET last_checked_at=datetime('now') WHERE id=?1",
+            [series_id],
+        )?;
+        Ok(())
+    }
+
+    /// Seconds since the last recorded episode-list fetch, or `None` if the
+    /// series has never had one recorded. Computed in SQL so the stored ISO
+    /// 8601 text never needs parsing in Rust.
+    pub fn last_checked_age_secs(&self, series_id: i64) -> Result<Option<i64>> {
+        Ok(self.conn.query_row(
+            "SELECT strftime('%s','now') - strftime('%s', last_checked_at)
+             FROM series WHERE id=?1",
+            [series_id],
+            |r| r.get(0),
+        )?)
+    }
+
     pub fn existing_episode_urls(&self, series_id: i64) -> Result<std::collections::HashSet<String>> {
         let mut stmt = self
             .conn
@@ -1244,6 +1277,68 @@ mod tests {
             .unwrap();
         assert_eq!(count, 1);
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// Minimal airing-row builder for the sort/skip-metadata tests below.
+    fn mk_airing(slug: &str, title: &str, next_episode_at: Option<i64>) -> crate::models::Series {
+        crate::models::Series {
+            id: 0,
+            slug: slug.into(),
+            title: title.into(),
+            url: format!("https://site/tv/{slug}/"),
+            cover_url: None,
+            is_airing: true,
+            followed: false,
+            next_episode_at,
+            site_episode_count: None,
+        }
+    }
+
+    #[test]
+    fn upsert_series_writes_and_updates_scan_owned_airing_metadata() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b").unwrap();
+        let mut s = mk_airing("x", "X", Some(1_783_350_140));
+        s.site_episode_count = Some(2);
+        let sid = db.upsert_series(src, &s).unwrap();
+        let got = db.list_airing(src).unwrap().into_iter().find(|r| r.id == sid).unwrap();
+        assert_eq!(got.next_episode_at, Some(1_783_350_140));
+        assert_eq!(got.site_episode_count, Some(2));
+
+        // A re-scan with fresh values overwrites both (scan-owned fields).
+        let mut s2 = mk_airing("x", "X", Some(1_783_954_940));
+        s2.site_episode_count = Some(3);
+        db.upsert_series(src, &s2).unwrap();
+        let got = db.list_airing(src).unwrap().into_iter().find(|r| r.id == sid).unwrap();
+        assert_eq!(got.next_episode_at, Some(1_783_954_940));
+        assert_eq!(got.site_episode_count, Some(3));
+    }
+
+    #[test]
+    fn episode_count_counts_only_this_series() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b").unwrap();
+        let sid_a = db.upsert_series(src, &mk_airing("a", "A", None)).unwrap();
+        let sid_b = db.upsert_series(src, &mk_airing("b", "B", None)).unwrap();
+        for i in 1..=3 {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: sid_a, number: i.to_string(), title: None,
+                url: format!("https://site/a-{i}"), released_at: None, seen: false,
+            }).unwrap();
+        }
+        assert_eq!(db.episode_count(sid_a).unwrap(), 3);
+        assert_eq!(db.episode_count(sid_b).unwrap(), 0);
+    }
+
+    #[test]
+    fn last_checked_age_none_until_set_then_small() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b").unwrap();
+        let sid = db.upsert_series(src, &mk_airing("a", "A", None)).unwrap();
+        assert_eq!(db.last_checked_age_secs(sid).unwrap(), None);
+        db.set_last_checked_at(sid).unwrap();
+        let age = db.last_checked_age_secs(sid).unwrap().expect("age after set");
+        assert!((0..60).contains(&age), "freshly-set age should be ~0s, got {age}");
     }
 
     #[test]

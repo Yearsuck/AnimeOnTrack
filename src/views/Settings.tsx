@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
-import { scanAiring, rescanAiring, getMirrors, setMirrors } from "../api";
+import { scanAiring, rescanAiring, getMirrors, setMirrors, refresh } from "../api";
 
 export function Settings() {
   const [firstUrl, setFirstUrl] = useState("https://wwv.animeytx.net");
   const [mirrorsText, setMirrorsText] = useState("");
   const [busy, setBusy] = useState(false);
   const [savingMirrors, setSavingMirrors] = useState(false);
+  const [forcing, setForcing] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
 
   async function loadMirrors() {
@@ -54,6 +55,22 @@ export function Settings() {
     }
   }
 
+  // Escape hatch for the refresh skip logic: re-fetch every followed
+  // series' episode list, ignoring the "can't have changed" rules. Slow
+  // (one page per followed series) but guaranteed exhaustive.
+  async function doForceRefresh() {
+    setForcing(true);
+    setMsg(null);
+    try {
+      const n = await refresh(true);
+      setMsg(`Recomprobación completa terminada: ${n} episodio(s) nuevo(s).`);
+    } catch (e) {
+      setMsg(String(e));
+    } finally {
+      setForcing(false);
+    }
+  }
+
   return (
     <div className="page" style={{ maxWidth: 560 }}>
       <div className="page-head">
@@ -94,6 +111,17 @@ export function Settings() {
           </button>
         </div>
         {msg && <p className="muted" style={{ marginTop: 12 }}>{msg}</p>}
+      </div>
+
+      <div className="series-block" style={{ padding: 16, marginTop: 16 }}>
+        <label className="muted" style={{ display: "block", marginBottom: 6, fontSize: 12.5 }}>
+          Actualizar normalmente se salta las series que no pueden tener episodios nuevos
+          (según el propio calendario de la web). Si sospechas que falta algún episodio,
+          esto vuelve a comprobar TODAS las series seguidas, una a una. Es lento.
+        </label>
+        <button className="btn" onClick={doForceRefresh} disabled={forcing}>
+          {forcing ? "Recomprobando…" : "Forzar recomprobación completa"}
+        </button>
       </div>
     </div>
   );

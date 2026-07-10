@@ -419,6 +419,65 @@ pub fn set_followed(
 /// fetch, not the thing CLAUDE.md specifically calls out as abuse-prone.
 const REFRESH_CONCURRENCY: usize = 2;
 
+/// How long a followed series that is *absent* from the airing listing (a
+/// finished show) goes between episode-list rechecks. A completed series
+/// does not sprout episodes; once a week is plenty.
+const FINISHED_RECHECK_SECS: i64 = 7 * 24 * 3600;
+
+/// The skip decision at the heart of refresh()'s optimization A (see
+/// docs/superpowers/specs/2026-07-10-scraper-performance-design.md): given a
+/// followed series' fresh airing-listing metadata, does its episode-list
+/// page need fetching this cycle? Pure so it can be unit-tested without a
+/// scraper or DB — a bug here silently stops detecting new episodes, which
+/// is the app's entire purpose.
+///
+/// Rules, in order:
+/// - `force` (the Settings "Forzar recomprobación completa" escape hatch)
+///   always fetches.
+/// - `listing_scanned == false` (the airing-listing scan itself failed, so
+///   there is no fresh metadata) always fetches — behave exactly like the
+///   pre-skip-logic refresh rather than trusting stale signals.
+/// - Off the listing (finished show): fetch only when never checked or the
+///   last check is older than `FINISHED_RECHECK_SECS`.
+/// - On the listing, the site's own episode count (`.sb` badge) is the
+///   primary signal when present: a mismatch with the DB count always
+///   fetches — deliberately *not* a plain OR of the spec's two skip rules,
+///   because if the site posts an episode and rolls the countdown to next
+///   week in the same update, "future `next_episode_at`" alone would skip
+///   forever and the episode would never be detected. Agreement always
+///   skips (even with the countdown in the past: aired-but-not-yet-posted
+///   means there is nothing new on the site to fetch).
+/// - Count unknown (`"??"`): fall back to the countdown — future skips,
+///   past/absent fetches.
+#[allow(clippy::too_many_arguments)]
+fn should_fetch_series(
+    force: bool,
+    listing_scanned: bool,
+    on_listing: bool,
+    next_episode_at: Option<i64>,
+    site_episode_count: Option<i64>,
+    db_episode_count: i64,
+    last_checked_age_secs: Option<i64>,
+    now_unix: i64,
+) -> bool {
+    if force || !listing_scanned {
+        return true;
+    }
+    if !on_listing {
+        return match last_checked_age_secs {
+            None => true,
+            Some(age) => age >= FINISHED_RECHECK_SECS,
+        };
+    }
+    match site_episode_count {
+        Some(n) => n != db_episode_count,
+        None => match next_episode_at {
+            Some(t) => t <= now_unix,
+            None => true,
+        },
+    }
+}
+
 /// Fetch one series' episode list across mirrors. `None` means "skip, keep
 /// cached data" (malformed stored URL, or every mirror failed/mismatched) —
 /// same not-an-error semantics `refresh()`'s loop always had here.
@@ -438,25 +497,99 @@ async fn fetch_series_episodes(
     }
 }
 
-/// For each followed series: scrape its page (falling back across mirrors),
-/// insert new episodes. Returns count of new episodes.
+/// For each followed series: decide (from one fresh airing-listing fetch)
+/// whether its episode page can even have changed, and scrape only the ones
+/// that can (falling back across mirrors), inserting new episodes. Returns
+/// count of new episodes.
+///
+/// Optimization A of the scraper-performance design: the airing listing
+/// already carries, for every series on it, the next-release timestamp
+/// (`data-rlsdt`) and the site's episode count (`.sb`), so a refresh with no
+/// new episodes anywhere needs 1 page fetch instead of ~119. See
+/// `should_fetch_series` for the exact skip rules and their correctness
+/// reasoning. `force: true` (the "Forzar recomprobación completa" Settings
+/// action) ignores every skip rule — the user's escape hatch, and the
+/// A/B-verification path for the skip logic itself.
 #[tauri::command]
-pub async fn refresh(app: AppHandle, state: State<'_, AppState>) -> Result<i64, String> {
+pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) -> Result<i64, String> {
     let refresh_started = std::time::Instant::now();
     let src = get_source_id(&state)?;
-    let (followed, mirrors) = {
+    let mirrors = {
         let db = state.db.lock().unwrap();
-        (
-            db.list_followed(src).map_err(|e| e.to_string())?,
-            load_mirrors(&db)?,
-        )
+        load_mirrors(&db)?
     };
     let a = adapter();
-    let mut total_new = 0i64;
-    let total_series = followed.len();
-    let mut idx = 0usize;
 
-    for chunk in followed.chunks(REFRESH_CONCURRENCY) {
+    // One fresh airing-listing fetch up front — the skip decisions below are
+    // only sound against metadata from *this* scan, never a stale one, so
+    // this scan deliberately doesn't consult any cache. On failure (all
+    // mirrors down) fall back to fetching every followed series, exactly
+    // like the pre-skip-logic refresh.
+    emit_refresh_progress(&app, 0, 1, "Escaneando listado de estrenos");
+    let listing_path = a.airing_url("").to_string();
+    let listing_slugs: Option<std::collections::HashSet<String>> =
+        match scrape_via_mirrors(&app, &mirrors, &listing_path, |html| a.parse_airing(html)).await {
+            Ok((_scraped, series, _mirror)) => {
+                let db = state.db.lock().unwrap();
+                for s in &series {
+                    db.upsert_series(src, s).map_err(|e| e.to_string())?;
+                }
+                Some(series.into_iter().map(|s| s.slug).collect())
+            }
+            Err(e) => {
+                eprintln!("[scrape] refresh: airing-listing scan failed ({e}); falling back to fetching every followed series");
+                None
+            }
+        };
+
+    // Re-read followed AFTER the listing upserts so next_episode_at /
+    // site_episode_count are this scan's values, not last week's.
+    let followed = {
+        let db = state.db.lock().unwrap();
+        db.list_followed(src).map_err(|e| e.to_string())?
+    };
+    let total_series = followed.len();
+    let now_unix = chrono::Utc::now().timestamp();
+
+    // Partition into skip/fetch. Skipped series are reported to the progress
+    // bar immediately (the bar visibly races through them) so X/Y still
+    // covers ALL followed series, not just the fetched ones.
+    let mut to_fetch: Vec<Series> = Vec::new();
+    let mut idx = 0usize;
+    for s in followed {
+        let (db_count, checked_age) = {
+            let db = state.db.lock().unwrap();
+            (
+                db.episode_count(s.id).map_err(|e| e.to_string())?,
+                db.last_checked_age_secs(s.id).map_err(|e| e.to_string())?,
+            )
+        };
+        let on_listing = listing_slugs.as_ref().is_some_and(|set| set.contains(&s.slug));
+        if should_fetch_series(
+            force,
+            listing_slugs.is_some(),
+            on_listing,
+            s.next_episode_at,
+            s.site_episode_count,
+            db_count,
+            checked_age,
+            now_unix,
+        ) {
+            to_fetch.push(s);
+        } else {
+            idx += 1;
+            emit_refresh_progress(&app, idx, total_series, &s.title);
+        }
+    }
+    let skipped = total_series - to_fetch.len();
+    eprintln!(
+        "[scrape] refresh: {skipped} skipped, {} to fetch (force={force}, listing_scanned={})",
+        to_fetch.len(),
+        listing_slugs.is_some()
+    );
+
+    let mut total_new = 0i64;
+    for chunk in to_fetch.chunks(REFRESH_CONCURRENCY) {
         for s in chunk {
             emit_refresh_progress(&app, idx, total_series, &s.title);
             idx += 1;
@@ -497,6 +630,9 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>) -> Result<i64, 
                     db.insert_episode(&e).map_err(|e| e.to_string())?;
                     total_new += 1;
                 }
+                // Only on a *successful* fetch — a failed one leaves the old
+                // timestamp so the finished-show recheck retries next cycle.
+                db.set_last_checked_at(s.id).map_err(|e| e.to_string())?;
             }
 
             // One cover fetch per followed series per refresh — never in
@@ -528,7 +664,7 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>) -> Result<i64, 
     }
     emit_refresh_progress(&app, total_series, total_series, "Completado");
     eprintln!(
-        "[scrape] refresh() wall time: {:?} for {total_series} followed series, {total_new} new episodes",
+        "[scrape] refresh() wall time: {:?} for {total_series} followed series ({skipped} skipped), {total_new} new episodes",
         refresh_started.elapsed()
     );
     Ok(total_new)
@@ -1428,4 +1564,96 @@ async fn link_series_core(
     }
 
     Ok((LinkOutcome::Linked { url: matched.url, episodes: episode_count }, Some(series_id)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const NOW: i64 = 1_783_400_000;
+    const DAY: i64 = 86_400;
+
+    /// Baseline "quiet week" listing series: counts agree, next episode in
+    /// the future — the case that must skip for the 119→1 win to exist.
+    #[test]
+    fn skip_when_next_episode_in_future_and_no_count_conflict() {
+        assert!(!should_fetch_series(
+            false, true, true, Some(NOW + DAY), None, 5, None, NOW
+        ));
+        assert!(!should_fetch_series(
+            false, true, true, Some(NOW + DAY), Some(5), 5, None, NOW
+        ));
+    }
+
+    #[test]
+    fn fetch_when_next_episode_in_past_and_count_unknown() {
+        assert!(should_fetch_series(
+            false, true, true, Some(NOW - 3600), None, 5, None, NOW
+        ));
+    }
+
+    #[test]
+    fn skip_when_site_episode_count_matches_db() {
+        // Count agreement alone is enough to skip, even with the countdown
+        // sitting in the past (episode aired but the site hasn't posted it
+        // yet — there is nothing new to fetch).
+        assert!(!should_fetch_series(
+            false, true, true, Some(NOW - 3600), Some(5), 5, None, NOW
+        ));
+        assert!(!should_fetch_series(false, true, true, None, Some(5), 5, None, NOW));
+    }
+
+    /// Deliberate deviation from a literal OR of the spec's two skip rules:
+    /// if the site posts an episode AND rolls the countdown to next week in
+    /// the same update, "future next_episode_at" alone would skip forever and
+    /// the new episode would never be detected. A count mismatch must always
+    /// win over a future countdown.
+    #[test]
+    fn fetch_when_site_count_disagrees_even_with_future_countdown() {
+        assert!(should_fetch_series(
+            false, true, true, Some(NOW + DAY), Some(6), 5, None, NOW
+        ));
+    }
+
+    #[test]
+    fn fetch_when_no_signal_at_all_on_listing() {
+        // On the listing but no countdown span and a non-numeric count
+        // ("??") — no basis to skip.
+        assert!(should_fetch_series(false, true, true, None, None, 5, None, NOW));
+    }
+
+    /// Followed series absent from the airing listing (finished show): fetch
+    /// at most once per FINISHED_RECHECK interval.
+    #[test]
+    fn off_listing_series_fetches_only_when_recheck_interval_elapsed() {
+        // Never checked → fetch.
+        assert!(should_fetch_series(false, true, false, None, None, 5, None, NOW));
+        // Checked 2 days ago → skip.
+        assert!(!should_fetch_series(
+            false, true, false, None, None, 5, Some(2 * DAY), NOW
+        ));
+        // Checked 8 days ago → fetch again.
+        assert!(should_fetch_series(
+            false, true, false, None, None, 5, Some(8 * DAY), NOW
+        ));
+    }
+
+    #[test]
+    fn force_always_fetches() {
+        // force=true overrides every skip rule, including the strongest ones.
+        assert!(should_fetch_series(
+            true, true, true, Some(NOW + DAY), Some(5), 5, Some(0), NOW
+        ));
+        assert!(should_fetch_series(true, true, false, None, None, 5, Some(0), NOW));
+    }
+
+    #[test]
+    fn listing_scan_failure_falls_back_to_fetching_everything() {
+        // If the airing-listing scan failed there is no fresh metadata; the
+        // refresh must behave exactly like the pre-skip-logic code and fetch
+        // every followed series rather than trusting stale skip signals.
+        assert!(should_fetch_series(
+            false, false, true, Some(NOW + DAY), Some(5), 5, Some(0), NOW
+        ));
+    }
 }
