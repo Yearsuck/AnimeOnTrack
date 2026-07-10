@@ -442,6 +442,7 @@ async fn fetch_series_episodes(
 /// insert new episodes. Returns count of new episodes.
 #[tauri::command]
 pub async fn refresh(app: AppHandle, state: State<'_, AppState>) -> Result<i64, String> {
+    let refresh_started = std::time::Instant::now();
     let src = get_source_id(&state)?;
     let (followed, mirrors) = {
         let db = state.db.lock().unwrap();
@@ -526,6 +527,10 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>) -> Result<i64, 
         tokio::time::sleep(std::time::Duration::from_millis(400)).await;
     }
     emit_refresh_progress(&app, total_series, total_series, "Completado");
+    eprintln!(
+        "[scrape] refresh() wall time: {:?} for {total_series} followed series, {total_new} new episodes",
+        refresh_started.elapsed()
+    );
     Ok(total_new)
 }
 

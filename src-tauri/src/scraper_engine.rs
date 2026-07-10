@@ -40,9 +40,11 @@ fn emit_stage(app: &AppHandle, stage: &str) {
 /// remote pages (and exposing it to an untrusted scraped site would be a
 /// security hole), so the host-driven approach is the only correct one here.
 pub async fn fetch_html(app: &AppHandle, url: &str) -> Result<ScrapeResult> {
+    let total_started = std::time::Instant::now();
     let _permit = SCRAPE_PERMITS.acquire().await;
     emit_stage(app, "opening");
     let label = format!("scraper-{}", uuid_like());
+    let build_started = std::time::Instant::now();
     let window = WebviewWindowBuilder::new(
         app,
         &label,
@@ -60,8 +62,9 @@ pub async fn fetch_html(app: &AppHandle, url: &str) -> Result<ScrapeResult> {
     // error instead of a stuck window waiting on you.
     .visible(false)
     .build()?;
+    let window_build_ms = build_started.elapsed().as_millis();
 
-    let result = extract_when_ready(app, &window).await;
+    let result = extract_when_ready(app, &window, window_build_ms, total_started).await;
     window.close().ok();
     result
 }
@@ -70,7 +73,12 @@ pub async fn fetch_html(app: &AppHandle, url: &str) -> Result<ScrapeResult> {
 /// real content, then extract the full HTML. Condition-based waiting rather
 /// than a fixed sleep, because the challenge clears in a variable amount of
 /// time.
-async fn extract_when_ready(app: &AppHandle, window: &WebviewWindow) -> Result<ScrapeResult> {
+async fn extract_when_ready(
+    app: &AppHandle,
+    window: &WebviewWindow,
+    window_build_ms: u128,
+    total_started: std::time::Instant,
+) -> Result<ScrapeResult> {
     // NOTE: does NOT require readyState==='complete' — pages on this site
     // carry ad/tracker resources that can keep the load event from ever
     // firing, leaving readyState stuck at 'interactive' indefinitely even
@@ -134,11 +142,26 @@ len: document.body ? document.body.innerHTML.length : -1})";
             "page did not become ready within 40s (a Cloudflare challenge may require manual solving)"
         ));
     }
+    let time_to_ready_ms = started.elapsed().as_millis();
 
     emit_stage(app, "extracting");
+    let extract_started = std::time::Instant::now();
     let json = eval(window, "document.documentElement.outerHTML", 15).await?;
     let html: String =
         serde_json::from_str(&json).map_err(|e| anyhow!("failed to decode page HTML: {e}"))?;
+    let extract_ms = extract_started.elapsed().as_millis();
+    let total_ms = total_started.elapsed().as_millis();
+
+    // Phase-0 measurement instrumentation (see
+    // docs/superpowers/specs/2026-07-10-scraper-performance-design.md): one
+    // line per fetch with the four numbers the design's "measure first"
+    // method needs to decide whether optimization B (a hot-window pool) is
+    // worth its risk. Kept permanently, same style as the existing
+    // `[scrape] poll N` lines — cheap, and useful for diagnosing slow
+    // refreshes after this ships too.
+    eprintln!(
+        "[scrape] fetch timing: window_build_ms={window_build_ms} time_to_ready_ms={time_to_ready_ms} (polls={poll_num}) extract_ms={extract_ms} total_ms={total_ms}"
+    );
 
     Ok(ScrapeResult { html })
 }
