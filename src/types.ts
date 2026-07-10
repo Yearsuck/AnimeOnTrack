@@ -86,6 +86,20 @@ export interface CatalogPage {
   items: CatalogAnime[];
   has_next_page: boolean;
   total_synced: number;
+  total_matching: number;
+}
+
+export interface CatalogFilter {
+  search?: string;
+  genres?: string[];
+  format?: string;
+  min_score?: number;
+  episodes?: string;
+}
+
+export interface CatalogFacets {
+  genres: string[];
+  formats: string[];
 }
 
 export interface CatalogSyncProgress {
