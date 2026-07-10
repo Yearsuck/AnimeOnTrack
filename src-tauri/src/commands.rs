@@ -702,7 +702,7 @@ pub async fn decide_swipe(
         url: card.url.clone(),
         cover_url: card.poster_url.clone(),
         is_airing: false,
-        followed: false,
+        followed: false, next_episode_at: None, site_episode_count: None,
     };
 
     let sid = match decision {
@@ -1236,7 +1236,7 @@ pub fn decide_catalog_card(
         url,
         cover_url: poster_url,
         is_airing: false,
-        followed: false,
+        followed: false, next_episode_at: None, site_episode_count: None,
     };
     let sid = db.upsert_series(src, &series).map_err(|e| e.to_string())?;
     db.set_anilist_id(sid, anilist_id).map_err(|e| e.to_string())?;

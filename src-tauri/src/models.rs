@@ -9,6 +9,19 @@ pub struct Series {
     pub cover_url: Option<String>,
     pub is_airing: bool,
     pub followed: bool,
+    /// Unix timestamp of the next episode's release, parsed from the airing
+    /// listing's `data-rlsdt` attribute (see `SiteAdapter::parse_airing`).
+    /// Only ever fresh for series currently on the airing listing — scan-owned,
+    /// like `followed`, and written by `Db::upsert_series`. `None` for series
+    /// that have never been seen on the airing listing, or whose card carried
+    /// no countdown span.
+    #[serde(default)]
+    pub next_episode_at: Option<i64>,
+    /// The site's own reported episode count for this series (the `.sb` badge
+    /// on its airing card), scan-owned like `next_episode_at`. `None` when
+    /// the badge is missing or non-numeric (e.g. `"??"`).
+    #[serde(default)]
+    pub site_episode_count: Option<i64>,
 }
 
 /// A followed series plus its episode counts, for the library view.
@@ -119,7 +132,7 @@ mod tests {
             url: "https://wwv.animeytx.net/tv/baki-dou/".into(),
             cover_url: Some("https://x/img.jpg".into()),
             is_airing: true,
-            followed: false,
+            followed: false, next_episode_at: None, site_episode_count: None,
         };
         let j = serde_json::to_string(&s).unwrap();
         let back: Series = serde_json::from_str(&j).unwrap();

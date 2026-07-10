@@ -67,6 +67,8 @@ impl SiteAdapter for AnimeytxAdapter {
         let a_sel = Selector::parse("a").unwrap();
         let tt_sel = Selector::parse(".tt").unwrap();
         let img_sel = Selector::parse("img").unwrap();
+        let cndwn_sel = Selector::parse(".epx.cndwn").unwrap();
+        let sb_sel = Selector::parse(".sb").unwrap();
 
         let mut out = Vec::new();
         for card in doc.select(&card_sel) {
@@ -74,6 +76,19 @@ impl SiteAdapter for AnimeytxAdapter {
                 Some(b) => b,
                 None => continue,
             };
+            // data-rlsdt is the unix timestamp of the NEXT episode's release
+            // (data-cndwn is the redundant seconds-remaining countdown, stale
+            // the instant it's parsed — ignored). Missing on a card with no
+            // countdown span at all.
+            let next_episode_at = card
+                .select(&cndwn_sel)
+                .next()
+                .and_then(|el| el.value().attr("data-rlsdt"))
+                .and_then(|s| s.parse::<i64>().ok());
+            // .sb is the site's reported episode count. Not always numeric —
+            // observed live values include "2", "14", and "??" — so this
+            // must parse to None rather than panic or coerce to 0.
+            let site_episode_count = text_of(card, &sb_sel).and_then(|s| s.parse::<i64>().ok());
             out.push(Series {
                 id: 0,
                 slug: slug_from_url(&url),
@@ -82,6 +97,8 @@ impl SiteAdapter for AnimeytxAdapter {
                 cover_url,
                 is_airing: true,
                 followed: false,
+                next_episode_at,
+                site_episode_count,
             });
         }
         Ok(out)
@@ -291,11 +308,40 @@ mod tests {
         assert_eq!(first.url, "https://wwv.animeytx.net/tv/world-is-dancing/");
         assert!(first.cover_url.as_deref().unwrap().contains("wp-content"));
         assert!(first.is_airing);
+        // World Is Dancing's card: data-rlsdt="1783350140", <span class="sb Sub">2</span>.
+        assert_eq!(first.next_episode_at, Some(1783350140));
+        assert_eq!(first.site_episode_count, Some(2));
         for s in &out {
             assert!(!s.url.is_empty());
             assert!(!s.slug.is_empty());
             assert!(!s.title.is_empty());
         }
+    }
+
+    #[test]
+    fn parses_airing_fixture_non_numeric_episode_count_is_none() {
+        // Third card (Higeki no Genkyou...) has <span class="sb Sub">??</span>
+        // — must parse to None, not panic or coerce to 0.
+        let html = include_str!("../../tests/fixtures/airing.html");
+        let out = AnimeytxAdapter.parse_airing(html).unwrap();
+        let third = &out[2];
+        assert_eq!(third.next_episode_at, Some(1783434000));
+        assert_eq!(third.site_episode_count, None);
+    }
+
+    #[test]
+    fn parses_airing_card_with_no_countdown_span_as_none() {
+        let html = r#"<div class="bsx">
+            <a href="https://wwv.animeytx.net/tv/no-countdown/" title="No Countdown">
+                <div class="limit"><div class="bt"><span class="sb Sub">5</span></div>
+                <img src="https://wwv.animeytx.net/wp-content/x.jpg"></div>
+                <div class="tt">No Countdown</div>
+            </a>
+        </div>"#;
+        let out = AnimeytxAdapter.parse_airing(html).unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].next_episode_at, None);
+        assert_eq!(out[0].site_episode_count, Some(5));
     }
 
     #[test]
