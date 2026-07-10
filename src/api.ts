@@ -14,6 +14,7 @@ import type {
   CatalogPage,
   CatalogFilter,
   CatalogFacets,
+  LinkOutcome,
 } from "./types";
 
 export const scanAiring = (baseUrl: string) =>
@@ -106,4 +107,7 @@ export const decideCatalogCard = (params: {
   genres: string[];
   format: string;
   decision: SwipeDecision;
-}) => invoke<void>("decide_catalog_card", params);
+}) => invoke<number>("decide_catalog_card", params);
+
+export const linkCatalogSeries = (seriesId: number) =>
+  invoke<LinkOutcome>("link_catalog_series", { seriesId });

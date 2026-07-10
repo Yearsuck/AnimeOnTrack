@@ -36,4 +36,15 @@ pub trait SiteAdapter: Send + Sync {
     /// *complete* genre set is available; listing cards only imply the
     /// genre archive they were found under.
     fn parse_series_detail(&self, html: &str) -> Result<SeriesDetail>;
+
+    /// Search-results URL for a free-text query (URL-encoded by the impl).
+    fn search_url(&self, base_url: &str, query: &str) -> String;
+    /// Cards from a search-results page. Same card shape as a genre listing.
+    /// `Ok(vec![])` is a legitimate "zero results for this query" answer,
+    /// not a failure — only a page that doesn't look like this site's search
+    /// results at all (wrong/incompatible mirror) is `Err`. See
+    /// `commands::search_site` for why this distinction matters: unlike
+    /// every other scrape in this codebase, a search's caller must not treat
+    /// "parsed empty" as "this mirror failed".
+    fn parse_search_results(&self, html: &str) -> Result<Vec<FinishedCard>>;
 }

@@ -5,6 +5,7 @@ import {
   discoverCatalogCard,
   getSeriesGenres,
   getTopGenres,
+  linkCatalogSeries,
   listBacklog,
   openEpisode,
   promoteDiscarded,
@@ -14,6 +15,60 @@ import {
 } from "../api";
 import { categoryColor } from "../lib/categoryColor";
 import type { GenreAffinity, Series, SwipeCard, SwipeDecision } from "../types";
+
+// decide_catalog_card always writes the synthetic slug `anilist-{id}`;
+// link_catalog_series rewrites it to the site's real slug on a successful
+// match. A real site slug starting with this literal is not a realistic
+// collision, so this doubles as a cheap "still unlinked?" signal the
+// frontend can read straight off `Series` without a dedicated field.
+function isUnlinkedCatalogRow(series: Series): boolean {
+  return series.slug.startsWith("anilist-");
+}
+
+type LinkStatus = {
+  id: number;
+  title: string;
+  state: "searching" | "linked" | "nomatch";
+  episodes?: number;
+};
+
+/// Serializes `linkCatalogSeries` calls through a single promise chain so
+/// rapid swiping never spawns unbounded parallel scrapes — the backend's
+/// SCRAPE_PERMITS semaphore would otherwise just queue them behind whatever
+/// the deck's own prefetching needs, defeating the point of not blocking the
+/// swipe on the link. Keeps the most recent 2 statuses for display.
+function useLinkQueue() {
+  const chainRef = useRef<Promise<void>>(Promise.resolve());
+  const [statuses, setStatuses] = useState<LinkStatus[]>([]);
+
+  const upsert = useCallback((next: LinkStatus) => {
+    setStatuses((prev) => [next, ...prev.filter((s) => s.id !== next.id)].slice(0, 2));
+  }, []);
+
+  const enqueue = useCallback(
+    (seriesId: number, title: string) => {
+      upsert({ id: seriesId, title, state: "searching" });
+      chainRef.current = chainRef.current
+        .then(() => linkCatalogSeries(seriesId))
+        .then((outcome) => {
+          if (outcome.type === "Linked") {
+            upsert({ id: seriesId, title, state: "linked", episodes: outcome.episodes });
+          } else if (outcome.type === "NoMatch") {
+            upsert({ id: seriesId, title, state: "nomatch" });
+          }
+          // AlreadyLinked: nothing to show — a freshly-decided card is never
+          // already linked, this only matters for the manual retry button.
+        })
+        .catch((err) => {
+          console.error("linkCatalogSeries failed for", seriesId, err);
+          upsert({ id: seriesId, title, state: "nomatch" });
+        });
+    },
+    [upsert]
+  );
+
+  return { statuses, enqueue };
+}
 
 type SubView = "swipe" | "listas";
 type SwipeOutDirection = "discard" | "want" | "seen" | null;
@@ -76,6 +131,7 @@ function SwipeView() {
   const queueRef = useRef<SwipeCard[]>([]);
   const fillingRef = useRef(false);
   const cardUrlRef = useRef<string | null>(null);
+  const { statuses: linkStatuses, enqueue: enqueueLink } = useLinkQueue();
 
   // Top the local queue back up to PREFETCH_TARGET, deduping against
   // whatever's already queued or on screen (discover_catalog_card can hand
@@ -154,7 +210,7 @@ function SwipeView() {
       const anilistId = anilistIdFromUrl(activeCard.url);
       const decidePromise =
         anilistId === null
-          ? Promise.resolve()
+          ? Promise.resolve(null)
           : decideCatalogCard({
               anilistId,
               title: activeCard.title,
@@ -168,10 +224,19 @@ function SwipeView() {
         setOutDirection(null);
         popNext(); // instant — already prefetched, no round-trip to wait on
         busyRef.current = false;
-        decidePromise.then(() => setCanUndo(true));
+        decidePromise.then((seriesId) => {
+          setCanUndo(true);
+          // Linking is a real scrape (seconds) — it must not block the swipe,
+          // so it's fired here without awaiting it, queued through
+          // useLinkQueue so rapid swiping serializes the scrapes instead of
+          // firing them all in parallel. Discard never searches the site.
+          if (seriesId !== null && decision !== "Discard") {
+            enqueueLink(seriesId, activeCard.title);
+          }
+        });
       }, 160);
     },
-    [card, popNext]
+    [card, popNext, enqueueLink]
   );
 
   const undo = useCallback(async () => {
@@ -278,24 +343,63 @@ function SwipeView() {
         </button>
       </div>
       <div className="swipe-hint">← Descartar · ↑ Ya lo vi · → Quiero ver · Ctrl+Z Deshacer</div>
+      {linkStatuses.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 8 }}>
+          {linkStatuses.map((s) => (
+            <div key={s.id} className="muted" style={{ fontSize: 12 }}>
+              {s.state === "searching" && `Buscando ${s.title} en la web…`}
+              {s.state === "linked" && `✓ Enlazado (${s.episodes} episodios)`}
+              {s.state === "nomatch" && `No encontrado en el sitio: ${s.title}`}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
 
 function WantRow({ series, onChanged }: { series: Series; onChanged: () => void }) {
   const [genres, setGenres] = useState<string[]>([]);
+  const [linking, setLinking] = useState(false);
+  const unlinked = isUnlinkedCatalogRow(series);
   useEffect(() => {
     getSeriesGenres(series.id).then(setGenres);
   }, [series.id]);
+
+  const retryLink = async () => {
+    setLinking(true);
+    try {
+      await linkCatalogSeries(series.id);
+    } finally {
+      setLinking(false);
+      onChanged();
+    }
+  };
 
   return (
     <div className="backlog-row">
       {series.cover_url && <img src={series.cover_url} alt="" />}
       <div className="backlog-main">
-        <div className="backlog-title">{series.title}</div>
+        <div className="backlog-title">
+          {series.title}
+          {unlinked && (
+            <span
+              className="muted"
+              style={{ fontSize: 11, marginLeft: 8, fontWeight: 400 }}
+              title="Todavía no se ha encontrado en el sitio"
+            >
+              (sin enlazar)
+            </span>
+          )}
+        </div>
         <div className="backlog-genres">{genres.join(", ") || " "}</div>
       </div>
       <div className="backlog-actions">
+        {unlinked && (
+          <button className="btn btn-ghost" onClick={retryLink} disabled={linking}>
+            {linking ? "Buscando…" : "Buscar en la web"}
+          </button>
+        )}
         <button
           className="btn btn-primary"
           onClick={async () => {

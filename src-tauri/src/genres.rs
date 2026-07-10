@@ -14,8 +14,10 @@
 /// Strip the handful of accented Latin-1 characters that show up in the
 /// site's Spanish genre tags. Not a general Unicode NFD normalizer — just
 /// enough to make `canonical_genre`'s lookup accent-insensitive without
-/// pulling in a dependency for a fixed, small vocabulary.
-fn strip_accents(s: &str) -> String {
+/// pulling in a dependency for a fixed, small vocabulary. `pub(crate)` so
+/// `matching.rs` can reuse it for title normalization instead of
+/// duplicating the same accent table.
+pub(crate) fn strip_accents(s: &str) -> String {
     s.chars()
         .map(|c| match c {
             'á' | 'à' | 'ä' | 'â' => 'a',

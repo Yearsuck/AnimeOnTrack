@@ -225,6 +225,45 @@ impl SiteAdapter for AnimeytxAdapter {
 
         Ok(SeriesDetail { genres, kind, synopsis })
     }
+
+    fn search_url(&self, base_url: &str, query: &str) -> String {
+        // DooPlay serves search at {base}/?s={urlencoded}, confirmed against
+        // real captured search-results HTML (see tests/fixtures/animeytx_search_*.html).
+        let encoded: String = url::form_urlencoded::byte_serialize(query.as_bytes()).collect();
+        format!("{}/?s={}", base_url.trim_end_matches('/'), encoded)
+    }
+
+    fn parse_search_results(&self, html: &str) -> Result<Vec<FinishedCard>> {
+        let doc = Html::parse_document(html);
+        // `.listupd` wraps the results area on both search and genre-listing
+        // pages (confirmed live): present-but-empty (just a "No se
+        // encuentra" message, no `.bsx` cards) for a genuine zero-hit search,
+        // and absent entirely only when the page isn't recognizable as this
+        // site's layout at all (wrong/incompatible mirror) — that's the only
+        // case this returns Err.
+        let container_sel = Selector::parse(".listupd").unwrap();
+        if doc.select(&container_sel).next().is_none() {
+            return Err(anyhow::anyhow!(
+                "no .listupd container found; not a recognizable search-results page"
+            ));
+        }
+        let card_sel = Selector::parse(".listupd .bsx").unwrap();
+        let a_sel = Selector::parse("a").unwrap();
+        let tt_sel = Selector::parse(".tt").unwrap();
+        let typez_sel = Selector::parse(".typez").unwrap();
+        let img_sel = Selector::parse("img").unwrap();
+
+        let mut out = Vec::new();
+        for card in doc.select(&card_sel) {
+            let (title, url, poster_url) = match card_basics(card, &a_sel, &tt_sel, &img_sel) {
+                Some(b) => b,
+                None => continue,
+            };
+            let kind = text_of(card, &typez_sel).unwrap_or_default();
+            out.push(FinishedCard { title, url, poster_url, kind, matched_genre: None });
+        }
+        Ok(out)
+    }
 }
 
 #[cfg(test)]
@@ -338,5 +377,48 @@ mod tests {
         );
         assert_eq!(d.kind.as_deref(), Some("TV"));
         assert!(d.synopsis.unwrap().contains("Nao Kanzaki"));
+    }
+
+    #[test]
+    fn search_url_is_urlencoded_query_string() {
+        let a = AnimeytxAdapter;
+        assert_eq!(
+            a.search_url("https://wwv.animeytx.net/", "naruto"),
+            "https://wwv.animeytx.net/?s=naruto"
+        );
+        assert_eq!(
+            a.search_url("https://wwv.animeytx.net", "Shingeki no Kyojin"),
+            "https://wwv.animeytx.net/?s=Shingeki+no+Kyojin"
+        );
+    }
+
+    // Both fixtures below are real HTML captured live via scraper_engine::fetch_html
+    // against https://wwv.animeytx.net/?s=naruto and /?s=xyzzyqqqnonexistentanimetitle999
+    // (2026-07-10) — not hand-written, per the design spec's requirement that
+    // parse_search_results not be built against guessed markup.
+
+    #[test]
+    fn parses_search_hits_fixture() {
+        let html = include_str!("../../tests/fixtures/animeytx_search_hits.html");
+        let out = AnimeytxAdapter.parse_search_results(html).unwrap();
+        assert_eq!(out.len(), 1, "the 'naruto' search fixture has exactly one .bsx result card");
+        let first = &out[0];
+        assert_eq!(first.title, "Boruto: Naruto Next Generations");
+        assert_eq!(first.url, "https://wwv.animeytx.net/tv/boruto-naruto-next-generations/");
+        assert_eq!(first.kind, "TV");
+        assert!(first.poster_url.as_deref().unwrap().contains("wp-content"));
+    }
+
+    #[test]
+    fn parses_search_empty_fixture_as_zero_results_not_an_error() {
+        let html = include_str!("../../tests/fixtures/animeytx_search_empty.html");
+        let out = AnimeytxAdapter.parse_search_results(html).unwrap();
+        assert!(out.is_empty(), "a genuine zero-hit search must parse to Ok(vec![]), not Err");
+    }
+
+    #[test]
+    fn parse_search_results_errs_on_unrecognizable_page() {
+        let err = AnimeytxAdapter.parse_search_results("<html><body>not this site</body></html>");
+        assert!(err.is_err(), "a page with no .listupd at all must be treated as a broken/wrong mirror");
     }
 }

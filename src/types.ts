@@ -65,6 +65,11 @@ export interface SwipeCard {
 
 export type SwipeDecision = "Seen" | "Want" | "Discard";
 
+export type LinkOutcome =
+  | { type: "Linked"; url: string; episodes: number }
+  | { type: "NoMatch" }
+  | { type: "AlreadyLinked" };
+
 export interface GenreAffinity {
   genre: string;
   score: number;

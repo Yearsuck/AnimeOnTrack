@@ -25,6 +25,20 @@ pub struct CatalogFilter {
     pub episodes: Option<String>,
 }
 
+/// The subset of a `series` row's fields `link_catalog_series` needs to
+/// decide how (or whether) to link it — see `Db::get_series_for_link` and
+/// `commands::link_catalog_series`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SeriesForLink {
+    pub id: i64,
+    pub source_id: i64,
+    pub slug: String,
+    pub anilist_id: Option<i64>,
+    pub followed: bool,
+    pub backlog_status: Option<String>,
+    pub watched_externally: bool,
+}
+
 /// Extract a comparable numeric value from an episode-number string, e.g.
 /// "12" -> 12.0, "12.5" -> 12.5 (OVA/special numbering), "1x05" -> season 1
 /// episode 5 packed as 100005.0 (season-prefixed numbering seen on
@@ -187,6 +201,13 @@ impl Db {
             "#,
         )?;
         ensure_column(&self.conn, "anilist_catalog", "popularity", "INTEGER")?;
+        // title_romaji/title_english: kept alongside `title` (which collapses
+        // to english-or-romaji) so matching.rs's best_match can try both when
+        // looking a catalog title up on the scraped site — see
+        // `anilist::CatalogAnime`'s field comments. Existing rows backfill on
+        // the next incremental sync; NULL until then is expected, not an error.
+        ensure_column(&self.conn, "anilist_catalog", "title_romaji", "TEXT")?;
+        ensure_column(&self.conn, "anilist_catalog", "title_english", "TEXT")?;
         self.conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_catalog_popularity ON anilist_catalog(popularity DESC);
              CREATE INDEX IF NOT EXISTS idx_catalog_genre ON anilist_catalog_genres(genre);",
@@ -224,6 +245,136 @@ impl Db {
                 r.get::<_, String>(0)
             })
             .ok())
+    }
+
+    /// The subset of a `series` row's fields `link_catalog_series` needs to
+    /// decide how (or whether) to link it — see `commands::link_catalog_series`.
+    pub fn get_series_for_link(&self, series_id: i64) -> Result<Option<SeriesForLink>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT id, source_id, slug, anilist_id, followed, backlog_status, watched_externally
+                 FROM series WHERE id=?1",
+                [series_id],
+                |r| {
+                    Ok(SeriesForLink {
+                        id: r.get(0)?,
+                        source_id: r.get(1)?,
+                        slug: r.get(2)?,
+                        anilist_id: r.get(3)?,
+                        followed: r.get::<_, i64>(4)? != 0,
+                        backlog_status: r.get(5)?,
+                        watched_externally: r.get::<_, i64>(6)? != 0,
+                    })
+                },
+            )
+            .ok())
+    }
+
+    /// `(title, title_romaji, title_english)` for a synced catalog entry —
+    /// `link_catalog_series` tries `title_romaji.unwrap_or(title)` first,
+    /// then `title_english` if that fails to match anything on the site.
+    pub fn get_catalog_titles(&self, anilist_id: i64) -> Result<Option<(String, Option<String>, Option<String>)>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT title, title_romaji, title_english FROM anilist_catalog WHERE id=?1",
+                [anilist_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .ok())
+    }
+
+    /// Does a *different* `series` row already own `(source_id, slug)`? Used
+    /// by `link_catalog_series` to detect that the matched site series is
+    /// already tracked (e.g. it's on the airing list) before ever attempting
+    /// an insert/update that could violate `UNIQUE(source_id, slug)`.
+    pub fn find_series_id_by_slug(&self, source_id: i64, slug: &str, exclude_id: i64) -> Result<Option<i64>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT id FROM series WHERE source_id=?1 AND slug=?2 AND id != ?3",
+                (source_id, slug, exclude_id),
+                |r| r.get(0),
+            )
+            .ok())
+    }
+
+    /// Fold a synthetic catalog-swipe row's decision flags onto an existing
+    /// real site row that turns out to share its slug, then delete the
+    /// synthetic row. `followed`/`watched_externally` are OR'd (either source
+    /// wanting it means the merged row does); `backlog_status` is
+    /// most-specific-wins — the existing row's own status survives if it
+    /// already has one, otherwise the synthetic row's takes over. Slug/url/
+    /// cover/kind/episodes are untouched: the existing row is canonical
+    /// (already scraped through the normal path), not the synthetic one.
+    pub fn merge_series_into(&self, existing_id: i64, synthetic_id: i64) -> Result<()> {
+        let (followed, backlog_status, watched_externally): (i64, Option<String>, i64) = self.conn.query_row(
+            "SELECT followed, backlog_status, watched_externally FROM series WHERE id=?1",
+            [synthetic_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )?;
+        self.conn.execute(
+            "UPDATE series SET
+                followed = followed OR ?1,
+                watched_externally = watched_externally OR ?2,
+                backlog_status = COALESCE(backlog_status, ?3)
+             WHERE id=?4",
+            (followed, watched_externally, backlog_status, existing_id),
+        )?;
+        self.delete_series(synthetic_id)
+    }
+
+    /// Rewrite a synthetic row's slug/url/cover/kind in place after a
+    /// successful site match — `id`/`followed`/`backlog_status`/
+    /// `watched_externally`/`anilist_id` are deliberately untouched (see
+    /// `commands::link_catalog_series`).
+    pub fn relink_series(
+        &self,
+        series_id: i64,
+        slug: &str,
+        url: &str,
+        cover_url: Option<&str>,
+        kind: &str,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE series SET slug=?1, url=?2, cover_url=?3, kind=?4 WHERE id=?5",
+            (slug, url, cover_url, kind, series_id),
+        )?;
+        Ok(())
+    }
+
+    /// Replace a series' genre set outright (unlike `insert_series_genres`,
+    /// which is additive) — used when linking rewrites a synthetic row's
+    /// AniList-sourced genres with the site's own.
+    pub fn replace_series_genres(&self, series_id: i64, genres: &[String]) -> Result<()> {
+        self.conn.execute("DELETE FROM series_genres WHERE series_id=?1", [series_id])?;
+        self.insert_series_genres(series_id, genres)
+    }
+
+    /// Mark every episode of `series_id` seen via the existing gap-free
+    /// `set_seen_cascade`, targeting whichever episode number sorts highest
+    /// by `parse_ep_number` — used when a catalog title decided `Seen`
+    /// (`watched_externally=1`) gets linked to a real site series and its
+    /// episode list is scraped in for the first time. Reusing the cascade
+    /// (rather than a blanket `UPDATE ... SET seen=1`) keeps this consistent
+    /// with the same season/episode-aware ordering the rest of the app's
+    /// watch-tracking relies on. A series with no episodes yet is a silent
+    /// no-op, not an error.
+    pub fn mark_all_episodes_seen(&self, series_id: i64) -> Result<()> {
+        let mut stmt = self.conn.prepare("SELECT number FROM episodes WHERE series_id=?1")?;
+        let numbers: Vec<String> = stmt
+            .query_map([series_id], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let highest = numbers.iter().max_by(|a, b| {
+            let av = parse_ep_number(a).unwrap_or(f64::MIN);
+            let bv = parse_ep_number(b).unwrap_or(f64::MIN);
+            av.partial_cmp(&bv).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        if let Some(number) = highest {
+            self.set_seen_cascade(series_id, number, true)?;
+        }
+        Ok(())
     }
 
     pub fn upsert_series(&self, source_id: i64, s: &crate::models::Series) -> Result<i64> {
@@ -757,14 +908,15 @@ impl Db {
         sort_order: i64,
     ) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO anilist_catalog(id, title, cover_url, format, episodes, average_score, popularity, url, sort_order)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            "INSERT INTO anilist_catalog(id, title, title_romaji, title_english, cover_url, format, episodes, average_score, popularity, url, sort_order)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
              ON CONFLICT(id) DO UPDATE SET
-                title=excluded.title, cover_url=excluded.cover_url, format=excluded.format,
+                title=excluded.title, title_romaji=excluded.title_romaji, title_english=excluded.title_english,
+                cover_url=excluded.cover_url, format=excluded.format,
                 episodes=excluded.episodes, average_score=excluded.average_score,
                 popularity=excluded.popularity, url=excluded.url, sort_order=excluded.sort_order",
             (
-                anime.id, &anime.title, &anime.cover_url, &anime.format,
+                anime.id, &anime.title, &anime.title_romaji, &anime.title_english, &anime.cover_url, &anime.format,
                 anime.episodes, anime.average_score, anime.popularity, &anime.url, sort_order,
             ),
         )?;
@@ -860,7 +1012,7 @@ impl Db {
         let offset = (page.max(1) - 1) * per_page;
         let (where_sql, mut params) = Self::build_catalog_where(filter);
         let sql = format!(
-            "SELECT id, title, cover_url, format, episodes, average_score, popularity, url
+            "SELECT id, title, title_romaji, title_english, cover_url, format, episodes, average_score, popularity, url
              FROM anilist_catalog WHERE {where_sql}
              ORDER BY popularity DESC NULLS LAST, id LIMIT ? OFFSET ?"
         );
@@ -917,6 +1069,8 @@ impl Db {
         Ok(crate::anilist::CatalogAnime {
             id,
             title: r.get("title")?,
+            title_romaji: r.get("title_romaji")?,
+            title_english: r.get("title_english")?,
             cover_url: r.get("cover_url")?,
             format: r.get("format")?,
             episodes: r.get("episodes")?,
@@ -969,7 +1123,7 @@ impl Db {
     ) -> Result<Option<crate::anilist::CatalogAnime>> {
         const MIN_POPULARITY: i64 = 500;
         let mut stmt = self.conn.prepare(
-            "SELECT c.id, c.title, c.cover_url, c.format, c.episodes, c.average_score, c.popularity, c.url
+            "SELECT c.id, c.title, c.title_romaji, c.title_english, c.cover_url, c.format, c.episodes, c.average_score, c.popularity, c.url
              FROM anilist_catalog c
              JOIN anilist_catalog_genres g ON g.anilist_id = c.id
              WHERE g.genre = ?1
@@ -1275,6 +1429,226 @@ mod tests {
     }
 
     #[test]
+    fn get_series_for_link_reads_link_relevant_fields() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b").unwrap();
+        let s = crate::models::Series {
+            id: 0, slug: "anilist-42".into(), title: "X".into(),
+            url: "https://anilist.co/anime/42".into(), cover_url: None, is_airing: false, followed: false,
+        };
+        let sid = db.upsert_series(src, &s).unwrap();
+        db.set_anilist_id(sid, 42).unwrap();
+        db.set_backlog_status(sid, Some("want")).unwrap();
+
+        let info = db.get_series_for_link(sid).unwrap().unwrap();
+        assert_eq!(info.id, sid);
+        assert_eq!(info.source_id, src);
+        assert_eq!(info.slug, "anilist-42");
+        assert_eq!(info.anilist_id, Some(42));
+        assert_eq!(info.backlog_status.as_deref(), Some("want"));
+        assert!(!info.followed);
+        assert!(!info.watched_externally);
+    }
+
+    #[test]
+    fn get_series_for_link_none_for_missing_row() {
+        let db = Db::open(":memory:").unwrap();
+        assert!(db.get_series_for_link(999).unwrap().is_none());
+    }
+
+    #[test]
+    fn get_catalog_titles_reads_all_three_title_fields() {
+        let db = Db::open(":memory:").unwrap();
+        let anime = crate::anilist::CatalogAnime {
+            id: 42,
+            title: "Attack on Titan".into(),
+            title_romaji: Some("Shingeki no Kyojin".into()),
+            title_english: Some("Attack on Titan".into()),
+            cover_url: None,
+            format: Some("TV".into()),
+            genres: vec!["Action".into()],
+            episodes: Some(25),
+            average_score: Some(90),
+            popularity: Some(1000),
+            url: "https://anilist.co/anime/42".into(),
+        };
+        db.upsert_catalog_anime(&anime, 0).unwrap();
+
+        let (title, romaji, english) = db.get_catalog_titles(42).unwrap().unwrap();
+        assert_eq!(title, "Attack on Titan");
+        assert_eq!(romaji.as_deref(), Some("Shingeki no Kyojin"));
+        assert_eq!(english.as_deref(), Some("Attack on Titan"));
+    }
+
+    #[test]
+    fn find_series_id_by_slug_excludes_given_id_and_scopes_by_source() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b").unwrap();
+        let real = crate::models::Series {
+            id: 0, slug: "baki-dou".into(), title: "Baki-dou".into(),
+            url: "u1".into(), cover_url: None, is_airing: true, followed: false,
+        };
+        let real_id = db.upsert_series(src, &real).unwrap();
+        let synthetic = crate::models::Series {
+            id: 0, slug: "anilist-7".into(), title: "Baki-dou".into(),
+            url: "https://anilist.co/anime/7".into(), cover_url: None, is_airing: false, followed: false,
+        };
+        let synthetic_id = db.upsert_series(src, &synthetic).unwrap();
+
+        // Excluding the synthetic row's own id, "baki-dou" resolves to the real row.
+        assert_eq!(
+            db.find_series_id_by_slug(src, "baki-dou", synthetic_id).unwrap(),
+            Some(real_id)
+        );
+        // No collision for a slug nothing owns.
+        assert_eq!(db.find_series_id_by_slug(src, "no-such-slug", synthetic_id).unwrap(), None);
+    }
+
+    /// Acceptance criterion: "linking a synthetic row onto an existing site
+    /// slug merges rather than violating uniqueness" — `merge_series_into`
+    /// must move the synthetic row's decision flags onto the existing real
+    /// row (OR'd / most-specific-wins) and delete the synthetic row, never
+    /// attempting an insert/update that could hit `UNIQUE(source_id, slug)`.
+    #[test]
+    fn merge_series_into_transfers_flags_and_deletes_synthetic() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b").unwrap();
+        let existing = crate::models::Series {
+            id: 0, slug: "baki-dou".into(), title: "Baki-dou".into(),
+            url: "https://site/tv/baki-dou/".into(), cover_url: None, is_airing: true, followed: false,
+        };
+        let existing_id = db.upsert_series(src, &existing).unwrap();
+
+        let synthetic = crate::models::Series {
+            id: 0, slug: "anilist-7".into(), title: "Baki-dou".into(),
+            url: "https://anilist.co/anime/7".into(), cover_url: None, is_airing: false, followed: false,
+        };
+        let synthetic_id = db.upsert_series(src, &synthetic).unwrap();
+        db.set_anilist_id(synthetic_id, 7).unwrap();
+        db.set_followed(synthetic_id, true).unwrap();
+        db.set_backlog_status(synthetic_id, Some("want")).unwrap();
+
+        db.merge_series_into(existing_id, synthetic_id).unwrap();
+
+        // Synthetic row is gone.
+        assert!(db.get_series_for_link(synthetic_id).unwrap().is_none());
+        // Existing row picked up the synthetic row's flags.
+        let merged = db.get_series_for_link(existing_id).unwrap().unwrap();
+        assert!(merged.followed);
+        assert_eq!(merged.backlog_status.as_deref(), Some("want"));
+        // Existing row's own slug/url survive untouched (it stays canonical).
+        assert_eq!(merged.slug, "baki-dou");
+    }
+
+    #[test]
+    fn merge_series_into_keeps_existing_backlog_status_when_it_already_has_one() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b").unwrap();
+        let existing = crate::models::Series {
+            id: 0, slug: "baki-dou".into(), title: "Baki-dou".into(),
+            url: "https://site/tv/baki-dou/".into(), cover_url: None, is_airing: true, followed: false,
+        };
+        let existing_id = db.upsert_series(src, &existing).unwrap();
+        db.set_backlog_status(existing_id, Some("discarded")).unwrap();
+
+        let synthetic = crate::models::Series {
+            id: 0, slug: "anilist-7".into(), title: "Baki-dou".into(),
+            url: "https://anilist.co/anime/7".into(), cover_url: None, is_airing: false, followed: false,
+        };
+        let synthetic_id = db.upsert_series(src, &synthetic).unwrap();
+        db.set_backlog_status(synthetic_id, Some("want")).unwrap();
+
+        db.merge_series_into(existing_id, synthetic_id).unwrap();
+
+        // Existing row's own (more specific/pre-existing) status wins.
+        let merged = db.get_series_for_link(existing_id).unwrap().unwrap();
+        assert_eq!(merged.backlog_status.as_deref(), Some("discarded"));
+    }
+
+    #[test]
+    fn relink_series_updates_slug_url_cover_and_kind_in_place() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b").unwrap();
+        let synthetic = crate::models::Series {
+            id: 0, slug: "anilist-7".into(), title: "Baki-dou".into(),
+            url: "https://anilist.co/anime/7".into(), cover_url: Some("https://anilist-cdn/7.jpg".into()),
+            is_airing: false, followed: true,
+        };
+        let sid = db.upsert_series(src, &synthetic).unwrap();
+        db.set_anilist_id(sid, 7).unwrap();
+        // upsert_series deliberately never writes `followed` (see its own
+        // doc comment) — set it the same way the rest of the codebase does.
+        db.set_followed(sid, true).unwrap();
+
+        db.relink_series(sid, "baki-dou", "https://site/tv/baki-dou/", Some("https://site/cover.jpg"), "TV").unwrap();
+
+        let url = db.get_series_url(sid).unwrap().unwrap();
+        assert_eq!(url, "https://site/tv/baki-dou/");
+        // followed/anilist_id survive — relink_series only touches slug/url/cover/kind.
+        let info = db.get_series_for_link(sid).unwrap().unwrap();
+        assert_eq!(info.slug, "baki-dou");
+        assert!(info.followed);
+        assert_eq!(info.anilist_id, Some(7));
+    }
+
+    #[test]
+    fn replace_series_genres_drops_old_genres_instead_of_accumulating() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b").unwrap();
+        let s = crate::models::Series {
+            id: 0, slug: "x".into(), title: "X".into(),
+            url: "u".into(), cover_url: None, is_airing: false, followed: false,
+        };
+        let sid = db.upsert_series(src, &s).unwrap();
+        db.insert_series_genres(sid, &["Action".to_string(), "Isekai".to_string()]).unwrap();
+
+        db.replace_series_genres(sid, &["Drama".to_string()]).unwrap();
+
+        assert_eq!(db.list_series_genres(sid).unwrap(), vec!["Drama".to_string()]);
+    }
+
+    /// Acceptance criterion: "watched_externally + link marks all episodes
+    /// seen" — after episodes are scraped in for a title the user decided
+    /// `Seen` on the catalog deck, every episode must end up seen, via the
+    /// same gap-free `set_seen_cascade` the rest of the app's watch-tracking
+    /// uses (not a separate blanket UPDATE).
+    #[test]
+    fn mark_all_episodes_seen_marks_every_episode_via_cascade() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b").unwrap();
+        let s = crate::models::Series {
+            id: 0, slug: "x".into(), title: "X".into(),
+            url: "u".into(), cover_url: None, is_airing: false, followed: false,
+        };
+        let sid = db.upsert_series(src, &s).unwrap();
+        for n in ["1", "2", "3"] {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: sid, number: n.into(), title: None,
+                url: format!("e{n}"), released_at: None, seen: false,
+            }).unwrap();
+        }
+
+        db.mark_all_episodes_seen(sid).unwrap();
+
+        let eps = db.list_series_episodes(sid).unwrap();
+        assert_eq!(eps.len(), 3);
+        assert!(eps.iter().all(|e| e.seen), "every episode must be marked seen");
+    }
+
+    #[test]
+    fn mark_all_episodes_seen_is_a_no_op_on_a_series_with_no_episodes() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b").unwrap();
+        let s = crate::models::Series {
+            id: 0, slug: "x".into(), title: "X".into(),
+            url: "u".into(), cover_url: None, is_airing: false, followed: false,
+        };
+        let sid = db.upsert_series(src, &s).unwrap();
+        db.mark_all_episodes_seen(sid).unwrap(); // must not error on zero episodes
+        assert!(db.list_series_episodes(sid).unwrap().is_empty());
+    }
+
+    #[test]
     fn known_series_urls_reflects_any_decided_row() {
         let db = Db::open(":memory:").unwrap();
         let src = db.upsert_source("AnimeYT", "b").unwrap();
@@ -1361,6 +1735,8 @@ mod tests {
         crate::anilist::CatalogAnime {
             id,
             title: title.into(),
+            title_romaji: None,
+            title_english: None,
             cover_url: Some(format!("https://cdn/{id}.jpg")),
             format: Some("TV".into()),
             genres: genres.iter().map(|g| g.to_string()).collect(),
@@ -1625,6 +2001,8 @@ mod tests {
         crate::anilist::CatalogAnime {
             id,
             title: title.into(),
+            title_romaji: None,
+            title_english: None,
             cover_url: None,
             format: Some(format.into()),
             genres: genres.iter().map(|g| g.to_string()).collect(),
