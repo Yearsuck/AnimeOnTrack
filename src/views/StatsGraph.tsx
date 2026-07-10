@@ -97,7 +97,13 @@ function fallbackCircleCanvas(color: string): HTMLCanvasElement {
   return canvas;
 }
 
-export function StatsGraph({ seriesList }: { seriesList: SeriesGraphNode[] }) {
+export function StatsGraph({
+  seriesList,
+  active,
+}: {
+  seriesList: SeriesGraphNode[];
+  active: boolean;
+}) {
   const graphRef = useRef<ForceGraphMethods<NodeObject<GNode>, GLink> | undefined>(undefined);
   const containerRef = useRef<HTMLDivElement>(null);
   const [height, setHeight] = useState(MIN_HEIGHT);
@@ -123,6 +129,15 @@ export function StatsGraph({ seriesList }: { seriesList: SeriesGraphNode[] }) {
     const el = containerRef.current;
     if (!el) return;
     const recompute = () => {
+      // display:none (tab hidden via App.tsx's `hidden` attribute) collapses
+      // the box to clientWidth 0 — ResizeObserver and getBoundingClientRect
+      // still fire/report through that collapse, and acting on it would
+      // push a zero size into the graph, leaving the canvas blank on
+      // re-show. Ignore zero-width reads and keep the last known-good size;
+      // the `active` effect below forces one fresh recompute on becoming
+      // visible again (covers the case where the window was resized while
+      // hidden).
+      if (el.clientWidth === 0) return;
       const top = el.getBoundingClientRect().top;
       setHeight(Math.max(MIN_HEIGHT, window.innerHeight - top - BOTTOM_MARGIN));
       setWidth(el.clientWidth);
@@ -136,6 +151,15 @@ export function StatsGraph({ seriesList }: { seriesList: SeriesGraphNode[] }) {
       window.removeEventListener("resize", recompute);
     };
   }, []);
+
+  useEffect(() => {
+    if (!active) return;
+    const el = containerRef.current;
+    if (!el || el.clientWidth === 0) return;
+    const top = el.getBoundingClientRect().top;
+    setHeight(Math.max(MIN_HEIGHT, window.innerHeight - top - BOTTOM_MARGIN));
+    setWidth(el.clientWidth);
+  }, [active]);
 
   useEffect(() => {
     const fg = graphRef.current as unknown as

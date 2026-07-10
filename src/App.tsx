@@ -31,6 +31,12 @@ export default function App() {
   const [pending, setPending] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
   const [airingRefreshSignal, setAiringRefreshSignal] = useState(0);
+  // Estadísticas mounts the three.js/d3-force graph, which is expensive to
+  // build and re-layout — see docs/superpowers/specs/2026-07-10-stats-graph-cache-design.md.
+  // Once visited it stays mounted (hidden via CSS, not unmounted) so
+  // switching tabs and back doesn't rebuild the renderer or re-scramble the
+  // layout. Lazy: only mounts on first visit, not eagerly at app start.
+  const [statsVisited, setStatsVisited] = useState(false);
 
   const refreshBadge = useCallback(async () => {
     try {
@@ -77,6 +83,10 @@ export default function App() {
       if (view !== "airing") setView("pending");
     }
   }
+
+  useEffect(() => {
+    if (view === "stats") setStatsVisited(true);
+  }, [view]);
 
   function openSeries(s: Series) {
     setCameFrom(view === "detail" ? cameFrom : view);
@@ -139,7 +149,11 @@ export default function App() {
       {view === "library" && <Library onOpenSeries={openSeries} />}
       {view === "descubrir" && <Descubrir onOpenSeries={openSeries} />}
       {view === "catalog" && <Catalog />}
-      {view === "stats" && <Stats />}
+      {statsVisited && (
+        <div hidden={view !== "stats"}>
+          <Stats active={view === "stats"} />
+        </div>
+      )}
       {view === "settings" && <Settings />}
       {view === "detail" && selected && (
         <SeriesDetail

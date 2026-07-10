@@ -6,7 +6,7 @@ import { StatsRings } from "./StatsRings";
 
 type StatsView = "grafo" | "barras";
 
-export function Stats() {
+export function Stats({ active }: { active: boolean }) {
   const [summary, setSummary] = useState<WatchSummary | null>(null);
   const [genres, setGenres] = useState<GenreStat[]>([]);
   const [types, setTypes] = useState<TypeStat[]>([]);
@@ -94,7 +94,7 @@ export function Stats() {
 
       {view === "grafo" ? (
         <div className="series-block">
-          <StatsGraph seriesList={graph} />
+          <StatsGraph seriesList={graph} active={active} />
         </div>
       ) : (
         <StatsRings genres={genres} types={types} />
