@@ -1,6 +1,11 @@
 # Descubrir → automatic site search + link
 
-Depends on `2026-07-10-discover-from-catalog-only-design.md` (task 3): the swipe deck is fed exclusively from the local AniList catalog, and `decide_catalog_card` persists a **synthetic** `series` row (slug `anilist-{id}`, AniList URL, no episodes, no real cover).
+Depends on `2026-07-10-discover-from-catalog-only-design.md` (task 3, **merged** — commit `30cafdb`): the swipe deck is fed exclusively from the local AniList catalog, and `decide_catalog_card` persists a **synthetic** `series` row (slug `anilist-{id}`, AniList URL, no episodes, no real cover).
+
+**Post-task-3 reality check** (verified against the merged code and live DB — these supersede any conflicting detail below):
+- `decide_catalog_card(state, anilist_id, title, url, poster_url, genres, format, decision: SwipeDecision)` — the `discard: bool` arg is gone; `SwipeDecision` is the shared `Discard | Want | Seen` enum. It returns `Result<(), String>`.
+- `series` now has real `anilist_id INTEGER` and `watched_externally INTEGER DEFAULT 0` columns (backfilled from the legacy slug). **Use `series.anilist_id` for every "is this a catalog row / which AniList title is it" lookup** — do not parse the `anilist-{id}` slug.
+- `src-tauri/src/genres.rs::canonical_genre()` exists and normalizes the site's Spanish genre vocabulary onto AniList's canon. Reuse it; do not write a second mapping.
 
 ## Problem
 
@@ -70,8 +75,8 @@ pub async fn link_catalog_series(app: AppHandle, state: State<'_, AppState>, ser
 `LinkOutcome` = `Linked { url, episodes: i64 }` | `NoMatch` | `AlreadyLinked` (serde-tagged enum, so the UI can distinguish).
 
 Steps:
-1. Load the `series` row; bail `AlreadyLinked` if its slug isn't `anilist-%`.
-2. Read `title_romaji`/`title_english`/`title` from `anilist_catalog` for that id.
+1. Load the `series` row; bail `AlreadyLinked` if its `anilist_id` is `NULL` (i.e. it's already a real site row).
+2. Read `title_romaji`/`title_english`/`title` from `anilist_catalog` via that `anilist_id`.
 3. `search_site(app, mirrors, romaji_or_title)` → candidates. If `best_match` fails and an english title exists **and differs**, do a **second** search with it (one extra scrape, only on failure — not two searches every time).
 4. On match: `fetch_html` the matched series URL, `parse_series` → episodes, `parse_series_detail` → genres + kind.
 5. Update the row **in place** (keep `id`, `followed`, `backlog_status`, `watched_externally` — don't delete/recreate, that would break `last_swiped_series_id` and any FK): set `slug` = site slug, `url` = site URL, `kind`, `cover_url` = site poster URL (remote; the existing cover-fetch path replaces it with a `data:` URI on the next `refresh()` if followed), replace `series_genres` with the site's, insert episodes.
