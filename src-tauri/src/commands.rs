@@ -810,22 +810,65 @@ pub fn delete_series(state: State<'_, AppState>, series_id: i64) -> Result<(), S
     db.delete_series(series_id).map_err(|e| e.to_string())
 }
 
-/// Promote a `backlog_status='want'` row to an ordinary followed series:
-/// fetch its episode list (all unseen), start following it, clear the
-/// backlog status. `refresh()` already scans all followed rows regardless
-/// of `is_airing`, so no changes are needed there.
+/// Promote a `backlog_status='want'` row to an ordinary followed series.
+///
+/// Two shapes of "want" row reach here:
+///
+/// - A **catalog** row (synthetic `anilist-{id}` slug, AniList URL, no
+///   episodes): its `url` points at anilist.co, so there is nothing to scrape
+///   there. It must be **linked to the real site first** — this is one of the
+///   three (and only three) explicit link triggers in the design spec, fired
+///   because the user pressed "Empezar a ver". If the matcher can't find it on
+///   the site (`NoMatch`), the row is left untouched in the backlog and the
+///   outcome is returned so the UI can show "No encontrado" instead of
+///   silently creating a followed-but-untrackable series. Linking already
+///   scrapes and inserts the episode list, so no separate episode fetch runs.
+/// - A **site** row (real slug/URL from a `decide_swipe` Want, `anilist_id`
+///   NULL): unchanged behaviour — fetch its episode list, follow, clear the
+///   backlog status.
+///
+/// `refresh()` already scans all followed rows regardless of `is_airing`, so
+/// no changes are needed there. Returns a `LinkOutcome` so the caller can
+/// distinguish a successful start from a `NoMatch` that left the row as-is.
 #[tauri::command]
 pub async fn start_watching(
     app: AppHandle,
     state: State<'_, AppState>,
     series_id: i64,
-) -> Result<(), String> {
-    let (series_url, mirrors) = {
+) -> Result<LinkOutcome, String> {
+    let info = {
         let db = state.db.lock().unwrap();
         let status = db.get_backlog_status(series_id).map_err(|e| e.to_string())?;
         if status.as_deref() != Some("want") {
             return Err("series is not in the 'want' backlog".into());
         }
+        db.get_series_for_link(series_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "series not found".to_string())?
+    };
+
+    // Catalog row (anilist-backed) with no real site episodes yet: link it
+    // before following. A NoMatch leaves the row exactly as it is.
+    let has_episodes = {
+        let db = state.db.lock().unwrap();
+        !db.list_series_episodes(series_id).map_err(|e| e.to_string())?.is_empty()
+    };
+    if info.anilist_id.is_some() && !has_episodes {
+        let (outcome, resulting_id) = link_series_core(&app, &state, series_id).await?;
+        let Some(target_id) = resulting_id else {
+            // NoMatch — do not follow; hand the outcome back so the UI can
+            // surface "No encontrado" and keep the row in the backlog.
+            return Ok(outcome);
+        };
+        let db = state.db.lock().unwrap();
+        db.set_followed(target_id, true).map_err(|e| e.to_string())?;
+        db.set_backlog_status(target_id, None).map_err(|e| e.to_string())?;
+        return Ok(outcome);
+    }
+
+    // Site row: fetch its episode list (all unseen), follow, clear backlog.
+    let (series_url, mirrors) = {
+        let db = state.db.lock().unwrap();
         let url = db
             .get_series_url(series_id)
             .map_err(|e| e.to_string())?
@@ -834,6 +877,7 @@ pub async fn start_watching(
     };
     let eps = fetch_episode_list_for(&app, &mirrors, &series_url).await?;
     let db = state.db.lock().unwrap();
+    let episode_count = eps.len() as i64;
     for mut e in eps {
         e.series_id = series_id;
         e.seen = false;
@@ -841,7 +885,7 @@ pub async fn start_watching(
     }
     db.set_followed(series_id, true).map_err(|e| e.to_string())?;
     db.set_backlog_status(series_id, None).map_err(|e| e.to_string())?;
-    Ok(())
+    Ok(LinkOutcome::Linked { url: series_url, episodes: episode_count })
 }
 
 /// Set (or clear, with `status: None`) a series' backlog status directly —
@@ -1280,6 +1324,23 @@ pub async fn link_catalog_series(
     state: State<'_, AppState>,
     series_id: i64,
 ) -> Result<LinkOutcome, String> {
+    let (outcome, _resulting_id) = link_series_core(&app, &state, series_id).await?;
+    Ok(outcome)
+}
+
+/// The shared body behind both `link_catalog_series` (fire-and-forget from a
+/// `Seen` swipe / manual retry) and `start_watching` (which must link an
+/// unlinked catalog row *before* following it). Returns the outcome plus the
+/// canonical row id the caller should act on afterwards — that's the same
+/// `series_id` for an in-place relink or `AlreadyLinked`, the *existing*
+/// row's id when a slug collision merged the synthetic row away (the
+/// synthetic `series_id` no longer exists after that), and `None` for
+/// `NoMatch` (nothing to follow).
+async fn link_series_core(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    series_id: i64,
+) -> Result<(LinkOutcome, Option<i64>), String> {
     let (mirrors, info) = {
         let db = state.db.lock().unwrap();
         let mirrors = load_mirrors(&db)?;
@@ -1290,7 +1351,7 @@ pub async fn link_catalog_series(
         (mirrors, info)
     };
     let Some(anilist_id) = info.anilist_id else {
-        return Ok(LinkOutcome::AlreadyLinked);
+        return Ok((LinkOutcome::AlreadyLinked, Some(series_id)));
     };
     let (title, romaji, english) = {
         let db = state.db.lock().unwrap();
@@ -1300,7 +1361,7 @@ pub async fn link_catalog_series(
     };
 
     let primary_query = romaji.clone().unwrap_or_else(|| title.clone());
-    let mut cards = search_site(&app, &mirrors, &primary_query).await?;
+    let mut cards = search_site(app, &mirrors, &primary_query).await?;
     let mut best = crate::matching::best_match(&[&primary_query], &to_candidates(&cards));
 
     // Second search only on failure, only if an english title exists and
@@ -1309,13 +1370,13 @@ pub async fn link_catalog_series(
     if best.is_none() {
         if let Some(english) = &english {
             if !english.eq_ignore_ascii_case(&primary_query) {
-                cards = search_site(&app, &mirrors, english).await?;
+                cards = search_site(app, &mirrors, english).await?;
                 best = crate::matching::best_match(&[english], &to_candidates(&cards));
             }
         }
     }
 
-    let Some(m) = best else { return Ok(LinkOutcome::NoMatch) };
+    let Some(m) = best else { return Ok((LinkOutcome::NoMatch, None)) };
     let matched = cards[m.index].clone();
     let new_slug = slug_from_url(&matched.url);
 
@@ -1334,12 +1395,12 @@ pub async fn link_catalog_series(
             .get_series_url(existing_id)
             .map_err(|e| e.to_string())?
             .unwrap_or(matched.url.clone());
-        return Ok(LinkOutcome::Linked { url, episodes });
+        return Ok((LinkOutcome::Linked { url, episodes }, Some(existing_id)));
     }
 
     // No collision: fetch the matched series page once, reused for both the
     // episode list and the detail (genres/kind) parse.
-    let scraped = fetch_html(&app, &matched.url).await.map_err(|e| e.to_string())?;
+    let scraped = fetch_html(app, &matched.url).await.map_err(|e| e.to_string())?;
     let a = adapter();
     let episodes = a.parse_series(&scraped.html).map_err(|e| e.to_string())?;
     let detail = a.parse_series_detail(&scraped.html).map_err(|e| e.to_string())?;
@@ -1358,5 +1419,5 @@ pub async fn link_catalog_series(
         db.mark_all_episodes_seen(series_id).map_err(|e| e.to_string())?;
     }
 
-    Ok(LinkOutcome::Linked { url: matched.url, episodes: episode_count })
+    Ok((LinkOutcome::Linked { url: matched.url, episodes: episode_count }, Some(series_id)))
 }

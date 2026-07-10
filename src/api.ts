@@ -69,7 +69,7 @@ export const decideSwipe = (seriesUrl: string, decision: SwipeDecision) =>
 export const undoLastSwipe = () => invoke<void>("undo_last_swipe");
 
 export const startWatching = (seriesId: number) =>
-  invoke<void>("start_watching", { seriesId });
+  invoke<LinkOutcome>("start_watching", { seriesId });
 
 export const listBacklog = (status: "want" | "discarded") =>
   invoke<Series[]>("list_backlog", { status });

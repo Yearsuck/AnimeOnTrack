@@ -14,16 +14,8 @@ import {
   undoLastSwipe,
 } from "../api";
 import { categoryColor } from "../lib/categoryColor";
+import { isUnlinkedCatalogRow } from "../lib/catalogLink";
 import type { GenreAffinity, Series, SwipeCard, SwipeDecision } from "../types";
-
-// decide_catalog_card always writes the synthetic slug `anilist-{id}`;
-// link_catalog_series rewrites it to the site's real slug on a successful
-// match. A real site slug starting with this literal is not a realistic
-// collision, so this doubles as a cheap "still unlinked?" signal the
-// frontend can read straight off `Series` without a dedicated field.
-function isUnlinkedCatalogRow(series: Series): boolean {
-  return series.slug.startsWith("anilist-");
-}
 
 type LinkStatus = {
   id: number;
@@ -229,8 +221,15 @@ function SwipeView() {
           // Linking is a real scrape (seconds) — it must not block the swipe,
           // so it's fired here without awaiting it, queued through
           // useLinkQueue so rapid swiping serializes the scrapes instead of
-          // firing them all in parallel. Discard never searches the site.
-          if (seriesId !== null && decision !== "Discard") {
+          // firing them all in parallel.
+          //
+          // Only `Seen` triggers a scrape here. `Want` must NEVER scrape —
+          // swiping right is fast, cheap, local, and stays that way; a scrape
+          // per right-swipe would hammer the site behind Cloudflare for
+          // titles the user may never actually watch. A `Want` row is only
+          // ever linked later, explicitly: via "Empezar a ver" (start_watching)
+          // or the manual "Buscar en la web" retry button in Listas.
+          if (seriesId !== null && decision === "Seen") {
             enqueueLink(seriesId, activeCard.title);
           }
         });
@@ -361,6 +360,8 @@ function SwipeView() {
 function WantRow({ series, onChanged }: { series: Series; onChanged: () => void }) {
   const [genres, setGenres] = useState<string[]>([]);
   const [linking, setLinking] = useState(false);
+  const [starting, setStarting] = useState(false);
+  const [noMatch, setNoMatch] = useState(false);
   const unlinked = isUnlinkedCatalogRow(series);
   useEffect(() => {
     getSeriesGenres(series.id).then(setGenres);
@@ -373,6 +374,26 @@ function WantRow({ series, onChanged }: { series: Series; onChanged: () => void 
     } finally {
       setLinking(false);
       onChanged();
+    }
+  };
+
+  // start_watching links an unlinked catalog row (searches the site) before
+  // marking it followed -- the button-press trigger from the design spec,
+  // so unlike the swipe-to-Seen path it awaits and shows a spinner. A
+  // NoMatch keeps the row in "want" (backend never sets followed) and
+  // surfaces the same "not found" message the retry button would show.
+  const handleStartWatching = async () => {
+    setStarting(true);
+    setNoMatch(false);
+    try {
+      const outcome = await startWatching(series.id);
+      if (outcome.type === "NoMatch") {
+        setNoMatch(true);
+      } else {
+        onChanged();
+      }
+    } finally {
+      setStarting(false);
     }
   };
 
@@ -393,6 +414,11 @@ function WantRow({ series, onChanged }: { series: Series; onChanged: () => void 
           )}
         </div>
         <div className="backlog-genres">{genres.join(", ") || " "}</div>
+        {noMatch && (
+          <div className="muted" style={{ fontSize: 11, color: "var(--danger, #e06666)" }}>
+            No encontrado en el sitio
+          </div>
+        )}
       </div>
       <div className="backlog-actions">
         {unlinked && (
@@ -400,14 +426,8 @@ function WantRow({ series, onChanged }: { series: Series; onChanged: () => void 
             {linking ? "Buscando…" : "Buscar en la web"}
           </button>
         )}
-        <button
-          className="btn btn-primary"
-          onClick={async () => {
-            await startWatching(series.id);
-            onChanged();
-          }}
-        >
-          Empezar a ver
+        <button className="btn btn-primary" onClick={handleStartWatching} disabled={starting}>
+          {starting ? "Buscando…" : "Empezar a ver"}
         </button>
         <button
           className="btn btn-ghost"
