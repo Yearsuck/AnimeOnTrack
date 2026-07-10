@@ -4,6 +4,7 @@ mod commands;
 mod db;
 mod diff;
 mod genres;
+mod html_cache;
 mod matching;
 mod models;
 mod player;
@@ -35,6 +36,7 @@ pub fn run() {
                 swipe_last_page: Mutex::new(std::collections::HashMap::new()),
                 swipe_served: Mutex::new(std::collections::HashMap::new()),
                 last_swiped_series_id: Mutex::new(None),
+                html_cache: Mutex::new(html_cache::HtmlCache::default()),
             });
             Ok(())
         })

@@ -11,7 +11,7 @@ use crate::swipe::{pick_index, shuffle, undecided_cards, weighted_pick_index};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Mutex;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 #[derive(Serialize, Clone)]
 struct RefreshProgress {
@@ -30,6 +30,12 @@ fn emit_refresh_progress(app: &AppHandle, current: usize, total: usize, title: &
 pub struct AppState {
     pub db: Mutex<Db>,
     pub source_id: Mutex<Option<i64>>,
+    /// Short-TTL rendered-HTML cache (optimization C, see `html_cache.rs`)
+    /// consulted by `scrape_via_mirrors` — makes re-scraping a page just
+    /// fetched by another flow (refresh → discover/link/backfill) free
+    /// within the TTL. Never used for refresh()'s own fetches, whose whole
+    /// point is checking for *changes*.
+    pub html_cache: Mutex<crate::html_cache::HtmlCache>,
     /// Cards from a (genre, page) fetch not yet shown this session — lets
     /// discover_swipe_card serve ~10 swipes off one HTTP fetch instead of one
     /// fetch per swipe.
@@ -107,7 +113,7 @@ async fn ensure_genre_list(
     }
     let a = adapter();
     let (_scraped, pairs, _mirror) =
-        scrape_via_mirrors(app, db_mirrors, &a.genre_list_url(""), |html| a.parse_genre_list(html)).await?;
+        scrape_via_mirrors(app, db_mirrors, &a.genre_list_url(""), true, |html| a.parse_genre_list(html)).await?;
     let db = state.db.lock().unwrap();
     save_genre_list(&db, &pairs)?;
     Ok(pairs)
@@ -130,7 +136,7 @@ async fn fetch_series_detail(
 ) -> Result<SeriesDetail, String> {
     let a = adapter();
     let path = path_of(series_url)?;
-    let (_scraped, details, _mirror) = scrape_via_mirrors(app, mirrors, &path, |html| {
+    let (_scraped, details, _mirror) = scrape_via_mirrors(app, mirrors, &path, true, |html| {
         let d = a.parse_series_detail(html)?;
         if d.genres.is_empty() {
             Err(anyhow::anyhow!("no genres parsed (likely wrong/incompatible mirror)"))
@@ -178,7 +184,7 @@ async fn fetch_episode_list_for(
     let a = adapter();
     let path = path_of(series_url)?;
     let (_scraped, eps, _mirror) =
-        scrape_via_mirrors(app, mirrors, &path, |html| a.parse_series(html)).await?;
+        scrape_via_mirrors(app, mirrors, &path, true, |html| a.parse_series(html)).await?;
     Ok(eps)
 }
 
@@ -210,10 +216,19 @@ fn with_mirror(mirrors: Vec<String>, url: &str) -> Vec<String> {
 /// Both must fall through to the next mirror, or one bad entry anywhere in the
 /// list can break every scan, even when a perfectly good mirror is right below
 /// it.
+///
+/// `use_cache: true` consults the app-wide short-TTL HTML cache before
+/// opening a scraper window (and every successful fetch populates it either
+/// way). Callers whose purpose is *detecting change* — refresh()'s listing
+/// scan and per-series fetches, the user-triggered airing rescan — must pass
+/// `false`: serving them minutes-old HTML would silently defeat the check
+/// they exist to perform. A cached page that no longer parses non-empty
+/// falls through to a real fetch rather than failing the mirror.
 async fn scrape_via_mirrors<T>(
     app: &AppHandle,
     mirrors: &[String],
     path: &str,
+    use_cache: bool,
     parse: impl Fn(&str) -> Result<Vec<T>, anyhow::Error>,
 ) -> Result<(ScrapeResult, Vec<T>, String), String> {
     if mirrors.is_empty() {
@@ -222,9 +237,28 @@ async fn scrape_via_mirrors<T>(
     let mut last_err = String::new();
     for mirror in mirrors {
         let url = format!("{mirror}{path}");
+        if use_cache {
+            let cached = {
+                let state = app.state::<AppState>();
+                let mut cache = state.html_cache.lock().unwrap();
+                cache.get(&url, std::time::Instant::now())
+            };
+            if let Some(html) = cached {
+                if let Ok(items) = parse(&html) {
+                    if !items.is_empty() {
+                        return Ok((ScrapeResult { html }, items, mirror.clone()));
+                    }
+                }
+                // Cached HTML didn't satisfy this parse — fall through to a
+                // real fetch below instead of treating the mirror as broken.
+            }
+        }
         match fetch_html(app, &url).await {
             Ok(scraped) => match parse(&scraped.html) {
                 Ok(items) if !items.is_empty() => {
+                    let state = app.state::<AppState>();
+                    let mut cache = state.html_cache.lock().unwrap();
+                    cache.put(&url, scraped.html.clone(), std::time::Instant::now());
                     return Ok((scraped, items, mirror.clone()));
                 }
                 Ok(_) => {
@@ -250,7 +284,7 @@ async fn scan_airing_via_mirrors(
     // airing_url() just appends a fixed path; reuse it against an empty base to get that path alone.
     let path = a.airing_url("").to_string();
     let (_scraped, series, working_mirror) =
-        scrape_via_mirrors(app, &mirrors, &path, |html| a.parse_airing(html)).await?;
+        scrape_via_mirrors(app, &mirrors, &path, false, |html| a.parse_airing(html)).await?;
     emit_refresh_progress(app, 1, 1, "Listado completo");
     // Cover images are intentionally NOT fetched here: doing it for every
     // series on the airing list (~150 at once) reads as scraping abuse to
@@ -491,7 +525,7 @@ async fn fetch_series_episodes(
         Ok(u) => format!("{}{}", u.path(), u.query().map(|q| format!("?{q}")).unwrap_or_default()),
         Err(_) => return None,
     };
-    match scrape_via_mirrors(app, mirrors, &path, |html| a.parse_series(html)).await {
+    match scrape_via_mirrors(app, mirrors, &path, false, |html| a.parse_series(html)).await {
         Ok((_scraped, eps, working_mirror)) => Some((eps, working_mirror, path)),
         Err(_) => None,
     }
@@ -528,7 +562,7 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
     emit_refresh_progress(&app, 0, 1, "Escaneando listado de estrenos");
     let listing_path = a.airing_url("").to_string();
     let listing_slugs: Option<std::collections::HashSet<String>> =
-        match scrape_via_mirrors(&app, &mirrors, &listing_path, |html| a.parse_airing(html)).await {
+        match scrape_via_mirrors(&app, &mirrors, &listing_path, false, |html| a.parse_airing(html)).await {
             Ok((_scraped, series, _mirror)) => {
                 let db = state.db.lock().unwrap();
                 for s in &series {
@@ -793,7 +827,7 @@ pub async fn discover_swipe_card(
             let a = adapter();
             let path = a.genre_page_url("", slug, page);
             let (scraped, raw_cards, _mirror) =
-                scrape_via_mirrors(&app, &mirrors, &path, |html| a.parse_finished_page(html)).await?;
+                scrape_via_mirrors(&app, &mirrors, &path, true, |html| a.parse_finished_page(html)).await?;
             state
                 .swipe_last_page
                 .lock()
@@ -1427,7 +1461,7 @@ async fn search_site(
 ) -> Result<Vec<FinishedCard>, String> {
     let a = adapter();
     let path = a.search_url("", query);
-    let (_scraped, mut outcomes, _mirror) = scrape_via_mirrors(app, mirrors, &path, |html| {
+    let (_scraped, mut outcomes, _mirror) = scrape_via_mirrors(app, mirrors, &path, true, |html| {
         a.parse_search_results(html).map(|cards| vec![SearchOutcome { cards }])
     })
     .await?;
