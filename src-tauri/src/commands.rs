@@ -1350,9 +1350,12 @@ async fn link_series_core(
             .ok_or_else(|| "series not found".to_string())?;
         (mirrors, info)
     };
-    let Some(anilist_id) = info.anilist_id else {
+    // See SeriesForLink::already_linked_to_site's doc comment for why this
+    // checks more than just `anilist_id.is_some()`.
+    if info.already_linked_to_site() {
         return Ok((LinkOutcome::AlreadyLinked, Some(series_id)));
-    };
+    }
+    let anilist_id = info.anilist_id.unwrap();
     let (title, romaji, english) = {
         let db = state.db.lock().unwrap();
         db.get_catalog_titles(anilist_id)

@@ -39,6 +39,24 @@ pub struct SeriesForLink {
     pub watched_externally: bool,
 }
 
+impl SeriesForLink {
+    /// Idempotent early-out for `commands::link_series_core`: a row is
+    /// "already linked" either because it was never a catalog row to begin
+    /// with (`anilist_id` NULL — a plain site row, e.g. from the airing
+    /// scan) *or* because a previous `link_catalog_series` call already
+    /// rewrote it onto a real site slug (`relink_series` deliberately keeps
+    /// `anilist_id` set after a successful link — only slug/url/cover/kind
+    /// change — so `anilist_id.is_some()` alone is NOT a reliable "still
+    /// needs linking" signal). Checking the slug too closes that gap: the
+    /// three trigger call sites (Seen swipe, "Empezar a ver", opening
+    /// SeriesDetail) can race on the same freshly-linked row, and without
+    /// this each would re-search and re-scrape it. Mirrors the frontend's
+    /// `isUnlinkedCatalogRow` (`src/lib/catalogLink.ts`) — keep both in sync.
+    pub fn already_linked_to_site(&self) -> bool {
+        self.anilist_id.is_none() || !self.slug.starts_with("anilist-")
+    }
+}
+
 /// Extract a comparable numeric value from an episode-number string, e.g.
 /// "12" -> 12.0, "12.5" -> 12.5 (OVA/special numbering), "1x05" -> season 1
 /// episode 5 packed as 100005.0 (season-prefixed numbering seen on
@@ -1454,6 +1472,37 @@ mod tests {
     fn get_series_for_link_none_for_missing_row() {
         let db = Db::open(":memory:").unwrap();
         assert!(db.get_series_for_link(999).unwrap().is_none());
+    }
+
+    /// Pins the idempotence fix: a row must be treated as "already linked"
+    /// (no re-scrape) both when it never had a catalog origin and when a
+    /// previous link already rewrote its slug onto the real site, even
+    /// though `anilist_id` itself is never cleared by a successful link.
+    #[test]
+    fn already_linked_to_site_covers_both_null_anilist_id_and_relinked_slug() {
+        let plain_site_row = SeriesForLink {
+            id: 1, source_id: 1, slug: "baki-dou".into(), anilist_id: None,
+            followed: true, backlog_status: None, watched_externally: false,
+        };
+        assert!(plain_site_row.already_linked_to_site());
+
+        let unlinked_catalog_row = SeriesForLink {
+            id: 2, source_id: 1, slug: "anilist-42".into(), anilist_id: Some(42),
+            followed: false, backlog_status: Some("want".into()), watched_externally: false,
+        };
+        assert!(!unlinked_catalog_row.already_linked_to_site());
+
+        // The critical case: a catalog row that was already linked in a
+        // previous call keeps its `anilist_id` (relink_series never clears
+        // it) but its slug is now the real site slug — must still count as
+        // already-linked, or a second call (e.g. a race between the Seen
+        // swipe's fire-and-forget link and opening SeriesDetail) would
+        // re-search and re-scrape.
+        let already_relinked_row = SeriesForLink {
+            id: 3, source_id: 1, slug: "baki-dou".into(), anilist_id: Some(42),
+            followed: false, backlog_status: None, watched_externally: true,
+        };
+        assert!(already_relinked_row.already_linked_to_site());
     }
 
     #[test]
