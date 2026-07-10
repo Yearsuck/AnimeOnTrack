@@ -717,10 +717,20 @@ impl Db {
         })
     }
 
+    /// "En emisión" default order: most-recently-released first.
+    /// `next_episode_at` is the *next* episode's release time; for a weekly
+    /// series that's roughly "last release + 7 days", so the series whose
+    /// episode dropped most recently has the furthest-away next episode —
+    /// descending order therefore reads as newest-release-first (see the
+    /// airing-sort-order design doc; non-weekly series break the inference
+    /// and that's accepted). NULLs (no countdown on the card / never seen on
+    /// the airing listing) sort last; `title` is a stable tie-break so
+    /// equal/NULL timestamps never reorder run to run.
     pub fn list_airing(&self, source_id: i64) -> Result<Vec<crate::models::Series>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, slug, title, url, cover_url, is_airing, followed, next_episode_at, site_episode_count
-             FROM series WHERE source_id=?1 AND is_airing=1 ORDER BY title",
+             FROM series WHERE source_id=?1 AND is_airing=1
+             ORDER BY next_episode_at IS NULL, next_episode_at DESC, title",
         )?;
         let rows = stmt
             .query_map([source_id], Self::row_to_series)?
@@ -1339,6 +1349,22 @@ mod tests {
         db.set_last_checked_at(sid).unwrap();
         let age = db.last_checked_age_secs(sid).unwrap().expect("age after set");
         assert!((0..60).contains(&age), "freshly-set age should be ~0s, got {age}");
+    }
+
+    /// Airing-sort acceptance test (see the airing-sort-order design doc):
+    /// newest-first by next_episode_at, NULLs last, title as the stable
+    /// tie-break for equal timestamps.
+    #[test]
+    fn list_airing_orders_newest_first_nulls_last_title_tiebreak() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b").unwrap();
+        db.upsert_series(src, &mk_airing("older", "Older", Some(1_000_000))).unwrap();
+        db.upsert_series(src, &mk_airing("newer", "Newer", Some(2_000_000))).unwrap();
+        db.upsert_series(src, &mk_airing("nodate", "NoDate", None)).unwrap();
+        db.upsert_series(src, &mk_airing("tie-b", "Tie B", Some(1_000_000))).unwrap();
+
+        let titles: Vec<String> = db.list_airing(src).unwrap().into_iter().map(|s| s.title).collect();
+        assert_eq!(titles, vec!["Newer", "Older", "Tie B", "NoDate"]);
     }
 
     #[test]

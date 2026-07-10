@@ -2,6 +2,24 @@ import { useEffect, useMemo, useState } from "react";
 import { listAiring, setFollowed } from "../api";
 import type { Series } from "../types";
 
+// Human label for the next-episode countdown the backend sorting is based
+// on — makes the newest-first ordering legible instead of mysterious.
+// Computed once per render (no ticking timer): "en 2 h" / "en 3 d" for a
+// future release, "hace 5 h" for one that already aired but whose card
+// hasn't rolled over yet. Null when the series carries no countdown.
+function countdownLabel(nextEpisodeAt: number | null): string | null {
+  if (nextEpisodeAt == null) return null;
+  const diffMs = nextEpisodeAt * 1000 - Date.now();
+  const absHours = Math.abs(diffMs) / 3_600_000;
+  const span =
+    absHours >= 48
+      ? `${Math.round(absHours / 24)} d`
+      : absHours >= 1
+        ? `${Math.round(absHours)} h`
+        : `${Math.max(1, Math.round(Math.abs(diffMs) / 60_000))} min`;
+  return diffMs >= 0 ? `en ${span}` : `hace ${span}`;
+}
+
 export function AiringGrid({
   onOpenSeries,
   refreshSignal,
@@ -67,6 +85,9 @@ export function AiringGrid({
             <div key={s.id} className="card" onClick={() => onOpenSeries(s)}>
               <div className="poster">
                 {s.followed && <span className="chip">SIGUIENDO</span>}
+                {countdownLabel(s.next_episode_at) && (
+                  <span className="chip chip-countdown">{countdownLabel(s.next_episode_at)}</span>
+                )}
                 {s.cover_url ? (
                   <img src={s.cover_url} alt={s.title} loading="lazy" />
                 ) : null}

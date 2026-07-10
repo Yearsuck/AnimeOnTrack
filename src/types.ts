@@ -6,6 +6,11 @@ export interface Series {
   cover_url: string | null;
   is_airing: boolean;
   followed: boolean;
+  /** Unix timestamp (seconds) of the next episode's release, from the airing
+   *  listing's countdown; null when the card has none / never scanned. */
+  next_episode_at: number | null;
+  /** The site's own episode-count badge; null when non-numeric ("??"). */
+  site_episode_count: number | null;
 }
 
 export interface Episode {
