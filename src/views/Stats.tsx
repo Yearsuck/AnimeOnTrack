@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { getGenreStats, getTypeStats, getWatchSummary, getStatsGraph, backfillGenres } from "../api";
 import type { GenreStat, TypeStat, WatchSummary, SeriesGraphNode } from "../types";
 import { StatsGraph } from "./StatsGraph";
@@ -13,6 +14,14 @@ export function Stats({ active }: { active: boolean }) {
   const [graph, setGraph] = useState<SeriesGraphNode[]>([]);
   const [view, setView] = useState<StatsView>("grafo");
   const [backfilling, setBackfilling] = useState(false);
+  // Stats now stays mounted forever (App.tsx hides it with CSS instead of
+  // unmounting, to keep the graph's three.js/d3-force state alive — see
+  // docs/superpowers/specs/2026-07-10-stats-graph-cache-design.md). That
+  // means it no longer refetches on every tab switch, which is correct but
+  // would otherwise leave it stale after a refresh or a genre backfill
+  // completes while some other tab is showing. `dirty` tracks exactly that.
+  const dirtyRef = useRef(false);
+  const wasActiveRef = useRef(active);
 
   async function load() {
     const [s, g, t, gr] = await Promise.all([
@@ -30,10 +39,40 @@ export function Stats({ active }: { active: boolean }) {
     load();
   }, []);
 
+  // Reuse the same `refresh-progress` Tauri event ProgressBar.tsx already
+  // listens to (current >= total marks the cycle complete) rather than
+  // adding a new event. If Estadísticas is visible when a refresh lands,
+  // reload right away; otherwise just mark dirty for the active-transition
+  // effect below to pick up. No polling.
+  useEffect(() => {
+    const un = listen<{ current: number; total: number }>("refresh-progress", (e) => {
+      if (e.payload.current < e.payload.total) return;
+      if (active) {
+        dirtyRef.current = false;
+        load();
+      } else {
+        dirtyRef.current = true;
+      }
+    });
+    return () => {
+      un.then((f) => f());
+    };
+  }, [active]);
+
+  // Becoming visible again after data changed while hidden.
+  useEffect(() => {
+    if (active && !wasActiveRef.current && dirtyRef.current) {
+      dirtyRef.current = false;
+      load();
+    }
+    wasActiveRef.current = active;
+  }, [active]);
+
   async function runBackfill() {
     setBackfilling(true);
     try {
       await backfillGenres();
+      dirtyRef.current = false;
       await load();
     } finally {
       setBackfilling(false);
