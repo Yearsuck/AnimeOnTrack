@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { listEpisodes, openEpisode, setSeenCascade } from "../api";
+import { linkCatalogSeries, listEpisodes, openEpisode, setSeenCascade } from "../api";
+import { isUnlinkedCatalogRow } from "../lib/catalogLink";
 import type { Episode, Series } from "../types";
 
 // Mirrors the backend's parse_ep_number (src-tauri/src/db.rs): leading
@@ -24,18 +25,48 @@ export function SeriesDetail({
 }) {
   const [episodes, setEpisodes] = useState<Episode[]>([]);
   const [loading, setLoading] = useState(true);
+  const [linking, setLinking] = useState(false);
   const rowRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+  // Guards the link-on-open trigger against React StrictMode's dev-only
+  // double-invoke (same pattern as App.tsx's startup effect) — otherwise
+  // opening an unlinked catalog row would fire two scrapes.
+  const linkTriedRef = useRef<number | null>(null);
 
-  async function load() {
+  async function load(): Promise<Episode[]> {
     setLoading(true);
     try {
-      setEpisodes(await listEpisodes(series.id));
+      const eps = await listEpisodes(series.id);
+      setEpisodes(eps);
+      return eps;
     } finally {
       setLoading(false);
     }
   }
   useEffect(() => {
-    load();
+    linkTriedRef.current = null;
+    (async () => {
+      const eps = await load();
+      // Opening the detail view of an unlinked catalog row (synthetic
+      // `anilist-{id}` slug, no episodes yet) is one of the three explicit
+      // link triggers in the design spec: the user asked to see episode
+      // titles, so scrape the site for this one title, then reload. Only
+      // when there are genuinely no episodes and it's still an unlinked
+      // catalog row — a real site series with no episodes must not scrape.
+      if (eps.length === 0 && isUnlinkedCatalogRow(series) && linkTriedRef.current !== series.id) {
+        linkTriedRef.current = series.id;
+        setLinking(true);
+        try {
+          await linkCatalogSeries(series.id);
+        } catch (err) {
+          console.error("linkCatalogSeries failed for", series.id, err);
+        } finally {
+          setLinking(false);
+        }
+        await load();
+        onChanged();
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [series.id]);
 
   // Cascading + optimistic: update local state immediately (no reload, so
@@ -106,7 +137,9 @@ export function SeriesDetail({
         )}
       </div>
 
-      {loading ? (
+      {linking ? (
+        <div className="empty">Buscando en la web…</div>
+      ) : loading ? (
         <div className="empty">Cargando episodios…</div>
       ) : episodes.length === 0 ? (
         <div className="empty">Sin episodios registrados todavía. Pulsa Actualizar.</div>

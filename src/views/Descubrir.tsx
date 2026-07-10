@@ -5,6 +5,7 @@ import {
   discoverCatalogCard,
   getSeriesGenres,
   getTopGenres,
+  linkCatalogSeries,
   listBacklog,
   openEpisode,
   promoteDiscarded,
@@ -13,7 +14,53 @@ import {
   undoLastSwipe,
 } from "../api";
 import { categoryColor } from "../lib/categoryColor";
+import { isUnlinkedCatalogRow } from "../lib/catalogLink";
 import type { GenreAffinity, Series, SwipeCard, SwipeDecision } from "../types";
+
+type LinkStatus = {
+  id: number;
+  title: string;
+  state: "searching" | "linked" | "nomatch";
+  episodes?: number;
+};
+
+/// Serializes `linkCatalogSeries` calls through a single promise chain so
+/// rapid swiping never spawns unbounded parallel scrapes — the backend's
+/// SCRAPE_PERMITS semaphore would otherwise just queue them behind whatever
+/// the deck's own prefetching needs, defeating the point of not blocking the
+/// swipe on the link. Keeps the most recent 2 statuses for display.
+function useLinkQueue() {
+  const chainRef = useRef<Promise<void>>(Promise.resolve());
+  const [statuses, setStatuses] = useState<LinkStatus[]>([]);
+
+  const upsert = useCallback((next: LinkStatus) => {
+    setStatuses((prev) => [next, ...prev.filter((s) => s.id !== next.id)].slice(0, 2));
+  }, []);
+
+  const enqueue = useCallback(
+    (seriesId: number, title: string) => {
+      upsert({ id: seriesId, title, state: "searching" });
+      chainRef.current = chainRef.current
+        .then(() => linkCatalogSeries(seriesId))
+        .then((outcome) => {
+          if (outcome.type === "Linked") {
+            upsert({ id: seriesId, title, state: "linked", episodes: outcome.episodes });
+          } else if (outcome.type === "NoMatch") {
+            upsert({ id: seriesId, title, state: "nomatch" });
+          }
+          // AlreadyLinked: nothing to show — a freshly-decided card is never
+          // already linked, this only matters for the manual retry button.
+        })
+        .catch((err) => {
+          console.error("linkCatalogSeries failed for", seriesId, err);
+          upsert({ id: seriesId, title, state: "nomatch" });
+        });
+    },
+    [upsert]
+  );
+
+  return { statuses, enqueue };
+}
 
 type SubView = "swipe" | "listas";
 type SwipeOutDirection = "discard" | "want" | "seen" | null;
@@ -76,6 +123,7 @@ function SwipeView() {
   const queueRef = useRef<SwipeCard[]>([]);
   const fillingRef = useRef(false);
   const cardUrlRef = useRef<string | null>(null);
+  const { statuses: linkStatuses, enqueue: enqueueLink } = useLinkQueue();
 
   // Top the local queue back up to PREFETCH_TARGET, deduping against
   // whatever's already queued or on screen (discover_catalog_card can hand
@@ -154,7 +202,7 @@ function SwipeView() {
       const anilistId = anilistIdFromUrl(activeCard.url);
       const decidePromise =
         anilistId === null
-          ? Promise.resolve()
+          ? Promise.resolve(null)
           : decideCatalogCard({
               anilistId,
               title: activeCard.title,
@@ -168,10 +216,26 @@ function SwipeView() {
         setOutDirection(null);
         popNext(); // instant — already prefetched, no round-trip to wait on
         busyRef.current = false;
-        decidePromise.then(() => setCanUndo(true));
+        decidePromise.then((seriesId) => {
+          setCanUndo(true);
+          // Linking is a real scrape (seconds) — it must not block the swipe,
+          // so it's fired here without awaiting it, queued through
+          // useLinkQueue so rapid swiping serializes the scrapes instead of
+          // firing them all in parallel.
+          //
+          // Only `Seen` triggers a scrape here. `Want` must NEVER scrape —
+          // swiping right is fast, cheap, local, and stays that way; a scrape
+          // per right-swipe would hammer the site behind Cloudflare for
+          // titles the user may never actually watch. A `Want` row is only
+          // ever linked later, explicitly: via "Empezar a ver" (start_watching)
+          // or the manual "Buscar en la web" retry button in Listas.
+          if (seriesId !== null && decision === "Seen") {
+            enqueueLink(seriesId, activeCard.title);
+          }
+        });
       }, 160);
     },
-    [card, popNext]
+    [card, popNext, enqueueLink]
   );
 
   const undo = useCallback(async () => {
@@ -278,32 +342,105 @@ function SwipeView() {
         </button>
       </div>
       <div className="swipe-hint">← Descartar · ↑ Ya lo vi · → Quiero ver · Ctrl+Z Deshacer</div>
+      {linkStatuses.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 8 }}>
+          {linkStatuses.map((s) => (
+            <div key={s.id} className="muted" style={{ fontSize: 12 }}>
+              {s.state === "searching" && `Buscando ${s.title} en la web…`}
+              {s.state === "linked" && `✓ Enlazado (${s.episodes} episodios)`}
+              {s.state === "nomatch" && `No encontrado en el sitio: ${s.title}`}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
 
-function WantRow({ series, onChanged }: { series: Series; onChanged: () => void }) {
+function WantRow({
+  series,
+  onChanged,
+  onOpenSeries,
+}: {
+  series: Series;
+  onChanged: () => void;
+  onOpenSeries: (s: Series) => void;
+}) {
   const [genres, setGenres] = useState<string[]>([]);
+  const [linking, setLinking] = useState(false);
+  const [starting, setStarting] = useState(false);
+  const [noMatch, setNoMatch] = useState(false);
+  const unlinked = isUnlinkedCatalogRow(series);
   useEffect(() => {
     getSeriesGenres(series.id).then(setGenres);
   }, [series.id]);
+
+  const retryLink = async () => {
+    setLinking(true);
+    try {
+      await linkCatalogSeries(series.id);
+    } finally {
+      setLinking(false);
+      onChanged();
+    }
+  };
+
+  // start_watching links an unlinked catalog row (searches the site) before
+  // marking it followed -- the button-press trigger from the design spec,
+  // so unlike the swipe-to-Seen path it awaits and shows a spinner. A
+  // NoMatch keeps the row in "want" (backend never sets followed) and
+  // surfaces the same "not found" message the retry button would show.
+  const handleStartWatching = async () => {
+    setStarting(true);
+    setNoMatch(false);
+    try {
+      const outcome = await startWatching(series.id);
+      if (outcome.type === "NoMatch") {
+        setNoMatch(true);
+      } else {
+        onChanged();
+      }
+    } finally {
+      setStarting(false);
+    }
+  };
 
   return (
     <div className="backlog-row">
       {series.cover_url && <img src={series.cover_url} alt="" />}
       <div className="backlog-main">
-        <div className="backlog-title">{series.title}</div>
+        <div
+          className="backlog-title"
+          onClick={() => onOpenSeries(series)}
+          style={{ cursor: "pointer" }}
+          title="Ver detalles"
+        >
+          {series.title}
+          {unlinked && (
+            <span
+              className="muted"
+              style={{ fontSize: 11, marginLeft: 8, fontWeight: 400 }}
+              title="Todavía no se ha encontrado en el sitio"
+            >
+              (sin enlazar)
+            </span>
+          )}
+        </div>
         <div className="backlog-genres">{genres.join(", ") || " "}</div>
+        {noMatch && (
+          <div className="muted" style={{ fontSize: 11, color: "var(--danger, #e06666)" }}>
+            No encontrado en el sitio
+          </div>
+        )}
       </div>
       <div className="backlog-actions">
-        <button
-          className="btn btn-primary"
-          onClick={async () => {
-            await startWatching(series.id);
-            onChanged();
-          }}
-        >
-          Empezar a ver
+        {unlinked && (
+          <button className="btn btn-ghost" onClick={retryLink} disabled={linking}>
+            {linking ? "Buscando…" : "Buscar en la web"}
+          </button>
+        )}
+        <button className="btn btn-primary" onClick={handleStartWatching} disabled={starting}>
+          {starting ? "Buscando…" : "Empezar a ver"}
         </button>
         <button
           className="btn btn-ghost"
@@ -350,7 +487,7 @@ function DiscardedRow({ series, onChanged }: { series: Series; onChanged: () => 
   );
 }
 
-function ListasView() {
+function ListasView({ onOpenSeries }: { onOpenSeries: (s: Series) => void }) {
   const [want, setWant] = useState<Series[]>([]);
   const [discarded, setDiscarded] = useState<Series[]>([]);
 
@@ -373,7 +510,9 @@ function ListasView() {
         {want.length === 0 ? (
           <div className="empty">Nada por aquí todavía.</div>
         ) : (
-          want.map((s) => <WantRow key={s.id} series={s} onChanged={load} />)
+          want.map((s) => (
+            <WantRow key={s.id} series={s} onChanged={load} onOpenSeries={onOpenSeries} />
+          ))
         )}
       </div>
 
@@ -391,7 +530,13 @@ function ListasView() {
   );
 }
 
-export function Descubrir() {
+// onOpenSeries is the same App.tsx-owned navigation callback Pending/Library/
+// AiringGrid already use to open SeriesDetail. Wiring it into Listas' "Quiero
+// ver" rows is what makes trigger (c) from the design spec ("SeriesDetail
+// opened on an unlinked catalog row" — see SeriesDetail.tsx's link-on-open
+// effect) actually reachable: without a click-through here, an unfollowed
+// catalog row had no UI path into SeriesDetail at all.
+export function Descubrir({ onOpenSeries }: { onOpenSeries: (s: Series) => void }) {
   const [subView, setSubView] = useState<SubView>("swipe");
 
   return (
@@ -414,7 +559,7 @@ export function Descubrir() {
         </button>
       </div>
 
-      {subView === "swipe" ? <SwipeView /> : <ListasView />}
+      {subView === "swipe" ? <SwipeView /> : <ListasView onOpenSeries={onOpenSeries} />}
     </div>
   );
 }

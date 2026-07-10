@@ -14,6 +14,7 @@ import type {
   CatalogPage,
   CatalogFilter,
   CatalogFacets,
+  LinkOutcome,
 } from "./types";
 
 export const scanAiring = (baseUrl: string) =>
@@ -68,7 +69,7 @@ export const decideSwipe = (seriesUrl: string, decision: SwipeDecision) =>
 export const undoLastSwipe = () => invoke<void>("undo_last_swipe");
 
 export const startWatching = (seriesId: number) =>
-  invoke<void>("start_watching", { seriesId });
+  invoke<LinkOutcome>("start_watching", { seriesId });
 
 export const listBacklog = (status: "want" | "discarded") =>
   invoke<Series[]>("list_backlog", { status });
@@ -106,4 +107,7 @@ export const decideCatalogCard = (params: {
   genres: string[];
   format: string;
   decision: SwipeDecision;
-}) => invoke<void>("decide_catalog_card", params);
+}) => invoke<number>("decide_catalog_card", params);
+
+export const linkCatalogSeries = (seriesId: number) =>
+  invoke<LinkOutcome>("link_catalog_series", { seriesId });

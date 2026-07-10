@@ -60,6 +60,20 @@ query ($page: Int, $perPage: Int, $startDateGreater: FuzzyDateInt, $startDateLes
 pub struct CatalogAnime {
     pub id: i64,
     pub title: String,
+    /// Original (non-English) romanized title, kept alongside the display
+    /// `title` so `matching::best_match` can try both when looking this
+    /// title up on the scraped site — the site often lists shows under
+    /// their romaji title even when AniList's `title` collapsed to English.
+    /// `None` for rows synced before this field existed (backfills on the
+    /// next incremental sync) or when AniList itself has no romaji title.
+    #[serde(default)]
+    pub title_romaji: Option<String>,
+    /// English title, kept alongside `title` for the same reason as
+    /// `title_romaji` — `title` prefers English already, so this is usually
+    /// redundant with it, but kept distinct so callers never have to guess
+    /// which one `title` actually is.
+    #[serde(default)]
+    pub title_english: Option<String>,
     pub cover_url: Option<String>,
     pub format: Option<String>,
     pub genres: Vec<String>,
@@ -118,7 +132,7 @@ struct MediaEntry {
     site_url: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct MediaTitle {
     romaji: Option<String>,
     english: Option<String>,
@@ -131,10 +145,12 @@ struct CoverImage {
 
 impl From<MediaEntry> for CatalogAnime {
     fn from(m: MediaEntry) -> Self {
-        let title = m.title.english.or(m.title.romaji).unwrap_or_default();
+        let title = m.title.english.clone().or_else(|| m.title.romaji.clone()).unwrap_or_default();
         CatalogAnime {
             id: m.id,
             title,
+            title_romaji: m.title.romaji,
+            title_english: m.title.english,
             cover_url: m.cover_image.and_then(|c| c.large),
             format: m.format,
             genres: m.genres,

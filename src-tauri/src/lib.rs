@@ -4,6 +4,7 @@ mod commands;
 mod db;
 mod diff;
 mod genres;
+mod matching;
 mod models;
 mod player;
 mod scraper_engine;
@@ -72,6 +73,7 @@ pub fn run() {
             commands::sync_anime_catalog,
             commands::discover_catalog_card,
             commands::decide_catalog_card,
+            commands::link_catalog_series,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

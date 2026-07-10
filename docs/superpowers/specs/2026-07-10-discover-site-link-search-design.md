@@ -9,11 +9,21 @@ Depends on `2026-07-10-discover-from-catalog-only-design.md` (task 3, **merged**
 
 ## Problem
 
-A synthetic row is a dead end. "Quiero ver" and "Ya la vi" produce a title the app can never track: no site URL, so no episode list, no new-episode detection, no playable link, and the poster is AniList's CDN image rather than the site's. The user's backlog fills with rows that Biblioteca/Pendientes cannot act on.
+A synthetic row is a dead end. A catalog title the user commits to is one the app can never track: no site URL, so no episode list, no new-episode detection, no playable link, and the poster is AniList's CDN image rather than the site's. The library fills with rows that Biblioteca/Pendientes cannot act on.
 
 ## Goal
 
-When the user decides `Want` or `Seen` on a catalog card, the app searches the configured site (`sources.base_url`, with mirror fallback) for that title, and — on a confident match — rewrites the row into a real, fully-tracked series: real site URL, real slug, scraped episode list, site genres/kind, and (for followed series) the site cover fetched through the existing one-at-a-time path.
+**Scraping is opt-in, on-demand, and never triggered by browsing.** The site is scraped in exactly two situations:
+
+1. The **airing** scan/refresh, unchanged (the site's currently-airing listing — this is the app's bread and butter).
+2. **On demand for a single catalog title**, when the user does something that means "I actually care about this one":
+   - marks it **Ya la vi** (`Seen`) in Descubrir — needs the episode list to mark it watched;
+   - **starts following** it (`start_watching` / the "Empezar a ver" button in Descubrir → Listas → Quiero ver) — needs episodes to track;
+   - **opens its detail view** (`SeriesDetail`) for an unlinked catalog row — the user asked to see episode titles.
+
+**`Want` (→ swipe right) must NOT scrape.** It only files the title in the backlog. This is the explicit constraint from the user: swiping is fast, cheap, local, and must stay that way — a scrape per right-swipe would hammer the site behind Cloudflare for titles the user may never watch.
+
+On any of the three triggers above, the app searches the configured site (`sources.base_url`, with mirror fallback) for that title, and — on a confident match — rewrites the row into a real, fully-tracked series: real site URL, real slug, scraped episode list, site genres/kind, and (for followed series) the site cover fetched through the existing one-at-a-time path.
 
 ## Technical context
 
@@ -83,18 +93,23 @@ Steps:
    - **Slug collision**: the site series may already exist as a row (e.g. it's on the airing list). Then *merge*: keep the existing row as canonical, move `followed`/`backlog_status`/`watched_externally` onto it (logical OR / most-specific-wins), delete the synthetic row, and return its id. A `UNIQUE(source_id, slug)` violation must never surface as an error.
 6. `Seen` semantics: if the row was decided `Seen` (task 3's `watched_externally=1`), mark **all** scraped episodes seen via the existing `set_seen_cascade` on the highest episode number — that's exactly what the gap-free watching invariant expects, and it's the whole point of linking a "ya la vi" title.
 
-**Concurrency/politeness**: `link_catalog_series` is one-at-a-time per call and takes `SCRAPE_PERMITS` implicitly through `fetch_html`. It performs at most 3 scrapes (search, [search #2], series page + detail page — reuse one `fetch_html` of the series page for both parses; DooPlay serves episodes and detail on the same page). No batching, no background sweep of the existing backlog.
+**Concurrency/politeness**: `link_catalog_series` is one-at-a-time per call and takes `SCRAPE_PERMITS` implicitly through `fetch_html`. It performs at most 3 scrapes (search, [search #2], series page + detail page — reuse one `fetch_html` of the series page for both parses; DooPlay serves episodes and detail on the same page). No batching, no background sweep of the existing backlog, and — see §4 — no call at all unless the user followed, marked-seen, opened the detail view, or pressed the explicit retry button.
 
-### 4. Frontend (`Descubrir.tsx`)
+**Idempotence**: all three call sites can fire for the same row (e.g. mark `Seen`, then open its detail view). The `AlreadyLinked` early-out makes repeat calls free — no second scrape.
 
-`decide()` currently fires `decideCatalogCard` and immediately pops the next card. Linking takes seconds (a real scrape), so it must **not** block the swipe:
+### 4. Where linking is triggered (and where it is NOT)
 
-- After `decideCatalogCard` resolves for `Want`/`Seen` (not `Discard`), fire `linkCatalogSeries(seriesId)` **without awaiting** it before popping the next card.
-- `decide_catalog_card` must therefore return the new `series_id` (today it returns `()`); `api.ts`/`types.ts` updated accordingly.
-- Show a small, non-blocking status line under the swipe actions: "Buscando *Título* en la web…" → "✓ Enlazado (12 episodios)" / "No encontrado en el sitio". Keep a tiny queue of in-flight links (`useRef<Map<id, status>>`), render the most recent 1–2. Rapid swiping must not spawn unbounded parallel scrapes: serialize the links through a simple in-flight promise chain on the frontend (one at a time), since the backend semaphore would otherwise queue them behind the deck's own needs.
-- `Discard` never triggers a search.
+`link_catalog_series` is **never** called speculatively. Exactly three call sites:
 
-A `NoMatch` leaves the synthetic row exactly as it is today — the title is still in the backlog, just unlinked. Show it in Descubrir's "Listas" with a subtle "sin enlazar" marker and a manual "Buscar en la web" retry button (calls the same command). That is the escape hatch for the matcher's inevitable misses.
+**a) `Seen` in Descubrir.** `decide()` fires `decideCatalogCard(..., "Seen")`, which must now return the new `series_id` (today it returns `()`; update `commands.rs`, `api.ts`, `types.ts`). The frontend then fires `linkCatalogSeries(seriesId)` **without awaiting**, pops the next card immediately, and renders a small non-blocking status line under the swipe actions: "Buscando *Título* en la web…" → "✓ Enlazado (12 episodios)" / "No encontrado en el sitio". Track in-flight links in a `useRef<Map<id, status>>`, render the most recent 1–2.
+
+**b) `start_watching(series_id)`** (backend command behind Descubrir → Listas → "Empezar a ver"). If the row is an unlinked catalog row (`anilist_id IS NOT NULL` and no episodes), link it **before** setting `followed = 1`, and surface the outcome to the caller so the row can show "No encontrado" instead of silently becoming an untrackable followed series. This call **awaits** — the user pressed a button and expects the series to be watchable afterwards; show a spinner on the button.
+
+**c) `SeriesDetail` opened on an unlinked catalog row.** The view already loads episodes; when the list is empty and `anilist_id IS NOT NULL`, it calls `linkCatalogSeries` once (guarded by a `useRef` against StrictMode double-invoke, same pattern as `App.tsx`), shows "Buscando en la web…", then reloads the episode list.
+
+**`Want` / `Discard` never scrape.** `Want` only writes the backlog row. A right-swipe stays local and instant. Serialize (a) and (c) through a single in-flight promise chain on the frontend so rapid `Seen` swipes can't stack scrapes behind the deck's own needs; the backend `SCRAPE_PERMITS` semaphore is the hard ceiling, not the strategy.
+
+A `NoMatch` leaves the synthetic row exactly as it is — the title stays in the backlog, unlinked. Show it in Descubrir's "Listas" with a subtle "sin enlazar" marker and a manual "Buscar en la web" retry button (calls the same command). That is the escape hatch for the matcher's inevitable misses, and the only way a `Want` row ever gets scraped: because the user explicitly asked.
 
 ## Acceptance criteria (verifiable)
 
@@ -103,13 +118,17 @@ A `NoMatch` leaves the synthetic row exactly as it is today — the title is sti
    - `animeytx.rs`: `parse_search_results` against the two **real captured** fixtures (hits + empty).
    - `db.rs`: linking a synthetic row onto an existing site slug merges rather than violating uniqueness; `watched_externally` + link marks all episodes seen.
 2. `npx tsc --noEmit`, `npm run build` pass.
-3. Live: swipe `Want` on a catalog title known to exist on the site (e.g. a currently-airing show) → status line reports "Enlazado" with a plausible episode count; `SELECT slug, url, (SELECT COUNT(*) FROM episodes e WHERE e.series_id=s.id) FROM series s WHERE id=…` shows a site slug/URL and >0 episodes. Swipe `Want` on something the site certainly lacks (obscure 1970s OVA) → "No encontrado", row stays synthetic, no crash.
-4. Swiping fast through 5 cards does not open more than 2 scraper windows at once (observe: at most 2 WebView2 windows visible).
+3. **Live — `Want` does not scrape**: swipe right on 5 catalog cards; **zero** WebView2 scraper windows appear and the rows land in `series` with `url LIKE 'https://anilist.co/%'` and zero episodes. This is the criterion that matters most; if it fails, the feature is wrong regardless of everything else.
+4. Live — `Seen` scrapes once: swipe up on a catalog title known to exist on the site (e.g. a currently-airing show) → status line reports "Enlazado" with a plausible episode count; `SELECT slug, url, (SELECT COUNT(*) FROM episodes e WHERE e.series_id=s.id) FROM series s WHERE id=…` shows a site slug/URL and >0 episodes, all marked seen.
+5. Live — "Empezar a ver" on a `Want` row links it (awaited, button spinner), and opening `SeriesDetail` on a still-unlinked row links it on open.
+6. Live — a title the site certainly lacks (obscure 1970s OVA) → "No encontrado", row stays synthetic, no crash, and the "Buscar en la web" retry button appears in Listas.
+7. Never more than 2 WebView2 scraper windows at once during any of the above.
 
 ## Live verification required
 
-- Screenshot of Descubrir showing the "Enlazado ✓" status after a real `Want`.
-- `sqlite3` output of the linked row + its episode count, and of a `NoMatch` row still on `anilist-%`.
+- Screenshot of Descubrir showing the "Enlazado ✓" status after a real `Seen`.
+- Evidence (screenshot or process/window observation) that 5 consecutive `Want` swipes opened **no** scraper window.
+- `sqlite3` output of: a linked row + its episode count; a `Want` row still on `anilist.co` with 0 episodes; a `NoMatch` row still synthetic.
 - Confirmation (visual) that no more than 2 scraper windows ever appear during a fast swipe run.
 
 ## Explicitly out of scope
