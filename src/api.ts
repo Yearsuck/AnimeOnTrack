@@ -105,5 +105,5 @@ export const decideCatalogCard = (params: {
   posterUrl: string | null;
   genres: string[];
   format: string;
-  discard: boolean;
+  decision: SwipeDecision;
 }) => invoke<void>("decide_catalog_card", params);

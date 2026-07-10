@@ -1,10 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   decideCatalogCard,
-  decideSwipe,
   deleteSeries,
   discoverCatalogCard,
-  discoverSwipeCard,
   getSeriesGenres,
   getTopGenres,
   listBacklog,
@@ -19,7 +17,6 @@ import type { GenreAffinity, Series, SwipeCard, SwipeDecision } from "../types";
 
 type SubView = "swipe" | "listas";
 type SwipeOutDirection = "discard" | "want" | "seen" | null;
-type SwipeSource = "site" | "catalog";
 
 // AniList's siteUrl shape is https://anilist.co/anime/{id}/{slug} — catalog
 // cards carry that as their url, this pulls the id back out for
@@ -31,13 +28,10 @@ function anilistIdFromUrl(url: string): number | null {
 
 const TOP_GENRES_LIMIT = 5;
 // Prefetch buffer: keep this many cards ready locally so a decision shows
-// the next card instantly instead of waiting on a fresh discover_swipe_card
-// round-trip (that command re-picks a random genre/page most of the time,
-// so it's a real network fetch far more often than the "~1 fetch per 10
-// swipes" the buffer keying alone provides). Backend scrape fetches are
-// still globally capped at 2 concurrent (see scraper_engine.rs), so firing
-// several discover_swipe_card calls at once to fill this is safe — they
-// just queue up server-side instead of stacking on top of each other.
+// the next card instantly instead of waiting on a fresh discover_catalog_card
+// round-trip. discover_catalog_card is a local SQLite read (no Cloudflare
+// exposure, no network at all), so filling this concurrently is cheap and
+// safe — unlike the scraped-site path, there's no rate limit to respect here.
 const PREFETCH_TARGET = 10;
 const REFILL_THRESHOLD = 4;
 const MAX_FILL_ROUNDS = 5;
@@ -73,7 +67,6 @@ function TasteChips() {
 }
 
 function SwipeView() {
-  const [source, setSource] = useState<SwipeSource>("site");
   const [card, setCard] = useState<SwipeCard | null>(null);
   const [outDirection, setOutDirection] = useState<SwipeOutDirection>(null);
   const [canUndo, setCanUndo] = useState(false);
@@ -83,25 +76,19 @@ function SwipeView() {
   const queueRef = useRef<SwipeCard[]>([]);
   const fillingRef = useRef(false);
   const cardUrlRef = useRef<string | null>(null);
-  const sourceRef = useRef<SwipeSource>("site");
 
   // Top the local queue back up to PREFETCH_TARGET, deduping against
-  // whatever's already queued or on screen (discover_swipe_card can hand
+  // whatever's already queued or on screen (discover_catalog_card can hand
   // out the same not-yet-decided card twice — it only excludes cards
   // already persisted to the DB, and a prefetched card isn't persisted
   // until the user actually decides on it).
   const fillQueue = useCallback(async () => {
     if (fillingRef.current) return;
     fillingRef.current = true;
-    const activeSource = sourceRef.current;
-    const fetchOne = activeSource === "catalog" ? discoverCatalogCard : discoverSwipeCard;
     try {
       for (let round = 0; round < MAX_FILL_ROUNDS && queueRef.current.length < PREFETCH_TARGET; round++) {
-        // Bail if the user switched source mid-fill — this batch is stale.
-        if (sourceRef.current !== activeSource) break;
         const need = PREFETCH_TARGET - queueRef.current.length;
-        const results = await Promise.all(Array.from({ length: need }, () => fetchOne()));
-        if (sourceRef.current !== activeSource) break;
+        const results = await Promise.all(Array.from({ length: need }, () => discoverCatalogCard()));
         const seen = new Set(queueRef.current.map((c) => c.url));
         if (cardUrlRef.current) seen.add(cardUrlRef.current);
         const fresh = results.filter((c): c is SwipeCard => c !== null && !seen.has(c.url));
@@ -148,14 +135,6 @@ function SwipeView() {
   }, [fillQueue]);
 
   useEffect(() => {
-    sourceRef.current = source;
-    // Switching source invalidates the prefetch queue (site cards and
-    // catalog cards aren't interchangeable — different decide command,
-    // different scraped-vs-metadata-only shape).
-    queueRef.current = [];
-    cardUrlRef.current = null;
-    setCard(null);
-    setExhausted(false);
     (async () => {
       setLoading(true);
       await fillQueue();
@@ -163,7 +142,7 @@ function SwipeView() {
       setLoading(false);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [source]);
+  }, []);
 
   const decide = useCallback(
     async (decision: SwipeDecision, direction: Exclude<SwipeOutDirection, null>) => {
@@ -172,22 +151,19 @@ function SwipeView() {
       const activeCard = card;
       setOutDirection(direction);
       setCanUndo(false);
+      const anilistId = anilistIdFromUrl(activeCard.url);
       const decidePromise =
-        source === "catalog"
-          ? (() => {
-              const anilistId = anilistIdFromUrl(activeCard.url);
-              if (anilistId === null) return Promise.resolve();
-              return decideCatalogCard({
-                anilistId,
-                title: activeCard.title,
-                url: activeCard.url,
-                posterUrl: activeCard.poster_url,
-                genres: activeCard.matched_genre ? [activeCard.matched_genre] : [],
-                format: activeCard.kind,
-                discard: decision === "Discard",
-              });
-            })()
-          : decideSwipe(activeCard.url, decision);
+        anilistId === null
+          ? Promise.resolve()
+          : decideCatalogCard({
+              anilistId,
+              title: activeCard.title,
+              url: activeCard.url,
+              posterUrl: activeCard.poster_url,
+              genres: activeCard.matched_genre ? [activeCard.matched_genre] : [],
+              format: activeCard.kind,
+              decision,
+            });
       setTimeout(() => {
         setOutDirection(null);
         popNext(); // instant — already prefetched, no round-trip to wait on
@@ -195,7 +171,7 @@ function SwipeView() {
         decidePromise.then(() => setCanUndo(true));
       }, 160);
     },
-    [card, popNext, source]
+    [card, popNext]
   );
 
   const undo = useCallback(async () => {
@@ -217,31 +193,17 @@ function SwipeView() {
       } else if (e.key === "ArrowRight") {
         e.preventDefault();
         decide("Want", "want");
-      } else if (e.key === "ArrowUp" && source !== "catalog") {
+      } else if (e.key === "ArrowUp") {
         e.preventDefault();
         decide("Seen", "seen");
       }
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [decide, undo, source]);
+  }, [decide, undo]);
 
   return (
     <div className="swipe-stage">
-      <div className="tabs" style={{ marginBottom: 4 }}>
-        <button
-          className={`tab ${source === "site" ? "active" : ""}`}
-          onClick={() => setSource("site")}
-        >
-          Del sitio
-        </button>
-        <button
-          className={`tab ${source === "catalog" ? "active" : ""}`}
-          onClick={() => setSource("catalog")}
-        >
-          Catálogo completo
-        </button>
-      </div>
       <TasteChips />
       {exhausted ? (
         <div className="empty">No se han encontrado más animes por ahora, prueba más tarde.</div>
@@ -300,13 +262,9 @@ function SwipeView() {
         </button>
         <button
           className="btn btn-success"
-          title={
-            source === "catalog"
-              ? "No disponible para el catálogo — sin datos de episodios"
-              : "Ya lo vi (↑)"
-          }
+          title="Ya lo vi (↑)"
           onClick={() => decide("Seen", "seen")}
-          disabled={!card || source === "catalog"}
+          disabled={!card}
         >
           ✓
         </button>
