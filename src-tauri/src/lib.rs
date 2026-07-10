@@ -67,6 +67,7 @@ pub fn run() {
             commands::get_series_genres,
             commands::get_top_genres,
             commands::get_anime_catalog,
+            commands::get_catalog_facets,
             commands::sync_anime_catalog,
             commands::discover_catalog_card,
             commands::decide_catalog_card,
