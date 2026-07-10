@@ -137,7 +137,7 @@ export default function App() {
         <AiringGrid onOpenSeries={openSeries} refreshSignal={airingRefreshSignal} />
       )}
       {view === "library" && <Library onOpenSeries={openSeries} />}
-      {view === "descubrir" && <Descubrir />}
+      {view === "descubrir" && <Descubrir onOpenSeries={openSeries} />}
       {view === "catalog" && <Catalog />}
       {view === "stats" && <Stats />}
       {view === "settings" && <Settings />}

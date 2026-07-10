@@ -357,7 +357,15 @@ function SwipeView() {
   );
 }
 
-function WantRow({ series, onChanged }: { series: Series; onChanged: () => void }) {
+function WantRow({
+  series,
+  onChanged,
+  onOpenSeries,
+}: {
+  series: Series;
+  onChanged: () => void;
+  onOpenSeries: (s: Series) => void;
+}) {
   const [genres, setGenres] = useState<string[]>([]);
   const [linking, setLinking] = useState(false);
   const [starting, setStarting] = useState(false);
@@ -401,7 +409,12 @@ function WantRow({ series, onChanged }: { series: Series; onChanged: () => void 
     <div className="backlog-row">
       {series.cover_url && <img src={series.cover_url} alt="" />}
       <div className="backlog-main">
-        <div className="backlog-title">
+        <div
+          className="backlog-title"
+          onClick={() => onOpenSeries(series)}
+          style={{ cursor: "pointer" }}
+          title="Ver detalles"
+        >
           {series.title}
           {unlinked && (
             <span
@@ -474,7 +487,7 @@ function DiscardedRow({ series, onChanged }: { series: Series; onChanged: () => 
   );
 }
 
-function ListasView() {
+function ListasView({ onOpenSeries }: { onOpenSeries: (s: Series) => void }) {
   const [want, setWant] = useState<Series[]>([]);
   const [discarded, setDiscarded] = useState<Series[]>([]);
 
@@ -497,7 +510,9 @@ function ListasView() {
         {want.length === 0 ? (
           <div className="empty">Nada por aquí todavía.</div>
         ) : (
-          want.map((s) => <WantRow key={s.id} series={s} onChanged={load} />)
+          want.map((s) => (
+            <WantRow key={s.id} series={s} onChanged={load} onOpenSeries={onOpenSeries} />
+          ))
         )}
       </div>
 
@@ -515,7 +530,13 @@ function ListasView() {
   );
 }
 
-export function Descubrir() {
+// onOpenSeries is the same App.tsx-owned navigation callback Pending/Library/
+// AiringGrid already use to open SeriesDetail. Wiring it into Listas' "Quiero
+// ver" rows is what makes trigger (c) from the design spec ("SeriesDetail
+// opened on an unlinked catalog row" — see SeriesDetail.tsx's link-on-open
+// effect) actually reachable: without a click-through here, an unfollowed
+// catalog row had no UI path into SeriesDetail at all.
+export function Descubrir({ onOpenSeries }: { onOpenSeries: (s: Series) => void }) {
   const [subView, setSubView] = useState<SubView>("swipe");
 
   return (
@@ -538,7 +559,7 @@ export function Descubrir() {
         </button>
       </div>
 
-      {subView === "swipe" ? <SwipeView /> : <ListasView />}
+      {subView === "swipe" ? <SwipeView /> : <ListasView onOpenSeries={onOpenSeries} />}
     </div>
   );
 }
