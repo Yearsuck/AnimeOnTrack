@@ -15,6 +15,8 @@ import type {
   CatalogFilter,
   CatalogFacets,
   LinkOutcome,
+  SiteSummary,
+  SiteSwitchResult,
 } from "./types";
 
 export const scanAiring = (baseUrl: string) =>
@@ -50,6 +52,16 @@ export const rescanAiring = () => invoke<Series[]>("rescan_airing");
 export const getMirrors = () => invoke<string[]>("get_mirrors");
 
 export const setMirrors = (urls: string[]) => invoke<void>("set_mirrors", { urls });
+
+export const listSites = () => invoke<SiteSummary[]>("list_sites");
+
+export const getActiveSite = () => invoke<SiteSummary>("get_active_site");
+
+// Switches the active site's mirrors/source bookkeeping. Does NOT itself
+// scan the airing listing — callers follow up with scanAiring(result.site
+// .default_base_url), same as a fresh install's first scan.
+export const setActiveSite = (siteId: string) =>
+  invoke<SiteSwitchResult>("set_active_site", { siteId });
 
 export const listLibrary = () => invoke<LibraryItem[]>("list_library");
 

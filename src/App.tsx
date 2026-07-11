@@ -88,6 +88,23 @@ export default function App() {
     if (view === "stats") setStatsVisited(true);
   }, [view]);
 
+  // After Settings.tsx switches the active site (and scans its airing
+  // listing), every other view is now showing stale, wrong-site data:
+  // - Stats stays mounted once visited (perf cache, see statsVisited's
+  //   comment) so it must be reset to unmount/refetch on next visit rather
+  //   than keep showing the old site's 3D graph.
+  // - AiringGrid needs its refreshSignal bumped so it re-fetches even if it
+  //   happens to already be mounted.
+  // - The pending badge is scoped to the active source too.
+  // Landing on "airing" gives an immediate, visible confirmation that the
+  // switch worked (the whole point of the live-verification requirement).
+  async function onSiteChanged() {
+    setStatsVisited(false);
+    setAiringRefreshSignal((n) => n + 1);
+    await refreshBadge();
+    setView("airing");
+  }
+
   function openSeries(s: Series) {
     setCameFrom(view === "detail" ? cameFrom : view);
     setSelected(s);
@@ -154,7 +171,7 @@ export default function App() {
           <Stats active={view === "stats"} />
         </div>
       )}
-      {view === "settings" && <Settings />}
+      {view === "settings" && <Settings onSiteChanged={onSiteChanged} />}
       {view === "detail" && selected && (
         <SeriesDetail
           series={selected}

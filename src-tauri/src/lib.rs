@@ -24,14 +24,20 @@ pub fn run() {
             std::fs::create_dir_all(&dir).ok();
             let db_path = dir.join("animeontrack.sqlite");
             let db = db::Db::open(db_path.to_str().unwrap()).expect("open db");
-            // Restore last source id if a single source exists.
-            let source_id: Option<i64> = db
-                .conn
-                .query_row("SELECT id FROM sources LIMIT 1", [], |r| r.get(0))
-                .ok();
+            // Restore the active site from settings (installs that predate
+            // multi-site support have no such key — default to the one site
+            // that ever existed before this), then the most recent source
+            // row tagged with that site, if that site has ever been scanned.
+            let active_site_id = db
+                .get_setting("active_site_id")
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| "animeytx".to_string());
+            let source_id: Option<i64> = db.get_source_id_for_site(&active_site_id).ok().flatten();
             app.manage(AppState {
                 db: Mutex::new(db),
                 source_id: Mutex::new(source_id),
+                active_site_id: Mutex::new(active_site_id),
                 swipe_buffer: Mutex::new(std::collections::HashMap::new()),
                 swipe_last_page: Mutex::new(std::collections::HashMap::new()),
                 swipe_served: Mutex::new(std::collections::HashMap::new()),
@@ -60,6 +66,9 @@ pub fn run() {
             commands::rescan_airing,
             commands::get_mirrors,
             commands::set_mirrors,
+            commands::list_sites,
+            commands::get_active_site,
+            commands::set_active_site,
             commands::discover_swipe_card,
             commands::decide_swipe,
             commands::start_watching,
