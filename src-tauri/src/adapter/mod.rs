@@ -2,6 +2,7 @@ use crate::models::{Episode, FinishedCard, Series, SeriesDetail};
 use anyhow::Result;
 
 pub mod animeytx;
+pub mod tioanime;
 
 /// Static metadata for one supported site — never the base URL (that changes
 /// with every mirror); `id` is the stable slug stored in `sources.site_id`
@@ -19,6 +20,7 @@ pub struct SiteInfo {
 pub fn all_sites() -> &'static [SiteInfo] {
     &[
         SiteInfo { id: "animeytx", name: "AnimeYT", default_base_url: "https://wwv.animeytx.net" },
+        SiteInfo { id: "tioanime", name: "TioAnime", default_base_url: "https://tioanime.com" },
     ]
 }
 
@@ -28,6 +30,7 @@ pub fn all_sites() -> &'static [SiteInfo] {
 pub fn adapter_for(site_id: &str) -> Option<Box<dyn SiteAdapter>> {
     match site_id {
         "animeytx" => Some(Box::new(animeytx::AnimeytxAdapter)),
+        "tioanime" => Some(Box::new(tioanime::TioanimeAdapter)),
         _ => None,
     }
 }
