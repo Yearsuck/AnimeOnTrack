@@ -28,11 +28,21 @@ export interface PendingItem {
   episode: Episode;
 }
 
+export interface NextEpisode {
+  number: string;
+  title: string | null;
+  url: string;
+}
+
 export interface LibraryItem {
   series: Series;
   total_episodes: number;
   seen_episodes: number;
   last_added: string | null;
+  /** Lowest-numbered unseen episode, or null when fully seen (or none exist). */
+  next_episode: NextEpisode | null;
+  /** MAX(episodes.seen_at) — when the user last marked an episode seen. */
+  last_watched_at: string | null;
 }
 
 export interface GenreStat {

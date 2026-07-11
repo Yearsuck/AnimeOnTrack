@@ -196,6 +196,14 @@ impl Db {
         ensure_column(&self.conn, "series", "next_episode_at", "INTEGER")?;
         ensure_column(&self.conn, "series", "site_episode_count", "INTEGER")?;
         ensure_column(&self.conn, "series", "last_checked_at", "TEXT")?;
+        // episodes.seen_at: ISO 8601 timestamp set by `set_seen`/
+        // `set_seen_cascade` when an episode is marked seen, cleared (NULL)
+        // when un-marked — including every row a cascade touches, not just
+        // the one explicitly toggled. Distinct from `added_at` (when the row
+        // was scraped): this is when the user actually watched it, and is
+        // the only thing that can drive "continue watching, most recent
+        // first" in the library view (see the library-redesign design doc).
+        ensure_column(&self.conn, "episodes", "seen_at", "TEXT")?;
         self.conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_series_next_ep ON series(source_id, is_airing, next_episode_at);",
         )?;
@@ -738,16 +746,20 @@ impl Db {
         Ok(rows)
     }
 
-    /// Followed series with their episode counts (total, seen) and the most
-    /// recent episode's `added_at`, for the library view. Series with zero
-    /// scraped episodes still appear (`total=0`).
+    /// Followed series with their episode counts (total, seen), the most
+    /// recent episode's `added_at`, and (via `next_unseen_episode`) the
+    /// lowest-numbered unseen episode plus `last_watched_at`, for the
+    /// library view. Series with zero scraped episodes still appear
+    /// (`total=0`, `next_episode=None`) — status derivation on the frontend
+    /// treats that as "plan", never dividing by zero.
     pub fn list_library(&self, source_id: i64) -> Result<Vec<crate::models::LibraryItem>> {
         let mut stmt = self.conn.prepare(
             "SELECT s.id, s.slug, s.title, s.url, s.cover_url, s.is_airing, s.followed,
                     s.next_episode_at, s.site_episode_count,
                     COUNT(e.id) AS total,
                     SUM(CASE WHEN e.seen=1 THEN 1 ELSE 0 END) AS seen,
-                    MAX(e.added_at) AS last_added
+                    MAX(e.added_at) AS last_added,
+                    MAX(e.seen_at) AS last_watched_at
              FROM series s
              LEFT JOIN episodes e ON e.series_id = s.id
              WHERE s.source_id=?1 AND s.followed=1
@@ -757,15 +769,52 @@ impl Db {
         let rows = stmt
             .query_map([source_id], |r| {
                 let series = Self::row_to_series(r)?;
-                Ok(crate::models::LibraryItem {
+                Ok((
                     series,
-                    total_episodes: r.get("total")?,
-                    seen_episodes: r.get::<_, Option<i64>>("seen")?.unwrap_or(0),
-                    last_added: r.get("last_added")?,
-                })
+                    r.get::<_, i64>("total")?,
+                    r.get::<_, Option<i64>>("seen")?.unwrap_or(0),
+                    r.get::<_, Option<String>>("last_added")?,
+                    r.get::<_, Option<String>>("last_watched_at")?,
+                ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
+
+        let mut out = Vec::with_capacity(rows.len());
+        for (series, total_episodes, seen_episodes, last_added, last_watched_at) in rows {
+            let next_episode = self.next_unseen_episode(series.id)?;
+            out.push(crate::models::LibraryItem {
+                series,
+                total_episodes,
+                seen_episodes,
+                last_added,
+                next_episode,
+                last_watched_at,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Lowest-numbered unseen episode of a series, or `None` if every
+    /// episode is seen (or there are none) — same ordering as
+    /// `list_series_episodes` (`SeriesDetail`'s query): `CAST(number AS
+    /// INTEGER) ASC, id ASC`. Deliberately reuses that exact ORDER BY rather
+    /// than a different numeric parse, so this can never disagree with what
+    /// `SeriesDetail` shows as "next" for the same series.
+    fn next_unseen_episode(&self, series_id: i64) -> Result<Option<crate::models::NextEpisode>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT number, title, url FROM episodes
+             WHERE series_id=?1 AND seen=0
+             ORDER BY CAST(number AS INTEGER) ASC, id ASC
+             LIMIT 1",
+        )?;
+        let mut rows = stmt.query_map([series_id], |r| {
+            Ok(crate::models::NextEpisode {
+                number: r.get(0)?,
+                title: r.get(1)?,
+                url: r.get(2)?,
+            })
+        })?;
+        rows.next().transpose().map_err(Into::into)
     }
 
     /// Series with the given `backlog_status` ('want' or 'discarded'), for
@@ -867,9 +916,12 @@ impl Db {
     }
 
     /// Set an episode's seen flag either way (lets the user un-mark).
+    /// `seen_at` tracks alongside: stamped `datetime('now')` when marking
+    /// seen, cleared back to NULL when un-marking.
     pub fn set_seen(&self, episode_id: i64, seen: bool) -> Result<()> {
         self.conn.execute(
-            "UPDATE episodes SET seen=?1 WHERE id=?2",
+            "UPDATE episodes SET seen=?1, seen_at = CASE WHEN ?1=1 THEN datetime('now') ELSE NULL END
+             WHERE id=?2",
             (seen as i64, episode_id),
         )?;
         Ok(())
@@ -891,7 +943,8 @@ impl Db {
             // No leading digits at all: ordering is meaningless, so just
             // toggle the exact-matching episode(s) rather than cascade.
             self.conn.execute(
-                "UPDATE episodes SET seen=?1 WHERE series_id=?2 AND number=?3",
+                "UPDATE episodes SET seen=?1, seen_at = CASE WHEN ?1=1 THEN datetime('now') ELSE NULL END
+                 WHERE series_id=?2 AND number=?3",
                 (seen as i64, series_id, number),
             )?;
             return Ok(());
@@ -909,8 +962,14 @@ impl Db {
                 None => false,
             };
             if matches {
-                self.conn
-                    .execute("UPDATE episodes SET seen=?1 WHERE id=?2", (seen as i64, id))?;
+                // seen_at cascades along with seen — every row the cascade
+                // touches gets the same stamped/cleared treatment as the
+                // one the user explicitly clicked, not just that one.
+                self.conn.execute(
+                    "UPDATE episodes SET seen=?1, seen_at = CASE WHEN ?1=1 THEN datetime('now') ELSE NULL END
+                     WHERE id=?2",
+                    (seen as i64, id),
+                )?;
             }
         }
         Ok(())
@@ -1429,6 +1488,162 @@ mod tests {
         assert!(eps.iter().find(|e| e.number == "1x01").unwrap().seen);
         assert!(!eps.iter().find(|e| e.number == "1x02").unwrap().seen);
         assert!(!eps.iter().find(|e| e.number == "1x03").unwrap().seen);
+    }
+
+    #[test]
+    fn set_seen_cascade_stamps_and_clears_seen_at() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "https://wwv.animeytx.net").unwrap();
+        let s = crate::models::Series {
+            id: 0, slug: "x".into(), title: "X".into(),
+            url: "u".into(), cover_url: None, is_airing: true, followed: false, next_episode_at: None, site_episode_count: None,
+        };
+        let sid = db.upsert_series(src, &s).unwrap();
+        let mk = |n: &str, url: &str| crate::models::Episode {
+            id: 0, series_id: sid, number: n.into(), title: None,
+            url: url.into(), released_at: None, seen: false,
+        };
+        let e1 = db.insert_episode(&mk("1", "https://site/e1")).unwrap();
+        let e2 = db.insert_episode(&mk("2", "https://site/e2")).unwrap();
+
+        let seen_at = |id: i64| -> Option<String> {
+            db.conn
+                .query_row("SELECT seen_at FROM episodes WHERE id=?1", [id], |r| r.get(0))
+                .unwrap()
+        };
+        assert!(seen_at(e1).is_none());
+        assert!(seen_at(e2).is_none());
+
+        // marking "2" seen cascades to "1" — both rows get seen_at, not just
+        // the one explicitly clicked.
+        db.set_seen_cascade(sid, "2", true).unwrap();
+        assert!(seen_at(e1).is_some());
+        assert!(seen_at(e2).is_some());
+
+        // un-marking "2" clears seen_at on the cascade target too
+        db.set_seen_cascade(sid, "2", false).unwrap();
+        assert!(seen_at(e1).is_some(), "e1 stays seen, keeps its seen_at");
+        assert!(seen_at(e2).is_none(), "e2 un-marked, seen_at cleared");
+    }
+
+    #[test]
+    fn set_seen_stamps_and_clears_seen_at() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "https://wwv.animeytx.net").unwrap();
+        let s = crate::models::Series {
+            id: 0, slug: "x".into(), title: "X".into(),
+            url: "u".into(), cover_url: None, is_airing: true, followed: false, next_episode_at: None, site_episode_count: None,
+        };
+        let sid = db.upsert_series(src, &s).unwrap();
+        let e1 = db
+            .insert_episode(&crate::models::Episode {
+                id: 0, series_id: sid, number: "1".into(), title: None,
+                url: "https://site/e1".into(), released_at: None, seen: false,
+            })
+            .unwrap();
+
+        db.set_seen(e1, true).unwrap();
+        let seen_at: Option<String> = db
+            .conn
+            .query_row("SELECT seen_at FROM episodes WHERE id=?1", [e1], |r| r.get(0))
+            .unwrap();
+        assert!(seen_at.is_some());
+
+        db.set_seen(e1, false).unwrap();
+        let seen_at: Option<String> = db
+            .conn
+            .query_row("SELECT seen_at FROM episodes WHERE id=?1", [e1], |r| r.get(0))
+            .unwrap();
+        assert!(seen_at.is_none());
+    }
+
+    #[test]
+    fn library_next_episode_agrees_with_series_detail_ordering() {
+        // "9", "10", "10.5" — the design doc's canonical case for why next-
+        // episode ordering must reuse list_series_episodes' ORDER BY
+        // (CAST(number AS INTEGER) ASC, id ASC) rather than a numeric parse:
+        // a naive string sort would put "10" before "9".
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "https://wwv.animeytx.net").unwrap();
+        let s = crate::models::Series {
+            id: 0, slug: "x".into(), title: "X".into(),
+            url: "u".into(), cover_url: None, is_airing: true, followed: true, next_episode_at: None, site_episode_count: None,
+        };
+        let sid = db.upsert_series(src, &s).unwrap();
+        // upsert_series never sets `followed` (scan path must not un-follow);
+        // list_library filters on followed=1, so follow it explicitly.
+        db.set_followed(sid, true).unwrap();
+        let mk = |n: &str, url: &str| crate::models::Episode {
+            id: 0, series_id: sid, number: n.into(), title: None,
+            url: url.into(), released_at: None, seen: false,
+        };
+        // Insert out of numeric order to make sure ordering isn't just
+        // reflecting insertion order.
+        db.insert_episode(&mk("10", "https://site/e10")).unwrap();
+        db.insert_episode(&mk("9", "https://site/e9")).unwrap();
+        db.insert_episode(&mk("10.5", "https://site/e10.5")).unwrap();
+
+        let detail_order = db.list_series_episodes(sid).unwrap();
+        let first_unseen_in_detail_order = detail_order.iter().find(|e| !e.seen).unwrap();
+
+        let items = db.list_library(src).unwrap();
+        let item = items.iter().find(|it| it.series.id == sid).unwrap();
+        let next = item.next_episode.as_ref().expect("has an unseen episode");
+        assert_eq!(next.number, first_unseen_in_detail_order.number);
+        assert_eq!(next.number, "9", "lowest by SeriesDetail's own ordering, not string sort");
+
+        // Mark "9" seen; next should become "10" (not "10.5" — 10 sorts
+        // before 10.5 under CAST(number AS INTEGER) since both cast to 10,
+        // then id ASC breaks the tie in insertion order: "10" was inserted
+        // before "10.5").
+        db.set_seen_cascade(sid, "9", true).unwrap();
+        let items = db.list_library(src).unwrap();
+        let item = items.iter().find(|it| it.series.id == sid).unwrap();
+        assert_eq!(item.next_episode.as_ref().unwrap().number, "10");
+    }
+
+    #[test]
+    fn library_next_episode_none_when_fully_seen() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "https://wwv.animeytx.net").unwrap();
+        let s = crate::models::Series {
+            id: 0, slug: "x".into(), title: "X".into(),
+            url: "u".into(), cover_url: None, is_airing: true, followed: true, next_episode_at: None, site_episode_count: None,
+        };
+        let sid = db.upsert_series(src, &s).unwrap();
+        db.set_followed(sid, true).unwrap();
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: sid, number: "1".into(), title: None,
+            url: "https://site/e1".into(), released_at: None, seen: false,
+        })
+        .unwrap();
+        db.set_seen_cascade(sid, "1", true).unwrap();
+
+        let items = db.list_library(src).unwrap();
+        let item = items.iter().find(|it| it.series.id == sid).unwrap();
+        assert!(item.next_episode.is_none());
+        assert_eq!(item.total_episodes, 1);
+        assert_eq!(item.seen_episodes, 1);
+    }
+
+    #[test]
+    fn library_next_episode_none_and_no_panic_with_zero_episodes() {
+        // A followed-but-never-scraped (or scrape-failed) series: total=0.
+        // Must not divide by zero anywhere and must yield next_episode=None.
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "https://wwv.animeytx.net").unwrap();
+        let s = crate::models::Series {
+            id: 0, slug: "x".into(), title: "X".into(),
+            url: "u".into(), cover_url: None, is_airing: true, followed: true, next_episode_at: None, site_episode_count: None,
+        };
+        let sid = db.upsert_series(src, &s).unwrap();
+        db.set_followed(sid, true).unwrap();
+
+        let items = db.list_library(src).unwrap();
+        assert_eq!(items.len(), 1);
+        assert!(items[0].next_episode.is_none());
+        assert_eq!(items[0].total_episodes, 0);
+        assert_eq!(items[0].seen_episodes, 0);
     }
 
     #[test]

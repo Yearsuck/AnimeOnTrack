@@ -1,98 +1,267 @@
 import { useEffect, useMemo, useState } from "react";
-import { listLibrary } from "../api";
+import { listLibrary, openEpisode } from "../api";
 import type { LibraryItem, Series } from "../types";
 
-type SortMode = "name" | "recent" | "progress";
+type Status = "completed" | "watching" | "plan";
+
+// Status is derived, never stored (no user-set field exists). Mirrors the
+// design doc's formula exactly: completed requires a nonzero total so a
+// followed-but-never-scraped series (total=0) can never read as completed;
+// watching requires at least one seen episode strictly under the total;
+// everything else (including total=0) is "plan", never dividing by zero.
+function statusOf(it: LibraryItem): Status {
+  if (it.total_episodes > 0 && it.seen_episodes === it.total_episodes) return "completed";
+  if (it.seen_episodes > 0) return "watching";
+  return "plan";
+}
+
+// "Viendo"/"Completadas" sort: most-recently-watched first, NULLs (never
+// watched, or watched before the `seen_at` column existed) sort last,
+// title as a stable tie-break.
+function byRecentWatched(a: LibraryItem, b: LibraryItem): number {
+  if (a.last_watched_at == null && b.last_watched_at == null) {
+    return a.series.title.localeCompare(b.series.title);
+  }
+  if (a.last_watched_at == null) return 1;
+  if (b.last_watched_at == null) return -1;
+  return (
+    b.last_watched_at.localeCompare(a.last_watched_at) ||
+    a.series.title.localeCompare(b.series.title)
+  );
+}
+
+function byTitle(a: LibraryItem, b: LibraryItem): number {
+  return a.series.title.localeCompare(b.series.title);
+}
+
+// Up to two initials from the title, for the poster-less fallback block —
+// never render a broken <img> when cover_url is null.
+function initials(title: string): string {
+  const chars = title
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((w) => w[0]?.toUpperCase() ?? "")
+    .join("");
+  return chars || "?";
+}
+
+function LibraryCard({
+  item,
+  showAction,
+  onOpenSeries,
+}: {
+  item: LibraryItem;
+  showAction: boolean;
+  onOpenSeries: (s: Series) => void;
+}) {
+  // cover_url is a data: URI only for followed series whose cover was
+  // fetched; otherwise it's a remote (Cloudflare-blocked) URL the WebView
+  // can't actually load, or null. Both must degrade to the text fallback —
+  // null up-front, a broken remote URL via onError — so the grid never
+  // shows a broken <img>.
+  const [imgFailed, setImgFailed] = useState(false);
+  const showFallback = !item.series.cover_url || imgFailed;
+
+  const pct = item.total_episodes
+    ? Math.round((item.seen_episodes / item.total_episodes) * 100)
+    : 0;
+
+  // The card is a div[role=button] rather than a real <button> because it
+  // must contain a real nested <button> (the play action) — nesting
+  // <button> inside <button> is invalid HTML. Enter and Space are wired by
+  // hand to match native button semantics.
+  function handleKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      onOpenSeries(item.series);
+    }
+  }
+
+  // Stop propagation on both click and keydown: a keydown on the nested
+  // button still bubbles to the card's onKeyDown even though the button's
+  // own Enter/Space handling stays internal, so without stopping it here
+  // Enter on this button would open the detail view *and* play the episode
+  // (the bubbling bug that already bit AiringGrid's follow button and
+  // Descubrir's poster click — commit 909c64d).
+  function playNext(e: React.SyntheticEvent) {
+    e.stopPropagation();
+    if (item.next_episode) openEpisode(item.next_episode.url);
+  }
+
+  return (
+    <div
+      className="card lib-card"
+      role="button"
+      tabIndex={0}
+      onClick={() => onOpenSeries(item.series)}
+      onKeyDown={handleKeyDown}
+      title={item.series.title}
+    >
+      <div className="poster">
+        {showFallback ? (
+          <div className="poster-fallback" aria-hidden="true">
+            {initials(item.series.title)}
+          </div>
+        ) : (
+          <img
+            src={item.series.cover_url!}
+            alt=""
+            loading="lazy"
+            onError={() => setImgFailed(true)}
+          />
+        )}
+      </div>
+      <div className="card-body">
+        <div className="card-title">{item.series.title}</div>
+        <div
+          className="progress"
+          role="progressbar"
+          aria-valuenow={item.seen_episodes}
+          aria-valuemin={0}
+          aria-valuemax={item.total_episodes}
+          aria-label={`Progreso de ${item.series.title}: ${item.seen_episodes} de ${item.total_episodes} episodios vistos`}
+        >
+          <span style={{ width: `${pct}%` }} />
+        </div>
+        <div className="lib-progress-text muted">
+          {item.seen_episodes} / {item.total_episodes}
+        </div>
+        {showAction && item.next_episode && (
+          <button
+            type="button"
+            className="btn btn-primary lib-play-btn"
+            onClick={playNext}
+            onKeyDown={(e) => e.stopPropagation()}
+          >
+            ▶ Episodio {item.next_episode.number}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function LibrarySection({
+  title,
+  items,
+  defaultOpen,
+  showAction,
+  onOpenSeries,
+}: {
+  title: string;
+  items: LibraryItem[];
+  defaultOpen: boolean;
+  showAction: boolean;
+  onOpenSeries: (s: Series) => void;
+}) {
+  // An empty section (nothing in this status, or nothing left after the
+  // search filter) is omitted entirely rather than rendered with a
+  // "no results" placeholder — three always-present empty groups would be
+  // noisier than the flat list this view replaces.
+  if (items.length === 0) return null;
+  return (
+    <details className="lib-section" open={defaultOpen}>
+      <summary className="lib-section-summary">
+        <span className="lib-section-title">{title}</span>
+        <span className="lib-section-count">{items.length}</span>
+      </summary>
+      <div className="grid">
+        {items.map((it) => (
+          <LibraryCard
+            key={it.series.id}
+            item={it}
+            showAction={showAction}
+            onOpenSeries={onOpenSeries}
+          />
+        ))}
+      </div>
+    </details>
+  );
+}
 
 export function Library({ onOpenSeries }: { onOpenSeries: (s: Series) => void }) {
   const [items, setItems] = useState<LibraryItem[]>([]);
   const [query, setQuery] = useState("");
-  const [sort, setSort] = useState<SortMode>("recent");
 
-  async function load() {
-    setItems(await listLibrary());
-  }
   useEffect(() => {
-    load();
+    listLibrary().then(setItems);
   }, []);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const list = items.filter((it) => !q || it.series.title.toLowerCase().includes(q));
-    const sorted = [...list];
-    if (sort === "name") {
-      sorted.sort((a, b) => a.series.title.localeCompare(b.series.title));
-    } else if (sort === "recent") {
-      sorted.sort((a, b) => (b.last_added ?? "").localeCompare(a.last_added ?? ""));
-    } else if (sort === "progress") {
-      const pct = (it: LibraryItem) => (it.total_episodes ? it.seen_episodes / it.total_episodes : 0);
-      sorted.sort((a, b) => pct(a) - pct(b));
-    }
-    return sorted;
-  }, [items, query, sort]);
+    return items.filter((it) => !q || it.series.title.toLowerCase().includes(q));
+  }, [items, query]);
+
+  const watching = useMemo(
+    () => filtered.filter((it) => statusOf(it) === "watching").sort(byRecentWatched),
+    [filtered]
+  );
+  const plan = useMemo(
+    () => filtered.filter((it) => statusOf(it) === "plan").sort(byTitle),
+    [filtered]
+  );
+  const completed = useMemo(
+    () => filtered.filter((it) => statusOf(it) === "completed").sort(byRecentWatched),
+    [filtered]
+  );
 
   return (
     <div className="page">
       <div className="page-head">
         <h2 className="page-title">Biblioteca</h2>
         <div className="search">
-          <span className="icon">⌕</span>
+          <span className="icon" aria-hidden="true">
+            ⌕
+          </span>
+          <label htmlFor="library-search" className="sr-only">
+            Buscar por nombre
+          </label>
           <input
+            id="library-search"
             className="input"
             placeholder="Buscar por nombre…"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
         </div>
-        <select
-          className="input"
-          style={{ width: 170 }}
-          value={sort}
-          onChange={(e) => setSort(e.target.value as SortMode)}
-        >
-          <option value="recent">Más reciente</option>
-          <option value="name">Nombre A-Z</option>
-          <option value="progress">Menos visto primero</option>
-        </select>
         <div className="spacer" />
         <span className="muted">{filtered.length} series</span>
       </div>
 
-      {filtered.length === 0 ? (
+      {items.length === 0 ? (
         <div className="empty">
           Aún no sigues ninguna serie.
           <br />
-          Ve a “En emisión” y dale a Seguir.
+          Ve a "En emisión" y dale a Seguir.
         </div>
+      ) : filtered.length === 0 ? (
+        <div className="empty">No hay resultados.</div>
       ) : (
-        <div className="series-block">
-          {filtered.map((it) => {
-            const pct = it.total_episodes
-              ? Math.round((it.seen_episodes / it.total_episodes) * 100)
-              : 0;
-            return (
-              <div
-                key={it.series.id}
-                className="lib-row"
-                onClick={() => onOpenSeries(it.series)}
-              >
-                {it.series.cover_url && <img src={it.series.cover_url} alt="" />}
-                <div className="lib-main">
-                  <div className="lib-title">{it.series.title}</div>
-                  <div className="progress" style={{ marginTop: 6 }}>
-                    <span style={{ width: `${pct}%` }} />
-                  </div>
-                </div>
-                <div className="lib-count">
-                  {it.seen_episodes}/{it.total_episodes}
-                  <span className="muted" style={{ display: "block", fontSize: 11 }}>
-                    vistos
-                  </span>
-                </div>
-              </div>
-            );
-          })}
-        </div>
+        <>
+          <LibrarySection
+            title="Viendo"
+            items={watching}
+            defaultOpen
+            showAction
+            onOpenSeries={onOpenSeries}
+          />
+          <LibrarySection
+            title="Pendientes de empezar"
+            items={plan}
+            defaultOpen
+            showAction
+            onOpenSeries={onOpenSeries}
+          />
+          <LibrarySection
+            title="Completadas"
+            items={completed}
+            defaultOpen={false}
+            showAction={false}
+            onOpenSeries={onOpenSeries}
+          />
+        </>
       )}
     </div>
   );
