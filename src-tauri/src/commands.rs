@@ -426,6 +426,96 @@ pub fn set_mirrors(state: State<'_, AppState>, urls: Vec<String>) -> Result<(), 
     save_mirrors(&db, &site_id, &cleaned)
 }
 
+/// Plain-data view of `adapter::SiteInfo` for the frontend — `SiteInfo`
+/// itself holds `&'static str`s, not serializable across the Tauri IPC
+/// boundary as-is.
+#[derive(Serialize, Clone, Debug)]
+pub struct SiteSummary {
+    pub id: String,
+    pub name: String,
+    pub default_base_url: String,
+}
+
+impl From<&adapter::SiteInfo> for SiteSummary {
+    fn from(s: &adapter::SiteInfo) -> Self {
+        SiteSummary { id: s.id.to_string(), name: s.name.to_string(), default_base_url: s.default_base_url.to_string() }
+    }
+}
+
+/// Every site the Settings selector can offer, in `adapter::all_sites()`
+/// order.
+#[tauri::command]
+pub fn list_sites() -> Vec<SiteSummary> {
+    adapter::all_sites().iter().map(SiteSummary::from).collect()
+}
+
+/// The currently-active site (`state.active_site_id`), for the Settings
+/// selector's initial value.
+#[tauri::command]
+pub fn get_active_site(state: State<'_, AppState>) -> Result<SiteSummary, String> {
+    let site_id = get_active_site_id(&state);
+    adapter::all_sites()
+        .iter()
+        .find(|s| s.id == site_id)
+        .map(SiteSummary::from)
+        .ok_or_else(|| format!("sitio activo desconocido: {site_id}"))
+}
+
+#[derive(Serialize, Debug)]
+pub struct SiteSwitchResult {
+    pub site: SiteSummary,
+    /// `true` when this site has never been scanned before in this install
+    /// (no `sources` row tagged with it yet) — the caller still needs to
+    /// call `scan_airing` either way, but this lets the UI say "first scan
+    /// of {site}…" vs "back to {site}" if it wants to.
+    pub is_first_time: bool,
+}
+
+/// Pure-enough-to-test core of `set_active_site`: everything that reads/
+/// writes the DB, returning the resulting `source_id` for the caller to
+/// stash in `state.source_id`. Split out from the `#[tauri::command]` wrapper
+/// so it's testable against a plain in-memory `Db` without a live `State`.
+fn switch_site_core(db: &Db, site_id: &str) -> Result<(SiteSwitchResult, Option<i64>), String> {
+    let info = adapter::all_sites()
+        .iter()
+        .find(|s| s.id == site_id)
+        .ok_or_else(|| format!("sitio desconocido: {site_id}"))?;
+    // Listed in all_sites() but no adapter implementation yet would silently
+    // brick every scan after switching — refuse up front instead.
+    if adapter::adapter_for(site_id).is_none() {
+        return Err(format!("el sitio \"{}\" todavía no tiene un adaptador implementado", info.name));
+    }
+
+    let existing_mirrors = load_mirrors(db, site_id)?;
+    if existing_mirrors.is_empty() {
+        save_mirrors(db, site_id, &[info.default_base_url.to_string()])?;
+    }
+    let existing_source = db.get_source_id_for_site(site_id).map_err(|e| e.to_string())?;
+    let is_first_time = existing_source.is_none();
+    db.set_setting(ACTIVE_SITE_KEY, site_id).map_err(|e| e.to_string())?;
+
+    Ok((SiteSwitchResult { site: SiteSummary::from(info), is_first_time }, existing_source))
+}
+
+/// Switch the active site: seed its mirror list (default_base_url, if it has
+/// no mirrors configured yet) and its `sources` row (if it's never been
+/// scanned before), then make it the one every other command routes through.
+/// Does NOT itself scan the airing listing — the caller (Settings.tsx, after
+/// its confirmation step) follows up with `scan_airing(result.site
+/// .default_base_url)`, same first-run seeding path `scan_airing` already
+/// has, so switching to a brand-new site and a fresh install behave
+/// identically. Nothing about a site's existing `series`/`episodes` rows is
+/// touched or deleted by switching away from it — see the design spec's
+/// "library is per-site" scope note.
+#[tauri::command]
+pub fn set_active_site(state: State<'_, AppState>, site_id: String) -> Result<SiteSwitchResult, String> {
+    let db = state.db.lock().unwrap();
+    let (result, existing_source) = switch_site_core(&db, &site_id)?;
+    *state.source_id.lock().unwrap() = existing_source;
+    *state.active_site_id.lock().unwrap() = site_id;
+    Ok(result)
+}
+
 #[tauri::command]
 pub fn list_airing(state: State<'_, AppState>) -> Result<Vec<Series>, String> {
     let src = get_source_id(&state)?;
@@ -794,8 +884,9 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
 
 #[tauri::command]
 pub fn list_pending(state: State<'_, AppState>) -> Result<Vec<PendingItem>, String> {
+    let src = get_source_id(&state)?;
     let db = state.db.lock().unwrap();
-    let rows = db.list_pending().map_err(|e| e.to_string())?;
+    let rows = db.list_pending(src).map_err(|e| e.to_string())?;
     Ok(rows
         .into_iter()
         .map(|(s, e)| PendingItem { series: s, episode: e })
@@ -810,8 +901,9 @@ pub struct PendingItem {
 
 #[tauri::command]
 pub fn pending_count(state: State<'_, AppState>) -> Result<i64, String> {
+    let src = get_source_id(&state)?;
     let db = state.db.lock().unwrap();
-    db.pending_count().map_err(|e| e.to_string())
+    db.pending_count(src).map_err(|e| e.to_string())
 }
 
 /// Open an episode in the browser. Does NOT mark it seen — the user marks
@@ -1727,6 +1819,80 @@ mod tests {
         let db = Db::open(":memory:").unwrap();
         db.set_setting(LEGACY_MIRRORS_KEY, "https://old-mirror.example").unwrap();
         assert_eq!(load_mirrors(&db, "tioanime").unwrap(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn list_sites_matches_the_adapter_registry() {
+        let sites = list_sites();
+        assert_eq!(sites.len(), adapter::all_sites().len());
+        assert!(sites.iter().any(|s| s.id == "animeytx"));
+        assert!(sites.iter().any(|s| s.id == "tioanime"));
+        assert!(sites.iter().any(|s| s.id == "animeflv"));
+    }
+
+    #[test]
+    fn switch_site_core_rejects_an_unknown_site() {
+        let db = Db::open(":memory:").unwrap();
+        let err = switch_site_core(&db, "not-a-real-site").unwrap_err();
+        assert!(err.contains("desconocido"));
+    }
+
+    #[test]
+    fn switch_site_core_seeds_default_mirrors_on_first_switch() {
+        let db = Db::open(":memory:").unwrap();
+        let (result, existing_source) = switch_site_core(&db, "tioanime").unwrap();
+        assert!(result.is_first_time, "never scanned before -> first_time");
+        assert_eq!(existing_source, None, "no sources row yet -> nothing to restore");
+        assert_eq!(load_mirrors(&db, "tioanime").unwrap(), vec!["https://tioanime.com"]);
+        assert_eq!(db.get_setting(ACTIVE_SITE_KEY).unwrap().as_deref(), Some("tioanime"));
+    }
+
+    #[test]
+    fn switch_site_core_does_not_clobber_mirrors_the_user_already_configured() {
+        let db = Db::open(":memory:").unwrap();
+        save_mirrors(&db, "tioanime", &["https://custom-mirror.example".to_string()]).unwrap();
+        let (_result, _) = switch_site_core(&db, "tioanime").unwrap();
+        assert_eq!(load_mirrors(&db, "tioanime").unwrap(), vec!["https://custom-mirror.example"]);
+    }
+
+    #[test]
+    fn switch_site_core_restores_an_existing_source_and_is_not_first_time() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("TioAnime", "https://tioanime.com", "tioanime").unwrap();
+        let (result, existing_source) = switch_site_core(&db, "tioanime").unwrap();
+        assert!(!result.is_first_time);
+        assert_eq!(existing_source, Some(src));
+    }
+
+    /// Switching site A -> B -> A must not touch A's series rows at all —
+    /// the core "library is per-site, nothing is deleted" guarantee. This
+    /// only exercises the settings/sources bookkeeping switch_site_core
+    /// owns; the `series` table itself is never written by it, which is the
+    /// point (see the design spec's scope note).
+    #[test]
+    fn switch_site_core_round_trip_leaves_series_rows_untouched() {
+        let db = Db::open(":memory:").unwrap();
+        let src_a = db.upsert_source("AnimeYT", "https://wwv.animeytx.net", "animeytx").unwrap();
+        let s = crate::models::Series {
+            id: 0, slug: "a".into(), title: "A".into(), url: "u".into(), cover_url: None,
+            is_airing: true, followed: true, next_episode_at: None, site_episode_count: None,
+        };
+        let sid = db.upsert_series(src_a, &s).unwrap();
+        db.set_followed(sid, true).unwrap();
+
+        switch_site_core(&db, "tioanime").unwrap();
+        switch_site_core(&db, "animeytx").unwrap();
+
+        let (count, followed): (i64, i64) = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*), SUM(followed) FROM series WHERE source_id=?1",
+                [src_a],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(followed, 1);
     }
 
     #[test]

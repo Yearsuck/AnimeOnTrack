@@ -1031,31 +1031,33 @@ impl Db {
         Ok(rows)
     }
 
-    /// Unseen episodes of currently-followed series only — unfollowing a
-    /// series must drop its episodes out of the pending count immediately.
-    pub fn pending_count(&self) -> Result<i64> {
+    /// Unseen episodes of currently-followed series only, scoped to
+    /// `source_id` — unfollowing a series must drop its episodes out of the
+    /// pending count immediately, and (multi-site) a different site's
+    /// followed series must never leak into this site's pending count.
+    pub fn pending_count(&self, source_id: i64) -> Result<i64> {
         let n: i64 = self.conn.query_row(
             "SELECT count(*) FROM episodes e JOIN series s ON s.id = e.series_id
-             WHERE e.seen=0 AND s.followed=1",
-            [],
+             WHERE e.seen=0 AND s.followed=1 AND s.source_id=?1",
+            [source_id],
             |r| r.get(0),
         )?;
         Ok(n)
     }
 
     /// Unseen episodes of currently-followed series, joined with their
-    /// series, newest first.
-    pub fn list_pending(&self) -> Result<Vec<(crate::models::Series, crate::models::Episode)>> {
+    /// series, newest first, scoped to `source_id` (see `pending_count`).
+    pub fn list_pending(&self, source_id: i64) -> Result<Vec<(crate::models::Series, crate::models::Episode)>> {
         let mut stmt = self.conn.prepare(
             "SELECT s.id, s.slug, s.title, s.url, s.cover_url, s.is_airing, s.followed,
                     e.id, e.series_id, e.number, e.title, e.url, e.released_at, e.seen,
                     s.next_episode_at, s.site_episode_count
              FROM episodes e JOIN series s ON s.id = e.series_id
-             WHERE e.seen=0 AND s.followed=1
+             WHERE e.seen=0 AND s.followed=1 AND s.source_id=?1
              ORDER BY s.title, e.added_at DESC",
         )?;
         let rows = stmt
-            .query_map([], |r| {
+            .query_map([source_id], |r| {
                 let series = crate::models::Series {
                     id: r.get(0)?,
                     slug: r.get(1)?,
@@ -1698,9 +1700,47 @@ mod tests {
         let eid_dup = db.insert_episode(&ep).unwrap();
         assert_eq!(eid, eid_dup);
 
-        assert_eq!(db.pending_count().unwrap(), 1);
+        assert_eq!(db.pending_count(src).unwrap(), 1);
         db.set_seen(eid, true).unwrap();
-        assert_eq!(db.pending_count().unwrap(), 0);
+        assert_eq!(db.pending_count(src).unwrap(), 0);
+    }
+
+    #[test]
+    fn pending_count_and_list_pending_are_scoped_per_source() {
+        let db = Db::open(":memory:").unwrap();
+        let src_a = db.upsert_source("AnimeYT", "https://a.example", "animeytx").unwrap();
+        let src_b = db.upsert_source("TioAnime", "https://b.example", "tioanime").unwrap();
+
+        let mk = |slug: &str| crate::models::Series {
+            id: 0, slug: slug.into(), title: slug.into(), url: format!("u-{slug}"),
+            cover_url: None, is_airing: true, followed: false, next_episode_at: None, site_episode_count: None,
+        };
+        let sid_a = db.upsert_series(src_a, &mk("a")).unwrap();
+        db.set_followed(sid_a, true).unwrap();
+        let sid_b = db.upsert_series(src_b, &mk("b")).unwrap();
+        db.set_followed(sid_b, true).unwrap();
+
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: sid_a, number: "1".into(), title: None,
+            url: "https://a.example/ep1".into(), released_at: None, seen: false,
+        })
+        .unwrap();
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: sid_b, number: "1".into(), title: None,
+            url: "https://b.example/ep1".into(), released_at: None, seen: false,
+        })
+        .unwrap();
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: sid_b, number: "2".into(), title: None,
+            url: "https://b.example/ep2".into(), released_at: None, seen: false,
+        })
+        .unwrap();
+
+        assert_eq!(db.pending_count(src_a).unwrap(), 1);
+        assert_eq!(db.pending_count(src_b).unwrap(), 2);
+        assert_eq!(db.list_pending(src_a).unwrap().len(), 1);
+        assert_eq!(db.list_pending(src_b).unwrap().len(), 2);
+        assert!(db.list_pending(src_a).unwrap().iter().all(|(s, _)| s.id == sid_a));
     }
 
     #[test]

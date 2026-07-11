@@ -90,6 +90,17 @@ export interface GenreAffinity {
   score: number;
 }
 
+export interface SiteSummary {
+  id: string;
+  name: string;
+  default_base_url: string;
+}
+
+export interface SiteSwitchResult {
+  site: SiteSummary;
+  is_first_time: boolean;
+}
+
 export interface CatalogAnime {
   id: number;
   title: string;

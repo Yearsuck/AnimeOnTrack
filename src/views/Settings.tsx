@@ -1,7 +1,17 @@
 import { useEffect, useState } from "react";
-import { scanAiring, rescanAiring, getMirrors, setMirrors, refresh } from "../api";
+import {
+  scanAiring,
+  rescanAiring,
+  getMirrors,
+  setMirrors,
+  refresh,
+  listSites,
+  getActiveSite,
+  setActiveSite,
+} from "../api";
+import type { SiteSummary } from "../types";
 
-export function Settings() {
+export function Settings({ onSiteChanged }: { onSiteChanged?: (site: SiteSummary) => void }) {
   const [firstUrl, setFirstUrl] = useState("https://wwv.animeytx.net");
   const [mirrorsText, setMirrorsText] = useState("");
   const [busy, setBusy] = useState(false);
@@ -9,13 +19,49 @@ export function Settings() {
   const [forcing, setForcing] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
 
+  const [sites, setSites] = useState<SiteSummary[]>([]);
+  const [activeSite, setActiveSiteState] = useState<SiteSummary | null>(null);
+  // The site picked in the <select> but not yet confirmed — drives the
+  // confirmation panel below it. Separate from activeSite so changing the
+  // dropdown never switches anything by itself.
+  const [pendingSiteId, setPendingSiteId] = useState<string | null>(null);
+  const [switchingSite, setSwitchingSite] = useState(false);
+
   async function loadMirrors() {
     const list = await getMirrors();
     setMirrorsText(list.join("\n"));
   }
+  async function loadSites() {
+    const [all, active] = await Promise.all([listSites(), getActiveSite()]);
+    setSites(all);
+    setActiveSiteState(active);
+    setFirstUrl(active.default_base_url);
+  }
   useEffect(() => {
     loadMirrors();
+    loadSites();
   }, []);
+
+  const pendingSite = sites.find((s) => s.id === pendingSiteId) ?? null;
+
+  async function confirmSiteSwitch() {
+    if (!pendingSite) return;
+    setSwitchingSite(true);
+    setMsg(null);
+    try {
+      const result = await setActiveSite(pendingSite.id);
+      const s = await scanAiring(result.site.default_base_url);
+      setActiveSiteState(result.site);
+      setPendingSiteId(null);
+      await loadMirrors();
+      setMsg(`Cambiado a ${result.site.name}. Encontradas ${s.length} series en emisión.`);
+      onSiteChanged?.(result.site);
+    } catch (e) {
+      setMsg(String(e));
+    } finally {
+      setSwitchingSite(false);
+    }
+  }
 
   async function addFirstUrl() {
     setBusy(true);
@@ -79,6 +125,51 @@ export function Settings() {
 
       <div className="series-block" style={{ padding: 16, marginBottom: 16 }}>
         <label className="muted" style={{ display: "block", marginBottom: 6, fontSize: 12.5 }}>
+          Sitio activo — cada sitio tiene su propia biblioteca (series seguidas,
+          progreso de visionado). Cambiar de sitio NO borra nada de los demás;
+          simplemente muestra la biblioteca de ese sitio.
+        </label>
+        <select
+          className="input"
+          style={{ maxWidth: 280 }}
+          value={pendingSiteId ?? activeSite?.id ?? ""}
+          disabled={switchingSite || sites.length === 0}
+          onChange={(e) => {
+            const id = e.target.value;
+            setPendingSiteId(id === activeSite?.id ? null : id);
+          }}
+        >
+          {sites.map((s) => (
+            <option key={s.id} value={s.id}>
+              {s.name}
+              {s.id === activeSite?.id ? " (activo)" : ""}
+            </option>
+          ))}
+        </select>
+
+        {pendingSite && (
+          <div
+            className="series-block"
+            style={{ padding: 12, marginTop: 12, background: "var(--surface-2, rgba(255,255,255,0.04))" }}
+          >
+            <p style={{ margin: 0, marginBottom: 10 }}>
+              Cambiar de sitio mostrará la biblioteca de {pendingSite.name}. Tus series de{" "}
+              {activeSite?.name ?? "el sitio actual"} se conservan y volverán al cambiar de vuelta.
+            </p>
+            <div className="row">
+              <button className="btn btn-primary" onClick={confirmSiteSwitch} disabled={switchingSite}>
+                {switchingSite ? "Cambiando…" : `Cambiar a ${pendingSite.name}`}
+              </button>
+              <button className="btn" onClick={() => setPendingSiteId(null)} disabled={switchingSite}>
+                Cancelar
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="series-block" style={{ padding: 16, marginBottom: 16 }}>
+        <label className="muted" style={{ display: "block", marginBottom: 6, fontSize: 12.5 }}>
           Añadir una web nueva
         </label>
         <div className="row">
@@ -91,8 +182,9 @@ export function Settings() {
 
       <div className="series-block" style={{ padding: 16 }}>
         <label className="muted" style={{ display: "block", marginBottom: 6, fontSize: 12.5 }}>
-          Webs configuradas (una por línea, en orden de preferencia). Si la primera falla,
-          se prueba la siguiente automáticamente — útil porque los mirrors suelen tener el
+          Webs configuradas para {activeSite?.name ?? "el sitio activo"} (una por línea, en
+          orden de preferencia; cada sitio tiene su propia lista). Si la primera falla, se
+          prueba la siguiente automáticamente — útil porque los mirrors suelen tener el
           mismo contenido.
         </label>
         <textarea
