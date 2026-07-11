@@ -1,0 +1,184 @@
+// Spanish catalog — the source of truth for every translatable string in
+// the UI. `Messages` (in index.ts) is derived from this object's shape via
+// `typeof es`, so `catalog/en.ts` (and any future language) is type-checked
+// against exactly this key set: a missing or misspelled key there is a
+// `tsc` error.
+//
+// Values here are the EXACT strings that were previously hardcoded across
+// src/App.tsx and src/views/*.tsx (copied verbatim) — the Spanish UI must
+// be a byte-for-byte no-op after extraction.
+export const es = {
+  // Nav tabs (App.tsx) + shared page titles reused by their own view.
+  "nav.pending": "Pendientes",
+  "nav.airing": "En emisión",
+  "nav.library": "Biblioteca",
+  "nav.discover": "Descubrir",
+  "nav.catalog": "Catálogo",
+  "nav.stats": "Estadísticas",
+  "nav.settings": "Ajustes",
+
+  // Common / shared across multiple views.
+  "common.loading": "Cargando…",
+  "common.refresh": "↻ Actualizar",
+  "common.refreshing": "Actualizando…",
+  "common.cancel": "Cancelar",
+  "common.watch": "▶ Ver",
+  "common.markSeen": "Marcar como visto",
+  "common.markUnseen": "Marcar como no visto",
+  "common.back": "← Volver",
+  "common.noResults": "No hay resultados.",
+  "common.seriesCount": "{count} series",
+  "common.searchPlaceholder": "Buscar por nombre…",
+  "common.episodeNumber": "Episodio {number}",
+  "common.scan": "Escanear",
+  "common.scanning": "Escaneando…",
+
+  // Generic error framing wrapped around a raw backend error message.
+  "errors.generic": "Error: {detail}",
+
+  // AiringGrid.tsx
+  "airing.followingFilter": "★ Siguiendo ({count})",
+  "airing.followingChip": "SIGUIENDO",
+  "airing.followingBtn": "✓ Siguiendo",
+  "airing.followBtn": "+ Seguir",
+
+  // Pending.tsx
+  "pending.episodesToWatch": "{count} episodios por ver",
+  "pending.empty": "No hay episodios pendientes.",
+  "pending.emptyHint": "Sigue algún anime en “En emisión” y pulsa Actualizar.",
+  "pending.new": "{count} nuevo",
+  "pending.newPlural": "{count} nuevos",
+
+  // Onboarding.tsx
+  "onboarding.title": "Sigue tus animes en emisión",
+  "onboarding.subtitle": "Introduce la URL de la web para escanear los animes en estreno.",
+  "onboarding.urlPlaceholder": "https://…",
+  "onboarding.scanningHint": "Abriendo la web y pasando la verificación… puede tardar unos segundos.",
+
+  // Settings.tsx
+  "settings.activeSiteHelp":
+    "Sitio activo — cada sitio tiene su propia biblioteca (series seguidas, progreso de visionado). Cambiar de sitio NO borra nada de los demás; simplemente muestra la biblioteca de ese sitio.",
+  "settings.activeSuffix": " (activo)",
+  "settings.switchSiteConfirm":
+    "Cambiar de sitio mostrará la biblioteca de {site}. Tus series de {currentSite} se conservan y volverán al cambiar de vuelta.",
+  "settings.currentSiteFallback": "el sitio actual",
+  "settings.activeSiteFallback": "el sitio activo",
+  "settings.switchTo": "Cambiar a {site}",
+  "settings.switching": "Cambiando…",
+  "settings.addNewSiteLabel": "Añadir una web nueva",
+  "settings.mirrorsLabel":
+    "Webs configuradas para {site} (una por línea, en orden de preferencia; cada sitio tiene su propia lista). Si la primera falla, se prueba la siguiente automáticamente — útil porque los mirrors suelen tener el mismo contenido.",
+  "settings.saveMirrors": "Guardar lista",
+  "settings.saving": "Guardando…",
+  "settings.rescan": "Reescanear en emisión",
+  "settings.forceRefreshHelp":
+    "Actualizar normalmente se salta las series que no pueden tener episodios nuevos (según el propio calendario de la web). Si sospechas que falta algún episodio, esto vuelve a comprobar TODAS las series seguidas, una a una. Es lento.",
+  "settings.forceRefresh": "Forzar recomprobación completa",
+  "settings.forcing": "Recomprobando…",
+  "settings.siteChanged": "Cambiado a {site}. Encontradas {count} series en emisión.",
+  "settings.foundSeries": "Encontradas {count} series en emisión.",
+  "settings.mirrorsSaved": "Lista de webs guardada.",
+  "settings.forceRefreshDone": "Recomprobación completa terminada: {count} episodio(s) nuevo(s).",
+  "settings.language": "Idioma",
+
+  // Library.tsx
+  "library.searchAriaLabel": "Buscar por nombre",
+  "library.emptyTitle": "Aún no sigues ninguna serie.",
+  "library.emptyHint": 'Ve a "En emisión" y dale a Seguir.',
+  "library.watching": "Viendo",
+  "library.planToWatch": "Pendientes de empezar",
+  "library.completed": "Completadas",
+  "library.progressAria": "Progreso de {title}: {seen} de {total} episodios vistos",
+  "library.playNext": "▶ Episodio {number}",
+
+  // SeriesDetail.tsx
+  "seriesDetail.openPage": "Abrir página de la serie ↗",
+  "seriesDetail.seenCount": "{seen} / {total} vistos",
+  "seriesDetail.jumpToCurrent": "⇒ Ir al episodio actual",
+  "seriesDetail.linking": "Buscando en la web…",
+  "seriesDetail.loadingEpisodes": "Cargando episodios…",
+  "seriesDetail.noEpisodes": "Sin episodios registrados todavía. Pulsa Actualizar.",
+
+  // Descubrir.tsx
+  "discover.topGenres": "Tus géneros favoritos:",
+  "discover.exhausted": "No se han encontrado más animes por ahora, prueba más tarde.",
+  "discover.openPageTitle": "Abrir página del anime",
+  "discover.genreLabel": "Género: {genre}",
+  "discover.discardTitle": "Descartar (←)",
+  "discover.wantTitle": "Quiero ver (→)",
+  "discover.seenTitle": "Ya lo vi (↑)",
+  "discover.undoTitle": "Deshacer (Ctrl+Z)",
+  "discover.hint": "← Descartar · ↑ Ya lo vi · → Quiero ver · Ctrl+Z Deshacer",
+  "discover.searching": "Buscando {title} en la web…",
+  "discover.linked": "✓ Enlazado ({count} episodios)",
+  "discover.noMatch": "No encontrado en el sitio: {title}",
+  "discover.notFoundYetTitle": "Todavía no se ha encontrado en el sitio",
+  "discover.unlinked": "(sin enlazar)",
+  "discover.notFoundInSite": "No encontrado en el sitio",
+  "discover.viewDetailsTitle": "Ver detalles",
+  "discover.searchOnSite": "Buscar en la web",
+  "discover.searchingBtn": "Buscando…",
+  "discover.startWatching": "Empezar a ver",
+  "discover.discard": "Descartar",
+  "discover.moveToWant": "Mover a quiero ver",
+  "discover.deleteCompletely": "Eliminar del todo",
+  "discover.wantHeading": "Quiero ver",
+  "discover.wantEmpty": "Nada por aquí todavía.",
+  "discover.discardedHeading": "Descartados",
+  "discover.discardedEmpty": "Nada descartado todavía.",
+  "discover.tabSwipe": "Swipe",
+  "discover.tabLists": "Listas",
+
+  // Catalog.tsx
+  "catalog.anyScore": "Cualquier puntuación",
+  "catalog.anyDuration": "Cualquier duración",
+  "catalog.oneEpisode": "1 episodio",
+  "catalog.episodes2to12": "2–12 episodios",
+  "catalog.episodes13to26": "13–26 episodios",
+  "catalog.episodes27plus": "27+ episodios",
+  "catalog.unknownDuration": "Duración desconocida",
+  "catalog.totalSynced": "{count} animes guardados en local (AniList)",
+  "catalog.subtitle": "Catálogo completo de anime vía AniList",
+  "catalog.syncButton": "Sincronizar catálogo completo",
+  "catalog.syncing": "Sincronizando…",
+  "catalog.syncInfo":
+    "Descargando el catálogo de AniList y guardándolo en local — puede tardar varios minutos (limitado a ~1 petición cada 2s para no pasarnos con el rate limit de la API).",
+  "catalog.syncProgressAria": "Progreso de sincronización",
+  "catalog.syncedCount": "{count} sincronizados",
+  "catalog.loadError": "No se pudo cargar el catálogo:",
+  "catalog.searchPlaceholder": "Buscar por título…",
+  "catalog.anyFormat": "Cualquier formato",
+  "catalog.clearFilters": "Limpiar filtros",
+  "catalog.resultsCount": "{count} resultados",
+  "catalog.noResultsFiltered": "Sin resultados con estos filtros.",
+  "catalog.emptyNotSynced":
+    'Nada sincronizado todavía. Dale a "Sincronizar catálogo completo" para descargar el catálogo de AniList.',
+  "catalog.episodesCount": "{count} episodios",
+  "catalog.episodesUnknown": "Episodios: ?",
+  "catalog.loadMore": "Cargar más",
+
+  // ProgressBar.tsx
+  "progress.stageOpening": "Abriendo página…",
+  "progress.stageVerifying": "Verificando (Cloudflare)…",
+  "progress.stageExtracting": "Leyendo contenido…",
+  "progress.stageCovers": "Descargando portadas…",
+  "progress.completed": "Completado",
+
+  // Stats.tsx
+  "stats.episodesWatched": "Episodios vistos",
+  "stats.followedSeries": "Series seguidas",
+  "stats.backlogPending": "Pendientes en backlog",
+  "stats.tabGraph": "Grafo",
+  "stats.tabBars": "Barras",
+  "stats.backfilling": "Rellenando…",
+  "stats.backfillButton": "Rellenar géneros ahora",
+
+  // StatsRings.tsx
+  "stats.ringsEmpty": "Sin datos todavía. Dale a Actualizar para completarlos.",
+  "stats.byGenre": "Por género",
+  "stats.byType": "Por tipo",
+
+  // StatsGraph.tsx
+  "stats.graphEmpty": "Sin series seguidas todavía.",
+  "stats.graphRootLabel": "Seguidas",
+} as const;
