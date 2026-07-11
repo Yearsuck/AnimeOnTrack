@@ -1,27 +1,34 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getAnimeCatalog, getCatalogFacets, openEpisode, syncAnimeCatalog } from "../api";
+import { useT } from "../i18n";
 import type { CatalogAnime, CatalogFacets, CatalogFilter, CatalogSyncProgress } from "../types";
-
-const SCORE_OPTIONS: { value: string; label: string }[] = [
-  { value: "", label: "Cualquier puntuación" },
-  { value: "60", label: "60%+" },
-  { value: "70", label: "70%+" },
-  { value: "80", label: "80%+" },
-];
-
-const EPISODE_OPTIONS: { value: string; label: string }[] = [
-  { value: "", label: "Cualquier duración" },
-  { value: "1", label: "1 episodio" },
-  { value: "2-12", label: "2–12 episodios" },
-  { value: "13-26", label: "13–26 episodios" },
-  { value: "27+", label: "27+ episodios" },
-  { value: "unknown", label: "Duración desconocida" },
-];
 
 const EMPTY_FACETS: CatalogFacets = { genres: [], formats: [] };
 
 export function Catalog() {
+  const t = useT();
+  const SCORE_OPTIONS: { value: string; label: string }[] = useMemo(
+    () => [
+      { value: "", label: t("catalog.anyScore") },
+      { value: "60", label: "60%+" },
+      { value: "70", label: "70%+" },
+      { value: "80", label: "80%+" },
+    ],
+    [t]
+  );
+
+  const EPISODE_OPTIONS: { value: string; label: string }[] = useMemo(
+    () => [
+      { value: "", label: t("catalog.anyDuration") },
+      { value: "1", label: t("catalog.oneEpisode") },
+      { value: "2-12", label: t("catalog.episodes2to12") },
+      { value: "13-26", label: t("catalog.episodes13to26") },
+      { value: "27+", label: t("catalog.episodes27plus") },
+      { value: "unknown", label: t("catalog.unknownDuration") },
+    ],
+    [t]
+  );
   const [items, setItems] = useState<CatalogAnime[]>([]);
   const [page, setPage] = useState(1);
   const [hasNextPage, setHasNextPage] = useState(true);
@@ -74,7 +81,7 @@ export function Catalog() {
         setTotalMatching(result.total_matching);
         setPage(targetPage);
       } catch (e) {
-        setError(String(e));
+        setError(t("errors.generic", { detail: String(e) }));
       } finally {
         setLoading(false);
       }
@@ -113,7 +120,7 @@ export function Catalog() {
       await syncAnimeCatalog();
       await loadPage(1);
     } catch (e) {
-      setError(String(e));
+      setError(t("errors.generic", { detail: String(e) }));
     } finally {
       setSyncing(false);
       syncingRef.current = false;
@@ -136,42 +143,44 @@ export function Catalog() {
   return (
     <div className="page">
       <div className="page-head">
-        <h2 className="page-title">Catálogo</h2>
+        <h2 className="page-title">{t("nav.catalog")}</h2>
         <span className="muted">
           {totalSynced !== null
-            ? `${totalSynced} animes guardados en local (AniList)`
-            : "Catálogo completo de anime vía AniList"}
+            ? t("catalog.totalSynced", { count: totalSynced })
+            : t("catalog.subtitle")}
         </span>
         <div className="spacer" />
         <button className="btn btn-primary" onClick={runSync} disabled={syncing}>
-          {syncing ? "Sincronizando…" : "Sincronizar catálogo completo"}
+          {syncing ? t("catalog.syncing") : t("catalog.syncButton")}
         </button>
       </div>
 
       {syncing && (
         <div className="series-block" style={{ marginBottom: 20, padding: "12px 16px" }}>
           <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>
-            Descargando el catálogo de AniList y guardándolo en local — puede tardar varios
-            minutos (limitado a ~1 petición cada 2s para no pasarnos con el rate limit de la
-            API).
+            {t("catalog.syncInfo")}
           </div>
           {syncProgress && (
             <progress
               className="scanbar-track"
               value={syncProgress.synced}
               max={Math.max(syncProgress.total, syncProgress.synced, 1)}
-              aria-label="Progreso de sincronización"
+              aria-label={t("catalog.syncProgressAria")}
             />
           )}
           {syncProgress && (
             <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
-              {syncProgress.synced} sincronizados
+              {t("catalog.syncedCount", { count: syncProgress.synced })}
             </div>
           )}
         </div>
       )}
 
-      {error && <div className="empty">No se pudo cargar el catálogo: {error}</div>}
+      {error && (
+        <div className="empty">
+          {t("catalog.loadError")} {error}
+        </div>
+      )}
 
       <div className="filter-bar">
         <div className="filter-row">
@@ -179,7 +188,7 @@ export function Catalog() {
             <span className="icon">⌕</span>
             <input
               className="input"
-              placeholder="Buscar por título…"
+              placeholder={t("catalog.searchPlaceholder")}
               value={searchInput}
               onChange={(e) => setSearchInput(e.target.value)}
             />
@@ -190,7 +199,7 @@ export function Catalog() {
             value={format}
             onChange={(e) => setFormat(e.target.value)}
           >
-            <option value="">Cualquier formato</option>
+            <option value="">{t("catalog.anyFormat")}</option>
             {facets.formats.map((f) => (
               <option key={f} value={f}>
                 {f}
@@ -223,12 +232,12 @@ export function Catalog() {
           </select>
           {anyFilterActive && (
             <button className="btn btn-ghost" onClick={clearFilters}>
-              Limpiar filtros
+              {t("catalog.clearFilters")}
             </button>
           )}
           <div className="spacer" />
           {anyFilterActive && totalMatching !== null && (
-            <span className="muted">{totalMatching} resultados</span>
+            <span className="muted">{t("catalog.resultsCount", { count: totalMatching })}</span>
           )}
         </div>
         {facets.genres.length > 0 && (
@@ -248,14 +257,11 @@ export function Catalog() {
       </div>
 
       {items.length === 0 && loading ? (
-        <div className="empty">Cargando…</div>
+        <div className="empty">{t("common.loading")}</div>
       ) : items.length === 0 && anyFilterActive ? (
-        <div className="empty">Sin resultados con estos filtros.</div>
+        <div className="empty">{t("catalog.noResultsFiltered")}</div>
       ) : items.length === 0 ? (
-        <div className="empty">
-          Nada sincronizado todavía. Dale a "Sincronizar catálogo completo" para descargar el
-          catálogo de AniList.
-        </div>
+        <div className="empty">{t("catalog.emptyNotSynced")}</div>
       ) : (
         <>
           <div className="grid">
@@ -276,7 +282,9 @@ export function Catalog() {
                     {a.genres.slice(0, 3).join(", ") || "—"}
                   </div>
                   <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
-                    {a.episodes ? `${a.episodes} episodios` : "Episodios: ?"}
+                    {a.episodes
+                      ? t("catalog.episodesCount", { count: a.episodes })
+                      : t("catalog.episodesUnknown")}
                     {a.average_score ? ` · ${a.average_score}%` : ""}
                   </div>
                 </div>
@@ -287,7 +295,7 @@ export function Catalog() {
           {hasNextPage && (
             <div style={{ display: "flex", justifyContent: "center", marginTop: 24 }}>
               <button className="btn btn-primary" onClick={() => loadPage(page + 1)} disabled={loading}>
-                {loading ? "Cargando…" : "Cargar más"}
+                {loading ? t("common.loading") : t("catalog.loadMore")}
               </button>
             </div>
           )}

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { listLibrary, openEpisode } from "../api";
+import { useT } from "../i18n";
 import type { LibraryItem, Series } from "../types";
 
 type Status = "completed" | "watching" | "plan";
@@ -56,6 +57,7 @@ function LibraryCard({
   showAction: boolean;
   onOpenSeries: (s: Series) => void;
 }) {
+  const t = useT();
   // cover_url is a data: URI only for followed series whose cover was
   // fetched; otherwise it's a remote (Cloudflare-blocked) URL the WebView
   // can't actually load, or null. Both must degrade to the text fallback —
@@ -121,7 +123,11 @@ function LibraryCard({
           aria-valuenow={item.seen_episodes}
           aria-valuemin={0}
           aria-valuemax={item.total_episodes}
-          aria-label={`Progreso de ${item.series.title}: ${item.seen_episodes} de ${item.total_episodes} episodios vistos`}
+          aria-label={t("library.progressAria", {
+            title: item.series.title,
+            seen: item.seen_episodes,
+            total: item.total_episodes,
+          })}
         >
           <span style={{ width: `${pct}%` }} />
         </div>
@@ -135,7 +141,7 @@ function LibraryCard({
             onClick={playNext}
             onKeyDown={(e) => e.stopPropagation()}
           >
-            ▶ Episodio {item.next_episode.number}
+            {t("library.playNext", { number: item.next_episode.number })}
           </button>
         )}
       </div>
@@ -182,6 +188,7 @@ function LibrarySection({
 }
 
 export function Library({ onOpenSeries }: { onOpenSeries: (s: Series) => void }) {
+  const t = useT();
   const [items, setItems] = useState<LibraryItem[]>([]);
   const [query, setQuery] = useState("");
 
@@ -210,52 +217,52 @@ export function Library({ onOpenSeries }: { onOpenSeries: (s: Series) => void })
   return (
     <div className="page">
       <div className="page-head">
-        <h2 className="page-title">Biblioteca</h2>
+        <h2 className="page-title">{t("nav.library")}</h2>
         <div className="search">
           <span className="icon" aria-hidden="true">
             ⌕
           </span>
           <label htmlFor="library-search" className="sr-only">
-            Buscar por nombre
+            {t("library.searchAriaLabel")}
           </label>
           <input
             id="library-search"
             className="input"
-            placeholder="Buscar por nombre…"
+            placeholder={t("common.searchPlaceholder")}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
         </div>
         <div className="spacer" />
-        <span className="muted">{filtered.length} series</span>
+        <span className="muted">{t("common.seriesCount", { count: filtered.length })}</span>
       </div>
 
       {items.length === 0 ? (
         <div className="empty">
-          Aún no sigues ninguna serie.
+          {t("library.emptyTitle")}
           <br />
-          Ve a "En emisión" y dale a Seguir.
+          {t("library.emptyHint")}
         </div>
       ) : filtered.length === 0 ? (
-        <div className="empty">No hay resultados.</div>
+        <div className="empty">{t("common.noResults")}</div>
       ) : (
         <>
           <LibrarySection
-            title="Viendo"
+            title={t("library.watching")}
             items={watching}
             defaultOpen
             showAction
             onOpenSeries={onOpenSeries}
           />
           <LibrarySection
-            title="Pendientes de empezar"
+            title={t("library.planToWatch")}
             items={plan}
             defaultOpen
             showAction
             onOpenSeries={onOpenSeries}
           />
           <LibrarySection
-            title="Completadas"
+            title={t("library.completed")}
             items={completed}
             defaultOpen={false}
             showAction={false}

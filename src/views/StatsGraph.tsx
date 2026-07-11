@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ForceGraph3D, { type ForceGraphMethods, type NodeObject } from "react-force-graph-3d";
 import * as THREE from "three";
+import { useT } from "../i18n";
 import { categoryColor, SIN_GENERO_LABEL } from "../lib/categoryColor";
 import type { SeriesGraphNode } from "../types";
 
@@ -51,8 +52,11 @@ interface GLink {
   target: string;
 }
 
-function buildGraphData(seriesList: SeriesGraphNode[]): { nodes: GNode[]; links: GLink[] } {
-  const nodes: GNode[] = [{ id: "root", kind: "root", label: "Seguidas" }];
+function buildGraphData(
+  seriesList: SeriesGraphNode[],
+  rootLabel: string
+): { nodes: GNode[]; links: GLink[] } {
+  const nodes: GNode[] = [{ id: "root", kind: "root", label: rootLabel }];
   const links: GLink[] = [];
 
   const genreCounts = new Map<string, number>();
@@ -126,6 +130,7 @@ export function StatsGraph({
   seriesList: SeriesGraphNode[];
   active: boolean;
 }) {
+  const t = useT();
   const graphRef = useRef<ForceGraphMethods<NodeObject<GNode>, GLink> | undefined>(undefined);
   const containerRef = useRef<HTMLDivElement>(null);
   const [height, setHeight] = useState(MIN_HEIGHT);
@@ -149,13 +154,13 @@ export function StatsGraph({
   const nodeObjectsRef = useRef<Map<string, THREE.Object3D>>(new Map());
 
   const { nodes, links } = useMemo(() => {
-    const built = buildGraphData(seriesList);
+    const built = buildGraphData(seriesList, t("stats.graphRootLabel"));
     for (const n of built.nodes) {
       const saved = positionsRef.current.get(n.id);
       if (saved) Object.assign(n as NodeObject<GNode>, saved);
     }
     return built;
-  }, [seriesList]);
+  }, [seriesList, t]);
   const structuralKey = useMemo(
     () => `${nodes.map((n) => n.id).sort().join(",")}|${links.length}`,
     [nodes, links]
@@ -312,7 +317,7 @@ export function StatsGraph({
   return (
     <div ref={containerRef} style={{ borderRadius: "var(--radius-sm)", overflow: "hidden" }}>
       {seriesList.length === 0 ? (
-        <div className="empty">Sin series seguidas todavía.</div>
+        <div className="empty">{t("stats.graphEmpty")}</div>
       ) : (
       <ForceGraph3D<GNode, GLink>
         ref={graphRef}

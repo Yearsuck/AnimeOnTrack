@@ -1,3 +1,4 @@
+import { useT } from "../i18n";
 import { categoryColor } from "../lib/categoryColor";
 
 const SIZE = 96;
@@ -50,8 +51,9 @@ function Ring({ label, count, max, color }: { label: string; count: number; max:
 }
 
 function RingRow({ data, nameKey }: { data: { count: number }[]; nameKey: "genre" | "kind" }) {
+  const t = useT();
   if (data.length === 0) {
-    return <div className="empty">Sin datos todavía. Dale a Actualizar para completarlos.</div>;
+    return <div className="empty">{t("stats.ringsEmpty")}</div>;
   }
   const max = Math.max(...data.map((d) => d.count));
   return (
@@ -73,18 +75,19 @@ export function StatsRings({
   genres: { genre: string; count: number }[];
   types: { kind: string; count: number }[];
 }) {
+  const t = useT();
   return (
     <>
       <div className="series-block" style={{ marginBottom: 20 }}>
         <div className="series-head">
-          <h3 className="card-title">Por género</h3>
+          <h3 className="card-title">{t("stats.byGenre")}</h3>
         </div>
         <RingRow data={genres} nameKey="genre" />
       </div>
 
       <div className="series-block">
         <div className="series-head">
-          <h3 className="card-title">Por tipo</h3>
+          <h3 className="card-title">{t("stats.byType")}</h3>
         </div>
         <RingRow data={types} nameKey="kind" />
       </div>
