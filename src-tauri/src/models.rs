@@ -24,6 +24,17 @@ pub struct Series {
     pub site_episode_count: Option<i64>,
 }
 
+/// The lowest-numbered unseen episode of a followed series (`LibraryItem`'s
+/// "resume here" affordance) — same ordering `list_series_episodes` uses
+/// (`CAST(number AS INTEGER) ASC, id ASC`), so this can never disagree with
+/// what `SeriesDetail` shows as "next".
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NextEpisode {
+    pub number: String,
+    pub title: Option<String>,
+    pub url: String,
+}
+
 /// A followed series plus its episode counts, for the library view.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LibraryItem {
@@ -34,6 +45,15 @@ pub struct LibraryItem {
     /// scraped episode — used to sort "recently active" first. Not the
     /// episode's air date (that's free-text and not reliably sortable).
     pub last_added: Option<String>,
+    /// Lowest-numbered unseen episode, or `None` when every episode is seen
+    /// (or there are none). Library view's "▶ Episodio n" affordance.
+    #[serde(default)]
+    pub next_episode: Option<NextEpisode>,
+    /// `MAX(episodes.seen_at)` — when the user last marked an episode of
+    /// this series seen (not when it was scraped; see `episodes.seen_at`).
+    /// Drives "Viendo"/"Completadas" most-recent-first ordering.
+    #[serde(default)]
+    pub last_watched_at: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
