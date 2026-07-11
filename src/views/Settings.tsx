@@ -9,9 +9,12 @@ import {
   getActiveSite,
   setActiveSite,
 } from "../api";
+import { LANGS, useLang, useT } from "../i18n";
 import type { SiteSummary } from "../types";
 
 export function Settings({ onSiteChanged }: { onSiteChanged?: (site: SiteSummary) => void }) {
+  const t = useT();
+  const { lang, setLang } = useLang();
   const [firstUrl, setFirstUrl] = useState("https://wwv.animeytx.net");
   const [mirrorsText, setMirrorsText] = useState("");
   const [busy, setBusy] = useState(false);
@@ -54,10 +57,10 @@ export function Settings({ onSiteChanged }: { onSiteChanged?: (site: SiteSummary
       setActiveSiteState(result.site);
       setPendingSiteId(null);
       await loadMirrors();
-      setMsg(`Cambiado a ${result.site.name}. Encontradas ${s.length} series en emisión.`);
+      setMsg(t("settings.siteChanged", { site: result.site.name, count: s.length }));
       onSiteChanged?.(result.site);
     } catch (e) {
-      setMsg(String(e));
+      setMsg(t("errors.generic", { detail: String(e) }));
     } finally {
       setSwitchingSite(false);
     }
@@ -68,10 +71,10 @@ export function Settings({ onSiteChanged }: { onSiteChanged?: (site: SiteSummary
     setMsg(null);
     try {
       const s = await scanAiring(firstUrl.trim());
-      setMsg(`Encontradas ${s.length} series en emisión.`);
+      setMsg(t("settings.foundSeries", { count: s.length }));
       await loadMirrors();
     } catch (e) {
-      setMsg(String(e));
+      setMsg(t("errors.generic", { detail: String(e) }));
     } finally {
       setBusy(false);
     }
@@ -82,7 +85,7 @@ export function Settings({ onSiteChanged }: { onSiteChanged?: (site: SiteSummary
     try {
       const urls = mirrorsText.split("\n").map((u) => u.trim()).filter(Boolean);
       await setMirrors(urls);
-      setMsg("Lista de webs guardada.");
+      setMsg(t("settings.mirrorsSaved"));
     } finally {
       setSavingMirrors(false);
     }
@@ -93,9 +96,9 @@ export function Settings({ onSiteChanged }: { onSiteChanged?: (site: SiteSummary
     setMsg(null);
     try {
       const s = await rescanAiring();
-      setMsg(`Encontradas ${s.length} series en emisión.`);
+      setMsg(t("settings.foundSeries", { count: s.length }));
     } catch (e) {
-      setMsg(String(e));
+      setMsg(t("errors.generic", { detail: String(e) }));
     } finally {
       setBusy(false);
     }
@@ -109,9 +112,9 @@ export function Settings({ onSiteChanged }: { onSiteChanged?: (site: SiteSummary
     setMsg(null);
     try {
       const n = await refresh(true);
-      setMsg(`Recomprobación completa terminada: ${n} episodio(s) nuevo(s).`);
+      setMsg(t("settings.forceRefreshDone", { count: n }));
     } catch (e) {
-      setMsg(String(e));
+      setMsg(t("errors.generic", { detail: String(e) }));
     } finally {
       setForcing(false);
     }
@@ -120,14 +123,30 @@ export function Settings({ onSiteChanged }: { onSiteChanged?: (site: SiteSummary
   return (
     <div className="page" style={{ maxWidth: 560 }}>
       <div className="page-head">
-        <h2 className="page-title">Ajustes</h2>
+        <h2 className="page-title">{t("nav.settings")}</h2>
       </div>
 
       <div className="series-block" style={{ padding: 16, marginBottom: 16 }}>
         <label className="muted" style={{ display: "block", marginBottom: 6, fontSize: 12.5 }}>
-          Sitio activo — cada sitio tiene su propia biblioteca (series seguidas,
-          progreso de visionado). Cambiar de sitio NO borra nada de los demás;
-          simplemente muestra la biblioteca de ese sitio.
+          {t("settings.language")}
+        </label>
+        <select
+          className="input"
+          style={{ maxWidth: 280 }}
+          value={lang}
+          onChange={(e) => setLang(e.target.value as typeof lang)}
+        >
+          {LANGS.map((l) => (
+            <option key={l.code} value={l.code}>
+              {l.label}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      <div className="series-block" style={{ padding: 16, marginBottom: 16 }}>
+        <label className="muted" style={{ display: "block", marginBottom: 6, fontSize: 12.5 }}>
+          {t("settings.activeSiteHelp")}
         </label>
         <select
           className="input"
@@ -142,7 +161,7 @@ export function Settings({ onSiteChanged }: { onSiteChanged?: (site: SiteSummary
           {sites.map((s) => (
             <option key={s.id} value={s.id}>
               {s.name}
-              {s.id === activeSite?.id ? " (activo)" : ""}
+              {s.id === activeSite?.id ? t("settings.activeSuffix") : ""}
             </option>
           ))}
         </select>
@@ -153,15 +172,17 @@ export function Settings({ onSiteChanged }: { onSiteChanged?: (site: SiteSummary
             style={{ padding: 12, marginTop: 12, background: "var(--surface-2, rgba(255,255,255,0.04))" }}
           >
             <p style={{ margin: 0, marginBottom: 10 }}>
-              Cambiar de sitio mostrará la biblioteca de {pendingSite.name}. Tus series de{" "}
-              {activeSite?.name ?? "el sitio actual"} se conservan y volverán al cambiar de vuelta.
+              {t("settings.switchSiteConfirm", {
+                site: pendingSite.name,
+                currentSite: activeSite?.name ?? t("settings.currentSiteFallback"),
+              })}
             </p>
             <div className="row">
               <button className="btn btn-primary" onClick={confirmSiteSwitch} disabled={switchingSite}>
-                {switchingSite ? "Cambiando…" : `Cambiar a ${pendingSite.name}`}
+                {switchingSite ? t("settings.switching") : t("settings.switchTo", { site: pendingSite.name })}
               </button>
               <button className="btn" onClick={() => setPendingSiteId(null)} disabled={switchingSite}>
-                Cancelar
+                {t("common.cancel")}
               </button>
             </div>
           </div>
@@ -170,22 +191,19 @@ export function Settings({ onSiteChanged }: { onSiteChanged?: (site: SiteSummary
 
       <div className="series-block" style={{ padding: 16, marginBottom: 16 }}>
         <label className="muted" style={{ display: "block", marginBottom: 6, fontSize: 12.5 }}>
-          Añadir una web nueva
+          {t("settings.addNewSiteLabel")}
         </label>
         <div className="row">
           <input className="input" value={firstUrl} onChange={(e) => setFirstUrl(e.target.value)} />
           <button className="btn btn-primary" onClick={addFirstUrl} disabled={busy}>
-            {busy ? "Escaneando…" : "Escanear"}
+            {busy ? t("common.scanning") : t("common.scan")}
           </button>
         </div>
       </div>
 
       <div className="series-block" style={{ padding: 16 }}>
         <label className="muted" style={{ display: "block", marginBottom: 6, fontSize: 12.5 }}>
-          Webs configuradas para {activeSite?.name ?? "el sitio activo"} (una por línea, en
-          orden de preferencia; cada sitio tiene su propia lista). Si la primera falla, se
-          prueba la siguiente automáticamente — útil porque los mirrors suelen tener el
-          mismo contenido.
+          {t("settings.mirrorsLabel", { site: activeSite?.name ?? t("settings.activeSiteFallback") })}
         </label>
         <textarea
           className="input"
@@ -196,10 +214,10 @@ export function Settings({ onSiteChanged }: { onSiteChanged?: (site: SiteSummary
         />
         <div className="row" style={{ marginTop: 10 }}>
           <button className="btn" onClick={saveMirrors} disabled={savingMirrors}>
-            {savingMirrors ? "Guardando…" : "Guardar lista"}
+            {savingMirrors ? t("settings.saving") : t("settings.saveMirrors")}
           </button>
           <button className="btn btn-primary" onClick={doRescan} disabled={busy}>
-            {busy ? "Escaneando…" : "Reescanear en emisión"}
+            {busy ? t("common.scanning") : t("settings.rescan")}
           </button>
         </div>
         {msg && <p className="muted" style={{ marginTop: 12 }}>{msg}</p>}
@@ -207,12 +225,10 @@ export function Settings({ onSiteChanged }: { onSiteChanged?: (site: SiteSummary
 
       <div className="series-block" style={{ padding: 16, marginTop: 16 }}>
         <label className="muted" style={{ display: "block", marginBottom: 6, fontSize: 12.5 }}>
-          Actualizar normalmente se salta las series que no pueden tener episodios nuevos
-          (según el propio calendario de la web). Si sospechas que falta algún episodio,
-          esto vuelve a comprobar TODAS las series seguidas, una a una. Es lento.
+          {t("settings.forceRefreshHelp")}
         </label>
         <button className="btn" onClick={doForceRefresh} disabled={forcing}>
-          {forcing ? "Recomprobando…" : "Forzar recomprobación completa"}
+          {forcing ? t("settings.forcing") : t("settings.forceRefresh")}
         </button>
       </div>
     </div>

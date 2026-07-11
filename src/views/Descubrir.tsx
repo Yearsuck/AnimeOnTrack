@@ -13,6 +13,7 @@ import {
   startWatching,
   undoLastSwipe,
 } from "../api";
+import { useT } from "../i18n";
 import { categoryColor } from "../lib/categoryColor";
 import { isUnlinkedCatalogRow } from "../lib/catalogLink";
 import type { GenreAffinity, Series, SwipeCard, SwipeDecision } from "../types";
@@ -84,6 +85,7 @@ const REFILL_THRESHOLD = 4;
 const MAX_FILL_ROUNDS = 5;
 
 function TasteChips() {
+  const t = useT();
   const [genres, setGenres] = useState<GenreAffinity[]>([]);
   useEffect(() => {
     getTopGenres(TOP_GENRES_LIMIT).then(setGenres);
@@ -92,7 +94,7 @@ function TasteChips() {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
       <span className="muted" style={{ fontSize: 12 }}>
-        Tus géneros favoritos:
+        {t("discover.topGenres")}
       </span>
       {genres.map((g) => (
         <span
@@ -114,6 +116,7 @@ function TasteChips() {
 }
 
 function SwipeView() {
+  const t = useT();
   const [card, setCard] = useState<SwipeCard | null>(null);
   const [outDirection, setOutDirection] = useState<SwipeOutDirection>(null);
   const [canUndo, setCanUndo] = useState(false);
@@ -270,13 +273,13 @@ function SwipeView() {
     <div className="swipe-stage">
       <TasteChips />
       {exhausted ? (
-        <div className="empty">No se han encontrado más animes por ahora, prueba más tarde.</div>
+        <div className="empty">{t("discover.exhausted")}</div>
       ) : card ? (
         <div className={`card swipe-card ${outDirection ? `swipe-out-${outDirection}` : ""}`}>
           <div
             className="poster"
             style={{ cursor: "pointer" }}
-            title="Abrir página del anime"
+            title={t("discover.openPageTitle")}
             onClick={(e) => {
               e.stopPropagation();
               openEpisode(card.url).catch((err) =>
@@ -293,7 +296,7 @@ function SwipeView() {
             </div>
             {card.matched_genre && (
               <div className="muted" style={{ fontSize: 12 }}>
-                Género: {card.matched_genre}
+                {t("discover.genreLabel", { genre: card.matched_genre })}
               </div>
             )}
           </div>
@@ -302,7 +305,7 @@ function SwipeView() {
         <div className="card swipe-card">
           <div className="poster" />
           <div className="card-body">
-            <div className="muted">{loading ? "Cargando…" : ""}</div>
+            <div className="muted">{loading ? t("common.loading") : ""}</div>
           </div>
         </div>
       )}
@@ -310,7 +313,7 @@ function SwipeView() {
       <div className="swipe-actions">
         <button
           className="btn btn-discard"
-          title="Descartar (←)"
+          title={t("discover.discardTitle")}
           onClick={() => decide("Discard", "discard")}
           disabled={!card}
         >
@@ -318,7 +321,7 @@ function SwipeView() {
         </button>
         <button
           className="btn btn-want"
-          title="Quiero ver (→)"
+          title={t("discover.wantTitle")}
           onClick={() => decide("Want", "want")}
           disabled={!card}
         >
@@ -326,7 +329,7 @@ function SwipeView() {
         </button>
         <button
           className="btn btn-success"
-          title="Ya lo vi (↑)"
+          title={t("discover.seenTitle")}
           onClick={() => decide("Seen", "seen")}
           disabled={!card}
         >
@@ -334,21 +337,21 @@ function SwipeView() {
         </button>
         <button
           className="btn btn-ghost"
-          title="Deshacer (Ctrl+Z)"
+          title={t("discover.undoTitle")}
           onClick={undo}
           disabled={!canUndo}
         >
           ↺
         </button>
       </div>
-      <div className="swipe-hint">← Descartar · ↑ Ya lo vi · → Quiero ver · Ctrl+Z Deshacer</div>
+      <div className="swipe-hint">{t("discover.hint")}</div>
       {linkStatuses.length > 0 && (
         <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 8 }}>
           {linkStatuses.map((s) => (
             <div key={s.id} className="muted" style={{ fontSize: 12 }}>
-              {s.state === "searching" && `Buscando ${s.title} en la web…`}
-              {s.state === "linked" && `✓ Enlazado (${s.episodes} episodios)`}
-              {s.state === "nomatch" && `No encontrado en el sitio: ${s.title}`}
+              {s.state === "searching" && t("discover.searching", { title: s.title })}
+              {s.state === "linked" && t("discover.linked", { count: s.episodes ?? 0 })}
+              {s.state === "nomatch" && t("discover.noMatch", { title: s.title })}
             </div>
           ))}
         </div>
@@ -366,6 +369,7 @@ function WantRow({
   onChanged: () => void;
   onOpenSeries: (s: Series) => void;
 }) {
+  const t = useT();
   const [genres, setGenres] = useState<string[]>([]);
   const [linking, setLinking] = useState(false);
   const [starting, setStarting] = useState(false);
@@ -413,34 +417,34 @@ function WantRow({
           className="backlog-title"
           onClick={() => onOpenSeries(series)}
           style={{ cursor: "pointer" }}
-          title="Ver detalles"
+          title={t("discover.viewDetailsTitle")}
         >
           {series.title}
           {unlinked && (
             <span
               className="muted"
               style={{ fontSize: 11, marginLeft: 8, fontWeight: 400 }}
-              title="Todavía no se ha encontrado en el sitio"
+              title={t("discover.notFoundYetTitle")}
             >
-              (sin enlazar)
+              {t("discover.unlinked")}
             </span>
           )}
         </div>
         <div className="backlog-genres">{genres.join(", ") || " "}</div>
         {noMatch && (
           <div className="muted" style={{ fontSize: 11, color: "var(--danger, #e06666)" }}>
-            No encontrado en el sitio
+            {t("discover.notFoundInSite")}
           </div>
         )}
       </div>
       <div className="backlog-actions">
         {unlinked && (
           <button className="btn btn-ghost" onClick={retryLink} disabled={linking}>
-            {linking ? "Buscando…" : "Buscar en la web"}
+            {linking ? t("discover.searchingBtn") : t("discover.searchOnSite")}
           </button>
         )}
         <button className="btn btn-primary" onClick={handleStartWatching} disabled={starting}>
-          {starting ? "Buscando…" : "Empezar a ver"}
+          {starting ? t("discover.searchingBtn") : t("discover.startWatching")}
         </button>
         <button
           className="btn btn-ghost"
@@ -449,7 +453,7 @@ function WantRow({
             onChanged();
           }}
         >
-          Descartar
+          {t("discover.discard")}
         </button>
       </div>
     </div>
@@ -457,6 +461,7 @@ function WantRow({
 }
 
 function DiscardedRow({ series, onChanged }: { series: Series; onChanged: () => void }) {
+  const t = useT();
   return (
     <div className="backlog-row">
       {series.cover_url && <img src={series.cover_url} alt="" />}
@@ -471,7 +476,7 @@ function DiscardedRow({ series, onChanged }: { series: Series; onChanged: () => 
             onChanged();
           }}
         >
-          Mover a quiero ver
+          {t("discover.moveToWant")}
         </button>
         <button
           className="btn btn-ghost"
@@ -480,7 +485,7 @@ function DiscardedRow({ series, onChanged }: { series: Series; onChanged: () => 
             onChanged();
           }}
         >
-          Eliminar del todo
+          {t("discover.deleteCompletely")}
         </button>
       </div>
     </div>
@@ -488,6 +493,7 @@ function DiscardedRow({ series, onChanged }: { series: Series; onChanged: () => 
 }
 
 function ListasView({ onOpenSeries }: { onOpenSeries: (s: Series) => void }) {
+  const t = useT();
   const [want, setWant] = useState<Series[]>([]);
   const [discarded, setDiscarded] = useState<Series[]>([]);
 
@@ -505,10 +511,10 @@ function ListasView({ onOpenSeries }: { onOpenSeries: (s: Series) => void }) {
     <>
       <div className="series-block" style={{ marginBottom: 20 }}>
         <div className="series-head">
-          <h3 className="card-title">Quiero ver</h3>
+          <h3 className="card-title">{t("discover.wantHeading")}</h3>
         </div>
         {want.length === 0 ? (
-          <div className="empty">Nada por aquí todavía.</div>
+          <div className="empty">{t("discover.wantEmpty")}</div>
         ) : (
           want.map((s) => (
             <WantRow key={s.id} series={s} onChanged={load} onOpenSeries={onOpenSeries} />
@@ -518,10 +524,10 @@ function ListasView({ onOpenSeries }: { onOpenSeries: (s: Series) => void }) {
 
       <div className="series-block">
         <div className="series-head">
-          <h3 className="card-title">Descartados</h3>
+          <h3 className="card-title">{t("discover.discardedHeading")}</h3>
         </div>
         {discarded.length === 0 ? (
-          <div className="empty">Nada descartado todavía.</div>
+          <div className="empty">{t("discover.discardedEmpty")}</div>
         ) : (
           discarded.map((s) => <DiscardedRow key={s.id} series={s} onChanged={load} />)
         )}
@@ -537,25 +543,26 @@ function ListasView({ onOpenSeries }: { onOpenSeries: (s: Series) => void }) {
 // effect) actually reachable: without a click-through here, an unfollowed
 // catalog row had no UI path into SeriesDetail at all.
 export function Descubrir({ onOpenSeries }: { onOpenSeries: (s: Series) => void }) {
+  const t = useT();
   const [subView, setSubView] = useState<SubView>("swipe");
 
   return (
     <div className="page">
       <div className="page-head">
-        <h2 className="page-title">Descubrir</h2>
+        <h2 className="page-title">{t("nav.discover")}</h2>
       </div>
       <div className="tabs" style={{ marginBottom: 20 }}>
         <button
           className={`tab ${subView === "swipe" ? "active" : ""}`}
           onClick={() => setSubView("swipe")}
         >
-          Swipe
+          {t("discover.tabSwipe")}
         </button>
         <button
           className={`tab ${subView === "listas" ? "active" : ""}`}
           onClick={() => setSubView("listas")}
         >
-          Listas
+          {t("discover.tabLists")}
         </button>
       </div>
 

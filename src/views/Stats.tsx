@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getGenreStats, getTypeStats, getWatchSummary, getStatsGraph, backfillGenres } from "../api";
+import { useT } from "../i18n";
 import type { GenreStat, TypeStat, WatchSummary, SeriesGraphNode } from "../types";
 import { StatsGraph } from "./StatsGraph";
 import { StatsRings } from "./StatsRings";
@@ -8,6 +9,7 @@ import { StatsRings } from "./StatsRings";
 type StatsView = "grafo" | "barras";
 
 export function Stats({ active }: { active: boolean }) {
+  const t = useT();
   const [summary, setSummary] = useState<WatchSummary | null>(null);
   const [genres, setGenres] = useState<GenreStat[]>([]);
   const [types, setTypes] = useState<TypeStat[]>([]);
@@ -82,14 +84,14 @@ export function Stats({ active }: { active: boolean }) {
   return (
     <div className="page">
       <div className="page-head">
-        <h2 className="page-title">Estadísticas</h2>
+        <h2 className="page-title">{t("nav.stats")}</h2>
       </div>
 
       {summary && (
         <div className="grid" style={{ marginBottom: 28 }}>
           <div className="card">
             <div className="card-body">
-              <div className="muted" style={{ fontSize: 12 }}>Episodios vistos</div>
+              <div className="muted" style={{ fontSize: 12 }}>{t("stats.episodesWatched")}</div>
               <div style={{ fontSize: 22, fontWeight: 700 }}>
                 {summary.episodes_watched}/{summary.episodes_total}
               </div>
@@ -97,13 +99,13 @@ export function Stats({ active }: { active: boolean }) {
           </div>
           <div className="card">
             <div className="card-body">
-              <div className="muted" style={{ fontSize: 12 }}>Series seguidas</div>
+              <div className="muted" style={{ fontSize: 12 }}>{t("stats.followedSeries")}</div>
               <div style={{ fontSize: 22, fontWeight: 700 }}>{summary.followed_series}</div>
             </div>
           </div>
           <div className="card">
             <div className="card-body">
-              <div className="muted" style={{ fontSize: 12 }}>Pendientes en backlog</div>
+              <div className="muted" style={{ fontSize: 12 }}>{t("stats.backlogPending")}</div>
               <div style={{ fontSize: 22, fontWeight: 700 }}>{summary.backlog_want}</div>
             </div>
           </div>
@@ -116,18 +118,18 @@ export function Stats({ active }: { active: boolean }) {
             className={`tab ${view === "grafo" ? "active" : ""}`}
             onClick={() => setView("grafo")}
           >
-            Grafo
+            {t("stats.tabGraph")}
           </button>
           <button
             className={`tab ${view === "barras" ? "active" : ""}`}
             onClick={() => setView("barras")}
           >
-            Barras
+            {t("stats.tabBars")}
           </button>
         </div>
         <div className="spacer" />
         <button className="btn btn-ghost" onClick={runBackfill} disabled={backfilling}>
-          {backfilling ? "Rellenando…" : "Rellenar géneros ahora"}
+          {backfilling ? t("stats.backfilling") : t("stats.backfillButton")}
         </button>
       </div>
 

@@ -10,6 +10,7 @@ import { Descubrir } from "./views/Descubrir";
 import { Catalog } from "./views/Catalog";
 import { ProgressBar } from "./views/ProgressBar";
 import { listAiring, refresh, rescanAiring, pendingCount } from "./api";
+import { useT } from "./i18n";
 import type { Series } from "./types";
 
 type View =
@@ -25,6 +26,7 @@ type View =
   | "detail";
 
 export default function App() {
+  const t = useT();
   const [view, setView] = useState<View>("loading");
   const [selected, setSelected] = useState<Series | null>(null);
   const [cameFrom, setCameFrom] = useState<View>("airing");
@@ -111,7 +113,7 @@ export default function App() {
     setView("detail");
   }
 
-  if (view === "loading") return <div className="empty">Cargando…</div>;
+  if (view === "loading") return <div className="empty">{t("common.loading")}</div>;
 
   if (view === "onboarding")
     return (
@@ -144,17 +146,17 @@ export default function App() {
           AnimeOnTrack
         </div>
         <div className="tabs">
-          <Tab id="pending" label="Pendientes" />
-          <Tab id="airing" label="En emisión" />
-          <Tab id="library" label="Biblioteca" />
-          <Tab id="descubrir" label="Descubrir" />
-          <Tab id="catalog" label="Catálogo" />
-          <Tab id="stats" label="Estadísticas" />
-          <Tab id="settings" label="Ajustes" />
+          <Tab id="pending" label={t("nav.pending")} />
+          <Tab id="airing" label={t("nav.airing")} />
+          <Tab id="library" label={t("nav.library")} />
+          <Tab id="descubrir" label={t("nav.discover")} />
+          <Tab id="catalog" label={t("nav.catalog")} />
+          <Tab id="stats" label={t("nav.stats")} />
+          <Tab id="settings" label={t("nav.settings")} />
         </div>
         <div className="spacer" />
         <button className="btn btn-primary" onClick={doRefresh} disabled={refreshing}>
-          {refreshing ? "Actualizando…" : "↻ Actualizar"}
+          {refreshing ? t("common.refreshing") : t("common.refresh")}
         </button>
       </div>
       <ProgressBar />

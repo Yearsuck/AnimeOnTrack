@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { useT } from "../i18n";
 
 interface RefreshProgress {
   current: number;
@@ -7,16 +8,19 @@ interface RefreshProgress {
   title: string;
 }
 
-const STAGE_LABEL: Record<string, string> = {
-  opening: "Abriendo página…",
-  verifying: "Verificando (Cloudflare)…",
-  extracting: "Leyendo contenido…",
-  covers: "Descargando portadas…",
-};
-
 // Native <progress> + accessible label, per the ARIA/WCAG progressbar pattern:
 // visible label, aria-valuenow/min/max via the native element's own semantics.
 export function ProgressBar() {
+  const t = useT();
+  const STAGE_LABEL: Record<string, string> = useMemo(
+    () => ({
+      opening: t("progress.stageOpening"),
+      verifying: t("progress.stageVerifying"),
+      extracting: t("progress.stageExtracting"),
+      covers: t("progress.stageCovers"),
+    }),
+    [t]
+  );
   const [progress, setProgress] = useState<RefreshProgress | null>(null);
   const [stage, setStage] = useState<string | null>(null);
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -42,7 +46,7 @@ export function ProgressBar() {
 
   const label =
     progress.current >= progress.total
-      ? "Completado"
+      ? t("progress.completed")
       : `${progress.title}${stage ? " — " + (STAGE_LABEL[stage] ?? stage) : ""}`;
 
   return (

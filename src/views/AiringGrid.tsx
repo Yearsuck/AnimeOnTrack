@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { listAiring, setFollowed } from "../api";
+import { useT } from "../i18n";
 import type { Series } from "../types";
 
 // Human label for the next-episode countdown the backend sorting is based
@@ -27,6 +28,7 @@ export function AiringGrid({
   onOpenSeries: (s: Series) => void;
   refreshSignal?: number;
 }) {
+  const t = useT();
   const [series, setSeries] = useState<Series[]>([]);
   const [query, setQuery] = useState("");
   const [onlyFollowed, setOnlyFollowed] = useState(false);
@@ -57,12 +59,12 @@ export function AiringGrid({
   return (
     <div className="page">
       <div className="page-head">
-        <h2 className="page-title">En emisión</h2>
+        <h2 className="page-title">{t("nav.airing")}</h2>
         <div className="search">
           <span className="icon">⌕</span>
           <input
             className="input"
-            placeholder="Buscar por nombre…"
+            placeholder={t("common.searchPlaceholder")}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
@@ -71,20 +73,20 @@ export function AiringGrid({
           className={`btn ${onlyFollowed ? "btn-success" : "btn-ghost"}`}
           onClick={() => setOnlyFollowed((v) => !v)}
         >
-          ★ Siguiendo ({followedCount})
+          {t("airing.followingFilter", { count: followedCount })}
         </button>
         <div className="spacer" />
-        <span className="muted">{filtered.length} series</span>
+        <span className="muted">{t("common.seriesCount", { count: filtered.length })}</span>
       </div>
 
       {filtered.length === 0 ? (
-        <div className="empty">No hay resultados.</div>
+        <div className="empty">{t("common.noResults")}</div>
       ) : (
         <div className="grid">
           {filtered.map((s) => (
             <div key={s.id} className="card" onClick={() => onOpenSeries(s)}>
               <div className="poster">
-                {s.followed && <span className="chip">SIGUIENDO</span>}
+                {s.followed && <span className="chip">{t("airing.followingChip")}</span>}
                 {countdownLabel(s.next_episode_at) && (
                   <span className="chip chip-countdown">{countdownLabel(s.next_episode_at)}</span>
                 )}
@@ -98,7 +100,7 @@ export function AiringGrid({
                   className={`btn follow-btn ${s.followed ? "on" : ""}`}
                   onClick={(e) => toggle(e, s)}
                 >
-                  {s.followed ? "✓ Siguiendo" : "+ Seguir"}
+                  {s.followed ? t("airing.followingBtn") : t("airing.followBtn")}
                 </button>
               </div>
             </div>

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { linkCatalogSeries, listEpisodes, openEpisode, setSeenCascade } from "../api";
+import { useT } from "../i18n";
 import { isUnlinkedCatalogRow } from "../lib/catalogLink";
 import type { Episode, Series } from "../types";
 
@@ -23,6 +24,7 @@ export function SeriesDetail({
   onBack: () => void;
   onChanged: () => void;
 }) {
+  const t = useT();
   const [episodes, setEpisodes] = useState<Episode[]>([]);
   const [loading, setLoading] = useState(true);
   const [linking, setLinking] = useState(false);
@@ -103,7 +105,7 @@ export function SeriesDetail({
   return (
     <div className="page">
       <button className="btn btn-ghost" onClick={onBack} style={{ marginBottom: 14 }}>
-        ← Volver
+        {t("common.back")}
       </button>
 
       <div className="page-head" style={{ alignItems: "flex-start" }}>
@@ -119,11 +121,11 @@ export function SeriesDetail({
             {series.title}
           </h2>
           <a href={series.url} target="_blank" rel="noreferrer">
-            Abrir página de la serie ↗
+            {t("seriesDetail.openPage")}
           </a>
           <div style={{ marginTop: 10 }}>
             <div className="muted" style={{ marginBottom: 4, fontSize: 12.5 }}>
-              {seenCount} / {episodes.length} vistos
+              {t("seriesDetail.seenCount", { seen: seenCount, total: episodes.length })}
             </div>
             <div className="progress">
               <span style={{ width: `${pct}%` }} />
@@ -132,17 +134,17 @@ export function SeriesDetail({
         </div>
         {episodes.length > 0 && (
           <button className="btn" onClick={jumpToCurrent}>
-            ⇒ Ir al episodio actual
+            {t("seriesDetail.jumpToCurrent")}
           </button>
         )}
       </div>
 
       {linking ? (
-        <div className="empty">Buscando en la web…</div>
+        <div className="empty">{t("seriesDetail.linking")}</div>
       ) : loading ? (
-        <div className="empty">Cargando episodios…</div>
+        <div className="empty">{t("seriesDetail.loadingEpisodes")}</div>
       ) : episodes.length === 0 ? (
-        <div className="empty">Sin episodios registrados todavía. Pulsa Actualizar.</div>
+        <div className="empty">{t("seriesDetail.noEpisodes")}</div>
       ) : (
         <div className="series-block">
           {episodes.map((ep) => (
@@ -157,17 +159,17 @@ export function SeriesDetail({
               <span className="ep-num">{ep.number}</span>
               <div className="ep-main">
                 <div className="ep-title" onClick={() => openEpisode(ep.url)}>
-                  {ep.title ?? `Episodio ${ep.number}`}
+                  {ep.title ?? t("common.episodeNumber", { number: ep.number })}
                 </div>
                 {ep.released_at && <div className="ep-date">{ep.released_at}</div>}
               </div>
               <div className="ep-actions">
                 <button className="btn" onClick={() => openEpisode(ep.url)}>
-                  ▶ Ver
+                  {t("common.watch")}
                 </button>
                 <button
                   className={`check ${ep.seen ? "on" : ""}`}
-                  title={ep.seen ? "Marcar como no visto" : "Marcar como visto"}
+                  title={ep.seen ? t("common.markUnseen") : t("common.markSeen")}
                   onClick={() => toggleSeen(ep)}
                 >
                   ✓
