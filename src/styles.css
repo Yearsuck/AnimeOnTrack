@@ -525,6 +525,60 @@ a:hover {
   gap: 6px;
 }
 
+/* Overflow "⋯" menu on Watching library cards (reclassify actions:
+   unfollow / move to want) — anchored inside .poster, which already has
+   position: relative for the chip corners. */
+.card-menu-wrap {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 5;
+}
+.card-menu-btn {
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-round);
+  border: 1px solid var(--border);
+  background: rgba(5, 18, 31, 0.7);
+  color: var(--text);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+}
+.card-menu-btn:hover {
+  color: var(--accent);
+}
+.card-menu-list {
+  position: absolute;
+  top: 30px;
+  right: 0;
+  min-width: 170px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md);
+  overflow: hidden;
+  z-index: 10;
+}
+.card-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 12px;
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.card-menu-item:hover {
+  background: var(--surface-3);
+}
+
 /* Visually-hidden but screen-reader-visible label (e.g. the library
    search box's real <label>, kept off-screen since the placeholder already
    carries the visual hint). */

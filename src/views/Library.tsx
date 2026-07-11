@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { listLibrary, openEpisode } from "../api";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { listLibrary, openEpisode, reclassifySeries } from "../api";
 import { useT } from "../i18n";
 import type { LibraryItem, Series } from "../types";
 
@@ -51,11 +51,15 @@ function initials(title: string): string {
 function LibraryCard({
   item,
   showAction,
+  showMenu,
   onOpenSeries,
+  onChanged,
 }: {
   item: LibraryItem;
   showAction: boolean;
+  showMenu: boolean;
   onOpenSeries: (s: Series) => void;
+  onChanged: () => void;
 }) {
   const t = useT();
   // cover_url is a data: URI only for followed series whose cover was
@@ -65,6 +69,37 @@ function LibraryCard({
   // shows a broken <img>.
   const [imgFailed, setImgFailed] = useState(false);
   const showFallback = !item.series.cover_url || imgFailed;
+
+  // Overflow "⋯" menu (Watching cards only) — reclassify actions
+  // (see docs/superpowers/specs/2026-07-11-reversibility-classifications-design.md).
+  // Closed on an outside click, same pattern used nowhere else yet in this
+  // codebase so wired by hand here.
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!menuOpen) return;
+    function onDocMouseDown(e: MouseEvent) {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenuOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", onDocMouseDown);
+    return () => document.removeEventListener("mousedown", onDocMouseDown);
+  }, [menuOpen]);
+
+  async function unfollow(e: React.SyntheticEvent) {
+    e.stopPropagation();
+    setMenuOpen(false);
+    await reclassifySeries(item.series.id, "None");
+    onChanged();
+  }
+
+  async function moveToWant(e: React.SyntheticEvent) {
+    e.stopPropagation();
+    setMenuOpen(false);
+    await reclassifySeries(item.series.id, "Want");
+    onChanged();
+  }
 
   const pct = item.total_episodes
     ? Math.round((item.seen_episodes / item.total_episodes) * 100)
@@ -102,6 +137,32 @@ function LibraryCard({
       title={item.series.title}
     >
       <div className="poster">
+        {showMenu && (
+          <div className="card-menu-wrap" ref={menuRef}>
+            <button
+              type="button"
+              className="card-menu-btn"
+              aria-label={t("library.cardMenuAria")}
+              onClick={(e) => {
+                e.stopPropagation();
+                setMenuOpen((v) => !v);
+              }}
+              onKeyDown={(e) => e.stopPropagation()}
+            >
+              ⋯
+            </button>
+            {menuOpen && (
+              <div className="card-menu-list" onClick={(e) => e.stopPropagation()}>
+                <button type="button" className="card-menu-item" onClick={unfollow}>
+                  {t("library.unfollow")}
+                </button>
+                <button type="button" className="card-menu-item" onClick={moveToWant}>
+                  {t("library.moveToWant")}
+                </button>
+              </div>
+            )}
+          </div>
+        )}
         {showFallback ? (
           <div className="poster-fallback" aria-hidden="true">
             {initials(item.series.title)}
@@ -154,13 +215,17 @@ function LibrarySection({
   items,
   defaultOpen,
   showAction,
+  showMenu,
   onOpenSeries,
+  onChanged,
 }: {
   title: string;
   items: LibraryItem[];
   defaultOpen: boolean;
   showAction: boolean;
+  showMenu: boolean;
   onOpenSeries: (s: Series) => void;
+  onChanged: () => void;
 }) {
   // An empty section (nothing in this status, or nothing left after the
   // search filter) is omitted entirely rather than rendered with a
@@ -179,7 +244,9 @@ function LibrarySection({
             key={it.series.id}
             item={it}
             showAction={showAction}
+            showMenu={showMenu}
             onOpenSeries={onOpenSeries}
+            onChanged={onChanged}
           />
         ))}
       </div>
@@ -192,9 +259,13 @@ export function Library({ onOpenSeries }: { onOpenSeries: (s: Series) => void })
   const [items, setItems] = useState<LibraryItem[]>([]);
   const [query, setQuery] = useState("");
 
-  useEffect(() => {
+  const load = useCallback(() => {
     listLibrary().then(setItems);
   }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -252,21 +323,27 @@ export function Library({ onOpenSeries }: { onOpenSeries: (s: Series) => void })
             items={watching}
             defaultOpen
             showAction
+            showMenu
             onOpenSeries={onOpenSeries}
+            onChanged={load}
           />
           <LibrarySection
             title={t("library.planToWatch")}
             items={plan}
             defaultOpen
             showAction
+            showMenu={false}
             onOpenSeries={onOpenSeries}
+            onChanged={load}
           />
           <LibrarySection
             title={t("library.completed")}
             items={completed}
             defaultOpen={false}
             showAction={false}
+            showMenu={false}
             onOpenSeries={onOpenSeries}
+            onChanged={load}
           />
         </>
       )}
