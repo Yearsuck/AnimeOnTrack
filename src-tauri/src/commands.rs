@@ -1126,6 +1126,15 @@ pub fn list_backlog(state: State<'_, AppState>, status: String) -> Result<Vec<Se
     db.list_backlog(src, &status).map_err(|e| e.to_string())
 }
 
+/// Series marked "watched outside the app" (the catalog "Ya lo vi" swipe),
+/// for the Listas view's "Ya vistas" sub-list — mirrors `list_backlog`.
+#[tauri::command]
+pub fn list_watched_externally(state: State<'_, AppState>) -> Result<Vec<Series>, String> {
+    let src = get_source_id(&state)?;
+    let db = state.db.lock().unwrap();
+    db.list_watched_externally(src).map_err(|e| e.to_string())
+}
+
 /// Move a discarded row back to 'want'. If it never had its detail page
 /// fetched (the common case — discard never fetches), fetch it now so the
 /// row has genres before it shows up as a normal "want" backlog item; if it
@@ -1262,6 +1271,63 @@ pub fn set_backlog_status(
 ) -> Result<(), String> {
     let db = state.db.lock().unwrap();
     db.set_backlog_status(series_id, status.as_deref()).map_err(|e| e.to_string())
+}
+
+/// The four non-scraping classification states a series can be moved
+/// between — see the state table in
+/// docs/superpowers/specs/2026-07-11-reversibility-classifications-design.md.
+/// Plain Rust variant names on the wire (no serde rename), same convention
+/// as `SwipeDecision`.
+#[derive(serde::Deserialize)]
+pub enum Classification {
+    None,
+    Want,
+    Discarded,
+    WatchedExternally,
+}
+
+/// The body of `reclassify_series`, factored out (in the `switch_site_core`
+/// style) so it can be unit-tested against an in-memory `Db` without a
+/// `State<AppState>`. Clears all three classification signals
+/// (`followed`/`backlog_status`/`watched_externally`) then applies `to` —
+/// reusing the existing `db.set_*` methods rather than raw SQL, so this
+/// stays in sync with their semantics. Deliberately does **not** scrape and
+/// does **not** touch `episodes`/seen rows: the one target this can't reach
+/// (Want -> actively Watching for a catalog stub with no episodes) needs a
+/// scrape and stays on `start_watching`, unchanged.
+fn reclassify_series_core(db: &Db, series_id: i64, to: Classification) -> Result<(), String> {
+    db.set_followed(series_id, false).map_err(|e| e.to_string())?;
+    db.set_backlog_status(series_id, None).map_err(|e| e.to_string())?;
+    db.set_watched_externally(series_id, false).map_err(|e| e.to_string())?;
+    match to {
+        Classification::None => {}
+        Classification::Want => {
+            db.set_backlog_status(series_id, Some("want")).map_err(|e| e.to_string())?
+        }
+        Classification::Discarded => {
+            db.set_backlog_status(series_id, Some("discarded")).map_err(|e| e.to_string())?
+        }
+        Classification::WatchedExternally => {
+            db.set_watched_externally(series_id, true).map_err(|e| e.to_string())?
+        }
+    }
+    Ok(())
+}
+
+/// Move a series between the four non-scraping classification states in one
+/// atomic step — the universal "de-classify / move between lists" inverse
+/// (Library "Dejar de seguir"/"Mover a Quiero ver", SeriesDetail "Dejar de
+/// seguir", Descubrir Listas "Quitar de la lista" and the "Ya vistas"
+/// sub-list). Held under a single `state.db` lock so nothing else can
+/// interleave a partial state. Never scrapes, never touches episodes/seen.
+#[tauri::command]
+pub fn reclassify_series(
+    state: State<'_, AppState>,
+    series_id: i64,
+    to: Classification,
+) -> Result<(), String> {
+    let db = state.db.lock().unwrap();
+    reclassify_series_core(&db, series_id, to)
 }
 
 /// Full genre list for one series, for the Listas view's "Quiero ver" rows.
@@ -1893,6 +1959,123 @@ mod tests {
             .unwrap();
         assert_eq!(count, 1);
         assert_eq!(followed, 1);
+    }
+
+    fn insert_test_series(db: &Db, src: i64, slug: &str) -> i64 {
+        let s = crate::models::Series {
+            id: 0, slug: slug.into(), title: slug.into(), url: format!("u-{slug}"),
+            cover_url: None, is_airing: false, followed: false, next_episode_at: None, site_episode_count: None,
+        };
+        db.upsert_series(src, &s).unwrap()
+    }
+
+    /// Watching -> None ("Dejar de seguir"): `followed` clears and no
+    /// backlog/watched-externally signal is left behind.
+    #[test]
+    fn reclassify_series_core_watching_to_none_clears_followed() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let sid = insert_test_series(&db, src, "a");
+        db.set_followed(sid, true).unwrap();
+
+        reclassify_series_core(&db, sid, Classification::None).unwrap();
+
+        assert!(!db.list_followed(src).unwrap().iter().any(|f| f.id == sid));
+        assert_eq!(db.get_backlog_status(sid).unwrap(), None);
+    }
+
+    /// Watching -> Want ("Mover a Quiero ver"): unfollows and lands in the
+    /// 'want' backlog in the same atomic step.
+    #[test]
+    fn reclassify_series_core_watching_to_want() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let sid = insert_test_series(&db, src, "a");
+        db.set_followed(sid, true).unwrap();
+
+        reclassify_series_core(&db, sid, Classification::Want).unwrap();
+
+        assert!(!db.list_followed(src).unwrap().iter().any(|f| f.id == sid));
+        assert_eq!(db.get_backlog_status(sid).unwrap().as_deref(), Some("want"));
+    }
+
+    /// Want -> None ("Quitar de la lista"): clears backlog_status without
+    /// discarding (distinct from Want -> Discarded).
+    #[test]
+    fn reclassify_series_core_want_to_none() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let sid = insert_test_series(&db, src, "a");
+        db.set_backlog_status(sid, Some("want")).unwrap();
+
+        reclassify_series_core(&db, sid, Classification::None).unwrap();
+
+        assert_eq!(db.get_backlog_status(sid).unwrap(), None);
+    }
+
+    /// WatchedExternally -> None ("Ya no la he visto"): clears the flag so
+    /// the row is unclassified again (reappears in future decks).
+    #[test]
+    fn reclassify_series_core_watched_externally_to_none() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let sid = insert_test_series(&db, src, "a");
+        db.set_watched_externally(sid, true).unwrap();
+
+        reclassify_series_core(&db, sid, Classification::None).unwrap();
+
+        assert!(db.list_watched_externally(src).unwrap().iter().all(|s| s.id != sid));
+    }
+
+    /// WatchedExternally -> Want ("Mover a Quiero ver" from Ya vistas).
+    #[test]
+    fn reclassify_series_core_watched_externally_to_want() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let sid = insert_test_series(&db, src, "a");
+        db.set_watched_externally(sid, true).unwrap();
+
+        reclassify_series_core(&db, sid, Classification::Want).unwrap();
+
+        assert!(db.list_watched_externally(src).unwrap().iter().all(|s| s.id != sid));
+        assert_eq!(db.get_backlog_status(sid).unwrap().as_deref(), Some("want"));
+    }
+
+    /// Any -> WatchedExternally applies the flag and clears whatever else
+    /// was set (defensive: reclassify always fully clears first).
+    #[test]
+    fn reclassify_series_core_want_to_watched_externally() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let sid = insert_test_series(&db, src, "a");
+        db.set_backlog_status(sid, Some("want")).unwrap();
+
+        reclassify_series_core(&db, sid, Classification::WatchedExternally).unwrap();
+
+        assert_eq!(db.get_backlog_status(sid).unwrap(), None);
+        assert!(db.list_watched_externally(src).unwrap().iter().any(|s| s.id == sid));
+    }
+
+    /// Reclassify is a pure local state move: it must never touch
+    /// `episodes` rows (seen/unseen), even when unfollowing a series with
+    /// watched history.
+    #[test]
+    fn reclassify_series_core_never_touches_episodes() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let sid = insert_test_series(&db, src, "a");
+        db.set_followed(sid, true).unwrap();
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: sid, number: "1".into(), title: None,
+            url: "e1".into(), released_at: None, seen: false,
+        }).unwrap();
+        db.set_seen_cascade(sid, "1", true).unwrap();
+
+        reclassify_series_core(&db, sid, Classification::Want).unwrap();
+
+        let eps = db.list_series_episodes(sid).unwrap();
+        assert_eq!(eps.len(), 1);
+        assert!(eps[0].seen, "episode seen state must survive a reclassify");
     }
 
     #[test]
