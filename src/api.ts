@@ -17,6 +17,7 @@ import type {
   LinkOutcome,
   SiteSummary,
   SiteSwitchResult,
+  Classification,
 } from "./types";
 
 export const scanAiring = (baseUrl: string) =>
@@ -96,6 +97,15 @@ export const deleteSeries = (seriesId: number) =>
 
 export const setBacklogStatus = (seriesId: number, status: "want" | "discarded" | null) =>
   invoke<void>("set_backlog_status", { seriesId, status });
+
+// The universal "de-classify / move between lists" inverse — clears
+// followed/backlog_status/watched_externally then applies `to`. Pure-local,
+// never scrapes, never touches episodes/seen rows.
+export const reclassifySeries = (seriesId: number, to: Classification) =>
+  invoke<void>("reclassify_series", { seriesId, to });
+
+export const listWatchedExternally = () =>
+  invoke<Series[]>("list_watched_externally");
 
 export const getSeriesGenres = (seriesId: number) =>
   invoke<string[]>("get_series_genres", { seriesId });

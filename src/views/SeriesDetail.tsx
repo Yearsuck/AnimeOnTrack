@@ -1,5 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { linkCatalogSeries, listEpisodes, openEpisode, setSeenCascade } from "../api";
+import {
+  linkCatalogSeries,
+  listEpisodes,
+  openEpisode,
+  reclassifySeries,
+  setSeenCascade,
+} from "../api";
 import { useT } from "../i18n";
 import { isUnlinkedCatalogRow } from "../lib/catalogLink";
 import type { Episode, Series } from "../types";
@@ -91,6 +97,17 @@ export function SeriesDetail({
     setSeenCascade(series.id, ep.number, nextSeen).then(onChanged);
   }
 
+  // Local/instant, no scrape — the universal reclassify inverse (see
+  // docs/superpowers/specs/2026-07-11-reversibility-classifications-design.md).
+  // Re-following later goes through the existing Airing "+ Seguir" toggle,
+  // which still finds the episode rows intact (reclassify never touches
+  // episodes/seen).
+  async function unfollow() {
+    await reclassifySeries(series.id, "None");
+    onChanged();
+    onBack();
+  }
+
   function jumpToCurrent() {
     const firstUnseen = episodes.find((e) => !e.seen);
     const target = firstUnseen ?? episodes[episodes.length - 1];
@@ -135,6 +152,11 @@ export function SeriesDetail({
         {episodes.length > 0 && (
           <button className="btn" onClick={jumpToCurrent}>
             {t("seriesDetail.jumpToCurrent")}
+          </button>
+        )}
+        {series.followed && (
+          <button className="btn btn-ghost" onClick={unfollow}>
+            {t("seriesDetail.unfollow")}
           </button>
         )}
       </div>

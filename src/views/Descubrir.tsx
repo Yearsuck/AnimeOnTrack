@@ -7,8 +7,10 @@ import {
   getTopGenres,
   linkCatalogSeries,
   listBacklog,
+  listWatchedExternally,
   openEpisode,
   promoteDiscarded,
+  reclassifySeries,
   setBacklogStatus,
   startWatching,
   undoLastSwipe,
@@ -455,6 +457,50 @@ function WantRow({
         >
           {t("discover.discard")}
         </button>
+        <button
+          className="btn btn-ghost"
+          onClick={async () => {
+            // Distinct from Descartar (want -> discarded): this fully
+            // de-classifies the row (want -> unclassified) via the shared
+            // reclassify inverse, so it's no longer excluded from the deck.
+            await reclassifySeries(series.id, "None");
+            onChanged();
+          }}
+        >
+          {t("discover.removeFromList")}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function WatchedRow({ series, onChanged }: { series: Series; onChanged: () => void }) {
+  const t = useT();
+  return (
+    <div className="backlog-row">
+      {series.cover_url && <img src={series.cover_url} alt="" />}
+      <div className="backlog-main">
+        <div className="backlog-title">{series.title}</div>
+      </div>
+      <div className="backlog-actions">
+        <button
+          className="btn btn-ghost"
+          onClick={async () => {
+            await reclassifySeries(series.id, "None");
+            onChanged();
+          }}
+        >
+          {t("discover.markUnwatched")}
+        </button>
+        <button
+          className="btn btn-ghost"
+          onClick={async () => {
+            await reclassifySeries(series.id, "Want");
+            onChanged();
+          }}
+        >
+          {t("discover.moveToWantFromWatched")}
+        </button>
       </div>
     </div>
   );
@@ -496,11 +542,17 @@ function ListasView({ onOpenSeries }: { onOpenSeries: (s: Series) => void }) {
   const t = useT();
   const [want, setWant] = useState<Series[]>([]);
   const [discarded, setDiscarded] = useState<Series[]>([]);
+  const [watched, setWatched] = useState<Series[]>([]);
 
   const load = useCallback(async () => {
-    const [w, d] = await Promise.all([listBacklog("want"), listBacklog("discarded")]);
+    const [w, d, wa] = await Promise.all([
+      listBacklog("want"),
+      listBacklog("discarded"),
+      listWatchedExternally(),
+    ]);
     setWant(w);
     setDiscarded(d);
+    setWatched(wa);
   }, []);
 
   useEffect(() => {
@@ -522,7 +574,7 @@ function ListasView({ onOpenSeries }: { onOpenSeries: (s: Series) => void }) {
         )}
       </div>
 
-      <div className="series-block">
+      <div className="series-block" style={{ marginBottom: 20 }}>
         <div className="series-head">
           <h3 className="card-title">{t("discover.discardedHeading")}</h3>
         </div>
@@ -530,6 +582,17 @@ function ListasView({ onOpenSeries }: { onOpenSeries: (s: Series) => void }) {
           <div className="empty">{t("discover.discardedEmpty")}</div>
         ) : (
           discarded.map((s) => <DiscardedRow key={s.id} series={s} onChanged={load} />)
+        )}
+      </div>
+
+      <div className="series-block">
+        <div className="series-head">
+          <h3 className="card-title">{t("discover.watchedHeading")}</h3>
+        </div>
+        {watched.length === 0 ? (
+          <div className="empty">{t("discover.watchedEmpty")}</div>
+        ) : (
+          watched.map((s) => <WatchedRow key={s.id} series={s} onChanged={load} />)
         )}
       </div>
     </>

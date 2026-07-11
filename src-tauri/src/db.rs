@@ -862,6 +862,19 @@ impl Db {
         Ok(rows)
     }
 
+    /// Series with `watched_externally=1` ("Ya lo vi" catalog swipe), for
+    /// the Listas view's "Ya vistas" sub-list — mirrors `list_backlog`.
+    pub fn list_watched_externally(&self, source_id: i64) -> Result<Vec<crate::models::Series>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, slug, title, url, cover_url, is_airing, followed, next_episode_at, site_episode_count
+             FROM series WHERE source_id=?1 AND watched_externally=1 ORDER BY title",
+        )?;
+        let rows = stmt
+            .query_map([source_id], Self::row_to_series)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
     /// Hard-delete a series and everything referencing it (episodes,
     /// genres). No `ON DELETE CASCADE` is declared on the schema, so this
     /// deletes children first. Safe to call on any series — used both by
@@ -1863,6 +1876,30 @@ mod tests {
         let discards = db.list_backlog(src, "discarded").unwrap();
         assert_eq!(discards.len(), 1);
         assert_eq!(discards[0].id, sid_disc);
+    }
+
+    #[test]
+    fn list_watched_externally_filters_by_flag() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+
+        let watched = crate::models::Series {
+            id: 0, slug: "watched".into(), title: "Watched".into(),
+            url: "u1".into(), cover_url: None, is_airing: false, followed: false, next_episode_at: None, site_episode_count: None,
+        };
+        let sid_watched = db.upsert_series(src, &watched).unwrap();
+        db.set_watched_externally(sid_watched, true).unwrap();
+
+        let other = crate::models::Series {
+            id: 0, slug: "other".into(), title: "Other".into(),
+            url: "u2".into(), cover_url: None, is_airing: false, followed: false, next_episode_at: None, site_episode_count: None,
+        };
+        let sid_other = db.upsert_series(src, &other).unwrap();
+        db.set_backlog_status(sid_other, Some("want")).unwrap();
+
+        let watched_rows = db.list_watched_externally(src).unwrap();
+        assert_eq!(watched_rows.len(), 1);
+        assert_eq!(watched_rows[0].id, sid_watched);
     }
 
     #[test]
