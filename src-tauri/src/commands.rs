@@ -1,4 +1,4 @@
-use crate::adapter::{animeytx::AnimeytxAdapter, SiteAdapter};
+use crate::adapter::{self, SiteAdapter};
 use crate::db::Db;
 use crate::diff::new_episodes;
 use crate::models::{
@@ -30,6 +30,13 @@ fn emit_refresh_progress(app: &AppHandle, current: usize, total: usize, title: &
 pub struct AppState {
     pub db: Mutex<Db>,
     pub source_id: Mutex<Option<i64>>,
+    /// Stable slug (`adapter::SiteInfo::id`) of the currently-active site —
+    /// the single source of truth `adapter_for`/per-site mirror keys read
+    /// from. Decoupled from `source_id` (the DB row, which may still be
+    /// `None` the very first time a newly-selected site is scanned).
+    /// Restored at startup from the `active_site_id` setting, defaulting to
+    /// `"animeytx"` for installs that predate multi-site support.
+    pub active_site_id: Mutex<String>,
     /// Short-TTL rendered-HTML cache (optimization C, see `html_cache.rs`)
     /// consulted by `scrape_via_mirrors` — makes re-scraping a page just
     /// fetched by another flow (refresh → discover/link/backfill) free
@@ -51,11 +58,35 @@ pub struct AppState {
     pub last_swiped_series_id: Mutex<Option<i64>>,
 }
 
-const SOURCE_NAME: &str = "AnimeYT";
-const MIRRORS_KEY: &str = "mirror_urls";
+/// Prefix for the per-site mirror-list settings key (`mirror_urls:{site_id}`).
+/// The old global `mirror_urls` key (no site suffix) is left in the DB
+/// untouched as a rollback path — see `load_mirrors`'s one-time migration.
+const MIRRORS_KEY_PREFIX: &str = "mirror_urls";
+/// Legacy pre-multi-site global mirrors key. Migrated once into
+/// `mirror_urls:animeytx` by `load_mirrors` the first time that site-scoped
+/// key is read and found empty.
+const LEGACY_MIRRORS_KEY: &str = "mirror_urls";
+/// Prefix for the per-site cached genre-archive list
+/// (`genre_list:{site_id}`) — see `ensure_genre_list`.
+const GENRE_LIST_KEY_PREFIX: &str = "genre_list";
+/// Settings key holding the stable slug of the currently-active site
+/// (`adapter::SiteInfo::id`). Absent on installs that predate multi-site
+/// support — those default to `"animeytx"`, the only site that ever existed
+/// before this key did.
+const ACTIVE_SITE_KEY: &str = "active_site_id";
+const DEFAULT_SITE_ID: &str = "animeytx";
 
-fn adapter() -> AnimeytxAdapter {
-    AnimeytxAdapter
+/// The active site's adapter, looked up from `state.active_site_id`. `Err`
+/// only if `active_site_id` somehow holds a slug `adapter::adapter_for`
+/// doesn't recognize (can't happen through normal use — `set_active_site`
+/// only ever writes a slug from `all_sites()`).
+fn get_active_adapter(state: &State<AppState>) -> Result<Box<dyn SiteAdapter>, String> {
+    let site_id = state.active_site_id.lock().unwrap().clone();
+    adapter::adapter_for(&site_id).ok_or_else(|| format!("sitio desconocido: {site_id}"))
+}
+
+fn get_active_site_id(state: &State<AppState>) -> String {
+    state.active_site_id.lock().unwrap().clone()
 }
 
 fn get_source_id(state: &State<AppState>) -> Result<i64, String> {
@@ -70,52 +101,76 @@ fn normalize(url: &str) -> String {
     url.trim().trim_end_matches('/').to_string()
 }
 
-fn load_mirrors(db: &Db) -> Result<Vec<String>, String> {
-    let raw = db.get_setting(MIRRORS_KEY).map_err(|e| e.to_string())?;
-    Ok(raw
-        .map(|s| s.lines().map(normalize).filter(|l| !l.is_empty()).collect())
-        .unwrap_or_default())
+/// Load the mirror list for `site_id`. One-time migration: if the site-scoped
+/// key has never been written and this is the original site (`"animeytx"`),
+/// fall back to the pre-multi-site global `mirror_urls` key, and persist it
+/// forward under the site-scoped key so future reads don't need this check —
+/// the old global key is left in place either way (harmless, and a rollback
+/// path), per the design spec.
+fn load_mirrors(db: &Db, site_id: &str) -> Result<Vec<String>, String> {
+    let key = format!("{MIRRORS_KEY_PREFIX}:{site_id}");
+    let raw = db.get_setting(&key).map_err(|e| e.to_string())?;
+    if let Some(raw) = raw {
+        return Ok(parse_mirrors(&raw));
+    }
+    if site_id == DEFAULT_SITE_ID {
+        if let Some(legacy) = db.get_setting(LEGACY_MIRRORS_KEY).map_err(|e| e.to_string())? {
+            let mirrors = parse_mirrors(&legacy);
+            db.set_setting(&key, &legacy).map_err(|e| e.to_string())?;
+            return Ok(mirrors);
+        }
+    }
+    Ok(Vec::new())
 }
 
-fn save_mirrors(db: &Db, mirrors: &[String]) -> Result<(), String> {
-    db.set_setting(MIRRORS_KEY, &mirrors.join("\n"))
-        .map_err(|e| e.to_string())
+fn parse_mirrors(raw: &str) -> Vec<String> {
+    raw.lines().map(normalize).filter(|l| !l.is_empty()).collect()
 }
 
-const GENRE_LIST_KEY: &str = "genre_list";
+fn save_mirrors(db: &Db, site_id: &str, mirrors: &[String]) -> Result<(), String> {
+    let key = format!("{MIRRORS_KEY_PREFIX}:{site_id}");
+    db.set_setting(&key, &mirrors.join("\n")).map_err(|e| e.to_string())
+}
 
-fn load_genre_list(db: &Db) -> Result<Vec<(String, String)>, String> {
-    let raw = db.get_setting(GENRE_LIST_KEY).map_err(|e| e.to_string())?;
+fn load_genre_list(db: &Db, site_id: &str) -> Result<Vec<(String, String)>, String> {
+    let key = format!("{GENRE_LIST_KEY_PREFIX}:{site_id}");
+    let raw = db.get_setting(&key).map_err(|e| e.to_string())?;
     match raw {
         Some(s) => serde_json::from_str(&s).map_err(|e| e.to_string()),
         None => Ok(Vec::new()),
     }
 }
 
-fn save_genre_list(db: &Db, list: &[(String, String)]) -> Result<(), String> {
+fn save_genre_list(db: &Db, site_id: &str, list: &[(String, String)]) -> Result<(), String> {
+    let key = format!("{GENRE_LIST_KEY_PREFIX}:{site_id}");
     let raw = serde_json::to_string(list).map_err(|e| e.to_string())?;
-    db.set_setting(GENRE_LIST_KEY, &raw).map_err(|e| e.to_string())
+    db.set_setting(&key, &raw).map_err(|e| e.to_string())
 }
 
-/// Cached genre (slug, name) list, scraped once per install and reused after
-/// (mirrors the `mirror_urls` settings-cache pattern already used elsewhere).
+/// Cached genre (slug, name) list, scraped once per install (per site) and
+/// reused after (mirrors the `mirror_urls` settings-cache pattern already
+/// used elsewhere). A site with no genre archive (`genre_list_url` returning
+/// `""`, the trait default) always scrapes an empty list, caches it, and
+/// `discover_swipe_card`'s caller sees `Ok(vec![])` — same "no genres" error
+/// path as an actual scrape failure would hit.
 async fn ensure_genre_list(
     app: &AppHandle,
     db_mirrors: &[String],
     state: &State<'_, AppState>,
+    a: &dyn SiteAdapter,
+    site_id: &str,
 ) -> Result<Vec<(String, String)>, String> {
     let cached = {
         let db = state.db.lock().unwrap();
-        load_genre_list(&db)?
+        load_genre_list(&db, site_id)?
     };
     if !cached.is_empty() {
         return Ok(cached);
     }
-    let a = adapter();
     let (_scraped, pairs, _mirror) =
         scrape_via_mirrors(app, db_mirrors, &a.genre_list_url(""), true, |html| a.parse_genre_list(html)).await?;
     let db = state.db.lock().unwrap();
-    save_genre_list(&db, &pairs)?;
+    save_genre_list(&db, site_id, &pairs)?;
     Ok(pairs)
 }
 
@@ -133,8 +188,8 @@ async fn fetch_series_detail(
     app: &AppHandle,
     mirrors: &[String],
     series_url: &str,
+    a: &dyn SiteAdapter,
 ) -> Result<SeriesDetail, String> {
-    let a = adapter();
     let path = path_of(series_url)?;
     let (_scraped, details, _mirror) = scrape_via_mirrors(app, mirrors, &path, true, |html| {
         let d = a.parse_series_detail(html)?;
@@ -158,6 +213,7 @@ async fn backfill_series_genre_if_missing(
     db: &Mutex<Db>,
     mirrors: &[String],
     series: &Series,
+    a: &dyn SiteAdapter,
 ) -> bool {
     let needs = {
         let db = db.lock().unwrap();
@@ -166,7 +222,7 @@ async fn backfill_series_genre_if_missing(
     if !needs {
         return false;
     }
-    if let Ok(detail) = fetch_series_detail(app, mirrors, &series.url).await {
+    if let Ok(detail) = fetch_series_detail(app, mirrors, &series.url, a).await {
         let db = db.lock().unwrap();
         let _ = db.insert_series_genres(series.id, &detail.genres);
         if let Some(kind) = &detail.kind {
@@ -180,8 +236,8 @@ async fn fetch_episode_list_for(
     app: &AppHandle,
     mirrors: &[String],
     series_url: &str,
+    a: &dyn SiteAdapter,
 ) -> Result<Vec<Episode>, String> {
-    let a = adapter();
     let path = path_of(series_url)?;
     let (_scraped, eps, _mirror) =
         scrape_via_mirrors(app, mirrors, &path, true, |html| a.parse_series(html)).await?;
@@ -278,8 +334,9 @@ async fn scan_airing_via_mirrors(
     app: &AppHandle,
     state: &State<'_, AppState>,
     mirrors: Vec<String>,
+    a: &dyn SiteAdapter,
+    site_id: &str,
 ) -> Result<Vec<Series>, String> {
-    let a = adapter();
     emit_refresh_progress(app, 0, 1, "Escaneando listado de estrenos");
     // airing_url() just appends a fixed path; reuse it against an empty base to get that path alone.
     let path = a.airing_url("").to_string();
@@ -291,10 +348,16 @@ async fn scan_airing_via_mirrors(
     // Cloudflare and gets rate-limited regardless of session validity. Covers
     // are fetched one at a time in `refresh`, only for followed series.
 
+    let site_name = adapter::all_sites()
+        .iter()
+        .find(|s| s.id == site_id)
+        .map(|s| s.name)
+        .unwrap_or(site_id);
+
     let db = state.db.lock().unwrap();
-    save_mirrors(&db, &mirrors)?;
+    save_mirrors(&db, site_id, &mirrors)?;
     let src = db
-        .upsert_source(SOURCE_NAME, &working_mirror)
+        .upsert_source(site_name, &working_mirror, site_id)
         .map_err(|e| e.to_string())?;
     for s in &series {
         db.upsert_series(src, s).map_err(|e| e.to_string())?;
@@ -304,44 +367,52 @@ async fn scan_airing_via_mirrors(
 }
 
 /// First-run scan: seed the mirror list with `base_url` (kept first if new),
-/// then scan the airing list trying every configured mirror in order.
+/// then scan the airing list trying every configured mirror in order. Always
+/// scans the currently-active site (`state.active_site_id`) — after a
+/// Settings site switch, that's already been updated before this is called.
 #[tauri::command]
 pub async fn scan_airing(
     app: AppHandle,
     state: State<'_, AppState>,
     base_url: String,
 ) -> Result<Vec<Series>, String> {
+    let site_id = get_active_site_id(&state);
+    let a = get_active_adapter(&state)?;
     let existing = {
         let db = state.db.lock().unwrap();
-        load_mirrors(&db)?
+        load_mirrors(&db, &site_id)?
     };
     let mirrors = with_mirror(existing, &base_url);
-    scan_airing_via_mirrors(&app, &state, mirrors).await
+    scan_airing_via_mirrors(&app, &state, mirrors, a.as_ref(), &site_id).await
 }
 
 /// Re-scan the airing list using only the mirrors already configured in
-/// Settings (no new URL supplied).
+/// Settings for the active site (no new URL supplied).
 #[tauri::command]
 pub async fn rescan_airing(app: AppHandle, state: State<'_, AppState>) -> Result<Vec<Series>, String> {
+    let site_id = get_active_site_id(&state);
+    let a = get_active_adapter(&state)?;
     let mirrors = {
         let db = state.db.lock().unwrap();
-        load_mirrors(&db)?
+        load_mirrors(&db, &site_id)?
     };
-    scan_airing_via_mirrors(&app, &state, mirrors).await
+    scan_airing_via_mirrors(&app, &state, mirrors, a.as_ref(), &site_id).await
 }
 
 #[tauri::command]
 pub fn get_mirrors(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    let site_id = get_active_site_id(&state);
     let db = state.db.lock().unwrap();
-    load_mirrors(&db)
+    load_mirrors(&db, &site_id)
 }
 
-/// Save the mirror list. If it would end up without the site the app is
-/// currently actually using (`sources.base_url`), that site is kept at the
-/// front regardless — otherwise a Settings edit can silently strand every
-/// future scan with no working entry at all.
+/// Save the mirror list for the active site. If it would end up without the
+/// site the app is currently actually using (`sources.base_url`), that URL is
+/// kept at the front regardless — otherwise a Settings edit can silently
+/// strand every future scan with no working entry at all.
 #[tauri::command]
 pub fn set_mirrors(state: State<'_, AppState>, urls: Vec<String>) -> Result<(), String> {
+    let site_id = get_active_site_id(&state);
     let db = state.db.lock().unwrap();
     let mut cleaned: Vec<String> = urls.iter().map(|u| normalize(u)).filter(|u| !u.is_empty()).collect();
     if let Ok(Some(src_id)) = state.source_id.lock().map(|g| *g) {
@@ -352,7 +423,7 @@ pub fn set_mirrors(state: State<'_, AppState>, urls: Vec<String>) -> Result<(), 
             }
         }
     }
-    save_mirrors(&db, &cleaned)
+    save_mirrors(&db, &site_id, &cleaned)
 }
 
 #[tauri::command]
@@ -407,6 +478,8 @@ pub fn get_stats_graph(state: State<'_, AppState>) -> Result<Vec<SeriesGraphNode
 #[tauri::command]
 pub async fn backfill_genres(app: AppHandle, state: State<'_, AppState>) -> Result<i64, String> {
     let src = get_source_id(&state)?;
+    let site_id = get_active_site_id(&state);
+    let a = get_active_adapter(&state)?;
     let (candidates, mirrors) = {
         let db = state.db.lock().unwrap();
         let followed = db.list_followed(src).map_err(|e| e.to_string())?;
@@ -416,13 +489,13 @@ pub async fn backfill_genres(app: AppHandle, state: State<'_, AppState>) -> Resu
                 candidates.push(s);
             }
         }
-        (candidates, load_mirrors(&db)?)
+        (candidates, load_mirrors(&db, &site_id)?)
     };
     let total = candidates.len();
     let mut filled = 0i64;
     for (idx, s) in candidates.into_iter().enumerate() {
         emit_refresh_progress(&app, idx, total, &s.title);
-        if backfill_series_genre_if_missing(&app, &state.db, &mirrors, &s).await {
+        if backfill_series_genre_if_missing(&app, &state.db, &mirrors, &s, a.as_ref()).await {
             let got = {
                 let db = state.db.lock().unwrap();
                 !db.series_needs_genre_backfill(s.id).map_err(|e| e.to_string())?
@@ -532,7 +605,7 @@ fn should_fetch_series(
 async fn fetch_series_episodes(
     app: &AppHandle,
     mirrors: &[String],
-    a: &AnimeytxAdapter,
+    a: &dyn SiteAdapter,
     series_url: &str,
 ) -> Option<(Vec<Episode>, String, String)> {
     let path = match url::Url::parse(series_url) {
@@ -562,11 +635,12 @@ async fn fetch_series_episodes(
 pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) -> Result<i64, String> {
     let refresh_started = std::time::Instant::now();
     let src = get_source_id(&state)?;
+    let site_id = get_active_site_id(&state);
+    let a = get_active_adapter(&state)?;
     let mirrors = {
         let db = state.db.lock().unwrap();
-        load_mirrors(&db)?
+        load_mirrors(&db, &site_id)?
     };
-    let a = adapter();
 
     // One fresh airing-listing fetch up front — the skip decisions below are
     // only sound against metadata from *this* scan, never a stale one, so
@@ -650,15 +724,15 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
         let fetched: Vec<Option<(Vec<Episode>, String, String)>> = match chunk {
             [s0, s1] => {
                 let (r0, r1) = tokio::join!(
-                    fetch_series_episodes(&app, &mirrors, &a, &s0.url),
-                    fetch_series_episodes(&app, &mirrors, &a, &s1.url),
+                    fetch_series_episodes(&app, &mirrors, a.as_ref(), &s0.url),
+                    fetch_series_episodes(&app, &mirrors, a.as_ref(), &s1.url),
                 );
                 vec![r0, r1]
             }
             _ => {
                 let mut v = Vec::with_capacity(chunk.len());
                 for s in chunk {
-                    v.push(fetch_series_episodes(&app, &mirrors, &a, &s.url).await);
+                    v.push(fetch_series_episodes(&app, &mirrors, a.as_ref(), &s.url).await);
                 }
                 v
             }
@@ -700,7 +774,7 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
             // One genre/kind backfill per followed series per refresh —
             // only for series that don't already have series_genres rows.
             // A failure here is silent and never blocks episode updates.
-            backfill_series_genre_if_missing(&app, &state.db, &mirrors, s).await;
+            backfill_series_genre_if_missing(&app, &state.db, &mirrors, s, a.as_ref()).await;
         }
 
         // Polite delay once per chunk rather than once per series — a chunk
@@ -803,11 +877,13 @@ pub async fn discover_swipe_card(
     state: State<'_, AppState>,
 ) -> Result<Option<FinishedCard>, String> {
     let src = get_source_id(&state)?;
+    let site_id = get_active_site_id(&state);
+    let a = get_active_adapter(&state)?;
     let mirrors = {
         let db = state.db.lock().unwrap();
-        load_mirrors(&db)?
+        load_mirrors(&db, &site_id)?
     };
-    let genres = ensure_genre_list(&app, &mirrors, &state).await?;
+    let genres = ensure_genre_list(&app, &mirrors, &state, a.as_ref(), &site_id).await?;
     if genres.is_empty() {
         return Err("no se encontraron géneros; reintenta el escaneo".into());
     }
@@ -838,7 +914,6 @@ pub async fn discover_swipe_card(
     let mut cards = match buffered {
         Some(cards) => undecided_cards(cards, &known),
         None => {
-            let a = adapter();
             let path = a.genre_page_url("", slug, page);
             let (scraped, raw_cards, _mirror) =
                 scrape_via_mirrors(&app, &mirrors, &path, true, |html| a.parse_finished_page(html)).await?;
@@ -872,6 +947,8 @@ pub async fn decide_swipe(
     decision: SwipeDecision,
 ) -> Result<(), String> {
     let src = get_source_id(&state)?;
+    let site_id = get_active_site_id(&state);
+    let a = get_active_adapter(&state)?;
     let card = state
         .swipe_served
         .lock()
@@ -900,9 +977,9 @@ pub async fn decide_swipe(
         SwipeDecision::Want => {
             let mirrors = {
                 let db = state.db.lock().unwrap();
-                load_mirrors(&db)?
+                load_mirrors(&db, &site_id)?
             };
-            let detail = fetch_series_detail(&app, &mirrors, &card.url).await?;
+            let detail = fetch_series_detail(&app, &mirrors, &card.url, a.as_ref()).await?;
             let db = state.db.lock().unwrap();
             let sid = db.upsert_series(src, &series).map_err(|e| e.to_string())?;
             db.set_kind(sid, detail.kind.as_deref().unwrap_or(&card.kind)).map_err(|e| e.to_string())?;
@@ -913,10 +990,10 @@ pub async fn decide_swipe(
         SwipeDecision::Seen => {
             let mirrors = {
                 let db = state.db.lock().unwrap();
-                load_mirrors(&db)?
+                load_mirrors(&db, &site_id)?
             };
-            let detail = fetch_series_detail(&app, &mirrors, &card.url).await?;
-            let eps = fetch_episode_list_for(&app, &mirrors, &card.url).await?;
+            let detail = fetch_series_detail(&app, &mirrors, &card.url, a.as_ref()).await?;
+            let eps = fetch_episode_list_for(&app, &mirrors, &card.url, a.as_ref()).await?;
             let db = state.db.lock().unwrap();
             let sid = db.upsert_series(src, &series).map_err(|e| e.to_string())?;
             db.set_followed(sid, true).map_err(|e| e.to_string())?;
@@ -968,6 +1045,8 @@ pub async fn promote_discarded(
     state: State<'_, AppState>,
     series_id: i64,
 ) -> Result<(), String> {
+    let site_id = get_active_site_id(&state);
+    let a = get_active_adapter(&state)?;
     let (needs_detail, series_url, mirrors) = {
         let db = state.db.lock().unwrap();
         let needs_detail = db.series_needs_genre_backfill(series_id).map_err(|e| e.to_string())?;
@@ -975,10 +1054,10 @@ pub async fn promote_discarded(
             .get_series_url(series_id)
             .map_err(|e| e.to_string())?
             .ok_or_else(|| "series not found".to_string())?;
-        (needs_detail, url, load_mirrors(&db)?)
+        (needs_detail, url, load_mirrors(&db, &site_id)?)
     };
     if needs_detail {
-        let detail = fetch_series_detail(&app, &mirrors, &series_url).await?;
+        let detail = fetch_series_detail(&app, &mirrors, &series_url, a.as_ref()).await?;
         let db = state.db.lock().unwrap();
         db.insert_series_genres(series_id, &detail.genres).map_err(|e| e.to_string())?;
         if let Some(kind) = &detail.kind {
@@ -1056,15 +1135,17 @@ pub async fn start_watching(
     }
 
     // Site row: fetch its episode list (all unseen), follow, clear backlog.
+    let site_id = get_active_site_id(&state);
+    let a = get_active_adapter(&state)?;
     let (series_url, mirrors) = {
         let db = state.db.lock().unwrap();
         let url = db
             .get_series_url(series_id)
             .map_err(|e| e.to_string())?
             .ok_or_else(|| "series not found".to_string())?;
-        (url, load_mirrors(&db)?)
+        (url, load_mirrors(&db, &site_id)?)
     };
-    let eps = fetch_episode_list_for(&app, &mirrors, &series_url).await?;
+    let eps = fetch_episode_list_for(&app, &mirrors, &series_url, a.as_ref()).await?;
     let db = state.db.lock().unwrap();
     let episode_count = eps.len() as i64;
     for mut e in eps {
@@ -1472,8 +1553,8 @@ async fn search_site(
     app: &AppHandle,
     mirrors: &[String],
     query: &str,
+    a: &dyn SiteAdapter,
 ) -> Result<Vec<FinishedCard>, String> {
-    let a = adapter();
     let path = a.search_url("", query);
     let (_scraped, mut outcomes, _mirror) = scrape_via_mirrors(app, mirrors, &path, true, |html| {
         a.parse_search_results(html).map(|cards| vec![SearchOutcome { cards }])
@@ -1530,9 +1611,11 @@ async fn link_series_core(
     state: &State<'_, AppState>,
     series_id: i64,
 ) -> Result<(LinkOutcome, Option<i64>), String> {
+    let site_id = get_active_site_id(state);
+    let a = get_active_adapter(state)?;
     let (mirrors, info) = {
         let db = state.db.lock().unwrap();
-        let mirrors = load_mirrors(&db)?;
+        let mirrors = load_mirrors(&db, &site_id)?;
         let info = db
             .get_series_for_link(series_id)
             .map_err(|e| e.to_string())?
@@ -1553,7 +1636,7 @@ async fn link_series_core(
     };
 
     let primary_query = romaji.clone().unwrap_or_else(|| title.clone());
-    let mut cards = search_site(app, &mirrors, &primary_query).await?;
+    let mut cards = search_site(app, &mirrors, &primary_query, a.as_ref()).await?;
     let mut best = crate::matching::best_match(&[&primary_query], &to_candidates(&cards));
 
     // Second search only on failure, only if an english title exists and
@@ -1562,7 +1645,7 @@ async fn link_series_core(
     if best.is_none() {
         if let Some(english) = &english {
             if !english.eq_ignore_ascii_case(&primary_query) {
-                cards = search_site(app, &mirrors, english).await?;
+                cards = search_site(app, &mirrors, english, a.as_ref()).await?;
                 best = crate::matching::best_match(&[english], &to_candidates(&cards));
             }
         }
@@ -1593,7 +1676,6 @@ async fn link_series_core(
     // No collision: fetch the matched series page once, reused for both the
     // episode list and the detail (genres/kind) parse.
     let scraped = fetch_html(app, &matched.url).await.map_err(|e| e.to_string())?;
-    let a = adapter();
     let episodes = a.parse_series(&scraped.html).map_err(|e| e.to_string())?;
     let detail = a.parse_series_detail(&scraped.html).map_err(|e| e.to_string())?;
     let kind = detail.kind.unwrap_or(matched.kind.clone());
@@ -1617,6 +1699,44 @@ async fn link_series_core(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn load_mirrors_migrates_legacy_global_key_into_animeytx_scoped_key_once() {
+        let db = Db::open(":memory:").unwrap();
+        db.set_setting(LEGACY_MIRRORS_KEY, "https://old-mirror.example\nhttps://old-mirror-2.example").unwrap();
+
+        // First read: no site-scoped key yet, falls back to (and persists into) it.
+        let mirrors = load_mirrors(&db, "animeytx").unwrap();
+        assert_eq!(mirrors, vec!["https://old-mirror.example", "https://old-mirror-2.example"]);
+        // The legacy key must survive untouched — it's the rollback path.
+        assert_eq!(
+            db.get_setting(LEGACY_MIRRORS_KEY).unwrap().as_deref(),
+            Some("https://old-mirror.example\nhttps://old-mirror-2.example")
+        );
+        // And the migration wrote the site-scoped key forward.
+        assert_eq!(
+            db.get_setting("mirror_urls:animeytx").unwrap().as_deref(),
+            Some("https://old-mirror.example\nhttps://old-mirror-2.example")
+        );
+    }
+
+    #[test]
+    fn load_mirrors_does_not_fall_back_to_legacy_key_for_a_non_animeytx_site() {
+        // A brand-new site with no site-scoped mirrors yet must start empty,
+        // never silently inherit AnimeYT's old global mirror list.
+        let db = Db::open(":memory:").unwrap();
+        db.set_setting(LEGACY_MIRRORS_KEY, "https://old-mirror.example").unwrap();
+        assert_eq!(load_mirrors(&db, "tioanime").unwrap(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn mirrors_are_isolated_per_site() {
+        let db = Db::open(":memory:").unwrap();
+        save_mirrors(&db, "animeytx", &["https://a.example".to_string()]).unwrap();
+        save_mirrors(&db, "tioanime", &["https://b.example".to_string()]).unwrap();
+        assert_eq!(load_mirrors(&db, "animeytx").unwrap(), vec!["https://a.example"]);
+        assert_eq!(load_mirrors(&db, "tioanime").unwrap(), vec!["https://b.example"]);
+    }
 
     const NOW: i64 = 1_783_400_000;
     const DAY: i64 = 86_400;

@@ -207,6 +207,17 @@ impl Db {
         self.conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_series_next_ep ON series(source_id, is_airing, next_episode_at);",
         )?;
+        // site_id: stable adapter slug (e.g. "animeytx") — see
+        // `adapter::SiteInfo`/`adapter::adapter_for`. Never the base_url,
+        // which changes with every mirror. Before this column existed there
+        // was exactly one supported site, so every pre-existing row is
+        // backfilled to "animeytx" rather than left NULL (verified via
+        // `SELECT * FROM sources` before writing this migration — one row).
+        ensure_column(&self.conn, "sources", "site_id", "TEXT")?;
+        self.conn.execute(
+            "UPDATE sources SET site_id = 'animeytx' WHERE site_id IS NULL",
+            [],
+        )?;
         self.conn.execute_batch(
             r#"
             CREATE TABLE IF NOT EXISTS series_genres (
@@ -257,11 +268,17 @@ impl Db {
         Ok(())
     }
 
-    pub fn upsert_source(&self, name: &str, base_url: &str) -> Result<i64> {
+    /// Insert or update a source row, tagged with its stable `site_id`
+    /// (`adapter::SiteInfo::id`). Conflict target stays `base_url` (matching
+    /// the pre-existing scheme: a mirror fallback resolving to a different
+    /// working URL creates/reuses a row keyed by that URL, same as before
+    /// site_id existed) — `site_id` is written on every call so an existing
+    /// row's tag stays correct even if it predates this column.
+    pub fn upsert_source(&self, name: &str, base_url: &str, site_id: &str) -> Result<i64> {
         self.conn.execute(
-            "INSERT INTO sources(name, base_url) VALUES(?1, ?2)
-             ON CONFLICT(base_url) DO UPDATE SET name=excluded.name",
-            (name, base_url),
+            "INSERT INTO sources(name, base_url, site_id) VALUES(?1, ?2, ?3)
+             ON CONFLICT(base_url) DO UPDATE SET name=excluded.name, site_id=excluded.site_id",
+            (name, base_url, site_id),
         )?;
         let id: i64 = self.conn.query_row(
             "SELECT id FROM sources WHERE base_url=?1",
@@ -277,6 +294,21 @@ impl Db {
             .query_row("SELECT base_url FROM sources WHERE id=?1", [source_id], |r| {
                 r.get::<_, String>(0)
             })
+            .ok())
+    }
+
+    /// The most recently-upserted source row tagged with `site_id`, or
+    /// `None` if that site has never been scanned yet in this install. Used
+    /// on app startup (restore the active source) and by the Settings site
+    /// switcher (has this site already got a row to reuse?).
+    pub fn get_source_id_for_site(&self, site_id: &str) -> Result<Option<i64>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT id FROM sources WHERE site_id=?1 ORDER BY id DESC LIMIT 1",
+                [site_id],
+                |r| r.get(0),
+            )
             .ok())
     }
 
@@ -1366,7 +1398,7 @@ mod tests {
     #[test]
     fn upsert_series_writes_and_updates_scan_owned_airing_metadata() {
         let db = Db::open(":memory:").unwrap();
-        let src = db.upsert_source("AnimeYT", "b").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
         let mut s = mk_airing("x", "X", Some(1_783_350_140));
         s.site_episode_count = Some(2);
         let sid = db.upsert_series(src, &s).unwrap();
@@ -1386,7 +1418,7 @@ mod tests {
     #[test]
     fn episode_count_counts_only_this_series() {
         let db = Db::open(":memory:").unwrap();
-        let src = db.upsert_source("AnimeYT", "b").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
         let sid_a = db.upsert_series(src, &mk_airing("a", "A", None)).unwrap();
         let sid_b = db.upsert_series(src, &mk_airing("b", "B", None)).unwrap();
         for i in 1..=3 {
@@ -1402,7 +1434,7 @@ mod tests {
     #[test]
     fn last_checked_age_none_until_set_then_small() {
         let db = Db::open(":memory:").unwrap();
-        let src = db.upsert_source("AnimeYT", "b").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
         let sid = db.upsert_series(src, &mk_airing("a", "A", None)).unwrap();
         assert_eq!(db.last_checked_age_secs(sid).unwrap(), None);
         db.set_last_checked_at(sid).unwrap();
@@ -1416,7 +1448,7 @@ mod tests {
     #[test]
     fn list_airing_orders_newest_first_nulls_last_title_tiebreak() {
         let db = Db::open(":memory:").unwrap();
-        let src = db.upsert_source("AnimeYT", "b").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
         db.upsert_series(src, &mk_airing("older", "Older", Some(1_000_000))).unwrap();
         db.upsert_series(src, &mk_airing("newer", "Newer", Some(2_000_000))).unwrap();
         db.upsert_series(src, &mk_airing("nodate", "NoDate", None)).unwrap();
@@ -1429,7 +1461,7 @@ mod tests {
     #[test]
     fn upsert_source_and_series_then_follow() {
         let db = Db::open(":memory:").unwrap();
-        let src = db.upsert_source("AnimeYT", "https://wwv.animeytx.net").unwrap();
+        let src = db.upsert_source("AnimeYT", "https://wwv.animeytx.net", "animeytx").unwrap();
 
         let s = crate::models::Series {
             id: 0,
@@ -1460,7 +1492,7 @@ mod tests {
         // the leading digit, so un-marking one used to wipe every episode's
         // seen flag in the series instead of just the later ones.
         let db = Db::open(":memory:").unwrap();
-        let src = db.upsert_source("AnimeYT", "https://wwv.animeytx.net").unwrap();
+        let src = db.upsert_source("AnimeYT", "https://wwv.animeytx.net", "animeytx").unwrap();
         let s = crate::models::Series {
             id: 0, slug: "x".into(), title: "X".into(),
             url: "u".into(), cover_url: None, is_airing: true, followed: false, next_episode_at: None, site_episode_count: None,
@@ -1493,7 +1525,7 @@ mod tests {
     #[test]
     fn set_seen_cascade_stamps_and_clears_seen_at() {
         let db = Db::open(":memory:").unwrap();
-        let src = db.upsert_source("AnimeYT", "https://wwv.animeytx.net").unwrap();
+        let src = db.upsert_source("AnimeYT", "https://wwv.animeytx.net", "animeytx").unwrap();
         let s = crate::models::Series {
             id: 0, slug: "x".into(), title: "X".into(),
             url: "u".into(), cover_url: None, is_airing: true, followed: false, next_episode_at: None, site_episode_count: None,
@@ -1529,7 +1561,7 @@ mod tests {
     #[test]
     fn set_seen_stamps_and_clears_seen_at() {
         let db = Db::open(":memory:").unwrap();
-        let src = db.upsert_source("AnimeYT", "https://wwv.animeytx.net").unwrap();
+        let src = db.upsert_source("AnimeYT", "https://wwv.animeytx.net", "animeytx").unwrap();
         let s = crate::models::Series {
             id: 0, slug: "x".into(), title: "X".into(),
             url: "u".into(), cover_url: None, is_airing: true, followed: false, next_episode_at: None, site_episode_count: None,
@@ -1564,7 +1596,7 @@ mod tests {
         // (CAST(number AS INTEGER) ASC, id ASC) rather than a numeric parse:
         // a naive string sort would put "10" before "9".
         let db = Db::open(":memory:").unwrap();
-        let src = db.upsert_source("AnimeYT", "https://wwv.animeytx.net").unwrap();
+        let src = db.upsert_source("AnimeYT", "https://wwv.animeytx.net", "animeytx").unwrap();
         let s = crate::models::Series {
             id: 0, slug: "x".into(), title: "X".into(),
             url: "u".into(), cover_url: None, is_airing: true, followed: true, next_episode_at: None, site_episode_count: None,
@@ -1605,7 +1637,7 @@ mod tests {
     #[test]
     fn library_next_episode_none_when_fully_seen() {
         let db = Db::open(":memory:").unwrap();
-        let src = db.upsert_source("AnimeYT", "https://wwv.animeytx.net").unwrap();
+        let src = db.upsert_source("AnimeYT", "https://wwv.animeytx.net", "animeytx").unwrap();
         let s = crate::models::Series {
             id: 0, slug: "x".into(), title: "X".into(),
             url: "u".into(), cover_url: None, is_airing: true, followed: true, next_episode_at: None, site_episode_count: None,
@@ -1631,7 +1663,7 @@ mod tests {
         // A followed-but-never-scraped (or scrape-failed) series: total=0.
         // Must not divide by zero anywhere and must yield next_episode=None.
         let db = Db::open(":memory:").unwrap();
-        let src = db.upsert_source("AnimeYT", "https://wwv.animeytx.net").unwrap();
+        let src = db.upsert_source("AnimeYT", "https://wwv.animeytx.net", "animeytx").unwrap();
         let s = crate::models::Series {
             id: 0, slug: "x".into(), title: "X".into(),
             url: "u".into(), cover_url: None, is_airing: true, followed: true, next_episode_at: None, site_episode_count: None,
@@ -1649,7 +1681,7 @@ mod tests {
     #[test]
     fn insert_episode_dedups_and_marks_seen() {
         let db = Db::open(":memory:").unwrap();
-        let src = db.upsert_source("AnimeYT", "https://wwv.animeytx.net").unwrap();
+        let src = db.upsert_source("AnimeYT", "https://wwv.animeytx.net", "animeytx").unwrap();
         let s = crate::models::Series {
             id: 0, slug: "x".into(), title: "X".into(),
             url: "u".into(), cover_url: None, is_airing: true, followed: false, next_episode_at: None, site_episode_count: None,
@@ -1674,7 +1706,7 @@ mod tests {
     #[test]
     fn existing_episode_urls_returns_known_urls() {
         let db = Db::open(":memory:").unwrap();
-        let src = db.upsert_source("AnimeYT", "b").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
         let s = crate::models::Series {
             id: 0, slug: "x".into(), title: "X".into(),
             url: "u".into(), cover_url: None, is_airing: true, followed: true, next_episode_at: None, site_episode_count: None,
@@ -1692,7 +1724,7 @@ mod tests {
     #[test]
     fn series_genres_insert_is_idempotent_and_lists_sorted() {
         let db = Db::open(":memory:").unwrap();
-        let src = db.upsert_source("AnimeYT", "b").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
         let s = crate::models::Series {
             id: 0, slug: "x".into(), title: "X".into(),
             url: "u".into(), cover_url: None, is_airing: false, followed: false, next_episode_at: None, site_episode_count: None,
@@ -1710,7 +1742,7 @@ mod tests {
     #[test]
     fn backlog_status_and_kind_round_trip() {
         let db = Db::open(":memory:").unwrap();
-        let src = db.upsert_source("AnimeYT", "b").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
         let s = crate::models::Series {
             id: 0, slug: "x".into(), title: "X".into(),
             url: "u".into(), cover_url: None, is_airing: false, followed: false, next_episode_at: None, site_episode_count: None,
@@ -1732,7 +1764,7 @@ mod tests {
     #[test]
     fn get_genre_affinity_weighs_followed_want_discarded_correctly() {
         let db = Db::open(":memory:").unwrap();
-        let src = db.upsert_source("AnimeYT", "b").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
 
         let followed = crate::models::Series {
             id: 0, slug: "f".into(), title: "F".into(),
@@ -1769,7 +1801,7 @@ mod tests {
     #[test]
     fn list_backlog_filters_by_status() {
         let db = Db::open(":memory:").unwrap();
-        let src = db.upsert_source("AnimeYT", "b").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
         let want = crate::models::Series {
             id: 0, slug: "want".into(), title: "Want".into(),
             url: "u1".into(), cover_url: None, is_airing: false, followed: false, next_episode_at: None, site_episode_count: None,
@@ -1796,7 +1828,7 @@ mod tests {
     #[test]
     fn delete_series_cascades_episodes_and_genres() {
         let db = Db::open(":memory:").unwrap();
-        let src = db.upsert_source("AnimeYT", "b").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
         let s = crate::models::Series {
             id: 0, slug: "x".into(), title: "X".into(),
             url: "u".into(), cover_url: None, is_airing: false, followed: true, next_episode_at: None, site_episode_count: None,
@@ -1818,7 +1850,7 @@ mod tests {
     #[test]
     fn get_series_for_link_reads_link_relevant_fields() {
         let db = Db::open(":memory:").unwrap();
-        let src = db.upsert_source("AnimeYT", "b").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
         let s = crate::models::Series {
             id: 0, slug: "anilist-42".into(), title: "X".into(),
             url: "https://anilist.co/anime/42".into(), cover_url: None, is_airing: false, followed: false, next_episode_at: None, site_episode_count: None,
@@ -1901,7 +1933,7 @@ mod tests {
     #[test]
     fn find_series_id_by_slug_excludes_given_id_and_scopes_by_source() {
         let db = Db::open(":memory:").unwrap();
-        let src = db.upsert_source("AnimeYT", "b").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
         let real = crate::models::Series {
             id: 0, slug: "baki-dou".into(), title: "Baki-dou".into(),
             url: "u1".into(), cover_url: None, is_airing: true, followed: false, next_episode_at: None, site_episode_count: None,
@@ -1930,7 +1962,7 @@ mod tests {
     #[test]
     fn merge_series_into_transfers_flags_and_deletes_synthetic() {
         let db = Db::open(":memory:").unwrap();
-        let src = db.upsert_source("AnimeYT", "b").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
         let existing = crate::models::Series {
             id: 0, slug: "baki-dou".into(), title: "Baki-dou".into(),
             url: "https://site/tv/baki-dou/".into(), cover_url: None, is_airing: true, followed: false, next_episode_at: None, site_episode_count: None,
@@ -1961,7 +1993,7 @@ mod tests {
     #[test]
     fn merge_series_into_keeps_existing_backlog_status_when_it_already_has_one() {
         let db = Db::open(":memory:").unwrap();
-        let src = db.upsert_source("AnimeYT", "b").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
         let existing = crate::models::Series {
             id: 0, slug: "baki-dou".into(), title: "Baki-dou".into(),
             url: "https://site/tv/baki-dou/".into(), cover_url: None, is_airing: true, followed: false, next_episode_at: None, site_episode_count: None,
@@ -1986,7 +2018,7 @@ mod tests {
     #[test]
     fn relink_series_updates_slug_url_cover_and_kind_in_place() {
         let db = Db::open(":memory:").unwrap();
-        let src = db.upsert_source("AnimeYT", "b").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
         let synthetic = crate::models::Series {
             id: 0, slug: "anilist-7".into(), title: "Baki-dou".into(),
             url: "https://anilist.co/anime/7".into(), cover_url: Some("https://anilist-cdn/7.jpg".into()),
@@ -2012,7 +2044,7 @@ mod tests {
     #[test]
     fn replace_series_genres_drops_old_genres_instead_of_accumulating() {
         let db = Db::open(":memory:").unwrap();
-        let src = db.upsert_source("AnimeYT", "b").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
         let s = crate::models::Series {
             id: 0, slug: "x".into(), title: "X".into(),
             url: "u".into(), cover_url: None, is_airing: false, followed: false, next_episode_at: None, site_episode_count: None,
@@ -2033,7 +2065,7 @@ mod tests {
     #[test]
     fn mark_all_episodes_seen_marks_every_episode_via_cascade() {
         let db = Db::open(":memory:").unwrap();
-        let src = db.upsert_source("AnimeYT", "b").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
         let s = crate::models::Series {
             id: 0, slug: "x".into(), title: "X".into(),
             url: "u".into(), cover_url: None, is_airing: false, followed: false, next_episode_at: None, site_episode_count: None,
@@ -2056,7 +2088,7 @@ mod tests {
     #[test]
     fn mark_all_episodes_seen_is_a_no_op_on_a_series_with_no_episodes() {
         let db = Db::open(":memory:").unwrap();
-        let src = db.upsert_source("AnimeYT", "b").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
         let s = crate::models::Series {
             id: 0, slug: "x".into(), title: "X".into(),
             url: "u".into(), cover_url: None, is_airing: false, followed: false, next_episode_at: None, site_episode_count: None,
@@ -2069,7 +2101,7 @@ mod tests {
     #[test]
     fn known_series_urls_reflects_any_decided_row() {
         let db = Db::open(":memory:").unwrap();
-        let src = db.upsert_source("AnimeYT", "b").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
         let s = crate::models::Series {
             id: 0, slug: "x".into(), title: "X".into(),
             url: "https://site/tv/x/".into(), cover_url: None, is_airing: false, followed: false, next_episode_at: None, site_episode_count: None,
@@ -2085,7 +2117,7 @@ mod tests {
     #[test]
     fn series_needs_genre_backfill_reflects_series_genres_rows() {
         let db = Db::open(":memory:").unwrap();
-        let src = db.upsert_source("AnimeYT", "b").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
         let s = crate::models::Series {
             id: 0, slug: "x".into(), title: "X".into(),
             url: "u".into(), cover_url: None, is_airing: false, followed: true, next_episode_at: None, site_episode_count: None,
@@ -2100,7 +2132,7 @@ mod tests {
     #[test]
     fn get_stats_graph_data_returns_genres_kind_and_cover_for_followed_series() {
         let db = Db::open(":memory:").unwrap();
-        let src = db.upsert_source("AnimeYT", "b").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
 
         let full = crate::models::Series {
             id: 0, slug: "full".into(), title: "Full".into(),
@@ -2293,7 +2325,7 @@ mod tests {
     #[test]
     fn random_catalog_anime_in_genre_excludes_already_decided_titles() {
         let db = Db::open(":memory:").unwrap();
-        let src = db.upsert_source("AnimeYT", "b").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
         db.upsert_catalog_anime(&catalog_anime_with_popularity(1, "Decided", &["Drama"], Some(1000)), 0).unwrap();
         db.upsert_catalog_anime(&catalog_anime_with_popularity(2, "Undecided", &["Drama"], Some(1000)), 1).unwrap();
 
@@ -2315,7 +2347,7 @@ mod tests {
     #[test]
     fn random_catalog_anime_in_genre_returns_none_when_all_decided() {
         let db = Db::open(":memory:").unwrap();
-        let src = db.upsert_source("AnimeYT", "b").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
         db.upsert_catalog_anime(&catalog_anime_with_popularity(1, "OnlyOne", &["Drama"], Some(1000)), 0).unwrap();
         let series = crate::models::Series {
             id: 0, slug: "anilist-1".into(), title: "OnlyOne".into(),
@@ -2332,7 +2364,7 @@ mod tests {
     #[test]
     fn anilist_id_and_watched_externally_round_trip() {
         let db = Db::open(":memory:").unwrap();
-        let src = db.upsert_source("AnimeYT", "b").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
         let s = crate::models::Series {
             id: 0, slug: "anilist-42".into(), title: "X".into(),
             url: "u".into(), cover_url: None, is_airing: false, followed: false, next_episode_at: None, site_episode_count: None,
@@ -2358,7 +2390,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         {
             let db = Db::open(path_str).unwrap();
-            let src = db.upsert_source("AnimeYT", "b").unwrap();
+            let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
             // Simulate a pre-migration row: slug carries the anilist id but
             // the anilist_id column (added by this migration) is unset.
             let s = crate::models::Series {
@@ -2378,9 +2410,49 @@ mod tests {
     }
 
     #[test]
+    fn sources_site_id_backfilled_to_animeytx_on_reopen() {
+        let path = std::env::temp_dir().join(format!("aot_site_id_migration_test_{}.sqlite", std::process::id()));
+        let path_str = path.to_str().unwrap();
+        let _ = std::fs::remove_file(&path);
+        {
+            let db = Db::open(path_str).unwrap();
+            db.upsert_source("AnimeYT", "https://wwv.animeytx.net", "animeytx").unwrap();
+            // Simulate a pre-migration row exactly as the design spec describes
+            // ("there is exactly one, verify via SELECT * before writing the
+            // migration"): site_id present in the schema but NULL on the row.
+            db.conn.execute("UPDATE sources SET site_id = NULL", []).unwrap();
+        }
+        // Re-opening re-runs init_schema, which must backfill NULL site_id
+        // rows to "animeytx" rather than leave them NULL.
+        let db = Db::open(path_str).unwrap();
+        let site_id: String = db
+            .conn
+            .query_row("SELECT site_id FROM sources WHERE base_url='https://wwv.animeytx.net'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(site_id, "animeytx");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn get_source_id_for_site_returns_none_when_never_scanned() {
+        let db = Db::open(":memory:").unwrap();
+        assert_eq!(db.get_source_id_for_site("tioanime").unwrap(), None);
+    }
+
+    #[test]
+    fn get_source_id_for_site_finds_the_tagged_row_and_ignores_other_sites() {
+        let db = Db::open(":memory:").unwrap();
+        let animeytx_id = db.upsert_source("AnimeYT", "https://a.example", "animeytx").unwrap();
+        let tioanime_id = db.upsert_source("TioAnime", "https://b.example", "tioanime").unwrap();
+        assert_eq!(db.get_source_id_for_site("animeytx").unwrap(), Some(animeytx_id));
+        assert_eq!(db.get_source_id_for_site("tioanime").unwrap(), Some(tioanime_id));
+        assert_ne!(animeytx_id, tioanime_id);
+    }
+
+    #[test]
     fn get_genre_affinity_folds_spanish_and_english_genre_into_one_canonical_key() {
         let db = Db::open(":memory:").unwrap();
-        let src = db.upsert_source("AnimeYT", "b").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
 
         // A followed series tagged with the site's Spanish genre "Acción".
         let followed = crate::models::Series {
