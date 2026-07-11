@@ -85,6 +85,12 @@ export type LinkOutcome =
   | { type: "NoMatch" }
   | { type: "AlreadyLinked" };
 
+// Mirrors the backend's `Classification` enum (src-tauri/src/commands.rs) —
+// the target state for `reclassify_series`, the universal "de-classify /
+// move between lists" inverse. Plain Rust variant names on the wire, same
+// convention as `SwipeDecision`.
+export type Classification = "None" | "Want" | "Discarded" | "WatchedExternally";
+
 export interface GenreAffinity {
   genre: string;
   score: number;

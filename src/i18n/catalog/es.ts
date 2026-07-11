@@ -90,8 +90,12 @@ export const es = {
   "library.completed": "Completadas",
   "library.progressAria": "Progreso de {title}: {seen} de {total} episodios vistos",
   "library.playNext": "▶ Episodio {number}",
+  "library.cardMenuAria": "Más opciones",
+  "library.unfollow": "Dejar de seguir",
+  "library.moveToWant": 'Mover a "Quiero ver"',
 
   // SeriesDetail.tsx
+  "seriesDetail.unfollow": "Dejar de seguir",
   "seriesDetail.openPage": "Abrir página de la serie ↗",
   "seriesDetail.seenCount": "{seen} / {total} vistos",
   "seriesDetail.jumpToCurrent": "⇒ Ir al episodio actual",
@@ -124,8 +128,13 @@ export const es = {
   "discover.deleteCompletely": "Eliminar del todo",
   "discover.wantHeading": "Quiero ver",
   "discover.wantEmpty": "Nada por aquí todavía.",
+  "discover.removeFromList": "Quitar de la lista",
   "discover.discardedHeading": "Descartados",
   "discover.discardedEmpty": "Nada descartado todavía.",
+  "discover.watchedHeading": "Ya vistas",
+  "discover.watchedEmpty": "Nada por aquí todavía.",
+  "discover.markUnwatched": "Ya no la he visto",
+  "discover.moveToWantFromWatched": 'Mover a "Quiero ver"',
   "discover.tabSwipe": "Swipe",
   "discover.tabLists": "Listas",
 
