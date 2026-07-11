@@ -1,6 +1,7 @@
 use crate::models::{Episode, FinishedCard, Series, SeriesDetail};
 use anyhow::Result;
 
+pub mod animeflv;
 pub mod animeytx;
 pub mod tioanime;
 
@@ -21,6 +22,7 @@ pub fn all_sites() -> &'static [SiteInfo] {
     &[
         SiteInfo { id: "animeytx", name: "AnimeYT", default_base_url: "https://wwv.animeytx.net" },
         SiteInfo { id: "tioanime", name: "TioAnime", default_base_url: "https://tioanime.com" },
+        SiteInfo { id: "animeflv", name: "AnimeFLV", default_base_url: "https://www4.animeflv.net" },
     ]
 }
 
@@ -31,6 +33,7 @@ pub fn adapter_for(site_id: &str) -> Option<Box<dyn SiteAdapter>> {
     match site_id {
         "animeytx" => Some(Box::new(animeytx::AnimeytxAdapter)),
         "tioanime" => Some(Box::new(tioanime::TioanimeAdapter)),
+        "animeflv" => Some(Box::new(animeflv::AnimeflvAdapter)),
         _ => None,
     }
 }
