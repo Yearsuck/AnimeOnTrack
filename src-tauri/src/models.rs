@@ -109,6 +109,10 @@ pub struct SeriesDetail {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WatchSummary {
     pub followed_series: i64,
+    /// Distinct animes among followed/watched-externally series, collapsing
+    /// seasons of the same show into one (see `db::franchise_key`).
+    #[serde(default)]
+    pub distinct_anime: i64,
     pub episodes_watched: i64,
     pub episodes_total: i64,
     pub backlog_want: i64,

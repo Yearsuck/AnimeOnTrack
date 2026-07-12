@@ -99,6 +99,15 @@ export function Stats({ active }: { active: boolean }) {
           </div>
           <div className="card">
             <div className="card-body">
+              <div className="muted" style={{ fontSize: 12 }}>{t("stats.distinctAnime")}</div>
+              <div style={{ fontSize: 22, fontWeight: 700 }}>{summary.distinct_anime}</div>
+              <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
+                {t("stats.distinctAnimeHelp")}
+              </div>
+            </div>
+          </div>
+          <div className="card">
+            <div className="card-body">
               <div className="muted" style={{ fontSize: 12 }}>{t("stats.followedSeries")}</div>
               <div style={{ fontSize: 22, fontWeight: 700 }}>{summary.followed_series}</div>
             </div>

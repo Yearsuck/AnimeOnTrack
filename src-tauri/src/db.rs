@@ -110,6 +110,44 @@ fn parse_ep_number(s: &str) -> Option<f64> {
     }
 }
 
+/// Collapse a series title to a season/part-agnostic "franchise key" so
+/// multiple seasons of the same show count as one anime in the stats
+/// (`get_watch_summary`'s distinct-anime count). Normalizes via
+/// `matching::normalize_title` (accents/case/punctuation/noise stripped), then
+/// strips trailing season/part markers: "temporada N", "season N", "part N",
+/// "parte N", "cour N", "Nth season", "final season", a trailing standalone
+/// integer, and trailing Roman numerals (ii..x). It's a heuristic, not a
+/// canonical grouping — good enough to keep "X" and "X Temporada 2" together
+/// without a metadata source. Never returns "" (an all-marker title keeps its
+/// normalized form).
+pub fn franchise_key(title: &str) -> String {
+    const ROMANS: &[&str] = &["ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x"];
+    const MARKER_WORDS: &[&str] =
+        &["season", "temporada", "part", "parte", "cour", "final", "the"];
+    let norm = crate::matching::normalize_title(title);
+    let mut tokens: Vec<&str> = norm.split_whitespace().collect();
+    while let Some(&last) = tokens.last() {
+        let is_int = !last.is_empty() && last.chars().all(|c| c.is_ascii_digit());
+        let is_roman = ROMANS.contains(&last);
+        let is_marker = MARKER_WORDS.contains(&last);
+        // "2nd"/"3rd"/"1st"/"4th" ordinal (digits + st/nd/rd/th).
+        let is_ordinal = last.len() > 2
+            && matches!(&last[last.len() - 2..], "st" | "nd" | "rd" | "th")
+            && last[..last.len() - 2].chars().all(|c| c.is_ascii_digit());
+        if is_int || is_roman || is_marker || is_ordinal {
+            tokens.pop();
+        } else {
+            break;
+        }
+    }
+    let key = tokens.join(" ");
+    if key.is_empty() {
+        norm
+    } else {
+        key
+    }
+}
+
 /// Add `column` to `table` if it isn't already there. SQLite has no
 /// `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, so this checks `PRAGMA
 /// table_info` first — needed because `init_schema` runs on every `Db::open`
@@ -844,8 +882,24 @@ impl Db {
             [source_id],
             |r| r.get(0),
         )?;
+        // Distinct animes = distinct franchise keys among the series the user
+        // is actually tracking (followed OR watched-externally), so seasons of
+        // the same show count once. Grouping is done in Rust (franchise_key)
+        // because SQLite can't run the normalization/marker-stripping.
+        let mut stmt = self.conn.prepare(
+            "SELECT title FROM series
+             WHERE source_id=?1 AND (followed=1 OR watched_externally=1)",
+        )?;
+        let franchises: std::collections::HashSet<String> = stmt
+            .query_map([source_id], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<String>>>()?
+            .into_iter()
+            .map(|t| franchise_key(&t))
+            .collect();
+        let distinct_anime = franchises.len() as i64;
         Ok(crate::models::WatchSummary {
             followed_series,
+            distinct_anime,
             episodes_watched,
             episodes_total,
             backlog_want,
@@ -1850,6 +1904,56 @@ mod tests {
         assert_eq!(seen, vec!["1", "2", "3"], "episodes 1..=3 seen, 4..=6 unseen");
         // Applied once — column cleared.
         assert_eq!(db.take_carried_seen_number(sid).unwrap(), None);
+    }
+
+    // ---- Stats clarity: franchise_key + distinct_anime (2026-07-12) ----
+
+    #[test]
+    fn franchise_key_collapses_seasons_and_parts() {
+        // Season suffix collapses onto the base.
+        assert_eq!(
+            franchise_key("Tensei shitara Slime Datta Ken Temporada 4"),
+            franchise_key("Tensei shitara Slime Datta Ken")
+        );
+        // Roman-numeral season collapses onto the base.
+        assert_eq!(franchise_key("Overlord IV"), franchise_key("Overlord"));
+        // English "Season N" and "Nth Season" both collapse.
+        assert_eq!(franchise_key("Vinland Saga Season 2"), franchise_key("Vinland Saga"));
+        assert_eq!(franchise_key("Bocchi the Rock! 2nd Season"), franchise_key("Bocchi the Rock!"));
+    }
+
+    #[test]
+    fn franchise_key_keeps_distinct_shows_distinct_and_never_empty() {
+        assert_ne!(franchise_key("Naruto"), franchise_key("Bleach"));
+        // A title that is *only* a season marker must not collapse to "".
+        assert!(!franchise_key("Season 2").is_empty());
+        assert!(!franchise_key("IV").is_empty());
+    }
+
+    #[test]
+    fn get_watch_summary_counts_distinct_animes_collapsing_seasons() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+
+        // Three followed rows that are the same franchise (S1/S2/S3).
+        for (slug, title) in [
+            ("slime1", "Tensei shitara Slime Datta Ken"),
+            ("slime2", "Tensei shitara Slime Datta Ken Temporada 2"),
+            ("slime3", "Tensei shitara Slime Datta Ken Temporada 3"),
+        ] {
+            let id = db.upsert_series(src, &mk_airing(slug, title, None)).unwrap();
+            db.set_followed(id, true).unwrap();
+        }
+        // A different followed franchise.
+        let n = db.upsert_series(src, &mk_airing("naruto", "Naruto", None)).unwrap();
+        db.set_followed(n, true).unwrap();
+        // A watched-externally-only franchise (counts too, even if not followed).
+        let w = db.upsert_series(src, &mk_airing("frieren", "Frieren", None)).unwrap();
+        db.set_watched_externally(w, true).unwrap();
+
+        let summary = db.get_watch_summary(src).unwrap();
+        assert_eq!(summary.followed_series, 4, "4 followed rows");
+        assert_eq!(summary.distinct_anime, 3, "Slime(x3 seasons)=1, Naruto=1, Frieren=1");
     }
 
     #[test]
