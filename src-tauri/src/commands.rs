@@ -9,7 +9,7 @@ use crate::player::{AppWindowPlayer, EpisodePlayer};
 use crate::scraper_engine::{fetch_cover_image, fetch_html, ScrapeResult};
 use crate::swipe::{pick_index, shuffle, undecided_cards, weighted_pick_index};
 use serde::Serialize;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -1767,6 +1767,18 @@ pub fn discover_catalog_card(state: State<'_, AppState>) -> Result<Option<Finish
         return Ok(None);
     }
 
+    // Titles of series the user has already engaged with (followed/want/
+    // discarded/watched-externally), normalized so a followed *site*-scraped
+    // series (almost always anilist_id=NULL — see `engaged_series_titles`'s
+    // doc comment) still blocks a same-titled catalog entry from being
+    // re-offered by the deck. Built once per call, not per genre attempt.
+    let excluded_norm_titles: HashSet<String> = db
+        .engaged_series_titles(src)
+        .map_err(|e| e.to_string())?
+        .iter()
+        .map(|t| crate::matching::normalize_title(t))
+        .collect();
+
     // Pool of candidate-genre indices still worth trying this call; a genre
     // that yields no undecided candidate is removed from the pool so a
     // retry never re-picks the same exhausted genre.
@@ -1783,7 +1795,10 @@ pub fn discover_catalog_card(state: State<'_, AppState>) -> Result<Option<Finish
         let genre_idx = pool[pick_in_pool];
         let genre = &candidates[genre_idx];
 
-        if let Some(anime) = db.random_catalog_anime_in_genre(genre, &banned_formats).map_err(|e| e.to_string())? {
+        if let Some(anime) = db
+            .random_catalog_anime_in_genre(genre, &banned_formats, &excluded_norm_titles)
+            .map_err(|e| e.to_string())?
+        {
             return Ok(Some(FinishedCard {
                 title: anime.title,
                 url: anime.url,

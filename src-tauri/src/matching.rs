@@ -35,7 +35,14 @@ pub const MATCH_THRESHOLD: f64 = 0.72;
 /// otherwise-clean titles ("Sub Español", "Latino", "Castellano", "HD",
 /// "Online"). Not a general slugifier — just enough to make "Attack on
 /// Titan" and "Attack on Titan Sub Español" compare equal.
-fn normalize(s: &str) -> String {
+///
+/// Public (not just an internal `best_match` helper) because `db.rs` reuses
+/// it to compare site-series titles against catalog titles for the
+/// Descubrir-deck engaged-title exclusion (see
+/// `db::engaged_series_titles`/`db::random_catalog_anime_in_genre`) — those
+/// callers want the exact same normalization `best_match` uses internally,
+/// not a second slightly-different implementation.
+pub fn normalize_title(s: &str) -> String {
     let lower = crate::genres::strip_accents(s).to_lowercase();
     let mut collapsed = String::with_capacity(lower.len());
     let mut last_was_space = true; // true at start so leading punctuation doesn't emit a leading space
@@ -156,10 +163,10 @@ fn score(query_norm: &str, candidate_norm: &str) -> f64 {
 /// `MATCH_THRESHOLD`. Each candidate is scored against every query and the
 /// max is taken, so a candidate need only match one of the queries well.
 pub fn best_match(queries: &[&str], candidates: &[TitleCandidate]) -> Option<MatchResult> {
-    let normalized_queries: Vec<String> = queries.iter().map(|q| normalize(q)).collect();
+    let normalized_queries: Vec<String> = queries.iter().map(|q| normalize_title(q)).collect();
     let mut best: Option<MatchResult> = None;
     for (index, candidate) in candidates.iter().enumerate() {
-        let candidate_norm = normalize(candidate.title);
+        let candidate_norm = normalize_title(candidate.title);
         let candidate_score = normalized_queries
             .iter()
             .map(|q| score(q, &candidate_norm))
@@ -178,28 +185,38 @@ mod tests {
     use super::*;
 
     #[test]
+    fn normalize_title_is_public_and_pins_a_known_normalization() {
+        // Task 5 (discover-exclude-followed) needs this normalizer outside
+        // this module (db.rs, comparing site-series titles against catalog
+        // titles) — pin that it's callable as `normalize_title` and that
+        // running it twice on the same input is idempotent/stable.
+        assert_eq!(normalize_title("Overlord IV"), normalize_title("Overlord IV"));
+        assert_eq!(normalize_title("Overlord IV"), "overlord iv");
+    }
+
+    #[test]
     fn normalize_strips_accents_case_and_punctuation() {
-        assert_eq!(normalize("Shingeki no Kyojin"), "shingeki no kyojin");
-        assert_eq!(normalize("ATTACK ON TITAN"), "attack on titan");
-        assert_eq!(normalize("Shingeki no Kyojin: The Final Season"), "shingeki no kyojin the final season");
-        assert_eq!(normalize("Ataque a los Titanes"), "ataque a los titanes");
+        assert_eq!(normalize_title("Shingeki no Kyojin"), "shingeki no kyojin");
+        assert_eq!(normalize_title("ATTACK ON TITAN"), "attack on titan");
+        assert_eq!(normalize_title("Shingeki no Kyojin: The Final Season"), "shingeki no kyojin the final season");
+        assert_eq!(normalize_title("Ataque a los Titanes"), "ataque a los titanes");
     }
 
     #[test]
     fn normalize_strips_trailing_noise_tokens() {
-        assert_eq!(normalize("Shingeki no Kyojin Sub Español"), "shingeki no kyojin");
-        assert_eq!(normalize("Baki-dou Latino"), "baki dou");
-        assert_eq!(normalize("One Piece HD"), "one piece");
-        assert_eq!(normalize("Naruto Online"), "naruto");
-        // Multiple stacked suffixes strip in one normalize() call.
-        assert_eq!(normalize("Bleach Sub Español HD"), "bleach");
+        assert_eq!(normalize_title("Shingeki no Kyojin Sub Español"), "shingeki no kyojin");
+        assert_eq!(normalize_title("Baki-dou Latino"), "baki dou");
+        assert_eq!(normalize_title("One Piece HD"), "one piece");
+        assert_eq!(normalize_title("Naruto Online"), "naruto");
+        // Multiple stacked suffixes strip in one normalize_title() call.
+        assert_eq!(normalize_title("Bleach Sub Español HD"), "bleach");
     }
 
     #[test]
     fn normalize_does_not_strip_noise_words_that_are_not_trailing() {
         // "hd" only strips as a genuine trailing token; a title that merely
         // contains "hd"-like substrings mid-string must survive untouched.
-        assert_eq!(normalize("High and Low"), "high and low");
+        assert_eq!(normalize_title("High and Low"), "high and low");
     }
 
     #[test]
