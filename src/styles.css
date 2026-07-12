@@ -512,10 +512,13 @@ a:hover {
   margin-bottom: 14px;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  background: var(--surface-2, rgba(255, 255, 255, 0.04));
+  /* Opaque so scrolled content never shows through the pinned bar. */
+  background: rgba(11, 21, 33, 0.92);
+  backdrop-filter: blur(10px);
+  /* Pin just below the sticky top nav (~56px tall), under it in the stack. */
   position: sticky;
-  top: 0;
-  z-index: 5;
+  top: 56px;
+  z-index: 40;
 }
 .card.selected {
   outline: 2px solid var(--accent);
