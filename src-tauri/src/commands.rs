@@ -5,7 +5,7 @@ use crate::models::{
     Episode, FinishedCard, GenreAffinity, GenreStat, Series, SeriesDetail, SeriesGraphNode, TypeStat,
     WatchSummary,
 };
-use crate::player::{BrowserPlayer, EpisodePlayer};
+use crate::player::{AppWindowPlayer, EpisodePlayer};
 use crate::scraper_engine::{fetch_cover_image, fetch_html, ScrapeResult};
 use crate::swipe::{pick_index, shuffle, undecided_cards, weighted_pick_index};
 use serde::Serialize;
@@ -937,8 +937,9 @@ pub fn pending_count(state: State<'_, AppState>) -> Result<i64, String> {
     db.pending_count(src).map_err(|e| e.to_string())
 }
 
-/// Open an episode in the browser. Does NOT mark it seen — the user marks
-/// seen/unseen explicitly via `set_seen`.
+/// Open an episode or info page in a visible, app-owned WebView2 window
+/// (separate from the user's browser — see `AppWindowPlayer`). Does NOT mark
+/// it seen — the user marks seen/unseen explicitly via `set_seen`.
 #[tauri::command]
 pub fn open_episode(app: AppHandle, url: String) -> Result<(), String> {
     let ep = Episode {
@@ -950,7 +951,7 @@ pub fn open_episode(app: AppHandle, url: String) -> Result<(), String> {
         released_at: None,
         seen: false,
     };
-    BrowserPlayer.open(&app, &ep).map_err(|e| e.to_string())
+    AppWindowPlayer.open(&app, &ep).map_err(|e| e.to_string())
 }
 
 /// Mark an episode seen or unseen (persisted).
