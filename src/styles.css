@@ -1033,3 +1033,93 @@ progress.scanbar-track::-webkit-progress-value {
   gap: 8px;
   flex-shrink: 0;
 }
+
+/* ---------- Descubrir · Listas (redesigned cards) ---------- */
+.listas-seg {
+  margin-bottom: 16px;
+}
+.listas-seg-count {
+  margin-left: 6px;
+  opacity: 0.7;
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.listas-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.listas-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  transition: border-color 0.15s var(--ease), background 0.15s var(--ease);
+}
+.listas-card:hover {
+  border-color: var(--surface-3);
+}
+.listas-poster {
+  width: 42px;
+  height: 60px;
+  flex-shrink: 0;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--surface-2);
+}
+.listas-poster img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.listas-poster .poster-fallback {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--muted);
+  background: var(--surface-2);
+}
+.listas-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.listas-title {
+  font-weight: 600;
+  font-size: 13.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.listas-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.listas-chip {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  padding: 2px 8px;
+  border-radius: var(--radius-round);
+  flex-shrink: 0;
+}
+.listas-chip-want {
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+.listas-chip-discarded {
+  background: var(--surface-3);
+  color: var(--muted);
+}
+.listas-chip-watched {
+  background: var(--success-dim);
+  color: var(--success);
+}

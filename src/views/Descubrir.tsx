@@ -496,6 +496,85 @@ function HistoryRow({
   );
 }
 
+// ---- Shared Listas card bits (poster+initials fallback, status chip, and an
+// outside-click overflow menu — same visual language as the Library cards). ----
+
+function listasInitials(title: string): string {
+  const chars = title
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((w) => w[0]?.toUpperCase() ?? "")
+    .join("");
+  return chars || "?";
+}
+
+function PosterThumb({ series }: { series: Series }) {
+  const [failed, setFailed] = useState(false);
+  const showFallback = !series.cover_url || failed;
+  return (
+    <div className="listas-poster">
+      {showFallback ? (
+        <div className="poster-fallback" aria-hidden="true">
+          {listasInitials(series.title)}
+        </div>
+      ) : (
+        <img src={series.cover_url!} alt="" loading="lazy" onError={() => setFailed(true)} />
+      )}
+    </div>
+  );
+}
+
+function OverflowMenu({
+  label,
+  items,
+}: {
+  label: string;
+  items: { label: string; onClick: () => void }[];
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    function onDown(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [open]);
+  if (items.length === 0) return null;
+  return (
+    <div className="card-menu-wrap" ref={ref}>
+      <button
+        type="button"
+        className="card-menu-btn"
+        aria-label={label}
+        onClick={() => setOpen((v) => !v)}
+      >
+        ⋯
+      </button>
+      {open && (
+        <div className="card-menu-list">
+          {items.map((it, i) => (
+            <button
+              key={i}
+              type="button"
+              className="card-menu-item"
+              onClick={() => {
+                setOpen(false);
+                it.onClick();
+              }}
+            >
+              {it.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function WantRow({
   series,
   onChanged,
@@ -546,63 +625,64 @@ function WantRow({
   };
 
   return (
-    <div className="backlog-row">
-      {series.cover_url && <img src={series.cover_url} alt="" />}
+    <div className="listas-card">
+      <PosterThumb series={series} />
       <div className="backlog-main">
-        <div
-          className="backlog-title"
-          onClick={() => onOpenSeries(series)}
-          style={{ cursor: "pointer" }}
-          title={t("discover.viewDetailsTitle")}
-        >
-          {series.title}
-          {unlinked && (
-            <span
-              className="muted"
-              style={{ fontSize: 11, marginLeft: 8, fontWeight: 400 }}
-              title={t("discover.notFoundYetTitle")}
-            >
-              {t("discover.unlinked")}
-            </span>
-          )}
+        <div className="listas-card-head">
+          <span
+            className="listas-title"
+            onClick={() => onOpenSeries(series)}
+            style={{ cursor: "pointer" }}
+            title={t("discover.viewDetailsTitle")}
+          >
+            {series.title}
+          </span>
+          <span className="listas-chip listas-chip-want">{t("discover.chipWant")}</span>
         </div>
-        <div className="backlog-genres">{genres.join(", ") || " "}</div>
+        {genres.length > 0 && <div className="backlog-genres">{genres.join(", ")}</div>}
+        {unlinked && (
+          <div className="muted" style={{ fontSize: 11 }} title={t("discover.notFoundYetTitle")}>
+            {t("discover.unlinked")}
+          </div>
+        )}
         {noMatch && (
-          <div className="muted" style={{ fontSize: 11, color: "var(--danger, #e06666)" }}>
+          <div className="muted" style={{ fontSize: 11, color: "var(--danger)" }}>
             {t("discover.notFoundInSite")}
           </div>
         )}
       </div>
-      <div className="backlog-actions">
-        {unlinked && (
-          <button className="btn btn-ghost" onClick={retryLink} disabled={linking}>
-            {linking ? t("discover.searchingBtn") : t("discover.searchOnSite")}
-          </button>
-        )}
+      <div className="listas-actions">
         <button className="btn btn-primary" onClick={handleStartWatching} disabled={starting}>
           {starting ? t("discover.searchingBtn") : t("discover.startWatching")}
         </button>
-        <button
-          className="btn btn-ghost"
-          onClick={async () => {
-            await setBacklogStatus(series.id, "discarded");
-            onChanged();
-          }}
-        >
-          {t("discover.discard")}
-        </button>
-        <button
-          className="btn btn-ghost"
-          onClick={async () => {
-            // Distinct from Descartar (want -> discarded): this fully
-            // de-classifies the row (want -> unclassified) via the shared
-            // reclassify inverse, so it's no longer excluded from the deck.
-            await reclassifySeries(series.id, "None");
-            onChanged();
-          }}
-        >
-          {t("discover.removeFromList")}
-        </button>
+        <OverflowMenu
+          label={t("discover.moreActions")}
+          items={[
+            {
+              label: t("discover.discard"),
+              onClick: async () => {
+                await setBacklogStatus(series.id, "discarded");
+                onChanged();
+              },
+            },
+            {
+              label: t("discover.removeFromList"),
+              onClick: async () => {
+                await reclassifySeries(series.id, "None");
+                onChanged();
+              },
+            },
+            ...(unlinked
+              ? [
+                  {
+                    label: linking ? t("discover.searchingBtn") : t("discover.searchOnSite"),
+                    onClick: retryLink,
+                  },
+                ]
+              : []),
+            { label: t("discover.viewDetails"), onClick: () => onOpenSeries(series) },
+          ]}
+        />
       </div>
     </div>
   );
@@ -611,14 +691,17 @@ function WantRow({
 function WatchedRow({ series, onChanged }: { series: Series; onChanged: () => void }) {
   const t = useT();
   return (
-    <div className="backlog-row">
-      {series.cover_url && <img src={series.cover_url} alt="" />}
+    <div className="listas-card">
+      <PosterThumb series={series} />
       <div className="backlog-main">
-        <div className="backlog-title">{series.title}</div>
+        <div className="listas-card-head">
+          <span className="listas-title">{series.title}</span>
+          <span className="listas-chip listas-chip-watched">{t("discover.chipWatched")}</span>
+        </div>
       </div>
-      <div className="backlog-actions">
+      <div className="listas-actions">
         <button
-          className="btn btn-ghost"
+          className="btn"
           onClick={async () => {
             await reclassifySeries(series.id, "None");
             onChanged();
@@ -626,15 +709,18 @@ function WatchedRow({ series, onChanged }: { series: Series; onChanged: () => vo
         >
           {t("discover.markUnwatched")}
         </button>
-        <button
-          className="btn btn-ghost"
-          onClick={async () => {
-            await reclassifySeries(series.id, "Want");
-            onChanged();
-          }}
-        >
-          {t("discover.moveToWantFromWatched")}
-        </button>
+        <OverflowMenu
+          label={t("discover.moreActions")}
+          items={[
+            {
+              label: t("discover.moveToWantFromWatched"),
+              onClick: async () => {
+                await reclassifySeries(series.id, "Want");
+                onChanged();
+              },
+            },
+          ]}
+        />
       </div>
     </div>
   );
@@ -643,14 +729,17 @@ function WatchedRow({ series, onChanged }: { series: Series; onChanged: () => vo
 function DiscardedRow({ series, onChanged }: { series: Series; onChanged: () => void }) {
   const t = useT();
   return (
-    <div className="backlog-row">
-      {series.cover_url && <img src={series.cover_url} alt="" />}
+    <div className="listas-card">
+      <PosterThumb series={series} />
       <div className="backlog-main">
-        <div className="backlog-title">{series.title}</div>
+        <div className="listas-card-head">
+          <span className="listas-title">{series.title}</span>
+          <span className="listas-chip listas-chip-discarded">{t("discover.chipDiscarded")}</span>
+        </div>
       </div>
-      <div className="backlog-actions">
+      <div className="listas-actions">
         <button
-          className="btn btn-ghost"
+          className="btn btn-primary"
           onClick={async () => {
             await promoteDiscarded(series.id);
             onChanged();
@@ -658,25 +747,31 @@ function DiscardedRow({ series, onChanged }: { series: Series; onChanged: () => 
         >
           {t("discover.moveToWant")}
         </button>
-        <button
-          className="btn btn-ghost"
-          onClick={async () => {
-            await deleteSeries(series.id);
-            onChanged();
-          }}
-        >
-          {t("discover.deleteCompletely")}
-        </button>
+        <OverflowMenu
+          label={t("discover.moreActions")}
+          items={[
+            {
+              label: t("discover.deleteCompletely"),
+              onClick: async () => {
+                await deleteSeries(series.id);
+                onChanged();
+              },
+            },
+          ]}
+        />
       </div>
     </div>
   );
 }
+
+type ListTab = "want" | "discarded" | "watched";
 
 function ListasView({ onOpenSeries }: { onOpenSeries: (s: Series) => void }) {
   const t = useT();
   const [want, setWant] = useState<Series[]>([]);
   const [discarded, setDiscarded] = useState<Series[]>([]);
   const [watched, setWatched] = useState<Series[]>([]);
+  const [tab, setTab] = useState<ListTab>("want");
 
   const load = useCallback(async () => {
     const [w, d, wa] = await Promise.all([
@@ -693,42 +788,62 @@ function ListasView({ onOpenSeries }: { onOpenSeries: (s: Series) => void }) {
     load();
   }, [load]);
 
+  const tabs: { key: ListTab; label: string; count: number }[] = [
+    { key: "want", label: t("discover.wantHeading"), count: want.length },
+    { key: "discarded", label: t("discover.discardedHeading"), count: discarded.length },
+    { key: "watched", label: t("discover.watchedHeading"), count: watched.length },
+  ];
+
   return (
     <>
-      <div className="series-block" style={{ marginBottom: 20 }}>
-        <div className="series-head">
-          <h3 className="card-title">{t("discover.wantHeading")}</h3>
-        </div>
-        {want.length === 0 ? (
+      <div className="seg listas-seg" role="tablist">
+        {tabs.map((tb) => (
+          <button
+            key={tb.key}
+            type="button"
+            role="tab"
+            aria-selected={tab === tb.key}
+            className={`seg-btn${tab === tb.key ? " active" : ""}`}
+            onClick={() => setTab(tb.key)}
+          >
+            {tb.label}
+            <span className="listas-seg-count">{tb.count}</span>
+          </button>
+        ))}
+      </div>
+
+      {tab === "want" &&
+        (want.length === 0 ? (
           <div className="empty">{t("discover.wantEmpty")}</div>
         ) : (
-          want.map((s) => (
-            <WantRow key={s.id} series={s} onChanged={load} onOpenSeries={onOpenSeries} />
-          ))
-        )}
-      </div>
+          <div className="listas-grid">
+            {want.map((s) => (
+              <WantRow key={s.id} series={s} onChanged={load} onOpenSeries={onOpenSeries} />
+            ))}
+          </div>
+        ))}
 
-      <div className="series-block" style={{ marginBottom: 20 }}>
-        <div className="series-head">
-          <h3 className="card-title">{t("discover.discardedHeading")}</h3>
-        </div>
-        {discarded.length === 0 ? (
+      {tab === "discarded" &&
+        (discarded.length === 0 ? (
           <div className="empty">{t("discover.discardedEmpty")}</div>
         ) : (
-          discarded.map((s) => <DiscardedRow key={s.id} series={s} onChanged={load} />)
-        )}
-      </div>
+          <div className="listas-grid">
+            {discarded.map((s) => (
+              <DiscardedRow key={s.id} series={s} onChanged={load} />
+            ))}
+          </div>
+        ))}
 
-      <div className="series-block">
-        <div className="series-head">
-          <h3 className="card-title">{t("discover.watchedHeading")}</h3>
-        </div>
-        {watched.length === 0 ? (
+      {tab === "watched" &&
+        (watched.length === 0 ? (
           <div className="empty">{t("discover.watchedEmpty")}</div>
         ) : (
-          watched.map((s) => <WatchedRow key={s.id} series={s} onChanged={load} />)
-        )}
-      </div>
+          <div className="listas-grid">
+            {watched.map((s) => (
+              <WatchedRow key={s.id} series={s} onChanged={load} />
+            ))}
+          </div>
+        ))}
     </>
   );
 }
