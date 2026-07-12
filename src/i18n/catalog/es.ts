@@ -104,6 +104,8 @@ export const es = {
   "library.cardMenuAria": "Más opciones",
   "library.unfollow": "Dejar de seguir",
   "library.moveToWant": 'Mover a "Quiero ver"',
+  "library.watchedExternally": "✓ Vista fuera de la app",
+  "library.markNotWatched": "Marcar como no vista",
 
   // SeriesDetail.tsx
   "seriesDetail.unfollow": "Dejar de seguir",

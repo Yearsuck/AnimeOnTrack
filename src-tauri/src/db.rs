@@ -833,23 +833,28 @@ impl Db {
         Ok(rows)
     }
 
-    /// Followed series with their episode counts (total, seen), the most
-    /// recent episode's `added_at`, and (via `next_unseen_episode`) the
-    /// lowest-numbered unseen episode plus `last_watched_at`, for the
-    /// library view. Series with zero scraped episodes still appear
-    /// (`total=0`, `next_episode=None`) — status derivation on the frontend
-    /// treats that as "plan", never dividing by zero.
+    /// Followed OR watched-externally series with their episode counts
+    /// (total, seen), the most recent episode's `added_at`, and (via
+    /// `next_unseen_episode`) the lowest-numbered unseen episode plus
+    /// `last_watched_at`, for the library view. Series with zero scraped
+    /// episodes still appear (`total=0`, `next_episode=None`) — status
+    /// derivation on the frontend treats that as "plan", never dividing by
+    /// zero, UNLESS `watched_externally=1` (a catalog "Ya lo vi" swipe never
+    /// scrapes episodes), in which case the frontend classifies it as
+    /// completed instead. `followed=1 AND watched_externally=1` rows are not
+    /// duplicated — `GROUP BY s.id` collapses them to one row regardless of
+    /// which condition matched.
     pub fn list_library(&self, source_id: i64) -> Result<Vec<crate::models::LibraryItem>> {
         let mut stmt = self.conn.prepare(
             "SELECT s.id, s.slug, s.title, s.url, s.cover_url, s.is_airing, s.followed,
-                    s.next_episode_at, s.site_episode_count,
+                    s.next_episode_at, s.site_episode_count, s.watched_externally,
                     COUNT(e.id) AS total,
                     SUM(CASE WHEN e.seen=1 THEN 1 ELSE 0 END) AS seen,
                     MAX(e.added_at) AS last_added,
                     MAX(e.seen_at) AS last_watched_at
              FROM series s
              LEFT JOIN episodes e ON e.series_id = s.id
-             WHERE s.source_id=?1 AND s.followed=1
+             WHERE s.source_id=?1 AND (s.followed=1 OR s.watched_externally=1)
              GROUP BY s.id
              ORDER BY s.title",
         )?;
@@ -858,6 +863,7 @@ impl Db {
                 let series = Self::row_to_series(r)?;
                 Ok((
                     series,
+                    r.get::<_, i64>("watched_externally")? != 0,
                     r.get::<_, i64>("total")?,
                     r.get::<_, Option<i64>>("seen")?.unwrap_or(0),
                     r.get::<_, Option<String>>("last_added")?,
@@ -867,7 +873,7 @@ impl Db {
             .collect::<rusqlite::Result<Vec<_>>>()?;
 
         let mut out = Vec::with_capacity(rows.len());
-        for (series, total_episodes, seen_episodes, last_added, last_watched_at) in rows {
+        for (series, watched_externally, total_episodes, seen_episodes, last_added, last_watched_at) in rows {
             let next_episode = self.next_unseen_episode(series.id)?;
             out.push(crate::models::LibraryItem {
                 series,
@@ -876,6 +882,7 @@ impl Db {
                 last_added,
                 next_episode,
                 last_watched_at,
+                watched_externally,
             });
         }
         Ok(out)
@@ -2121,6 +2128,51 @@ mod tests {
         let watched_rows = db.list_watched_externally(src).unwrap();
         assert_eq!(watched_rows.len(), 1);
         assert_eq!(watched_rows[0].id, sid_watched);
+    }
+
+    /// Root-cause test for the "Ya lo vi" Library-visibility bug (see
+    /// docs/superpowers/specs/2026-07-12-ya-lo-vi-library-visibility-design.md):
+    /// `list_library` used to filter on `followed=1` only, silently excluding
+    /// every `watched_externally=1, followed=0` catalog "Seen" row. Both a
+    /// normal followed series (with episodes) and a watched-externally-only
+    /// series (zero episodes, since AniList catalog Seen never scrapes) must
+    /// come back.
+    #[test]
+    fn list_library_includes_watched_externally_rows_with_no_episodes() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+
+        // Followed series with episodes — the existing, already-working path.
+        let followed = crate::models::Series {
+            id: 0, slug: "followed".into(), title: "Followed".into(),
+            url: "u1".into(), cover_url: None, is_airing: true, followed: false, next_episode_at: None, site_episode_count: None,
+        };
+        let sid_followed = db.upsert_series(src, &followed).unwrap();
+        db.set_followed(sid_followed, true).unwrap();
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: sid_followed, number: "1".into(), title: None,
+            url: "ep1".into(), released_at: None, seen: true,
+        }).unwrap();
+
+        // "Ya lo vi" catalog row: watched_externally=1, followed=0, no episodes.
+        let watched = crate::models::Series {
+            id: 0, slug: "watched".into(), title: "Watched".into(),
+            url: "u2".into(), cover_url: None, is_airing: false, followed: false, next_episode_at: None, site_episode_count: None,
+        };
+        let sid_watched = db.upsert_series(src, &watched).unwrap();
+        db.set_watched_externally(sid_watched, true).unwrap();
+
+        let items = db.list_library(src).unwrap();
+        assert_eq!(items.len(), 2, "both the followed and the watched-externally-only rows must be returned");
+
+        let watched_item = items.iter().find(|it| it.series.id == sid_watched)
+            .expect("watched_externally=1, followed=0 row must be present in list_library");
+        assert!(watched_item.watched_externally);
+        assert_eq!(watched_item.total_episodes, 0);
+
+        let followed_item = items.iter().find(|it| it.series.id == sid_followed).unwrap();
+        assert!(!followed_item.watched_externally);
+        assert_eq!(followed_item.total_episodes, 1);
     }
 
     #[test]
