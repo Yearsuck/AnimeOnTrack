@@ -11,8 +11,11 @@ const HUB_MAX_R = 22;
 const SERIES_SPRITE_SIZE = 18;
 const MIN_HEIGHT = 500;
 const BOTTOM_MARGIN = 24;
-const CHARGE_STRENGTH = -260;
-const LINK_DISTANCE = 90;
+// Spread nodes far enough apart that the edges between hubs and series read
+// clearly (the earlier -260 / 90 packed them into an unreadable ball). The
+// wider layout is re-framed once via zoomToFit on the first settle.
+const CHARGE_STRENGTH = -520;
+const LINK_DISTANCE = 150;
 // Bound the initial layout run instead of letting it simulate indefinitely
 // (the library's own cooldownTime default is 15s of wall time). Once the
 // engine stops (or this many ticks pass), onEngineStop below snapshots
@@ -123,6 +126,39 @@ function fallbackCircleCanvas(color: string): HTMLCanvasElement {
   return canvas;
 }
 
+// Lighten (amt > 0) / darken (amt < 0) a #rrggbb hex, clamped per channel.
+function shadeHex(hex: string, amt: number): string {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
+  if (!m) return hex;
+  const n = parseInt(m[1], 16);
+  const clamp = (v: number) => Math.max(0, Math.min(255, Math.round(v)));
+  const r = clamp(((n >> 16) & 0xff) + 255 * amt);
+  const g = clamp(((n >> 8) & 0xff) + 255 * amt);
+  const b = clamp((n & 0xff) + 255 * amt);
+  return `rgb(${r}, ${g}, ${b})`;
+}
+
+// A planet-looking disc texture: a radial gradient with the highlight offset
+// toward the upper-left (light side), the base colour in the middle, and a
+// darkened limb. Mapped onto the unlit SphereGeometry it reads as a lit planet
+// without adding a scene light (react-force-graph-3d ships none).
+function planetTexture(color: string): THREE.CanvasTexture {
+  const size = 128;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext("2d")!;
+  const g = ctx.createRadialGradient(size * 0.35, size * 0.32, size * 0.05, size * 0.5, size * 0.5, size * 0.62);
+  g.addColorStop(0, shadeHex(color, 0.45));
+  g.addColorStop(0.45, color);
+  g.addColorStop(1, shadeHex(color, -0.45));
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(size / 2, size / 2, size / 2 - 2, 0, Math.PI * 2);
+  ctx.fill();
+  return new THREE.CanvasTexture(canvas);
+}
+
 export function StatsGraph({
   seriesList,
   active,
@@ -152,6 +188,10 @@ export function StatsGraph({
   // explicitly. The graph now stays mounted indefinitely, so nothing else
   // ever garbage-collects these.
   const nodeObjectsRef = useRef<Map<string, THREE.Object3D>>(new Map());
+  // Frame the (now wider) layout exactly once, on the first settle — later
+  // rebuilds reuse the snapshot and must NOT re-fit (that would fight the
+  // frozen layout / user's own camera).
+  const didFitRef = useRef(false);
 
   const { nodes, links } = useMemo(() => {
     const built = buildGraphData(seriesList, t("stats.graphRootLabel"));
@@ -264,6 +304,12 @@ export function StatsGraph({
       }
     }
     layoutKeyRef.current = structuralKey;
+    // One-shot framing after the initial layout settles, so the wider spread
+    // stays fully visible without touching the reheat/snapshot invariant.
+    if (!didFitRef.current) {
+      didFitRef.current = true;
+      graphRef.current?.zoomToFit(400, 60);
+    }
   }, [nodes, structuralKey]);
 
   const handleNodeThreeObject = useCallback(
@@ -283,15 +329,13 @@ export function StatsGraph({
         } else {
           const color = node.kind === "root" ? ROOT_COLOR : node.color ?? "#4aa8ff";
           const radius = node.kind === "root" ? HUB_MAX_R * 1.1 : hubRadius(node.count ?? 0, maxHubCount);
-          // MeshBasicMaterial (unlit) rather than MeshLambertMaterial: a
-          // lit material renders pure black without a scene light hitting
-          // it, and this graph doesn't add one (react-force-graph-3d's
-          // default lighting isn't guaranteed) — flat, always-visible
-          // color is also just the right look for a data-viz sphere, not
-          // realistic shading.
+          // MeshBasicMaterial (unlit) rather than a lit material: the scene
+          // has no light (react-force-graph-3d ships none), so a lit material
+          // would render black. The planet look comes from a baked radial
+          // gradient texture (light side / dark limb), not real shading.
           obj = new THREE.Mesh(
-            new THREE.SphereGeometry(radius, 16, 16),
-            new THREE.MeshBasicMaterial({ color })
+            new THREE.SphereGeometry(radius, 24, 24),
+            new THREE.MeshBasicMaterial({ map: planetTexture(color) })
           );
         }
       } catch (e) {
@@ -315,7 +359,11 @@ export function StatsGraph({
   // instead of this same div, the ref would be null on that first pass and
   // never get a second chance to attach, permanently starving the graph.
   return (
-    <div ref={containerRef} style={{ borderRadius: "var(--radius-sm)", overflow: "hidden" }}>
+    <div
+      ref={containerRef}
+      className="stats-graph-galaxy"
+      style={{ borderRadius: "var(--radius-sm)", overflow: "hidden" }}
+    >
       {seriesList.length === 0 ? (
         <div className="empty">{t("stats.graphEmpty")}</div>
       ) : (
