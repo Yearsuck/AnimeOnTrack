@@ -9,7 +9,7 @@ use crate::player::{BrowserPlayer, EpisodePlayer};
 use crate::scraper_engine::{fetch_cover_image, fetch_html, ScrapeResult};
 use crate::swipe::{pick_index, shuffle, undecided_cards, weighted_pick_index};
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -52,10 +52,31 @@ pub struct AppState {
     /// Cards handed out by discover_swipe_card, keyed by url, so decide_swipe
     /// (which only receives a url) can look up the card data to persist.
     pub swipe_served: Mutex<HashMap<String, FinishedCard>>,
-    /// series.id written by the most recent decide_swipe call, consumed by
-    /// undo_last_swipe. Session-only "fix my last misclick" safety net, not
-    /// a persisted multi-level history.
-    pub last_swiped_series_id: Mutex<Option<i64>>,
+    /// series.ids written by `decide_swipe`/`decide_catalog_card`, most
+    /// recent at the front, capped at `SWIPE_HISTORY_CAP`. `undo_last_swipe`
+    /// (Ctrl+Z) pops the front; `list_swipe_history`/`undo_swipe_entry` let
+    /// the UI reach further back than just the most recent. Session-only
+    /// "fix my last few misclicks" safety net (see the design spec) — not
+    /// persisted across app restarts, not an audit log.
+    pub swipe_history: Mutex<VecDeque<i64>>,
+}
+
+/// How many recent swipe decisions `swipe_history` remembers.
+const SWIPE_HISTORY_CAP: usize = 5;
+
+/// Push `sid` to the front of `history`, evicting the oldest entry past
+/// `SWIPE_HISTORY_CAP`. Factored out as a plain function over `VecDeque`
+/// (no `State<AppState>`) so it's unit-testable directly.
+fn push_history(history: &mut VecDeque<i64>, sid: i64) {
+    history.push_front(sid);
+    history.truncate(SWIPE_HISTORY_CAP);
+}
+
+/// Record a fresh decision at the front of the session's undo/history
+/// deque. Shared by `decide_swipe` and `decide_catalog_card` so both
+/// sources feed the same history the frontend's strip and Ctrl+Z read from.
+fn push_swipe_history(state: &State<'_, AppState>, sid: i64) {
+    push_history(&mut state.swipe_history.lock().unwrap(), sid);
 }
 
 /// Prefix for the per-site mirror-list settings key (`mirror_urls:{site_id}`).
@@ -963,6 +984,12 @@ pub enum SwipeDecision {
 /// buffer) had nothing left after filtering — a normal "everything on this
 /// page was already decided" case, not an error; the frontend just calls
 /// again.
+///
+/// Not wired to the Section B genre/format bans (`get_banned_genres`/
+/// `get_banned_formats`): Descubrir.tsx only calls the catalog-deck path
+/// (`discover_catalog_card`/`decide_catalog_card`) — this site-scraped swipe
+/// deck has no live caller in the current UI, so extending it here would be
+/// speculative scope creep. See the design spec's "Out of scope".
 #[tauri::command]
 pub async fn discover_swipe_card(
     app: AppHandle,
@@ -1099,21 +1126,85 @@ pub async fn decide_swipe(
             sid
         }
     };
-    *state.last_swiped_series_id.lock().unwrap() = Some(sid);
+    push_swipe_history(&state, sid);
     Ok(())
 }
 
-/// Undo the most recent decide_swipe call by hard-deleting the series row it
-/// created. Calling this twice in a row (nothing left to undo) is a no-op,
-/// not an error — it's a "fix my last misclick" safety net, not an audit
-/// log, so there's no multi-level history to walk back through.
+/// Undo the most recent decide_swipe/decide_catalog_card call (Ctrl+Z) by
+/// popping it off the front of `swipe_history` and hard-deleting the series
+/// row it created. Calling this with nothing left to undo is a no-op, not an
+/// error. For reaching further back than just the most recent, see
+/// `undo_swipe_entry`.
 #[tauri::command]
 pub fn undo_last_swipe(state: State<'_, AppState>) -> Result<(), String> {
-    let sid = state.last_swiped_series_id.lock().unwrap().take();
+    let sid = state.swipe_history.lock().unwrap().pop_front();
     if let Some(sid) = sid {
         let db = state.db.lock().unwrap();
         db.delete_series(sid).map_err(|e| e.to_string())?;
     }
+    Ok(())
+}
+
+/// One entry in the swipe-history strip — a still-live `series` row from
+/// `swipe_history`, with its decision derived live from the row's current
+/// classification flags (not stored separately, so a `reclassify_series`
+/// call in between is reflected automatically on the next read).
+#[derive(Serialize, Clone)]
+pub struct SwipeHistoryItem {
+    pub series_id: i64,
+    pub title: String,
+    pub poster_url: Option<String>,
+    /// "seen" | "want" | "discard" | "none", derived from the row's live
+    /// `watched_externally`/`backlog_status` — see `decision_for_history_row`.
+    pub decision: String,
+}
+
+fn decision_for_history_row(row: &crate::db::SwipeHistoryRow) -> String {
+    if row.watched_externally {
+        "seen".to_string()
+    } else {
+        match row.backlog_status.as_deref() {
+            Some("want") => "want".to_string(),
+            Some("discarded") => "discard".to_string(),
+            _ => "none".to_string(),
+        }
+    }
+}
+
+/// Up to `SWIPE_HISTORY_CAP` most-recent swipe decisions still live in the
+/// DB, most-recent first — the Descubrir history strip's data source. An id
+/// in `swipe_history` whose row was already deleted (a prior undo/return-to-
+/// deck) is silently skipped rather than erroring, so the deque self-heals
+/// instead of requiring bookkeeping on every deletion path.
+#[tauri::command]
+pub fn list_swipe_history(state: State<'_, AppState>) -> Result<Vec<SwipeHistoryItem>, String> {
+    let ids: Vec<i64> = state.swipe_history.lock().unwrap().iter().copied().collect();
+    let db = state.db.lock().unwrap();
+    let mut out = Vec::with_capacity(ids.len());
+    for sid in ids {
+        if let Some(row) = db.get_series_for_history(sid).map_err(|e| e.to_string())? {
+            out.push(SwipeHistoryItem {
+                series_id: sid,
+                title: row.title.clone(),
+                poster_url: row.poster_url.clone(),
+                decision: decision_for_history_row(&row),
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// Return a specific past card to the deck: hard-delete its series row (so
+/// the catalog picker's `anilist_id NOT IN (...)` exclusion no longer
+/// applies) and drop it from `swipe_history`. Unlike `undo_last_swipe`, this
+/// targets an arbitrary entry in the history strip, not just the front —
+/// "undo this one" rather than "undo my last action". A no-op (not an
+/// error) if `series_id` isn't in the history or its row is already gone.
+#[tauri::command]
+pub fn undo_swipe_entry(state: State<'_, AppState>, series_id: i64) -> Result<(), String> {
+    state.swipe_history.lock().unwrap().retain(|&id| id != series_id);
+    let db = state.db.lock().unwrap();
+    db.delete_series(series_id).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -1409,6 +1500,34 @@ pub fn get_catalog_facets(state: State<'_, AppState>) -> Result<CatalogFacets, S
     Ok(CatalogFacets { genres, formats })
 }
 
+/// The Descubrir deck's user-configured genre/format bans (Section B) — see
+/// `db::{get_banned_genres, get_banned_formats}`. Global (not per-site).
+#[derive(Serialize, Clone)]
+pub struct DeckBans {
+    pub genres: Vec<String>,
+    pub formats: Vec<String>,
+}
+
+/// Read the current deck bans for the Descubrir "Filtros" sub-view.
+#[tauri::command]
+pub fn get_deck_bans(state: State<'_, AppState>) -> Result<DeckBans, String> {
+    let db = state.db.lock().unwrap();
+    let genres = db.get_banned_genres().map_err(|e| e.to_string())?;
+    let formats = db.get_banned_formats().map_err(|e| e.to_string())?;
+    Ok(DeckBans { genres, formats })
+}
+
+/// Persist the deck bans. Takes effect on the very next `discover_catalog_card`
+/// call — no cache to invalidate, `discover_catalog_card` reads the settings
+/// table fresh every time it's called.
+#[tauri::command]
+pub fn set_deck_bans(state: State<'_, AppState>, genres: Vec<String>, formats: Vec<String>) -> Result<(), String> {
+    let db = state.db.lock().unwrap();
+    db.set_banned_genres(&genres).map_err(|e| e.to_string())?;
+    db.set_banned_formats(&formats).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[derive(Serialize, Clone)]
 struct CatalogSyncProgress {
     synced: i64,
@@ -1567,6 +1686,20 @@ const EXCLUDED_CATALOG_GENRES: &[&str] = &["Hentai", "Ecchi"];
 /// immediately declaring the deck exhausted.
 const MAX_GENRE_ATTEMPTS: usize = 5;
 
+/// Genres eligible for the catalog deck: every synced genre except the
+/// always-on baseline (`EXCLUDED_CATALOG_GENRES` — Hentai/Ecchi) and the
+/// user's own banned-genre list (Section B, `get_banned_genres`), unioned.
+/// The baseline can't be lifted by a user setting; bans are strictly
+/// additive to it. Factored out of `discover_catalog_card` so the filter is
+/// unit-testable without a `State<AppState>`.
+fn filter_candidate_genres(all_genres: Vec<String>, banned_genres: &[String]) -> Vec<String> {
+    all_genres
+        .into_iter()
+        .filter(|g| !EXCLUDED_CATALOG_GENRES.iter().any(|ex| ex.eq_ignore_ascii_case(g)))
+        .filter(|g| !banned_genres.iter().any(|b| b.eq_ignore_ascii_case(g)))
+        .collect()
+}
+
 /// Pick a taste-weighted genre (mirroring `discover_swipe_card`'s scheme:
 /// `get_genre_affinity` + `weighted_pick_index`, uniform fallback when
 /// nothing's been decided yet) and ask the DB for a random undecided,
@@ -1586,12 +1719,15 @@ pub fn discover_catalog_card(state: State<'_, AppState>) -> Result<Option<Finish
     let db = state.db.lock().unwrap();
 
     let affinity = db.get_genre_affinity(src).map_err(|e| e.to_string())?;
-    let candidates: Vec<String> = db
-        .distinct_catalog_genres()
-        .map_err(|e| e.to_string())?
-        .into_iter()
-        .filter(|g| !EXCLUDED_CATALOG_GENRES.iter().any(|ex| ex.eq_ignore_ascii_case(g)))
-        .collect();
+    // Candidate-genre filter is EXCLUDED_CATALOG_GENRES (always-on baseline:
+    // Hentai/Ecchi) union the user's own banned-genre list (Section B) — the
+    // baseline can't be lifted by a user setting, bans are additive to it.
+    let banned_genres = db.get_banned_genres().map_err(|e| e.to_string())?;
+    let banned_formats = db.get_banned_formats().map_err(|e| e.to_string())?;
+    let candidates = filter_candidate_genres(
+        db.distinct_catalog_genres().map_err(|e| e.to_string())?,
+        &banned_genres,
+    );
     if candidates.is_empty() {
         return Ok(None);
     }
@@ -1612,7 +1748,7 @@ pub fn discover_catalog_card(state: State<'_, AppState>) -> Result<Option<Finish
         let genre_idx = pool[pick_in_pool];
         let genre = &candidates[genre_idx];
 
-        if let Some(anime) = db.random_catalog_anime_in_genre(genre).map_err(|e| e.to_string())? {
+        if let Some(anime) = db.random_catalog_anime_in_genre(genre, &banned_formats).map_err(|e| e.to_string())? {
             return Ok(Some(FinishedCard {
                 title: anime.title,
                 url: anime.url,
@@ -1630,9 +1766,9 @@ pub fn discover_catalog_card(state: State<'_, AppState>) -> Result<Option<Finish
 /// `series` row keyed by a synthetic `anilist-{id}` slug so it coexists with
 /// scraped-site rows without colliding, and records the real numeric
 /// `anilist_id` too (see its column comment in `db::init_schema`) so the
-/// catalog picker can exclude it directly. Sets `last_swiped_series_id` the
-/// same way `decide_swipe` does so the existing `undo_last_swipe` works
-/// uniformly across both sources.
+/// catalog picker can exclude it directly. Pushes onto `swipe_history` the
+/// same way `decide_swipe` does so `undo_last_swipe`/`list_swipe_history`/
+/// `undo_swipe_entry` all work uniformly across both sources.
 ///
 /// `Seen` means "I've watched this outside the app" — AniList has no
 /// episode list to mark, so unlike `decide_swipe`'s `Seen` (which fetches
@@ -1678,7 +1814,7 @@ pub fn decide_catalog_card(
             db.set_watched_externally(sid, true).map_err(|e| e.to_string())?;
         }
     }
-    *state.last_swiped_series_id.lock().unwrap() = Some(sid);
+    push_swipe_history(&state, sid);
     Ok(sid)
 }
 
@@ -1857,6 +1993,67 @@ async fn link_series_core(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn push_history_keeps_most_recent_at_front_and_caps_at_five() {
+        let mut h = VecDeque::new();
+        for sid in 1..=7 {
+            push_history(&mut h, sid);
+        }
+        // Newest first, oldest two (1 and 2) evicted past the cap of 5.
+        let got: Vec<i64> = h.iter().copied().collect();
+        assert_eq!(got, vec![7, 6, 5, 4, 3]);
+        assert_eq!(h.len(), SWIPE_HISTORY_CAP);
+    }
+
+    #[test]
+    fn push_history_reinserts_a_repeated_id_at_the_front() {
+        // Re-deciding the same series id moves it to the front; the deque may
+        // then hold it twice, but list_swipe_history/undo tolerate that
+        // (rows self-heal / retain removes all copies).
+        let mut h = VecDeque::new();
+        push_history(&mut h, 10);
+        push_history(&mut h, 20);
+        push_history(&mut h, 10);
+        assert_eq!(h.front().copied(), Some(10));
+    }
+
+    #[test]
+    fn filter_candidate_genres_drops_baseline_and_user_bans_case_insensitively() {
+        let all = vec![
+            "Action".to_string(),
+            "Hentai".to_string(),  // always-on baseline
+            "ecchi".to_string(),   // baseline, different case
+            "Horror".to_string(),  // user-banned below
+            "Drama".to_string(),
+        ];
+        let out = filter_candidate_genres(all, &["horror".to_string()]);
+        assert_eq!(out, vec!["Action".to_string(), "Drama".to_string()]);
+    }
+
+    #[test]
+    fn decision_for_history_row_derives_from_live_flags() {
+        let seen = crate::db::SwipeHistoryRow {
+            title: "S".into(), poster_url: None,
+            backlog_status: None, watched_externally: true,
+        };
+        assert_eq!(decision_for_history_row(&seen), "seen");
+        let want = crate::db::SwipeHistoryRow {
+            title: "W".into(), poster_url: None,
+            backlog_status: Some("want".into()), watched_externally: false,
+        };
+        assert_eq!(decision_for_history_row(&want), "want");
+        let disc = crate::db::SwipeHistoryRow {
+            title: "D".into(), poster_url: None,
+            backlog_status: Some("discarded".into()), watched_externally: false,
+        };
+        assert_eq!(decision_for_history_row(&disc), "discard");
+        let none = crate::db::SwipeHistoryRow {
+            title: "N".into(), poster_url: None,
+            backlog_status: None, watched_externally: false,
+        };
+        assert_eq!(decision_for_history_row(&none), "none");
+    }
 
     #[test]
     fn load_mirrors_migrates_legacy_global_key_into_animeytx_scoped_key_once() {

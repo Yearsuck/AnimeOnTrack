@@ -3,22 +3,45 @@ import {
   decideCatalogCard,
   deleteSeries,
   discoverCatalogCard,
+  getCatalogFacets,
+  getDeckBans,
   getSeriesGenres,
   getTopGenres,
   linkCatalogSeries,
   listBacklog,
+  listSwipeHistory,
   listWatchedExternally,
   openEpisode,
   promoteDiscarded,
   reclassifySeries,
   setBacklogStatus,
+  setDeckBans,
   startWatching,
   undoLastSwipe,
+  undoSwipeEntry,
 } from "../api";
 import { useT } from "../i18n";
 import { categoryColor } from "../lib/categoryColor";
 import { isUnlinkedCatalogRow } from "../lib/catalogLink";
-import type { GenreAffinity, Series, SwipeCard, SwipeDecision } from "../types";
+import type {
+  Classification,
+  GenreAffinity,
+  Series,
+  SwipeCard,
+  SwipeDecision,
+  SwipeHistoryItem,
+} from "../types";
+
+// The deck's format whitelist (backend DEFAULT_FORMATS in
+// db::random_catalog_anime_in_genre) — the "tipos" the Filtros view can ban.
+const DECK_FORMATS = ["TV", "MOVIE", "OVA", "ONA", "SPECIAL"];
+
+// Map a history-strip re-classify action to its reclassify_series target.
+const RECLASSIFY_TARGET: Record<"discard" | "want" | "seen", Classification> = {
+  discard: "Discarded",
+  want: "Want",
+  seen: "WatchedExternally",
+};
 
 type LinkStatus = {
   id: number;
@@ -65,7 +88,7 @@ function useLinkQueue() {
   return { statuses, enqueue };
 }
 
-type SubView = "swipe" | "listas";
+type SubView = "swipe" | "listas" | "filtros";
 type SwipeOutDirection = "discard" | "want" | "seen" | null;
 
 // AniList's siteUrl shape is https://anilist.co/anime/{id}/{slug} — catalog
@@ -129,6 +152,13 @@ function SwipeView() {
   const fillingRef = useRef(false);
   const cardUrlRef = useRef<string | null>(null);
   const { statuses: linkStatuses, enqueue: enqueueLink } = useLinkQueue();
+  // Multi-level undo cache: the last ~5 classified cards, newest first.
+  const [history, setHistory] = useState<SwipeHistoryItem[]>([]);
+  const refreshHistory = useCallback(() => {
+    listSwipeHistory()
+      .then(setHistory)
+      .catch((err) => console.error("listSwipeHistory failed", err));
+  }, []);
 
   // Top the local queue back up to PREFETCH_TARGET, deduping against
   // whatever's already queued or on screen (discover_catalog_card can hand
@@ -193,6 +223,7 @@ function SwipeView() {
       await fillQueue();
       popNext();
       setLoading(false);
+      refreshHistory();
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -237,17 +268,37 @@ function SwipeView() {
           if (seriesId !== null && decision === "Seen") {
             enqueueLink(seriesId, activeCard.title);
           }
+          refreshHistory();
         });
       }, 160);
     },
-    [card, popNext, enqueueLink]
+    [card, popNext, enqueueLink, refreshHistory]
   );
 
   const undo = useCallback(async () => {
     if (!canUndo) return;
     setCanUndo(false);
     await undoLastSwipe();
-  }, [canUndo]);
+    refreshHistory();
+  }, [canUndo, refreshHistory]);
+
+  // History-strip actions. Re-classifying a past card moves it between lists
+  // (local, via the shared reclassify inverse); returning it to the deck
+  // hard-deletes its row so the picker offers it again.
+  const reclassifyHistory = useCallback(
+    async (item: SwipeHistoryItem, action: "discard" | "want" | "seen") => {
+      await reclassifySeries(item.series_id, RECLASSIFY_TARGET[action]);
+      refreshHistory();
+    },
+    [refreshHistory]
+  );
+  const returnToDeck = useCallback(
+    async (item: SwipeHistoryItem) => {
+      await undoSwipeEntry(item.series_id);
+      refreshHistory();
+    },
+    [refreshHistory]
+  );
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
@@ -358,6 +409,89 @@ function SwipeView() {
           ))}
         </div>
       )}
+
+      {history.length > 0 && (
+        <div className="swipe-history">
+          <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>
+            {t("discover.historyHeading")}
+          </div>
+          {history.map((h) => (
+            <HistoryRow
+              key={h.series_id}
+              item={h}
+              onReclassify={reclassifyHistory}
+              onReturn={returnToDeck}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const DECISION_BADGE = {
+  want: "discover.badgeWant",
+  seen: "discover.badgeSeen",
+  discard: "discover.badgeDiscard",
+  none: "discover.badgeDiscard",
+} as const;
+
+// One row of the swipe-history strip: poster, title, current-decision badge,
+// quick re-classify buttons, and a "return to deck" undo for this one card.
+function HistoryRow({
+  item,
+  onReclassify,
+  onReturn,
+}: {
+  item: SwipeHistoryItem;
+  onReclassify: (item: SwipeHistoryItem, action: "discard" | "want" | "seen") => void;
+  onReturn: (item: SwipeHistoryItem) => void;
+}) {
+  const t = useT();
+  return (
+    <div className="swipe-history-row">
+      {item.poster_url && <img src={item.poster_url} alt="" />}
+      <div className="swipe-history-main">
+        <div className="swipe-history-title" title={item.title}>
+          {item.title}
+        </div>
+        <div className="muted" style={{ fontSize: 11 }}>
+          {t(DECISION_BADGE[item.decision])}
+        </div>
+      </div>
+      <div className="swipe-history-actions">
+        <button
+          className="btn btn-ghost"
+          title={t("discover.discard")}
+          onClick={() => onReclassify(item, "discard")}
+          disabled={item.decision === "discard"}
+        >
+          ✕
+        </button>
+        <button
+          className="btn btn-ghost"
+          title={t("discover.want")}
+          onClick={() => onReclassify(item, "want")}
+          disabled={item.decision === "want"}
+        >
+          ★
+        </button>
+        <button
+          className="btn btn-ghost"
+          title={t("discover.seen")}
+          onClick={() => onReclassify(item, "seen")}
+          disabled={item.decision === "seen"}
+        >
+          ✓
+        </button>
+        <button
+          className="btn btn-ghost"
+          title={t("discover.returnToDeck")}
+          onClick={() => onReturn(item)}
+        >
+          ↺
+        </button>
+      </div>
     </div>
   );
 }
@@ -599,6 +733,98 @@ function ListasView({ onOpenSeries }: { onOpenSeries: (s: Series) => void }) {
   );
 }
 
+// Deck genre/type bans (Section B). Banned chips render "active" (highlighted
+// = excluded from the deck). Genres come from the synced catalog facets;
+// formats are the fixed deck whitelist. Persisted via setDeckBans; takes
+// effect on the next discover_catalog_card.
+function FiltersView() {
+  const t = useT();
+  const [allGenres, setAllGenres] = useState<string[]>([]);
+  const [bannedGenres, setBannedGenres] = useState<Set<string>>(new Set());
+  const [bannedFormats, setBannedFormats] = useState<Set<string>>(new Set());
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    getDeckBans()
+      .then((b) => {
+        setBannedGenres(new Set(b.genres));
+        setBannedFormats(new Set(b.formats));
+      })
+      .catch((err) => console.error("getDeckBans failed", err));
+    getCatalogFacets()
+      .then((f) => setAllGenres(f.genres))
+      .catch((err) => console.error("getCatalogFacets failed", err));
+  }, []);
+
+  function toggle(set: Set<string>, setter: (s: Set<string>) => void, value: string) {
+    const next = new Set(set);
+    if (next.has(value)) next.delete(value);
+    else next.add(value);
+    setter(next);
+    setSaved(false);
+  }
+
+  async function save() {
+    setSaving(true);
+    try {
+      await setDeckBans([...bannedGenres], [...bannedFormats]);
+      setSaved(true);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="series-block" style={{ padding: 16 }}>
+      <p className="muted" style={{ marginTop: 0, fontSize: 12.5 }}>
+        {t("discover.filtersIntro")}
+      </p>
+
+      <h3 className="card-title" style={{ marginBottom: 8 }}>
+        {t("discover.filtersFormatsHeading")}
+      </h3>
+      <div className="chip-row" style={{ marginBottom: 16 }}>
+        {DECK_FORMATS.map((f) => (
+          <button
+            key={f}
+            type="button"
+            className={`chip-toggle${bannedFormats.has(f) ? " active" : ""}`}
+            onClick={() => toggle(bannedFormats, setBannedFormats, f)}
+          >
+            {f}
+          </button>
+        ))}
+      </div>
+
+      <h3 className="card-title" style={{ marginBottom: 8 }}>
+        {t("discover.filtersGenresHeading")}
+      </h3>
+      {allGenres.length > 0 && (
+        <div className="chip-row" style={{ marginBottom: 16 }}>
+          {allGenres.map((g) => (
+            <button
+              key={g}
+              type="button"
+              className={`chip-toggle${bannedGenres.has(g) ? " active" : ""}`}
+              onClick={() => toggle(bannedGenres, setBannedGenres, g)}
+            >
+              {g}
+            </button>
+          ))}
+        </div>
+      )}
+
+      <div className="row" style={{ alignItems: "center", gap: 12 }}>
+        <button className="btn btn-primary" onClick={save} disabled={saving}>
+          {saving ? t("discover.filtersSaving") : t("discover.filtersSave")}
+        </button>
+        {saved && <span className="muted">{t("discover.filtersSaved")}</span>}
+      </div>
+    </div>
+  );
+}
+
 // onOpenSeries is the same App.tsx-owned navigation callback Pending/Library/
 // AiringGrid already use to open SeriesDetail. Wiring it into Listas' "Quiero
 // ver" rows is what makes trigger (c) from the design spec ("SeriesDetail
@@ -627,9 +853,17 @@ export function Descubrir({ onOpenSeries }: { onOpenSeries: (s: Series) => void 
         >
           {t("discover.tabLists")}
         </button>
+        <button
+          className={`tab ${subView === "filtros" ? "active" : ""}`}
+          onClick={() => setSubView("filtros")}
+        >
+          {t("discover.tabFilters")}
+        </button>
       </div>
 
-      {subView === "swipe" ? <SwipeView /> : <ListasView onOpenSeries={onOpenSeries} />}
+      {subView === "swipe" && <SwipeView />}
+      {subView === "listas" && <ListasView onOpenSeries={onOpenSeries} />}
+      {subView === "filtros" && <FiltersView />}
     </div>
   );
 }

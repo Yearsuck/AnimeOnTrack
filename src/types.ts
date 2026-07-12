@@ -80,6 +80,23 @@ export interface SwipeCard {
 
 export type SwipeDecision = "Seen" | "Want" | "Discard";
 
+// One entry in the Descubrir swipe-history strip. `decision` is derived live
+// from the row's classification flags on the backend ("seen"|"want"|
+// "discard"|"none"), so a reclassify in between is reflected on next read.
+export interface SwipeHistoryItem {
+  series_id: number;
+  title: string;
+  poster_url: string | null;
+  decision: "seen" | "want" | "discard" | "none";
+}
+
+// The Descubrir deck's user-configured genre/format bans (global, not
+// per-site). Additive to the always-on Hentai/Ecchi baseline.
+export interface DeckBans {
+  genres: string[];
+  formats: string[];
+}
+
 export type LinkOutcome =
   | { type: "Linked"; url: string; episodes: number }
   | { type: "NoMatch" }

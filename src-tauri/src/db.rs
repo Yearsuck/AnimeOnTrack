@@ -25,6 +25,16 @@ pub struct CatalogFilter {
     pub episodes: Option<String>,
 }
 
+/// The subset of a `series` row's fields the swipe-history strip needs —
+/// see `Db::get_series_for_history` and `commands::list_swipe_history`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SwipeHistoryRow {
+    pub title: String,
+    pub poster_url: Option<String>,
+    pub backlog_status: Option<String>,
+    pub watched_externally: bool,
+}
+
 /// The subset of a `series` row's fields `link_catalog_series` needs to
 /// decide how (or whether) to link it — see `Db::get_series_for_link` and
 /// `commands::link_catalog_series`.
@@ -524,6 +534,43 @@ impl Db {
             (key, value),
         )?;
         Ok(())
+    }
+
+    /// Global (not per-site) user-configured genre ban list for the
+    /// Descubrir catalog deck — un-prefixed `banned_genres` settings key,
+    /// newline-joined like the per-site mirror list (see
+    /// `commands::{load_mirrors, save_mirrors}`), but global because taste
+    /// bans are a user preference, not tied to whichever site happens to be
+    /// active. Additive to `EXCLUDED_CATALOG_GENRES` (Hentai/Ecchi), not a
+    /// replacement for it.
+    pub fn get_banned_genres(&self) -> Result<Vec<String>> {
+        Ok(self
+            .get_setting("banned_genres")?
+            .map(|raw| raw.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect())
+            .unwrap_or_default())
+    }
+
+    pub fn set_banned_genres(&self, genres: &[String]) -> Result<()> {
+        self.set_setting("banned_genres", &genres.join("\n"))
+    }
+
+    /// Global user-configured format ("tipo") ban list for the Descubrir
+    /// catalog deck — un-prefixed `banned_formats` settings key, same
+    /// newline-joined shape as `get_banned_genres`. Values are expected to
+    /// be a subset of `['TV','MOVIE','OVA','ONA','SPECIAL']` (the deck's
+    /// default whitelist), but this getter doesn't validate that — the
+    /// consuming query (`random_catalog_anime_in_genre`) just filters the
+    /// whitelist against whatever's stored, so an unrecognized value is
+    /// harmlessly a no-op.
+    pub fn get_banned_formats(&self) -> Result<Vec<String>> {
+        Ok(self
+            .get_setting("banned_formats")?
+            .map(|raw| raw.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect())
+            .unwrap_or_default())
+    }
+
+    pub fn set_banned_formats(&self, formats: &[String]) -> Result<()> {
+        self.set_setting("banned_formats", &formats.join("\n"))
     }
 
     pub fn set_backlog_status(&self, series_id: i64, status: Option<&str>) -> Result<()> {
@@ -1317,26 +1364,77 @@ impl Db {
     /// entries. Already-decided titles (a `series` row with this
     /// `anilist_id`) are excluded so the deck never re-offers a decided
     /// card — see the `anilist_id` column comment in `init_schema`.
+    ///
+    /// `banned_formats` (from `get_banned_formats`) is subtracted from the
+    /// default whitelist `['TV','MOVIE','OVA','ONA','SPECIAL']` to build the
+    /// actual `IN (...)` clause dynamically — an unrecognized entry is
+    /// harmlessly ignored (nothing in the whitelist matches it to remove).
+    /// If every whitelisted format ends up banned, returns `Ok(None)`
+    /// without querying — an empty SQL `IN ()` is invalid, and there's
+    /// nothing left to offer anyway.
     pub fn random_catalog_anime_in_genre(
         &self,
         genre: &str,
+        banned_formats: &[String],
     ) -> Result<Option<crate::anilist::CatalogAnime>> {
         const MIN_POPULARITY: i64 = 500;
-        let mut stmt = self.conn.prepare(
+        const DEFAULT_FORMATS: &[&str] = &["TV", "MOVIE", "OVA", "ONA", "SPECIAL"];
+        let allowed: Vec<&str> = DEFAULT_FORMATS
+            .iter()
+            .copied()
+            .filter(|f| !banned_formats.iter().any(|b| b.eq_ignore_ascii_case(f)))
+            .collect();
+        if allowed.is_empty() {
+            return Ok(None);
+        }
+        let placeholders = allowed.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+        let sql = format!(
             "SELECT c.id, c.title, c.title_romaji, c.title_english, c.cover_url, c.format, c.episodes, c.average_score, c.popularity, c.url
              FROM anilist_catalog c
              JOIN anilist_catalog_genres g ON g.anilist_id = c.id
-             WHERE g.genre = ?1
-               AND c.format IN ('TV', 'MOVIE', 'OVA', 'ONA', 'SPECIAL')
-               AND c.popularity >= ?2
+             WHERE g.genre = ?
+               AND c.format IN ({placeholders})
+               AND c.popularity >= ?
                AND c.id NOT IN (SELECT anilist_id FROM series WHERE anilist_id IS NOT NULL)
-             ORDER BY RANDOM() LIMIT 1",
-        )?;
-        let mut rows = stmt.query_map((genre, MIN_POPULARITY), Self::row_to_catalog_anime)?;
+             ORDER BY RANDOM() LIMIT 1"
+        );
+        let mut params: Vec<Value> = vec![Value::Text(genre.to_string())];
+        for f in &allowed {
+            params.push(Value::Text((*f).to_string()));
+        }
+        params.push(Value::Integer(MIN_POPULARITY));
+        let mut stmt = self.conn.prepare(&sql)?;
+        let mut rows = stmt.query_map(rusqlite::params_from_iter(params.iter()), Self::row_to_catalog_anime)?;
         let Some(row) = rows.next() else { return Ok(None) };
         let mut anime = row?;
         anime.genres = self.list_catalog_genres(anime.id)?;
         Ok(Some(anime))
+    }
+
+    /// The subset of a `series` row's fields the swipe-history strip needs
+    /// to render one entry (`commands::list_swipe_history`): title, poster,
+    /// and the two decision signals a catalog-swipe row can carry
+    /// (`backlog_status`, `watched_externally` — catalog rows are never
+    /// `followed` by `decide_catalog_card`, so that flag isn't needed here).
+    /// `None` when the row no longer exists (already deleted by an earlier
+    /// undo/return-to-deck) — the caller skips it rather than erroring, so
+    /// the history strip self-heals.
+    pub fn get_series_for_history(&self, series_id: i64) -> Result<Option<SwipeHistoryRow>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT title, cover_url, backlog_status, watched_externally FROM series WHERE id=?1",
+                [series_id],
+                |r| {
+                    Ok(SwipeHistoryRow {
+                        title: r.get(0)?,
+                        poster_url: r.get(1)?,
+                        backlog_status: r.get(2)?,
+                        watched_externally: r.get::<_, i64>(3)? != 0,
+                    })
+                },
+            )
+            .ok())
     }
 }
 
@@ -2363,13 +2461,13 @@ mod tests {
     #[test]
     fn random_catalog_anime_in_genre_none_when_empty_some_when_populated() {
         let db = Db::open(":memory:").unwrap();
-        assert!(db.random_catalog_anime_in_genre("Drama").unwrap().is_none());
+        assert!(db.random_catalog_anime_in_genre("Drama", &[]).unwrap().is_none());
         db.upsert_catalog_anime(
             &catalog_anime_with_popularity(1, "Only", &["Drama"], Some(1000)),
             0,
         )
         .unwrap();
-        let picked = db.random_catalog_anime_in_genre("Drama").unwrap().unwrap();
+        let picked = db.random_catalog_anime_in_genre("Drama", &[]).unwrap().unwrap();
         assert_eq!(picked.id, 1);
         assert_eq!(picked.genres, vec!["Drama".to_string()]);
     }
@@ -2379,7 +2477,7 @@ mod tests {
         let db = Db::open(":memory:").unwrap();
         db.upsert_catalog_anime(&catalog_anime_with_popularity(1, "Dramatic", &["Drama"], Some(1000)), 0).unwrap();
         db.upsert_catalog_anime(&catalog_anime_with_popularity(2, "Actiony", &["Action"], Some(1000)), 1).unwrap();
-        let picked = db.random_catalog_anime_in_genre("Action").unwrap().unwrap();
+        let picked = db.random_catalog_anime_in_genre("Action", &[]).unwrap().unwrap();
         assert_eq!(picked.title, "Actiony");
     }
 
@@ -2395,7 +2493,7 @@ mod tests {
         // Qualifies on both counts.
         db.upsert_catalog_anime(&catalog_anime_with_popularity(3, "Qualifies", &["Drama"], Some(1000)), 2).unwrap();
 
-        let picked = db.random_catalog_anime_in_genre("Drama").unwrap().unwrap();
+        let picked = db.random_catalog_anime_in_genre("Drama", &[]).unwrap().unwrap();
         assert_eq!(picked.title, "Qualifies");
     }
 
@@ -2416,7 +2514,7 @@ mod tests {
         db.set_backlog_status(sid, Some("discarded")).unwrap();
 
         for _ in 0..10 {
-            let picked = db.random_catalog_anime_in_genre("Drama").unwrap().unwrap();
+            let picked = db.random_catalog_anime_in_genre("Drama", &[]).unwrap().unwrap();
             assert_eq!(picked.title, "Undecided");
         }
     }
@@ -2435,7 +2533,56 @@ mod tests {
         db.set_anilist_id(sid, 1).unwrap();
         db.set_backlog_status(sid, Some("want")).unwrap();
 
-        assert!(db.random_catalog_anime_in_genre("Drama").unwrap().is_none());
+        assert!(db.random_catalog_anime_in_genre("Drama", &[]).unwrap().is_none());
+    }
+
+    #[test]
+    fn random_catalog_anime_in_genre_excludes_a_banned_format() {
+        let db = Db::open(":memory:").unwrap();
+        let mut movie = catalog_anime_with_popularity(1, "AMovie", &["Drama"], Some(1000));
+        movie.format = Some("MOVIE".into());
+        db.upsert_catalog_anime(&movie, 0).unwrap();
+        let mut tv = catalog_anime_with_popularity(2, "ATVShow", &["Drama"], Some(1000));
+        tv.format = Some("TV".into());
+        db.upsert_catalog_anime(&tv, 1).unwrap();
+
+        // With MOVIE banned, only the TV entry can ever be picked.
+        for _ in 0..10 {
+            let picked = db.random_catalog_anime_in_genre("Drama", &["MOVIE".to_string()]).unwrap().unwrap();
+            assert_eq!(picked.title, "ATVShow");
+        }
+    }
+
+    #[test]
+    fn random_catalog_anime_in_genre_none_when_every_format_banned() {
+        let db = Db::open(":memory:").unwrap();
+        let mut tv = catalog_anime_with_popularity(1, "ATVShow", &["Drama"], Some(1000));
+        tv.format = Some("TV".into());
+        db.upsert_catalog_anime(&tv, 0).unwrap();
+
+        let all_banned: Vec<String> =
+            ["TV", "MOVIE", "OVA", "ONA", "SPECIAL"].iter().map(|s| s.to_string()).collect();
+        // An invalid empty SQL IN () would error here if not short-circuited.
+        assert!(db.random_catalog_anime_in_genre("Drama", &all_banned).unwrap().is_none());
+    }
+
+    #[test]
+    fn banned_genres_and_formats_round_trip_through_settings() {
+        let db = Db::open(":memory:").unwrap();
+        assert_eq!(db.get_banned_genres().unwrap(), Vec::<String>::new());
+        assert_eq!(db.get_banned_formats().unwrap(), Vec::<String>::new());
+
+        db.set_banned_genres(&["Horror".to_string(), "Mecha".to_string()]).unwrap();
+        db.set_banned_formats(&["OVA".to_string()]).unwrap();
+
+        assert_eq!(db.get_banned_genres().unwrap(), vec!["Horror".to_string(), "Mecha".to_string()]);
+        assert_eq!(db.get_banned_formats().unwrap(), vec!["OVA".to_string()]);
+    }
+
+    #[test]
+    fn get_series_for_history_returns_none_for_a_deleted_row() {
+        let db = Db::open(":memory:").unwrap();
+        assert!(db.get_series_for_history(999).unwrap().is_none());
     }
 
     #[test]

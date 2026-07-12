@@ -18,6 +18,8 @@ import type {
   SiteSummary,
   SiteSwitchResult,
   Classification,
+  SwipeHistoryItem,
+  DeckBans,
 } from "./types";
 
 export const scanAiring = (baseUrl: string) =>
@@ -82,6 +84,22 @@ export const decideSwipe = (seriesUrl: string, decision: SwipeDecision) =>
   invoke<void>("decide_swipe", { seriesUrl, decision });
 
 export const undoLastSwipe = () => invoke<void>("undo_last_swipe");
+
+// Up to 5 most-recent swipe decisions still live in the DB, newest first —
+// the Descubrir history strip. `undo_swipe_entry` returns a specific one to
+// the deck (hard-deletes its row); reclassification uses `reclassifySeries`.
+export const listSwipeHistory = () =>
+  invoke<SwipeHistoryItem[]>("list_swipe_history");
+
+export const undoSwipeEntry = (seriesId: number) =>
+  invoke<void>("undo_swipe_entry", { seriesId });
+
+// Deck genre/type bans (global). Persisted in settings; the next
+// discover_catalog_card call reads them fresh.
+export const getDeckBans = () => invoke<DeckBans>("get_deck_bans");
+
+export const setDeckBans = (genres: string[], formats: string[]) =>
+  invoke<void>("set_deck_bans", { genres, formats });
 
 export const startWatching = (seriesId: number) =>
   invoke<LinkOutcome>("start_watching", { seriesId });

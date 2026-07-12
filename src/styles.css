@@ -824,6 +824,53 @@ progress.scanbar-track::-webkit-progress-value {
   color: var(--muted-2);
   text-align: center;
 }
+.swipe-history {
+  width: 100%;
+  max-width: 420px;
+  margin-top: 16px;
+}
+.swipe-history-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.swipe-history-row:last-child {
+  border-bottom: none;
+}
+.swipe-history-row img {
+  width: 32px;
+  height: 44px;
+  object-fit: cover;
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+}
+.swipe-history-main {
+  flex: 1;
+  min-width: 0;
+}
+.swipe-history-title {
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.swipe-history-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.swipe-history-actions .btn {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: var(--radius-round);
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
 .backlog-row {
   display: flex;
   align-items: center;
