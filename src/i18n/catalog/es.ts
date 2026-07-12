@@ -190,6 +190,14 @@ export const es = {
   "catalog.episodesCount": "{count} episodios",
   "catalog.episodesUnknown": "Episodios: ?",
   "catalog.loadMore": "Cargar más",
+  "catalog.infoTitle": "Ver información (AniList)",
+  "catalog.selectedCount": "{count} seleccionados",
+  "catalog.batchWant": "Quiero ver",
+  "catalog.batchSeen": "Ya vistos",
+  "catalog.deselectAll": "Deseleccionar todo",
+  "catalog.linking": "Enlazando {current}/{total}…",
+  "catalog.batchWantDone": "{count} añadidos a Quiero ver.",
+  "catalog.batchSeenDone": "{count} marcados como vistos.",
 
   // ProgressBar.tsx
   "progress.stageOpening": "Abriendo página…",

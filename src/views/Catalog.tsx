@@ -1,8 +1,30 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { getAnimeCatalog, getCatalogFacets, openEpisode, syncAnimeCatalog } from "../api";
+import {
+  decideCatalogCard,
+  getAnimeCatalog,
+  getCatalogFacets,
+  linkCatalogSeries,
+  openEpisode,
+  syncAnimeCatalog,
+} from "../api";
 import { useT } from "../i18n";
 import type { CatalogAnime, CatalogFacets, CatalogFilter, CatalogSyncProgress } from "../types";
+
+// decide_catalog_card args for a catalog row. CatalogAnime.id is AniList's
+// own numeric id (the catalog PK), which is exactly the anilistId the
+// command keys its synthetic series row on.
+function decideArgs(a: CatalogAnime, decision: "Want" | "Seen") {
+  return {
+    anilistId: a.id,
+    title: a.title,
+    url: a.url,
+    posterUrl: a.cover_url,
+    genres: a.genres,
+    format: a.format ?? "",
+    decision,
+  } as const;
+}
 
 const EMPTY_FACETS: CatalogFacets = { genres: [], formats: [] };
 
@@ -47,6 +69,66 @@ export function Catalog() {
   const [format, setFormat] = useState("");
   const [minScore, setMinScore] = useState("");
   const [episodes, setEpisodes] = useState("");
+
+  // Multi-select + batch actions. The selected map holds the full card object
+  // (not just the id) so a selection survives pagination / scroll-out.
+  const [selected, setSelected] = useState<Map<number, CatalogAnime>>(new Map());
+  const [batching, setBatching] = useState(false);
+  const [batchMsg, setBatchMsg] = useState<string | null>(null);
+
+  function toggleSelect(a: CatalogAnime) {
+    setSelected((prev) => {
+      const next = new Map(prev);
+      if (next.has(a.id)) next.delete(a.id);
+      else next.set(a.id, a);
+      return next;
+    });
+    setBatchMsg(null);
+  }
+
+  // "Quiero ver" is fully local (decide_catalog_card never scrapes), so the
+  // decides may run concurrently.
+  async function batchWant() {
+    setBatching(true);
+    setBatchMsg(null);
+    try {
+      const cards = [...selected.values()];
+      await Promise.all(cards.map((a) => decideCatalogCard(decideArgs(a, "Want"))));
+      setSelected(new Map());
+      setBatchMsg(t("catalog.batchWantDone", { count: cards.length }));
+    } catch (e) {
+      setBatchMsg(t("errors.generic", { detail: String(e) }));
+    } finally {
+      setBatching(false);
+    }
+  }
+
+  // "Ya visto": the decides are local (batched), but each resulting site link
+  // is a real scrape — those are run STRICTLY serialized (one at a time) so
+  // marking 50 seen can never fire 50 parallel scrapes at the Cloudflare-
+  // fronted site. See project-scraping-scope.
+  async function batchSeen() {
+    setBatching(true);
+    setBatchMsg(null);
+    try {
+      const cards = [...selected.values()];
+      const ids = await Promise.all(cards.map((a) => decideCatalogCard(decideArgs(a, "Seen"))));
+      setSelected(new Map());
+      for (let i = 0; i < ids.length; i++) {
+        setBatchMsg(t("catalog.linking", { current: i + 1, total: ids.length }));
+        try {
+          await linkCatalogSeries(ids[i]);
+        } catch (e) {
+          console.error("linkCatalogSeries failed for", ids[i], e);
+        }
+      }
+      setBatchMsg(t("catalog.batchSeenDone", { count: cards.length }));
+    } catch (e) {
+      setBatchMsg(t("errors.generic", { detail: String(e) }));
+    } finally {
+      setBatching(false);
+    }
+  }
 
   // Debounce the raw search text into the committed value that actually
   // drives a reload — typing shouldn't fire a query per keystroke.
@@ -264,16 +346,53 @@ export function Catalog() {
         <div className="empty">{t("catalog.emptyNotSynced")}</div>
       ) : (
         <>
+          {selected.size > 0 && (
+            <div className="batch-bar">
+              <span className="muted">{t("catalog.selectedCount", { count: selected.size })}</span>
+              <div className="spacer" />
+              <button className="btn" onClick={batchWant} disabled={batching}>
+                {t("catalog.batchWant")}
+              </button>
+              <button className="btn" onClick={batchSeen} disabled={batching}>
+                {t("catalog.batchSeen")}
+              </button>
+              <button className="btn btn-ghost" onClick={() => setSelected(new Map())} disabled={batching}>
+                {t("catalog.deselectAll")}
+              </button>
+            </div>
+          )}
+          {batchMsg && (
+            <p className="muted" style={{ marginBottom: 12 }}>
+              {batchMsg}
+            </p>
+          )}
           <div className="grid">
             {items.map((a) => (
               <div
                 key={a.id}
-                className="card"
+                className={`card${selected.has(a.id) ? " selected" : ""}`}
                 style={{ cursor: "pointer" }}
-                onClick={() => openEpisode(a.url).catch((err) => console.error("open failed", err))}
+                onClick={() => toggleSelect(a)}
               >
                 <div className="poster">
                   {a.format && <span className="chip">{a.format}</span>}
+                  <button
+                    type="button"
+                    className="card-info-btn"
+                    title={t("catalog.infoTitle")}
+                    aria-label={t("catalog.infoTitle")}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      openEpisode(a.url).catch((err) => console.error("open failed", err));
+                    }}
+                  >
+                    ℹ
+                  </button>
+                  {selected.has(a.id) && (
+                    <span className="card-select-check" aria-hidden="true">
+                      ✓
+                    </span>
+                  )}
                   {a.cover_url ? <img src={a.cover_url} alt={a.title} loading="lazy" /> : null}
                 </div>
                 <div className="card-body">
