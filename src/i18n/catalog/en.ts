@@ -72,6 +72,9 @@ export const en: Messages = {
   "settings.mirrorsSaved": "Site list saved.",
   "settings.forceRefreshDone": "Full recheck complete: {count} new episode(s).",
   "settings.language": "Language",
+  "settings.theme": "Theme",
+  "settings.themeDark": "Dark",
+  "settings.themeLight": "Light",
 
   "library.searchAriaLabel": "Search by name",
   "library.emptyTitle": "You're not following any series yet.",
