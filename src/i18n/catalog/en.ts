@@ -123,6 +123,23 @@ export const en: Messages = {
   "discover.moveToWantFromWatched": 'Move to "Want to watch"',
   "discover.tabSwipe": "Swipe",
   "discover.tabLists": "Lists",
+  "discover.tabFilters": "Filters",
+  // Swipe history strip (multi-level undo cache)
+  "discover.historyHeading": "Recently classified",
+  "discover.want": "Want to watch",
+  "discover.seen": "Already seen",
+  "discover.returnToDeck": "Return to deck",
+  "discover.badgeWant": "★ Want",
+  "discover.badgeSeen": "✓ Seen",
+  "discover.badgeDiscard": "✕ Discarded",
+  // Filters sub-view (deck genre/type bans)
+  "discover.filtersIntro":
+    "Genres and types you ban won't appear in the Discover deck. Hentai and Ecchi are always excluded.",
+  "discover.filtersGenresHeading": "Banned genres",
+  "discover.filtersFormatsHeading": "Banned types",
+  "discover.filtersSave": "Save filters",
+  "discover.filtersSaving": "Saving…",
+  "discover.filtersSaved": "Filters saved.",
 
   "catalog.anyScore": "Any score",
   "catalog.anyDuration": "Any length",

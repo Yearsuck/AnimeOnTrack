@@ -137,6 +137,23 @@ export const es = {
   "discover.moveToWantFromWatched": 'Mover a "Quiero ver"',
   "discover.tabSwipe": "Swipe",
   "discover.tabLists": "Listas",
+  "discover.tabFilters": "Filtros",
+  // Swipe history strip (multi-level undo cache)
+  "discover.historyHeading": "Últimas clasificadas",
+  "discover.want": "Quiero ver",
+  "discover.seen": "Ya lo vi",
+  "discover.returnToDeck": "Devolver al mazo",
+  "discover.badgeWant": "★ Quiero ver",
+  "discover.badgeSeen": "✓ Ya lo vi",
+  "discover.badgeDiscard": "✕ Descartada",
+  // Filtros sub-view (deck genre/type bans)
+  "discover.filtersIntro":
+    "Los géneros y tipos que baneés no aparecerán en el mazo de Descubrir. Hentai y Ecchi están siempre excluidos.",
+  "discover.filtersGenresHeading": "Géneros baneados",
+  "discover.filtersFormatsHeading": "Tipos baneados",
+  "discover.filtersSave": "Guardar filtros",
+  "discover.filtersSaving": "Guardando…",
+  "discover.filtersSaved": "Filtros guardados.",
 
   // Catalog.tsx
   "catalog.anyScore": "Cualquier puntuación",
