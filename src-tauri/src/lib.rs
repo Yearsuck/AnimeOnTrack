@@ -41,7 +41,7 @@ pub fn run() {
                 swipe_buffer: Mutex::new(std::collections::HashMap::new()),
                 swipe_last_page: Mutex::new(std::collections::HashMap::new()),
                 swipe_served: Mutex::new(std::collections::HashMap::new()),
-                last_swiped_series_id: Mutex::new(None),
+                swipe_history: Mutex::new(std::collections::VecDeque::new()),
                 html_cache: Mutex::new(html_cache::HtmlCache::default()),
             });
             Ok(())
@@ -87,6 +87,10 @@ pub fn run() {
             commands::discover_catalog_card,
             commands::decide_catalog_card,
             commands::link_catalog_series,
+            commands::list_swipe_history,
+            commands::undo_swipe_entry,
+            commands::get_deck_bans,
+            commands::set_deck_bans,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
