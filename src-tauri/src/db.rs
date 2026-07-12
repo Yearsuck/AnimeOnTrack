@@ -214,6 +214,14 @@ impl Db {
         ensure_column(&self.conn, "series", "next_episode_at", "INTEGER")?;
         ensure_column(&self.conn, "series", "site_episode_count", "INTEGER")?;
         ensure_column(&self.conn, "series", "last_checked_at", "TEXT")?;
+        // series.carried_seen_number: cross-site follow carry-over (see
+        // docs/superpowers/specs/2026-07-12-cross-site-follow-carryover-design.md).
+        // When switching sites, a followed series matched by title on the new
+        // site gets its follow carried and this set to the highest *seen*
+        // episode number from the old site. `refresh()` applies it once (via
+        // `set_seen_cascade`) the first time the new site's episodes are
+        // fetched, then clears it back to NULL — so it never re-forces "seen".
+        ensure_column(&self.conn, "series", "carried_seen_number", "INTEGER")?;
         // episodes.seen_at: ISO 8601 timestamp set by `set_seen`/
         // `set_seen_cascade` when an episode is marked seen, cleared (NULL)
         // when un-marked — including every row a cascade touches, not just
@@ -506,6 +514,63 @@ impl Db {
             (followed as i64, series_id),
         )?;
         Ok(())
+    }
+
+    /// Every followed series on a source OTHER than `exclude_source_id`, with
+    /// its title and the highest *seen* episode number (0 when nothing's been
+    /// watched). Non-numeric / recap episode numbers never inflate the
+    /// watermark (`CAST(number AS INTEGER)` parses leading digits, "Recap"→0).
+    /// Powers cross-site follow carry-over: matched by title against the newly
+    /// scanned site's airing list. See the carry-over design doc.
+    pub fn followed_titles_with_watermark(
+        &self,
+        exclude_source_id: i64,
+    ) -> Result<Vec<(String, i64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT s.title,
+                    COALESCE(MAX(CASE WHEN e.seen=1 THEN CAST(e.number AS INTEGER) END), 0) AS watermark
+             FROM series s
+             LEFT JOIN episodes e ON e.series_id = s.id
+             WHERE s.followed=1 AND s.source_id <> ?1
+             GROUP BY s.id
+             ORDER BY s.title",
+        )?;
+        let rows = stmt
+            .query_map([exclude_source_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Carry a follow onto a new-site series row: set it followed and stash
+    /// the watermark for `refresh()` to apply once. Guarded to `followed=0` so
+    /// it never overrides an existing follow (or its real progress) — a series
+    /// the user already follows on this site is left completely untouched.
+    /// Returns true if a row was actually carried.
+    pub fn carry_follow(&self, series_id: i64, watermark: i64) -> Result<bool> {
+        let n = self.conn.execute(
+            "UPDATE series SET followed=1, carried_seen_number=?2
+             WHERE id=?1 AND followed=0",
+            (series_id, watermark),
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Read and clear a series' pending carry-over watermark (apply-once). The
+    /// clear happens whether or not the caller ends up cascading, so a series
+    /// with no episodes yet doesn't get stuck re-applying every refresh.
+    pub fn take_carried_seen_number(&self, series_id: i64) -> Result<Option<i64>> {
+        let v: Option<i64> = self.conn.query_row(
+            "SELECT carried_seen_number FROM series WHERE id=?1",
+            [series_id],
+            |r| r.get(0),
+        )?;
+        if v.is_some() {
+            self.conn.execute(
+                "UPDATE series SET carried_seen_number=NULL WHERE id=?1",
+                [series_id],
+            )?;
+        }
+        Ok(v)
     }
 
     /// Update a series' canonical URL (used when a mirror fallback succeeds on
@@ -1695,6 +1760,96 @@ mod tests {
         // No episodes at all -> 0.
         let sid_c = db.upsert_series(src, &mk_airing("c", "C", None)).unwrap();
         assert_eq!(db.max_episode_number(sid_c).unwrap(), 0);
+    }
+
+    // ---- Cross-site follow carry-over (2026-07-12) ----
+
+    fn insert_eps_seen_up_to(db: &Db, series_id: i64, total: i64, seen_up_to: i64) {
+        for i in 1..=total {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id, number: i.to_string(), title: None,
+                url: format!("https://site/{series_id}-{i}"), released_at: None, seen: false,
+            }).unwrap();
+        }
+        if seen_up_to >= 1 {
+            db.set_seen_cascade(series_id, &seen_up_to.to_string(), true).unwrap();
+        }
+    }
+
+    #[test]
+    fn followed_titles_with_watermark_excludes_active_source_and_computes_seen_high_water() {
+        let db = Db::open(":memory:").unwrap();
+        let src_a = db.upsert_source("A", "a", "animeytx").unwrap();
+        let src_b = db.upsert_source("B", "b", "tioanime").unwrap();
+
+        // src_a: one followed with eps 1..5 seen up to 3, one followed with a
+        // recap row + nothing seen, and one UN-followed (must be excluded).
+        let a1 = db.upsert_series(src_a, &mk_airing("frieren", "Frieren", None)).unwrap();
+        db.set_followed(a1, true).unwrap();
+        insert_eps_seen_up_to(&db, a1, 5, 3);
+
+        let a2 = db.upsert_series(src_a, &mk_airing("bocchi", "Bocchi the Rock!", None)).unwrap();
+        db.set_followed(a2, true).unwrap();
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: a2, number: "0 | Recap".into(), title: None,
+            url: "https://site/a2-recap".into(), released_at: None, seen: false,
+        }).unwrap();
+
+        let a3 = db.upsert_series(src_a, &mk_airing("unfollowed", "Unfollowed Show", None)).unwrap();
+        let _ = a3;
+
+        // src_b has its own followed series — must NOT come back when we
+        // exclude src_b.
+        let b1 = db.upsert_series(src_b, &mk_airing("frieren", "Frieren", None)).unwrap();
+        db.set_followed(b1, true).unwrap();
+
+        let mut got = db.followed_titles_with_watermark(src_b).unwrap();
+        got.sort();
+        assert_eq!(
+            got,
+            vec![("Bocchi the Rock!".to_string(), 0), ("Frieren".to_string(), 3)]
+        );
+    }
+
+    #[test]
+    fn carry_follow_only_touches_unfollowed_rows() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+
+        let sid = db.upsert_series(src, &mk_airing("s", "S", None)).unwrap();
+        assert!(db.carry_follow(sid, 4).unwrap(), "unfollowed row carries");
+        assert_eq!(db.take_carried_seen_number(sid).unwrap(), Some(4));
+        // Applied once: a second take yields None.
+        assert_eq!(db.take_carried_seen_number(sid).unwrap(), None);
+
+        // Already-followed row: carry is a no-op and leaves no watermark.
+        let sid2 = db.upsert_series(src, &mk_airing("t", "T", None)).unwrap();
+        db.set_followed(sid2, true).unwrap();
+        assert!(!db.carry_follow(sid2, 9).unwrap(), "followed row is left untouched");
+        assert_eq!(db.take_carried_seen_number(sid2).unwrap(), None);
+    }
+
+    #[test]
+    fn carried_watermark_marks_episodes_seen_via_cascade() {
+        // Simulates refresh()'s apply-once step: carry a follow, later fetch
+        // the new site's episodes, then apply the stored watermark.
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("B", "b", "tioanime").unwrap();
+        let sid = db.upsert_series(src, &mk_airing("x", "X", None)).unwrap();
+
+        db.carry_follow(sid, 3).unwrap();
+        // Episodes arrive on the new site (all unseen initially).
+        insert_eps_seen_up_to(&db, sid, 6, 0);
+
+        // refresh() step: read+clear the watermark, cascade-mark up to it.
+        let n = db.take_carried_seen_number(sid).unwrap().expect("watermark present");
+        db.set_seen_cascade(sid, &n.to_string(), true).unwrap();
+
+        let eps = db.list_series_episodes(sid).unwrap();
+        let seen: Vec<&str> = eps.iter().filter(|e| e.seen).map(|e| e.number.as_str()).collect();
+        assert_eq!(seen, vec!["1", "2", "3"], "episodes 1..=3 seen, 4..=6 unseen");
+        // Applied once — column cleared.
+        assert_eq!(db.take_carried_seen_number(sid).unwrap(), None);
     }
 
     #[test]
