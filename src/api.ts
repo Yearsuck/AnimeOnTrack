@@ -34,7 +34,8 @@ export const setFollowed = (seriesId: number, followed: boolean) =>
 // (Settings' "Forzar recomprobación completa" escape hatch).
 export const refresh = (force = false) => invoke<number>("refresh", { force });
 
-export const listPending = () => invoke<PendingItem[]>("list_pending");
+export const listPending = (sort?: "remaining_asc" | "remaining_desc") =>
+  invoke<PendingItem[]>("list_pending", { sort: sort ?? null });
 
 export const pendingCount = () => invoke<number>("pending_count");
 

@@ -35,6 +35,9 @@ export const en: Messages = {
   "airing.followBtn": "+ Follow",
 
   "pending.episodesToWatch": "{count} episodes to watch",
+  "pending.sortLabel": "Sort:",
+  "pending.sortFewest": "Fewest episodes",
+  "pending.sortMost": "Most episodes",
   "pending.empty": "No pending episodes.",
   "pending.emptyHint": "Follow an anime in “Airing” and hit Refresh.",
   "pending.new": "{count} new",
