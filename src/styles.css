@@ -1161,3 +1161,22 @@ progress.scanbar-track::-webkit-progress-value {
   height: auto;
   overflow: visible;
 }
+
+/* ---------- Stats · 3D graph galaxy backdrop ---------- */
+/* Deep-space panel behind the transparent three.js canvas. Intentionally dark
+   in BOTH themes — a galaxy reads as space regardless of the app theme. Pure
+   CSS (nebula washes + three tiled star layers of differing density); no
+   three.js scene change, so zero impact on the graph's frozen-layout perf. */
+.stats-graph-galaxy {
+  background-color: #05060e;
+  background-image:
+    radial-gradient(ellipse at 22% 28%, rgba(96, 72, 180, 0.28), transparent 55%),
+    radial-gradient(ellipse at 80% 70%, rgba(46, 104, 176, 0.24), transparent 55%),
+    radial-gradient(ellipse at 60% 92%, rgba(150, 66, 132, 0.18), transparent 50%),
+    radial-gradient(1px 1px at 8px 12px, rgba(255, 255, 255, 0.9), transparent 100%),
+    radial-gradient(1px 1px at 24px 40px, rgba(210, 225, 255, 0.8), transparent 100%),
+    radial-gradient(1px 1px at 50px 22px, rgba(255, 255, 255, 0.65), transparent 100%);
+  background-size:
+    100% 100%, 100% 100%, 100% 100%, 73px 73px, 111px 111px, 149px 149px;
+  background-repeat: no-repeat, no-repeat, no-repeat, repeat, repeat, repeat;
+}
