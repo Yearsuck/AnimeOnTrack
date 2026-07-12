@@ -1,157 +1,133 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useT } from "../i18n";
 import { categoryColor } from "../lib/categoryColor";
 
-// Circles <-> bars, persisted like language/theme.
-type Shape = "rings" | "bars";
+// Barras (horizontal bar chart) <-> Círculos (donut ring grid), persisted like
+// language/theme. Bars are the default: for comparing category magnitudes a
+// bar chart reads far clearer than rings.
+type Shape = "bars" | "rings";
 const SHAPE_KEY = "aot.statsShape";
 
 function getInitialShape(): Shape {
   try {
     const s = localStorage.getItem(SHAPE_KEY);
-    if (s === "rings" || s === "bars") return s;
+    if (s === "bars" || s === "rings") return s;
   } catch {
     // localStorage unavailable — fall through to default.
   }
-  return "rings";
+  return "bars";
 }
 
-// ---- Morph geometry ----------------------------------------------------
-// Each category's mark is two stroked paths (recessive track + colored value)
-// drawn by "unrolling" a ring into a bar. A single value m in [0,1] (0 = ring,
-// 1 = bar) lerps every sample point between its position on a circle and its
-// position on a horizontal line, so the arc visibly straightens into the bar.
-const VBW = 320; // viewBox width
-const VBH = 56; // viewBox height
-const R = 22; // ring radius
-const CX = VBW / 2; // ring centre x
-const CY = VBH / 2; // ring centre y / bar y
-const BAR_X0 = 14; // bar left inset
-const BAR_W = VBW - BAR_X0 * 2; // bar track length
-const SAMPLES = 56;
+type Datum = { name: string; count: number };
 
-const TAU = Math.PI * 2;
-
-function lerp(a: number, b: number, t: number): number {
-  return a + (b - a) * t;
+function toData(data: { count: number }[], nameKey: "genre" | "kind"): Datum[] {
+  return data.map((d) => ({
+    name: (d as unknown as Record<string, string>)[nameKey],
+    count: d.count,
+  }));
 }
 
-// One sample point of the unrolled shape at arc/line parameter s in [0,1].
-function samplePoint(s: number, m: number): [number, number] {
-  const angle = (-0.25 + s) * TAU; // start at top (-90deg), clockwise
-  const rx = CX + R * Math.cos(angle);
-  const ry = CY + R * Math.sin(angle);
-  const bx = BAR_X0 + s * BAR_W;
-  const by = CY;
-  return [lerp(rx, bx, m), lerp(ry, by, m)];
-}
-
-function pathFor(fraction: number, m: number): string {
-  const f = Math.max(0, Math.min(1, fraction));
-  if (f <= 0) return "";
-  const n = Math.max(2, Math.round(SAMPLES * f));
-  let d = "";
-  for (let i = 0; i <= n; i++) {
-    const s = (i / n) * f;
-    const [x, y] = samplePoint(s, m);
-    d += `${i === 0 ? "M" : "L"}${x.toFixed(2)} ${y.toFixed(2)} `;
-  }
-  return d.trim();
-}
-
-function easeInOutCubic(t: number): number {
-  return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
-}
-
-// Tween m toward `target` (0/1) with rAF; snap instantly under reduced motion.
-function useMorph(target: number): number {
-  const [m, setM] = useState(target);
-  const mRef = useRef(target);
-  mRef.current = m;
-  const rafRef = useRef<number | undefined>(undefined);
-
+// ---- Horizontal bar chart -------------------------------------------------
+// One row per category: label | proportional bar | value column. Bars are
+// anchored to a common baseline and share one max per block, so lengths are
+// directly comparable; the value lives in its own right-aligned column so it
+// never sits on top of the bar. Fills grow in from 0 (CSS transition, which the
+// global prefers-reduced-motion rule already neutralizes).
+function BarChart({ data }: { data: Datum[] }) {
+  const [grown, setGrown] = useState(false);
   useEffect(() => {
-    const reduce =
-      typeof window !== "undefined" &&
-      window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
-    if (reduce) {
-      setM(target);
-      return;
-    }
-    const from = mRef.current;
-    const start = performance.now();
-    const dur = 500;
-    const tick = (now: number) => {
-      const t = Math.min(1, (now - start) / dur);
-      setM(from + (target - from) * easeInOutCubic(t));
-      if (t < 1) rafRef.current = requestAnimationFrame(tick);
-    };
-    rafRef.current = requestAnimationFrame(tick);
-    return () => {
-      if (rafRef.current) cancelAnimationFrame(rafRef.current);
-    };
-  }, [target]);
-
-  return m;
-}
-
-function MorphMark({ fraction, color, m }: { fraction: number; color: string; m: number }) {
+    const id = requestAnimationFrame(() => setGrown(true));
+    return () => cancelAnimationFrame(id);
+  }, []);
+  const max = Math.max(1, ...data.map((d) => d.count));
   return (
-    <svg className="stats-mark" viewBox={`0 0 ${VBW} ${VBH}`} role="presentation">
-      <path
-        d={pathFor(1, m)}
-        fill="none"
-        stroke="var(--surface-3)"
-        strokeWidth={10}
-        strokeLinecap="round"
-      />
-      <path
-        d={pathFor(fraction, m)}
-        fill="none"
-        stroke={color}
-        strokeWidth={10}
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}
-
-function CategoryRow({ name, count, max, m }: { name: string; count: number; max: number; m: number }) {
-  const fraction = max > 0 ? count / max : 0;
-  return (
-    <div className="stats-cat-row">
-      <div className="stats-cat-head">
-        <span className="stats-cat-name" title={name}>
-          {name}
-        </span>
-        <span className="stats-cat-count">{count}</span>
-      </div>
-      <MorphMark fraction={fraction} color={categoryColor(name)} m={m} />
+    <div className="barchart">
+      {data.map((d) => {
+        const pct = (d.count / max) * 100;
+        return (
+          <div className="bar-row" key={d.name}>
+            <div className="bar-label" title={d.name}>
+              {d.name}
+            </div>
+            <div
+              className="bar-track"
+              role="progressbar"
+              aria-valuenow={d.count}
+              aria-valuemin={0}
+              aria-valuemax={max}
+              aria-label={d.name}
+            >
+              <div
+                className="bar-fill"
+                style={{ width: grown ? `${pct}%` : 0, background: categoryColor(d.name) }}
+              />
+            </div>
+            <div className="bar-val">{d.count}</div>
+          </div>
+        );
+      })}
     </div>
   );
 }
 
-function CategoryBlock({
-  data,
-  nameKey,
-  m,
-}: {
-  data: { count: number }[];
-  nameKey: "genre" | "kind";
-  m: number;
-}) {
+// ---- Donut ring grid ------------------------------------------------------
+const RING = 88;
+const RING_STROKE = 9;
+const RING_R = (RING - RING_STROKE) / 2;
+const RING_C = 2 * Math.PI * RING_R;
+
+function RingGrid({ data }: { data: Datum[] }) {
+  const [grown, setGrown] = useState(false);
+  useEffect(() => {
+    const id = requestAnimationFrame(() => setGrown(true));
+    return () => cancelAnimationFrame(id);
+  }, []);
+  const max = Math.max(1, ...data.map((d) => d.count));
+  return (
+    <div className="ringgrid">
+      {data.map((d) => {
+        const frac = grown ? d.count / max : 0;
+        const dash = RING_C * frac;
+        return (
+          <div className="ringcell" key={d.name}>
+            <svg width={RING} height={RING} viewBox={`0 0 ${RING} ${RING}`} role="img" aria-label={`${d.name}: ${d.count}`}>
+              <circle cx={RING / 2} cy={RING / 2} r={RING_R} fill="none" stroke="var(--surface-3)" strokeWidth={RING_STROKE} />
+              <circle
+                cx={RING / 2}
+                cy={RING / 2}
+                r={RING_R}
+                fill="none"
+                stroke={categoryColor(d.name)}
+                strokeWidth={RING_STROKE}
+                strokeLinecap="round"
+                strokeDasharray={`${dash} ${RING_C - dash}`}
+                transform={`rotate(-90 ${RING / 2} ${RING / 2})`}
+                style={{ transition: "stroke-dasharray 0.6s cubic-bezier(0.16,1,0.3,1)" }}
+              />
+              <text x="50%" y="50%" textAnchor="middle" dominantBaseline="central" fontSize={20} fontWeight={700} fill="var(--text)">
+                {d.count}
+              </text>
+            </svg>
+            <div className="ringcell-label" title={d.name}>
+              {d.name}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function CategoryBlock({ data, shape }: { data: Datum[]; shape: Shape }) {
   const t = useT();
   if (data.length === 0) {
     return <div className="empty">{t("stats.ringsEmpty")}</div>;
   }
-  const max = Math.max(...data.map((d) => d.count));
-  return (
-    <div className="stats-cat-list">
-      {data.map((d) => {
-        const name = (d as unknown as Record<string, string>)[nameKey];
-        return <CategoryRow key={name} name={name} count={d.count} max={max} m={m} />;
-      })}
-    </div>
+  // Key by shape so switching remounts and re-triggers the grow-in animation.
+  return shape === "bars" ? (
+    <BarChart key="bars" data={data} />
+  ) : (
+    <RingGrid key="rings" data={data} />
   );
 }
 
@@ -164,7 +140,6 @@ export function StatsRings({
 }) {
   const t = useT();
   const [shape, setShape] = useState<Shape>(getInitialShape);
-  const m = useMorph(shape === "bars" ? 1 : 0);
 
   function pick(next: Shape) {
     setShape(next);
@@ -175,18 +150,12 @@ export function StatsRings({
     }
   }
 
+  const genreData = toData(genres, "genre");
+  const typeData = toData(types, "kind");
+
   return (
     <>
       <div className="seg" style={{ marginBottom: 20 }} role="tablist" aria-label={t("stats.shapeToggleAria")}>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={shape === "rings"}
-          className={`seg-btn${shape === "rings" ? " active" : ""}`}
-          onClick={() => pick("rings")}
-        >
-          {t("stats.shapeRings")}
-        </button>
         <button
           type="button"
           role="tab"
@@ -196,24 +165,29 @@ export function StatsRings({
         >
           {t("stats.shapeBars")}
         </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={shape === "rings"}
+          className={`seg-btn${shape === "rings" ? " active" : ""}`}
+          onClick={() => pick("rings")}
+        >
+          {t("stats.shapeRings")}
+        </button>
       </div>
 
       <div className="series-block" style={{ marginBottom: 20 }}>
         <div className="series-head">
           <h3 className="card-title">{t("stats.byGenre")}</h3>
         </div>
-        <div style={{ padding: "12px 16px" }}>
-          <CategoryBlock data={genres} nameKey="genre" m={m} />
-        </div>
+        <CategoryBlock data={genreData} shape={shape} />
       </div>
 
       <div className="series-block">
         <div className="series-head">
           <h3 className="card-title">{t("stats.byType")}</h3>
         </div>
-        <div style={{ padding: "12px 16px" }}>
-          <CategoryBlock data={types} nameKey="kind" m={m} />
-        </div>
+        <CategoryBlock data={typeData} shape={shape} />
       </div>
     </>
   );
