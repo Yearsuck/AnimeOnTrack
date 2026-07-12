@@ -1418,12 +1418,36 @@ impl Db {
     /// If every whitelisted format ends up banned, returns `Ok(None)`
     /// without querying — an empty SQL `IN ()` is invalid, and there's
     /// nothing left to offer anyway.
+    /// `excluded_norm_titles` — normalized (`matching::normalize_title`)
+    /// titles of series the user has already engaged with (followed,
+    /// wanted, discarded, or marked watched-externally; see
+    /// `engaged_series_titles`), scoped to the caller's source. Needed
+    /// because the pre-existing `anilist_id NOT IN series` clause below only
+    /// catches engaged series that got linked to a real AniList id — and
+    /// followed *site*-scraped series almost never do (linking is on-demand,
+    /// rarely triggered), so without this a followed show with the exact
+    /// same title as a catalog entry keeps getting re-offered by the deck
+    /// (see docs/superpowers/specs/2026-07-12-discover-exclude-followed-design.md).
+    ///
+    /// Rather than `ORDER BY RANDOM() LIMIT 1` and rejecting only that one
+    /// row (which would silently starve the deck for any genre where the
+    /// single random pick happens to be engaged), this pulls a
+    /// `BATCH_SIZE`-row random batch and returns the first `survivor` — a
+    /// candidate whose title/`title_romaji`/`title_english` (skipping NULLs)
+    /// all normalize to something outside `excluded_norm_titles`. Kept as an
+    /// explicit `survivors` vec (rather than folding the pick into the
+    /// filter/iterator chain) so a future taste-scoring pass (recommendation
+    /// engine) can score the whole `survivors` batch and pick the best one
+    /// instead of just the first, without touching the batch-fetch or
+    /// exclusion logic above it.
     pub fn random_catalog_anime_in_genre(
         &self,
         genre: &str,
         banned_formats: &[String],
+        excluded_norm_titles: &std::collections::HashSet<String>,
     ) -> Result<Option<crate::anilist::CatalogAnime>> {
         const MIN_POPULARITY: i64 = 500;
+        const BATCH_SIZE: i64 = 40;
         const DEFAULT_FORMATS: &[&str] = &["TV", "MOVIE", "OVA", "ONA", "SPECIAL"];
         let allowed: Vec<&str> = DEFAULT_FORMATS
             .iter()
@@ -1442,7 +1466,7 @@ impl Db {
                AND c.format IN ({placeholders})
                AND c.popularity >= ?
                AND c.id NOT IN (SELECT anilist_id FROM series WHERE anilist_id IS NOT NULL)
-             ORDER BY RANDOM() LIMIT 1"
+             ORDER BY RANDOM() LIMIT {BATCH_SIZE}"
         );
         let mut params: Vec<Value> = vec![Value::Text(genre.to_string())];
         for f in &allowed {
@@ -1450,11 +1474,40 @@ impl Db {
         }
         params.push(Value::Integer(MIN_POPULARITY));
         let mut stmt = self.conn.prepare(&sql)?;
-        let mut rows = stmt.query_map(rusqlite::params_from_iter(params.iter()), Self::row_to_catalog_anime)?;
-        let Some(row) = rows.next() else { return Ok(None) };
-        let mut anime = row?;
+        let batch: Vec<crate::anilist::CatalogAnime> = stmt
+            .query_map(rusqlite::params_from_iter(params.iter()), Self::row_to_catalog_anime)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        let is_engaged_by_title = |anime: &crate::anilist::CatalogAnime| -> bool {
+            [Some(&anime.title), anime.title_romaji.as_ref(), anime.title_english.as_ref()]
+                .into_iter()
+                .flatten()
+                .any(|t| excluded_norm_titles.contains(&crate::matching::normalize_title(t)))
+        };
+        let survivors: Vec<crate::anilist::CatalogAnime> =
+            batch.into_iter().filter(|a| !is_engaged_by_title(a)).collect();
+
+        let Some(mut anime) = survivors.into_iter().next() else { return Ok(None) };
         anime.genres = self.list_catalog_genres(anime.id)?;
         Ok(Some(anime))
+    }
+
+    /// Normalized-title exclusion set input: titles of `series` rows the
+    /// user has already decided on for this source — followed, "want",
+    /// "discarded", or watched-externally. See
+    /// `random_catalog_anime_in_genre`'s doc comment for why this is needed
+    /// alongside (not instead of) its `anilist_id NOT IN series` clause.
+    /// Returns raw titles (not yet normalized) — callers normalize via
+    /// `matching::normalize_title` when building the exclusion set, keeping
+    /// this function a pure DB read.
+    pub fn engaged_series_titles(&self, source_id: i64) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT title FROM series
+             WHERE source_id=?1
+               AND (followed=1 OR watched_externally=1 OR backlog_status IN ('want','discarded'))",
+        )?;
+        let titles = stmt.query_map([source_id], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(titles)
     }
 
     /// The subset of a `series` row's fields the swipe-history strip needs
@@ -2636,13 +2689,13 @@ mod tests {
     #[test]
     fn random_catalog_anime_in_genre_none_when_empty_some_when_populated() {
         let db = Db::open(":memory:").unwrap();
-        assert!(db.random_catalog_anime_in_genre("Drama", &[]).unwrap().is_none());
+        assert!(db.random_catalog_anime_in_genre("Drama", &[], &std::collections::HashSet::new()).unwrap().is_none());
         db.upsert_catalog_anime(
             &catalog_anime_with_popularity(1, "Only", &["Drama"], Some(1000)),
             0,
         )
         .unwrap();
-        let picked = db.random_catalog_anime_in_genre("Drama", &[]).unwrap().unwrap();
+        let picked = db.random_catalog_anime_in_genre("Drama", &[], &std::collections::HashSet::new()).unwrap().unwrap();
         assert_eq!(picked.id, 1);
         assert_eq!(picked.genres, vec!["Drama".to_string()]);
     }
@@ -2652,7 +2705,7 @@ mod tests {
         let db = Db::open(":memory:").unwrap();
         db.upsert_catalog_anime(&catalog_anime_with_popularity(1, "Dramatic", &["Drama"], Some(1000)), 0).unwrap();
         db.upsert_catalog_anime(&catalog_anime_with_popularity(2, "Actiony", &["Action"], Some(1000)), 1).unwrap();
-        let picked = db.random_catalog_anime_in_genre("Action", &[]).unwrap().unwrap();
+        let picked = db.random_catalog_anime_in_genre("Action", &[], &std::collections::HashSet::new()).unwrap().unwrap();
         assert_eq!(picked.title, "Actiony");
     }
 
@@ -2668,7 +2721,7 @@ mod tests {
         // Qualifies on both counts.
         db.upsert_catalog_anime(&catalog_anime_with_popularity(3, "Qualifies", &["Drama"], Some(1000)), 2).unwrap();
 
-        let picked = db.random_catalog_anime_in_genre("Drama", &[]).unwrap().unwrap();
+        let picked = db.random_catalog_anime_in_genre("Drama", &[], &std::collections::HashSet::new()).unwrap().unwrap();
         assert_eq!(picked.title, "Qualifies");
     }
 
@@ -2689,7 +2742,7 @@ mod tests {
         db.set_backlog_status(sid, Some("discarded")).unwrap();
 
         for _ in 0..10 {
-            let picked = db.random_catalog_anime_in_genre("Drama", &[]).unwrap().unwrap();
+            let picked = db.random_catalog_anime_in_genre("Drama", &[], &std::collections::HashSet::new()).unwrap().unwrap();
             assert_eq!(picked.title, "Undecided");
         }
     }
@@ -2708,7 +2761,7 @@ mod tests {
         db.set_anilist_id(sid, 1).unwrap();
         db.set_backlog_status(sid, Some("want")).unwrap();
 
-        assert!(db.random_catalog_anime_in_genre("Drama", &[]).unwrap().is_none());
+        assert!(db.random_catalog_anime_in_genre("Drama", &[], &std::collections::HashSet::new()).unwrap().is_none());
     }
 
     #[test]
@@ -2723,7 +2776,10 @@ mod tests {
 
         // With MOVIE banned, only the TV entry can ever be picked.
         for _ in 0..10 {
-            let picked = db.random_catalog_anime_in_genre("Drama", &["MOVIE".to_string()]).unwrap().unwrap();
+            let picked = db
+                .random_catalog_anime_in_genre("Drama", &["MOVIE".to_string()], &std::collections::HashSet::new())
+                .unwrap()
+                .unwrap();
             assert_eq!(picked.title, "ATVShow");
         }
     }
@@ -2738,7 +2794,118 @@ mod tests {
         let all_banned: Vec<String> =
             ["TV", "MOVIE", "OVA", "ONA", "SPECIAL"].iter().map(|s| s.to_string()).collect();
         // An invalid empty SQL IN () would error here if not short-circuited.
-        assert!(db.random_catalog_anime_in_genre("Drama", &all_banned).unwrap().is_none());
+        assert!(db
+            .random_catalog_anime_in_genre("Drama", &all_banned, &std::collections::HashSet::new())
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn random_catalog_anime_in_genre_excludes_engaged_normalized_title() {
+        // Root cause (docs/superpowers/specs/2026-07-12-discover-exclude-followed-design.md):
+        // followed site series never get an anilist_id (linking is on-demand
+        // and rare), so the pre-existing `anilist_id NOT IN series` clause
+        // catches ~zero engaged series. The deck must also exclude by
+        // normalized title so a followed site row with no anilist_id still
+        // blocks the same-titled catalog entry.
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        db.upsert_catalog_anime(&catalog_anime_with_popularity(1, "Overlord IV", &["Fantasy"], Some(1000)), 0)
+            .unwrap();
+        // Control: an un-followed catalog title in the same genre must stay
+        // returnable, proving the exclusion is title-specific, not blanket.
+        db.upsert_catalog_anime(&catalog_anime_with_popularity(2, "Some Other Show", &["Fantasy"], Some(1000)), 1)
+            .unwrap();
+
+        let followed = crate::models::Series {
+            id: 0,
+            slug: "overlord-iv".into(),
+            title: "Overlord IV".into(),
+            url: "https://example.com/tv/overlord-iv".into(),
+            cover_url: None,
+            is_airing: false,
+            followed: true,
+            next_episode_at: None,
+            site_episode_count: None,
+        };
+        let sid = db.upsert_series(src, &followed).unwrap();
+        db.set_followed(sid, true).unwrap();
+        // Deliberately no set_anilist_id: this is the exact bug scenario —
+        // followed=1, anilist_id NULL.
+
+        let excluded: std::collections::HashSet<String> =
+            db.engaged_series_titles(src).unwrap().iter().map(|t| crate::matching::normalize_title(t)).collect();
+        assert!(excluded.contains(&crate::matching::normalize_title("Overlord IV")));
+
+        for _ in 0..10 {
+            let picked = db.random_catalog_anime_in_genre("Fantasy", &[], &excluded).unwrap().unwrap();
+            assert_eq!(picked.title, "Some Other Show");
+        }
+    }
+
+    #[test]
+    fn random_catalog_anime_in_genre_returns_none_when_only_candidate_is_engaged_by_title() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        db.upsert_catalog_anime(&catalog_anime_with_popularity(1, "Overlord IV", &["Fantasy"], Some(1000)), 0)
+            .unwrap();
+        let followed = crate::models::Series {
+            id: 0,
+            slug: "overlord-iv".into(),
+            title: "Overlord IV".into(),
+            url: "https://example.com/tv/overlord-iv".into(),
+            cover_url: None,
+            is_airing: false,
+            followed: true,
+            next_episode_at: None,
+            site_episode_count: None,
+        };
+        let sid = db.upsert_series(src, &followed).unwrap();
+        db.set_followed(sid, true).unwrap();
+
+        let excluded: std::collections::HashSet<String> =
+            db.engaged_series_titles(src).unwrap().iter().map(|t| crate::matching::normalize_title(t)).collect();
+        assert!(db.random_catalog_anime_in_genre("Fantasy", &[], &excluded).unwrap().is_none());
+    }
+
+    #[test]
+    fn engaged_series_titles_covers_followed_want_discarded_and_watched_externally() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+
+        let make = |slug: &str, title: &str| crate::models::Series {
+            id: 0,
+            slug: slug.into(),
+            title: title.into(),
+            url: format!("https://example.com/tv/{slug}"),
+            cover_url: None,
+            is_airing: false,
+            followed: false,
+            next_episode_at: None,
+            site_episode_count: None,
+        };
+
+        let sid_followed = db.upsert_series(src, &make("followed-show", "Followed Show")).unwrap();
+        db.set_followed(sid_followed, true).unwrap();
+
+        let sid_want = db.upsert_series(src, &make("want-show", "Want Show")).unwrap();
+        db.set_backlog_status(sid_want, Some("want")).unwrap();
+
+        let sid_discarded = db.upsert_series(src, &make("discarded-show", "Discarded Show")).unwrap();
+        db.set_backlog_status(sid_discarded, Some("discarded")).unwrap();
+
+        let sid_watched = db.upsert_series(src, &make("watched-show", "Watched Show")).unwrap();
+        db.set_watched_externally(sid_watched, true).unwrap();
+
+        // Untouched row must NOT be engaged.
+        db.upsert_series(src, &make("untouched-show", "Untouched Show")).unwrap();
+
+        let titles: std::collections::HashSet<String> = db.engaged_series_titles(src).unwrap().into_iter().collect();
+        assert!(titles.contains("Followed Show"));
+        assert!(titles.contains("Want Show"));
+        assert!(titles.contains("Discarded Show"));
+        assert!(titles.contains("Watched Show"));
+        assert!(!titles.contains("Untouched Show"));
     }
 
     #[test]
