@@ -8,6 +8,7 @@ mod html_cache;
 mod matching;
 mod models;
 mod player;
+mod recommend;
 mod scraper_engine;
 mod swipe;
 

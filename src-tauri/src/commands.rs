@@ -1737,12 +1737,24 @@ fn filter_candidate_genres(all_genres: Vec<String>, banned_genres: &[String]) ->
 
 /// Pick a taste-weighted genre (mirroring `discover_swipe_card`'s scheme:
 /// `get_genre_affinity` + `weighted_pick_index`, uniform fallback when
-/// nothing's been decided yet) and ask the DB for a random undecided,
-/// quality-floored catalog entry in it. Local + instant (no live AniList
-/// call per swipe, so no rate-limit exposure from normal browsing). Catalog
-/// cards carry no episode data (AniList is metadata-only), so they're
-/// decided through `decide_catalog_card` rather than `decide_swipe`, which
-/// assumes a scraped-site URL it can fetch an episode list from.
+/// nothing's been decided yet — but see the dampening note below) and ask
+/// the DB for a taste-scored undecided, quality-floored catalog entry in it
+/// (`recommend::pick_recommended`, see
+/// docs/superpowers/specs/2026-07-12-discover-recommendation-engine-design.md).
+/// Local + instant (no live AniList call per swipe, so no rate-limit
+/// exposure from normal browsing). Catalog cards carry no episode data
+/// (AniList is metadata-only), so they're decided through
+/// `decide_catalog_card` rather than `decide_swipe`, which assumes a
+/// scraped-site URL it can fetch an episode list from.
+///
+/// The outer genre-pick weights are run through
+/// `recommend::dampen_genre_weight` (sub-linear, `w' = max(0,score)^0.6`)
+/// before `weighted_pick_index` — raw affinity sums let one heavily-followed
+/// genre swamp every other candidate; dampening compresses that lead without
+/// flipping the order, so the deck still favors the user's top genre without
+/// collapsing into showing only that genre. Cold start (nothing
+/// followed/decided) still degrades to `weighted_pick_index`'s uniform
+/// fallback: dampening never turns a non-positive score into a positive one.
 ///
 /// `Ok(None)` means the deck is genuinely exhausted: every candidate genre
 /// (after excluding Hentai/Ecchi) either has zero synced titles passing the
@@ -1754,6 +1766,14 @@ pub fn discover_catalog_card(state: State<'_, AppState>) -> Result<Option<Finish
     let db = state.db.lock().unwrap();
 
     let affinity = db.get_genre_affinity(src).map_err(|e| e.to_string())?;
+    // Format-affinity map for the inner (per-candidate) score — built once
+    // per call, not per genre attempt or per candidate (see
+    // `recommend::format_affinity_from_type_stats`'s doc comment: empty for
+    // a brand-new user with no follows, which reduces the format term to 0
+    // for everyone, i.e. cold start behaves like the pre-recommendation-
+    // engine build).
+    let format_affinity =
+        crate::recommend::format_affinity_from_type_stats(&db.get_type_stats(src).map_err(|e| e.to_string())?);
     // Candidate-genre filter is EXCLUDED_CATALOG_GENRES (always-on baseline:
     // Hentai/Ecchi) union the user's own banned-genre list (Section B) — the
     // baseline can't be lifted by a user setting, bans are additive to it.
@@ -1789,14 +1809,14 @@ pub fn discover_catalog_card(state: State<'_, AppState>) -> Result<Option<Finish
         }
         let pool_weights: Vec<f64> = pool
             .iter()
-            .map(|&i| *affinity.get(&candidates[i]).unwrap_or(&0.0))
+            .map(|&i| crate::recommend::dampen_genre_weight(*affinity.get(&candidates[i]).unwrap_or(&0.0)))
             .collect();
         let Some(pick_in_pool) = weighted_pick_index(&pool_weights) else { break };
         let genre_idx = pool[pick_in_pool];
         let genre = &candidates[genre_idx];
 
         if let Some(anime) = db
-            .random_catalog_anime_in_genre(genre, &banned_formats, &excluded_norm_titles)
+            .random_catalog_anime_in_genre(genre, &banned_formats, &excluded_norm_titles, &affinity, &format_affinity)
             .map_err(|e| e.to_string())?
         {
             return Ok(Some(FinishedCard {
