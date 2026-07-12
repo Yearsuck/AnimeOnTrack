@@ -4,14 +4,20 @@ import { useT } from "../i18n";
 import type { LibraryItem, Series } from "../types";
 
 type Status = "completed" | "watching" | "plan";
+// Airing filter for the Viendo section.
+type AiringFilter = "all" | "airing" | "finished";
 
-// Status is derived, never stored (no user-set field exists). Mirrors the
-// design doc's formula exactly: completed requires a nonzero total so a
-// followed-but-never-scraped series (total=0) can never read as completed;
-// watching requires at least one seen episode strictly under the total;
-// everything else (including total=0) is "plan", never dividing by zero.
+// Status is derived, never stored (no user-set field exists). Completed means
+// the series is FINISHED (not airing) AND everything available is watched —
+// an airing series you're caught up on (allSeen && is_airing) stays in
+// "watching", because more episodes are still coming (it isn't done). A
+// nonzero total is required so a followed-but-never-scraped series (total=0)
+// never reads as completed. Everything with >0 seen that isn't completed is
+// "watching" (incl. caught-up airing and partly-watched finished shows);
+// 0 seen is "plan", never dividing by zero.
 function statusOf(it: LibraryItem): Status {
-  if (it.total_episodes > 0 && it.seen_episodes === it.total_episodes) return "completed";
+  const allSeen = it.total_episodes > 0 && it.seen_episodes === it.total_episodes;
+  if (allSeen && !it.series.is_airing) return "completed";
   if (it.seen_episodes > 0) return "watching";
   return "plan";
 }
@@ -258,6 +264,7 @@ export function Library({ onOpenSeries }: { onOpenSeries: (s: Series) => void })
   const t = useT();
   const [items, setItems] = useState<LibraryItem[]>([]);
   const [query, setQuery] = useState("");
+  const [airingFilter, setAiringFilter] = useState<AiringFilter>("all");
 
   const load = useCallback(() => {
     listLibrary().then(setItems);
@@ -272,10 +279,21 @@ export function Library({ onOpenSeries }: { onOpenSeries: (s: Series) => void })
     return items.filter((it) => !q || it.series.title.toLowerCase().includes(q));
   }, [items, query]);
 
-  const watching = useMemo(
-    () => filtered.filter((it) => statusOf(it) === "watching").sort(byRecentWatched),
+  // All "watching" items (before the airing filter) — drives whether the
+  // filter control is shown at all.
+  const watchingAll = useMemo(
+    () => filtered.filter((it) => statusOf(it) === "watching"),
     [filtered]
   );
+  const watching = useMemo(() => {
+    const w =
+      airingFilter === "all"
+        ? watchingAll
+        : airingFilter === "airing"
+          ? watchingAll.filter((it) => it.series.is_airing)
+          : watchingAll.filter((it) => !it.series.is_airing);
+    return [...w].sort(byRecentWatched);
+  }, [watchingAll, airingFilter]);
   const plan = useMemo(
     () => filtered.filter((it) => statusOf(it) === "plan").sort(byTitle),
     [filtered]
@@ -318,15 +336,44 @@ export function Library({ onOpenSeries }: { onOpenSeries: (s: Series) => void })
         <div className="empty">{t("common.noResults")}</div>
       ) : (
         <>
-          <LibrarySection
-            title={t("library.watching")}
-            items={watching}
-            defaultOpen
-            showAction
-            showMenu
-            onOpenSeries={onOpenSeries}
-            onChanged={load}
-          />
+          {watchingAll.length > 0 && (
+            <div className="lib-filter-bar">
+              <span className="muted" style={{ fontSize: 12 }}>
+                {t("library.filterLabel")}
+              </span>
+              <div className="seg">
+                {(["all", "airing", "finished"] as AiringFilter[]).map((f) => (
+                  <button
+                    key={f}
+                    type="button"
+                    className={`seg-btn${airingFilter === f ? " active" : ""}`}
+                    onClick={() => setAiringFilter(f)}
+                  >
+                    {f === "all"
+                      ? t("library.filterAll")
+                      : f === "airing"
+                        ? t("library.filterAiring")
+                        : t("library.filterFinished")}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          {watchingAll.length > 0 && watching.length === 0 ? (
+            <div className="empty" style={{ padding: "12px 0" }}>
+              {t("library.filterNoResults")}
+            </div>
+          ) : (
+            <LibrarySection
+              title={t("library.watching")}
+              items={watching}
+              defaultOpen
+              showAction
+              showMenu
+              onOpenSeries={onOpenSeries}
+              onChanged={load}
+            />
+          )}
           <LibrarySection
             title={t("library.planToWatch")}
             items={plan}

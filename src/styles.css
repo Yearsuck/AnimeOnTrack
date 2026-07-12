@@ -475,6 +475,34 @@ a:hover {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
+.lib-filter-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-2);
+}
+.seg {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-round);
+  overflow: hidden;
+}
+.seg-btn {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 5px 12px;
+  cursor: pointer;
+}
+.seg-btn:not(:last-child) {
+  border-right: 1px solid var(--border);
+}
+.seg-btn.active {
+  background: var(--accent-dim);
+  color: var(--accent);
+}
 .lib-section-count {
   color: var(--muted);
   font-weight: 600;
