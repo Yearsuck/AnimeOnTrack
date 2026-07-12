@@ -10,11 +10,13 @@ import {
   setActiveSite,
 } from "../api";
 import { LANGS, useLang, useT } from "../i18n";
+import { THEMES, useTheme } from "../theme";
 import type { SiteSummary } from "../types";
 
 export function Settings({ onSiteChanged }: { onSiteChanged?: (site: SiteSummary) => void }) {
   const t = useT();
   const { lang, setLang } = useLang();
+  const { theme, setTheme } = useTheme();
   const [firstUrl, setFirstUrl] = useState("https://wwv.animeytx.net");
   const [mirrorsText, setMirrorsText] = useState("");
   const [busy, setBusy] = useState(false);
@@ -124,6 +126,24 @@ export function Settings({ onSiteChanged }: { onSiteChanged?: (site: SiteSummary
     <div className="page" style={{ maxWidth: 560 }}>
       <div className="page-head">
         <h2 className="page-title">{t("nav.settings")}</h2>
+      </div>
+
+      <div className="series-block" style={{ padding: 16, marginBottom: 16 }}>
+        <label className="muted" style={{ display: "block", marginBottom: 6, fontSize: 12.5 }}>
+          {t("settings.theme")}
+        </label>
+        <select
+          className="input"
+          style={{ maxWidth: 280 }}
+          value={theme}
+          onChange={(e) => setTheme(e.target.value as typeof theme)}
+        >
+          {THEMES.map((th) => (
+            <option key={th.code} value={th.code}>
+              {t(th.labelKey)}
+            </option>
+          ))}
+        </select>
       </div>
 
       <div className="series-block" style={{ padding: 16, marginBottom: 16 }}>

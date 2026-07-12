@@ -83,6 +83,9 @@ export const es = {
   "settings.mirrorsSaved": "Lista de webs guardada.",
   "settings.forceRefreshDone": "Recomprobación completa terminada: {count} episodio(s) nuevo(s).",
   "settings.language": "Idioma",
+  "settings.theme": "Tema",
+  "settings.themeDark": "Oscuro",
+  "settings.themeLight": "Claro",
 
   // Library.tsx
   "library.searchAriaLabel": "Buscar por nombre",

@@ -16,6 +16,17 @@
   --success-dim: rgba(70, 209, 158, 0.16);
   --danger: #ff5c7c;
 
+  /* Tokenized dark-baked overlay/scrim/border colors (theme selector,
+     docs/superpowers/specs/2026-07-12-theme-light-dark-design.md).
+     --overlay-bg = the topbar's sticky blurred bar only.
+     --overlay-strong = modal/scrim/pill backgrounds (originally a mix of
+     rgba(5,18,31,.7/.8) and rgba(11,21,33,.92) at slightly different
+     alphas across 4 call sites) — collapsed to one value for consistency;
+     the alpha differences were subtle enough not to be worth a 4th token. */
+  --overlay-bg: rgba(11, 21, 33, 0.85);
+  --overlay-strong: rgba(5, 18, 31, 0.8);
+  --border-soft: rgba(36, 56, 74, 0.5);
+
   /* 4px spacing scale */
   --sp-1: 4px;
   --sp-2: 8px;
@@ -38,6 +49,36 @@
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
 
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+/* Light theme — overrides color tokens only (spacing/radius/ease/font stay
+   shared). Applied via `data-theme="light"` on <html>, set by src/theme.ts.
+   See docs/superpowers/specs/2026-07-12-theme-light-dark-design.md. */
+:root[data-theme="light"] {
+  --bg: #f4f7fb;
+  --surface: #ffffff;
+  --surface-2: #eef2f7;
+  --surface-3: #e2e8f0;
+  --surface-4: #dbe3ec99;
+  --border: #d3dde8;
+  --text: #17222e;
+  --muted: #5a6b7d;
+  --muted-2: #8394a5;
+  --accent: #1f88e6;
+  --accent-hover: #1670c8;
+  --accent-dim: rgba(31, 136, 230, 0.12);
+  --success: #1f9d6b;
+  --success-dim: rgba(31, 157, 107, 0.14);
+  --danger: #d83a5a;
+
+  --overlay-bg: rgba(244, 247, 251, 0.85);
+  --overlay-strong: rgba(255, 255, 255, 0.85);
+  --border-soft: rgba(211, 221, 232, 0.6);
+
+  /* Softer shadows on a light ground than the dark ramp's near-black ones. */
+  --shadow-sm: 0 2px 6px rgba(23, 34, 46, 0.08);
+  --shadow-md: 0 6px 20px rgba(23, 34, 46, 0.12);
+  --shadow-lg: 0 16px 40px rgba(23, 34, 46, 0.16);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -100,7 +141,7 @@ a:hover {
   align-items: center;
   gap: 16px;
   padding: 12px 20px;
-  background: rgba(11, 21, 33, 0.85);
+  background: var(--overlay-bg);
   backdrop-filter: blur(10px);
   border-bottom: 1px solid var(--border);
 }
@@ -344,7 +385,7 @@ a:hover {
   left: 8px;
   padding: 3px 8px;
   border-radius: 6px;
-  background: rgba(5, 18, 31, 0.8);
+  background: var(--overlay-strong);
   font-size: 11px;
   font-weight: 700;
   color: var(--accent);
@@ -424,7 +465,7 @@ a:hover {
   align-items: center;
   gap: 12px;
   padding: 10px 14px;
-  border-bottom: 1px solid rgba(36, 56, 74, 0.5);
+  border-bottom: 1px solid var(--border-soft);
   transition: background 0.15s var(--ease), opacity 0.25s var(--ease),
     transform 0.25s var(--ease);
 }
@@ -513,7 +554,7 @@ a:hover {
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   /* Opaque so scrolled content never shows through the pinned bar. */
-  background: rgba(11, 21, 33, 0.92);
+  background: var(--overlay-strong);
   backdrop-filter: blur(10px);
   /* Pin just below the sticky top nav (~56px tall), under it in the stack. */
   position: sticky;
@@ -532,7 +573,7 @@ a:hover {
   height: 26px;
   border-radius: var(--radius-round);
   border: none;
-  background: rgba(5, 18, 31, 0.7);
+  background: var(--overlay-strong);
   color: #fff;
   font-size: 14px;
   cursor: pointer;
@@ -624,7 +665,7 @@ a:hover {
   height: 26px;
   border-radius: var(--radius-round);
   border: 1px solid var(--border);
-  background: rgba(5, 18, 31, 0.7);
+  background: var(--overlay-strong);
   color: var(--text);
   backdrop-filter: blur(4px);
   display: flex;
