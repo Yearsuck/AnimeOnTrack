@@ -940,8 +940,13 @@ pub fn pending_count(state: State<'_, AppState>) -> Result<i64, String> {
 /// Open an episode or info page in a visible, app-owned WebView2 window
 /// (separate from the user's browser — see `AppWindowPlayer`). Does NOT mark
 /// it seen — the user marks seen/unseen explicitly via `set_seen`.
+///
+/// `async` on purpose: creating a WebView2 window from a *synchronous* command
+/// produced a blank window that closed itself (and an earlier main-thread-
+/// dispatch attempt deadlocked the UI). Async commands run on Tauri's runtime,
+/// the same context `scraper_engine` builds its windows from successfully.
 #[tauri::command]
-pub fn open_episode(app: AppHandle, url: String) -> Result<(), String> {
+pub async fn open_episode(app: AppHandle, url: String) -> Result<(), String> {
     let ep = Episode {
         id: 0,
         series_id: 0,
