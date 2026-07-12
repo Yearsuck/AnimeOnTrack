@@ -1,6 +1,5 @@
 use crate::models::Episode;
 use anyhow::{anyhow, Result};
-use std::sync::mpsc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_opener::OpenerExt;
@@ -32,6 +31,12 @@ impl EpisodePlayer for BrowserPlayer {
 /// it never competes with or interferes with `scraper_engine`'s hidden,
 /// permit-gated scrape windows. The user solves any Cloudflare challenge
 /// interactively here.
+///
+/// Must be called from an **async** command (see `commands::open_episode`),
+/// exactly like `scraper_engine`'s `fetch_html`/`fetch_cover_image` — building
+/// a WebView2 window from a synchronous command's thread produced a blank
+/// window that closed itself; the async-command context is the proven-working
+/// one for window creation in this app.
 pub struct AppWindowPlayer;
 
 impl EpisodePlayer for AppWindowPlayer {
@@ -43,34 +48,15 @@ impl EpisodePlayer for AppWindowPlayer {
             .map(|d| d.as_nanos())
             .unwrap_or(0);
         let label = format!("viewer-{nanos}");
-        let url_str = episode.url.clone();
-        let app_main = app.clone();
-        let app_build = app.clone();
-
-        // Build the window on the MAIN thread. Tauri runs command handlers off
-        // the main thread, and a WebView2 window created off it comes up blank
-        // and tears itself down after a moment (verified: the same builder run
-        // from the main thread loads and stays open fine). run_on_main_thread
-        // dispatches the creation onto the UI loop where WebView2 needs it; we
-        // hand the build Result back over a channel so callers still see errors.
-        let (tx, rx) = mpsc::channel::<std::result::Result<(), String>>();
-        app_main.run_on_main_thread(move || {
-            let built = (|| -> std::result::Result<(), String> {
-                let parsed = url_str.parse().map_err(|_| format!("bad url: {url_str}"))?;
-                WebviewWindowBuilder::new(&app_build, &label, WebviewUrl::External(parsed))
-                    .title("AnimeOnTrack")
-                    .inner_size(1280.0, 800.0)
-                    .visible(true)
-                    .build()
-                    .map_err(|e| e.to_string())?;
-                Ok(())
-            })();
-            let _ = tx.send(built);
-        })
-        .map_err(|e| anyhow!("run_on_main_thread failed: {e}"))?;
-
-        rx.recv()
-            .map_err(|_| anyhow!("window build channel closed before a result"))?
-            .map_err(|e| anyhow!("failed to open viewer window: {e}"))
+        let url = episode
+            .url
+            .parse()
+            .map_err(|_| anyhow!("bad url: {}", episode.url))?;
+        WebviewWindowBuilder::new(app, &label, WebviewUrl::External(url))
+            .title("AnimeOnTrack")
+            .inner_size(1280.0, 800.0)
+            .visible(true)
+            .build()?;
+        Ok(())
     }
 }
