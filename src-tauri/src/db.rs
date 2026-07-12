@@ -25,6 +25,14 @@ pub struct CatalogFilter {
     pub episodes: Option<String>,
 }
 
+/// Ordering for the pending queue, by how many episodes each series still
+/// has left to watch. `RemainingAsc` = fewest-left first (quick wins).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PendingSort {
+    RemainingAsc,
+    RemainingDesc,
+}
+
 /// The subset of a `series` row's fields the swipe-history strip needs —
 /// see `Db::get_series_for_history` and `commands::list_swipe_history`.
 #[derive(Debug, Clone, PartialEq)]
@@ -1107,15 +1115,31 @@ impl Db {
 
     /// Unseen episodes of currently-followed series, joined with their
     /// series, newest first, scoped to `source_id` (see `pending_count`).
-    pub fn list_pending(&self, source_id: i64) -> Result<Vec<(crate::models::Series, crate::models::Episode)>> {
-        let mut stmt = self.conn.prepare(
+    /// Unseen episodes of currently-followed series, ordered so each series'
+    /// episodes stay contiguous (grouped in the UI) and the *groups* come out
+    /// sorted by how many pending episodes each series has — see `PendingSort`.
+    /// `COUNT(*) OVER (PARTITION BY s.id)` is the per-series remaining count;
+    /// `s.title` then `e.added_at DESC` keep ordering stable within a group and
+    /// across equal-count series.
+    pub fn list_pending(
+        &self,
+        source_id: i64,
+        sort: PendingSort,
+    ) -> Result<Vec<(crate::models::Series, crate::models::Episode)>> {
+        let dir = match sort {
+            PendingSort::RemainingAsc => "ASC",
+            PendingSort::RemainingDesc => "DESC",
+        };
+        let sql = format!(
             "SELECT s.id, s.slug, s.title, s.url, s.cover_url, s.is_airing, s.followed,
                     e.id, e.series_id, e.number, e.title, e.url, e.released_at, e.seen,
-                    s.next_episode_at, s.site_episode_count
+                    s.next_episode_at, s.site_episode_count,
+                    COUNT(*) OVER (PARTITION BY s.id) AS remaining
              FROM episodes e JOIN series s ON s.id = e.series_id
              WHERE e.seen=0 AND s.followed=1 AND s.source_id=?1
-             ORDER BY s.title, e.added_at DESC",
-        )?;
+             ORDER BY remaining {dir}, s.title, e.added_at DESC"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt
             .query_map([source_id], |r| {
                 let series = crate::models::Series {
@@ -1849,9 +1873,50 @@ mod tests {
 
         assert_eq!(db.pending_count(src_a).unwrap(), 1);
         assert_eq!(db.pending_count(src_b).unwrap(), 2);
-        assert_eq!(db.list_pending(src_a).unwrap().len(), 1);
-        assert_eq!(db.list_pending(src_b).unwrap().len(), 2);
-        assert!(db.list_pending(src_a).unwrap().iter().all(|(s, _)| s.id == sid_a));
+        assert_eq!(db.list_pending(src_a, PendingSort::RemainingAsc).unwrap().len(), 1);
+        assert_eq!(db.list_pending(src_b, PendingSort::RemainingAsc).unwrap().len(), 2);
+        assert!(db
+            .list_pending(src_a, PendingSort::RemainingAsc)
+            .unwrap()
+            .iter()
+            .all(|(s, _)| s.id == sid_a));
+    }
+
+    #[test]
+    fn list_pending_orders_groups_by_remaining_count() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "https://a.example", "animeytx").unwrap();
+        let mk = |slug: &str| crate::models::Series {
+            id: 0, slug: slug.into(), title: slug.into(), url: format!("u-{slug}"),
+            cover_url: None, is_airing: true, followed: false, next_episode_at: None, site_episode_count: None,
+        };
+        // "few" has 1 pending episode, "many" has 3.
+        let few = db.upsert_series(src, &mk("few")).unwrap();
+        db.set_followed(few, true).unwrap();
+        let many = db.upsert_series(src, &mk("many")).unwrap();
+        db.set_followed(many, true).unwrap();
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: few, number: "1".into(), title: None,
+            url: "few/1".into(), released_at: None, seen: false,
+        }).unwrap();
+        for n in 1..=3 {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: many, number: n.to_string(), title: None,
+                url: format!("many/{n}"), released_at: None, seen: false,
+            }).unwrap();
+        }
+
+        // Ascending: the 1-episode series' rows come before the 3-episode one.
+        let asc = db.list_pending(src, PendingSort::RemainingAsc).unwrap();
+        assert_eq!(asc.first().unwrap().0.id, few);
+        assert_eq!(asc.last().unwrap().0.id, many);
+        // Descending: reversed.
+        let desc = db.list_pending(src, PendingSort::RemainingDesc).unwrap();
+        assert_eq!(desc.first().unwrap().0.id, many);
+        assert_eq!(desc.last().unwrap().0.id, few);
+        // Each series' episodes stay contiguous (no interleaving).
+        let ids: Vec<i64> = asc.iter().map(|(s, _)| s.id).collect();
+        assert_eq!(ids, vec![few, many, many, many]);
     }
 
     #[test]

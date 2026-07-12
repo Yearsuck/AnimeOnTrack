@@ -44,6 +44,9 @@ export const es = {
 
   // Pending.tsx
   "pending.episodesToWatch": "{count} episodios por ver",
+  "pending.sortLabel": "Ordenar:",
+  "pending.sortFewest": "Menos episodios",
+  "pending.sortMost": "Más episodios",
   "pending.empty": "No hay episodios pendientes.",
   "pending.emptyHint": "Sigue algún anime en “En emisión” y pulsa Actualizar.",
   "pending.new": "{count} nuevo",

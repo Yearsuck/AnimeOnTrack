@@ -903,11 +903,21 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
     Ok(total_new)
 }
 
+/// Pending queue, ordered by episodes-remaining per series. `sort` is the
+/// JS-side string `"remaining_asc"` | `"remaining_desc"`; anything else
+/// (incl. `None`) defaults to ascending (fewest-left first).
 #[tauri::command]
-pub fn list_pending(state: State<'_, AppState>) -> Result<Vec<PendingItem>, String> {
+pub fn list_pending(
+    state: State<'_, AppState>,
+    sort: Option<String>,
+) -> Result<Vec<PendingItem>, String> {
+    let sort = match sort.as_deref() {
+        Some("remaining_desc") => crate::db::PendingSort::RemainingDesc,
+        _ => crate::db::PendingSort::RemainingAsc,
+    };
     let src = get_source_id(&state)?;
     let db = state.db.lock().unwrap();
-    let rows = db.list_pending(src).map_err(|e| e.to_string())?;
+    let rows = db.list_pending(src, sort).map_err(|e| e.to_string())?;
     Ok(rows
         .into_iter()
         .map(|(s, e)| PendingItem { series: s, episode: e })
