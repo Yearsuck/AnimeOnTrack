@@ -963,6 +963,21 @@ impl Db {
         )?)
     }
 
+    /// Highest numeric episode number we have for a series — the correct DB
+    /// side of refresh()'s skip decision (see `commands::should_fetch_series`),
+    /// unlike `episode_count` which is a row COUNT and gets inflated by
+    /// recap/"0"/version-reupload rows (Bug B, 2026-07-12 airing-refresh fix).
+    /// SQLite's `CAST(x AS INTEGER)` parses a leading integer and stops at the
+    /// first non-digit, so `'13'`->13, `'1 | v2'`->1, `'0 | Recap'`->0,
+    /// `'Recap'`->0. Returns 0 when the series has no episode rows.
+    pub fn max_episode_number(&self, series_id: i64) -> Result<i64> {
+        Ok(self.conn.query_row(
+            "SELECT COALESCE(MAX(CAST(number AS INTEGER)), 0) FROM episodes WHERE series_id=?1",
+            [series_id],
+            |r| r.get(0),
+        )?)
+    }
+
     /// Record "this series' episode list was actually fetched just now" —
     /// gates the FINISHED_RECHECK interval for followed series absent from
     /// the airing listing (see `commands::should_fetch_series`).
@@ -1566,6 +1581,49 @@ mod tests {
         }
         assert_eq!(db.episode_count(sid_a).unwrap(), 3);
         assert_eq!(db.episode_count(sid_b).unwrap(), 0);
+    }
+
+    /// `max_episode_number` must reflect the highest real episode number, not
+    /// the row count — recap/"0"/version-reupload rows must never inflate it
+    /// (Bug B in the 2026-07-12 airing-refresh-missing-episodes fix: a row
+    /// COUNT was being compared against the site's next-episode-number badge,
+    /// so a recap row cancelled the detection margin and a real new episode
+    /// got silently skipped).
+    #[test]
+    fn max_episode_number_ignores_recap_and_version_rows() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+
+        // Wistoria-shaped: "0|Recap", "1".."12" -> 13 rows, highest real = 12.
+        let sid_a = db.upsert_series(src, &mk_airing("a", "A", None)).unwrap();
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: sid_a, number: "0 | Recap".to_string(), title: None,
+            url: "https://site/a-recap".to_string(), released_at: None, seen: false,
+        }).unwrap();
+        for i in 1..=12 {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: sid_a, number: i.to_string(), title: None,
+                url: format!("https://site/a-{i}"), released_at: None, seen: false,
+            }).unwrap();
+        }
+        assert_eq!(db.episode_count(sid_a).unwrap(), 13, "sanity: row count is 13");
+        assert_eq!(db.max_episode_number(sid_a).unwrap(), 12);
+
+        // Tomb Raider King-shaped: "1 | v2", "2 | v1" -> highest real = 2.
+        let sid_b = db.upsert_series(src, &mk_airing("b", "B", None)).unwrap();
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: sid_b, number: "1 | v2".to_string(), title: None,
+            url: "https://site/b-1".to_string(), released_at: None, seen: false,
+        }).unwrap();
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: sid_b, number: "2 | v1".to_string(), title: None,
+            url: "https://site/b-2".to_string(), released_at: None, seen: false,
+        }).unwrap();
+        assert_eq!(db.max_episode_number(sid_b).unwrap(), 2);
+
+        // No episodes at all -> 0.
+        let sid_c = db.upsert_series(src, &mk_airing("c", "C", None)).unwrap();
+        assert_eq!(db.max_episode_number(sid_c).unwrap(), 0);
     }
 
     #[test]
