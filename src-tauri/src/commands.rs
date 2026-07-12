@@ -351,6 +351,34 @@ async fn scrape_via_mirrors<T>(
     Err(format!("ninguna web funcionó; último error: {last_err}"))
 }
 
+/// Pure carry-over planner: for each newly-scanned series, find the best
+/// title match among series followed on OTHER sites and, if it clears
+/// `matching::MATCH_THRESHOLD`, return `(index into new_site_series, watermark)`
+/// so the caller can carry the follow + progress onto that row. One best match
+/// per new-site series; nothing below the threshold carries (a false match
+/// would wrongly follow + mark a show seen). Already-followed rows are handled
+/// by `db::carry_follow`'s `followed=0` guard, not here. Split out pure so the
+/// matching behaviour is unit-testable without a DB/scrape.
+fn plan_carryover(
+    new_site_series: &[Series],
+    followed_elsewhere: &[(String, i64)],
+) -> Vec<(usize, i64)> {
+    if followed_elsewhere.is_empty() {
+        return Vec::new();
+    }
+    let candidates: Vec<crate::matching::TitleCandidate> = followed_elsewhere
+        .iter()
+        .map(|(title, _)| crate::matching::TitleCandidate { title, url: "" })
+        .collect();
+    let mut out = Vec::new();
+    for (i, s) in new_site_series.iter().enumerate() {
+        if let Some(m) = crate::matching::best_match(&[&s.title], &candidates) {
+            out.push((i, followed_elsewhere[m.index].1));
+        }
+    }
+    out
+}
+
 async fn scan_airing_via_mirrors(
     app: &AppHandle,
     state: &State<'_, AppState>,
@@ -380,8 +408,24 @@ async fn scan_airing_via_mirrors(
     let src = db
         .upsert_source(site_name, &working_mirror, site_id)
         .map_err(|e| e.to_string())?;
+    let mut upserted_ids: Vec<i64> = Vec::with_capacity(series.len());
     for s in &series {
-        db.upsert_series(src, s).map_err(|e| e.to_string())?;
+        upserted_ids.push(db.upsert_series(src, s).map_err(|e| e.to_string())?);
+    }
+    // Cross-site follow carry-over: a series followed on ANOTHER site that
+    // matches (by title) one just scanned here inherits the follow + a
+    // progress watermark, so switching sites doesn't strand your library. The
+    // watermark is applied later, once refresh() fetches this site's episode
+    // list (see refresh + db::carry_follow). Matching is title-based and
+    // conservative (matching::MATCH_THRESHOLD) — a wrong carry would falsely
+    // follow + mark-seen the wrong show.
+    let followed_elsewhere = db
+        .followed_titles_with_watermark(src)
+        .map_err(|e| e.to_string())?;
+    if !followed_elsewhere.is_empty() {
+        for (idx, watermark) in plan_carryover(&series, &followed_elsewhere) {
+            db.carry_follow(upserted_ids[idx], watermark).map_err(|e| e.to_string())?;
+        }
     }
     *state.source_id.lock().unwrap() = Some(src);
     db.list_airing(src).map_err(|e| e.to_string())
@@ -885,6 +929,14 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
                 // Only on a *successful* fetch — a failed one leaves the old
                 // timestamp so the finished-show recheck retries next cycle.
                 db.set_last_checked_at(s.id).map_err(|e| e.to_string())?;
+
+                // Apply-once cross-site progress carry-over: if this series'
+                // follow was carried from another site, mark every episode up
+                // to the carried watermark seen now that its episode list has
+                // been fetched, then clear the marker so it never re-fires.
+                if let Some(n) = db.take_carried_seen_number(s.id).map_err(|e| e.to_string())? {
+                    db.set_seen_cascade(s.id, &n.to_string(), true).map_err(|e| e.to_string())?;
+                }
             }
 
             // One cover fetch per followed series per refresh — never in
@@ -2502,5 +2554,55 @@ mod tests {
         assert!(should_fetch_series(
             false, false, true, Some(NOW + DAY), Some(5), 5, Some(0), NOW
         ));
+    }
+
+    fn scanned(title: &str) -> Series {
+        Series {
+            id: 0,
+            slug: title.to_lowercase().replace(' ', "-"),
+            title: title.to_string(),
+            url: format!("https://site.example/tv/{}/", title.to_lowercase().replace(' ', "-")),
+            cover_url: None,
+            is_airing: true,
+            followed: false,
+            next_episode_at: None,
+            site_episode_count: None,
+        }
+    }
+
+    #[test]
+    fn plan_carryover_matches_exact_title_and_returns_its_watermark() {
+        let new_site = vec![scanned("Frieren Sub Español"), scanned("Totally Unrelated Show")];
+        let followed = vec![("Frieren".to_string(), 12i64), ("Some Other".to_string(), 3)];
+        let out = plan_carryover(&new_site, &followed);
+        // Only the Frieren card matches; it carries index 0 with watermark 12.
+        assert_eq!(out, vec![(0usize, 12i64)]);
+    }
+
+    #[test]
+    fn plan_carryover_does_not_carry_a_decoy_below_threshold() {
+        let new_site = vec![scanned("Kaiju No. 8")];
+        let followed = vec![("Monster Musume".to_string(), 5i64)];
+        assert!(plan_carryover(&new_site, &followed).is_empty());
+    }
+
+    #[test]
+    fn plan_carryover_picks_the_best_of_several_followed_titles() {
+        let new_site = vec![scanned("Overlord IV")];
+        // A near-miss decoy and the true match; best_match must choose the
+        // exact-after-normalization one and return ITS watermark (7), not the
+        // decoy's.
+        let followed = vec![
+            ("Overlord".to_string(), 39i64),      // shorter, lower score
+            ("Overlord IV".to_string(), 7i64),    // exact normalized match
+        ];
+        let out = plan_carryover(&new_site, &followed);
+        assert_eq!(out, vec![(0usize, 7i64)]);
+    }
+
+    #[test]
+    fn plan_carryover_empty_when_nothing_followed_elsewhere() {
+        let new_site = vec![scanned("Anything")];
+        assert!(plan_carryover(&new_site, &[]).is_empty());
     }
 }
