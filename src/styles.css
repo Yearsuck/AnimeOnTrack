@@ -1123,3 +1123,41 @@ progress.scanbar-track::-webkit-progress-value {
   background: var(--success-dim);
   color: var(--success);
 }
+
+/* ---------- Stats · circles<->bars morph ---------- */
+.stats-cat-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.stats-cat-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.stats-cat-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.stats-cat-name {
+  font-size: 12.5px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.stats-cat-count {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+.stats-mark {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}

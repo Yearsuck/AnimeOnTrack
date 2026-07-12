@@ -213,6 +213,9 @@ export const en: Messages = {
   "stats.ringsEmpty": "No data yet. Hit Refresh to fill it in.",
   "stats.byGenre": "By genre",
   "stats.byType": "By type",
+  "stats.shapeRings": "Circles",
+  "stats.shapeBars": "Bars",
+  "stats.shapeToggleAria": "Chart shape",
 
   "stats.graphEmpty": "No followed series yet.",
   "stats.graphRootLabel": "Followed",

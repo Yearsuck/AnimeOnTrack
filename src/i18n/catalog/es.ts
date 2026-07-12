@@ -231,6 +231,9 @@ export const es = {
   "stats.ringsEmpty": "Sin datos todavía. Dale a Actualizar para completarlos.",
   "stats.byGenre": "Por género",
   "stats.byType": "Por tipo",
+  "stats.shapeRings": "Círculos",
+  "stats.shapeBars": "Barras",
+  "stats.shapeToggleAria": "Forma del gráfico",
 
   // StatsGraph.tsx
   "stats.graphEmpty": "Sin series seguidas todavía.",
