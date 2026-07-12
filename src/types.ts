@@ -60,6 +60,7 @@ export interface TypeStat {
 
 export interface WatchSummary {
   followed_series: number;
+  distinct_anime: number;
   episodes_watched: number;
   episodes_total: number;
   backlog_want: number;

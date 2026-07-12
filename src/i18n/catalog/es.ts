@@ -218,8 +218,10 @@ export const es = {
 
   // Stats.tsx
   "stats.episodesWatched": "Episodios vistos",
-  "stats.followedSeries": "Series seguidas",
-  "stats.backlogPending": "Pendientes en backlog",
+  "stats.distinctAnime": "Animes",
+  "stats.distinctAnimeHelp": "temporadas contadas como una",
+  "stats.followedSeries": "Series en seguimiento",
+  "stats.backlogPending": "Series pendientes",
   "stats.tabGraph": "Grafo",
   "stats.tabBars": "Barras",
   "stats.backfilling": "Rellenando…",

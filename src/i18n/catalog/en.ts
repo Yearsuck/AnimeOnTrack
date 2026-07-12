@@ -201,8 +201,10 @@ export const en: Messages = {
   "progress.completed": "Complete",
 
   "stats.episodesWatched": "Episodes watched",
-  "stats.followedSeries": "Followed series",
-  "stats.backlogPending": "Pending in backlog",
+  "stats.distinctAnime": "Anime",
+  "stats.distinctAnimeHelp": "seasons counted as one",
+  "stats.followedSeries": "Currently following",
+  "stats.backlogPending": "Pending series",
   "stats.tabGraph": "Graph",
   "stats.tabBars": "Bars",
   "stats.backfilling": "Backfilling…",
