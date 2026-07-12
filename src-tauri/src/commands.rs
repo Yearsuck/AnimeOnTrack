@@ -649,6 +649,17 @@ const REFRESH_CONCURRENCY: usize = 2;
 /// still hitting the 1-fetch fast path.
 const OFF_LISTING_RECHECK_SECS: i64 = 24 * 3600;
 
+/// On-listing followed series whose airing card shows a non-numeric "??"
+/// badge give no count signal at all; the future countdown can't rule out a
+/// fresh episode either (live-verified: it's never observed in the past,
+/// since the site rolls it forward the instant an episode posts), so an
+/// unknown badge used to mean an indefinite skip (Bug A, 2026-07-12
+/// airing-refresh-missing-episodes fix — proven live against "One Piece:
+/// Arco de Elbaph", permanently stuck until a force refresh). Re-fetch at
+/// most this often instead. Cheap: only a handful of "??" series were ever
+/// observed live (<=7), at most once per 6h each.
+const UNKNOWN_BADGE_RECHECK_SECS: i64 = 6 * 3600;
+
 /// The skip decision at the heart of refresh()'s optimization A (see
 /// docs/superpowers/specs/2026-07-10-scraper-performance-design.md): given a
 /// followed series' fresh airing-listing metadata, does its episode-list
@@ -675,12 +686,17 @@ const OFF_LISTING_RECHECK_SECS: i64 = 24 * 3600;
 ///   NOT mean finished on this site).
 /// - On the listing with a past countdown: the episode aired and the card
 ///   hasn't rolled over — fetch, whatever the badge says.
-/// - Badge present: fetch iff `badge > db+1` (site has posted something we
-///   don't have). `db+1` (up to date) and `<= db` (our numbering equal or
+/// - Badge present: fetch iff `badge > db_max+1` (site has posted something
+///   we don't have; `db_max` is the highest real episode NUMBER, not a row
+///   count — see `Db::max_episode_number`'s doc for why a row count is
+///   wrong). `db_max+1` (up to date) and `<= db_max` (our numbering equal or
 ///   ahead) both skip. Deliberately *not* the spec's literal "badge == db
 ///   skips": that rule assumed badge = posted count, which the live data
 ///   disproves — under it, every current weekly series re-fetches forever.
-/// - Badge unknown (`"??"`): future countdown skips, absent fetches.
+/// - Badge unknown (`"??"`): no count signal at all, and the countdown can't
+///   substitute for one (it's never observed in the past — see
+///   `UNKNOWN_BADGE_RECHECK_SECS`'s doc), so fall back to a bounded recheck
+///   instead of skipping indefinitely (Bug A, 2026-07-12 fix).
 #[allow(clippy::too_many_arguments)]
 fn should_fetch_series(
     force: bool,
@@ -688,7 +704,7 @@ fn should_fetch_series(
     on_listing: bool,
     next_episode_at: Option<i64>,
     site_episode_count: Option<i64>,
-    db_episode_count: i64,
+    db_max_episode_number: i64,
     last_checked_age_secs: Option<i64>,
     now_unix: i64,
 ) -> bool {
@@ -705,8 +721,11 @@ fn should_fetch_series(
         return true;
     }
     match site_episode_count {
-        Some(next_number) => next_number > db_episode_count + 1,
-        None => next_episode_at.is_none(),
+        Some(next_number) => next_number > db_max_episode_number + 1,
+        None => match last_checked_age_secs {
+            None => true,
+            Some(age) => age >= UNKNOWN_BADGE_RECHECK_SECS,
+        },
     }
 }
 
@@ -790,10 +809,10 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
     let mut to_fetch: Vec<Series> = Vec::new();
     let mut idx = 0usize;
     for s in followed {
-        let (db_count, checked_age) = {
+        let (db_max_number, checked_age) = {
             let db = state.db.lock().unwrap();
             (
-                db.episode_count(s.id).map_err(|e| e.to_string())?,
+                db.max_episode_number(s.id).map_err(|e| e.to_string())?,
                 db.last_checked_age_secs(s.id).map_err(|e| e.to_string())?,
             )
         };
@@ -804,7 +823,7 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
             on_listing,
             s.next_episode_at,
             s.site_episode_count,
-            db_count,
+            db_max_number,
             checked_age,
             now_unix,
         ) {
@@ -2304,22 +2323,72 @@ mod tests {
     const DAY: i64 = 86_400;
 
     /// Baseline "quiet week" listing series: next episode in the future and
-    /// the site's badge shows the *upcoming* episode's number (db+1, the
+    /// the site's badge shows the *upcoming* episode's number (db_max+1, the
     /// live-verified up-to-date pattern) — the case that must skip for the
-    /// big win to exist.
+    /// big win to exist. The unknown-badge ("??") case used to live here too,
+    /// but Bug A (2026-07-12 airing-refresh fix) showed a future countdown
+    /// alone can't justify skipping when the badge gives no signal at all —
+    /// see `unknown_badge_with_future_countdown_uses_bounded_recheck` below.
     #[test]
     fn skip_when_next_episode_in_future_and_no_count_conflict() {
-        assert!(!should_fetch_series(
-            false, true, true, Some(NOW + DAY), None, 5, None, NOW
-        ));
-        // .sb = db+1: up to date under the verified next-episode-number
+        // .sb = db_max+1: up to date under the verified next-episode-number
         // semantics (8/8 provably-current live series showed exactly this).
         assert!(!should_fetch_series(
             false, true, true, Some(NOW + DAY), Some(6), 5, None, NOW
         ));
-        // .sb = db: db numbering equal/ahead of the badge — also nothing new.
+        // .sb = db_max: db numbering equal/ahead of the badge — also nothing new.
         assert!(!should_fetch_series(
             false, true, true, Some(NOW + DAY), Some(5), 5, None, NOW
+        ));
+    }
+
+    /// Bug A (2026-07-12 airing-refresh-missing-episodes fix): a non-numeric
+    /// "??" badge gives no count signal at all, and the site's countdown is
+    /// *never* observed in the past (it always rolls forward the instant an
+    /// episode posts, live-verified), so "future countdown -> skip" would
+    /// skip such a series FOREVER — proven live against "One Piece: Arco de
+    /// Elbaph" (203 episodes, airing, on-listing, badge NULL, future
+    /// next_episode_at, permanently stuck until a force refresh). Fall back
+    /// to a bounded recheck instead of an indefinite skip.
+    #[test]
+    fn unknown_badge_with_future_countdown_uses_bounded_recheck() {
+        // Never checked before -> fetch (matches the old test's flipped case:
+        // unknown badge + never checked used to assert skip, which was the
+        // bug).
+        assert!(should_fetch_series(
+            false, true, true, Some(NOW + DAY), None, 5, None, NOW
+        ));
+        // Checked well within the 6h window -> skip.
+        assert!(!should_fetch_series(
+            false, true, true, Some(NOW + DAY), None, 5, Some(3600), NOW
+        ));
+        // Checked exactly 6h ago -> fetch (boundary is inclusive).
+        assert!(should_fetch_series(
+            false, true, true, Some(NOW + DAY), None, 5, Some(6 * 3600), NOW
+        ));
+        // Checked well past 6h ago -> fetch.
+        assert!(should_fetch_series(
+            false, true, true, Some(NOW + DAY), None, 5, Some(7 * 3600), NOW
+        ));
+    }
+
+    /// Bug B regression (2026-07-12 fix): `db_max_episode_number` must be the
+    /// highest real episode NUMBER, not a row COUNT — recap/"0"/version rows
+    /// inflate a row count and silently cancel the `+1` detection margin.
+    /// Live proof: Tsue to Tsurugi no Wistoria Temporada 2 has episode rows
+    /// "0|Recap", 1..12 (13 rows, highest real number 12); when episode 13
+    /// posts the badge becomes 14.
+    #[test]
+    fn regression_recap_row_no_longer_masks_a_new_episode() {
+        // Caught up: badge 13 (next-episode-number) vs max number 12 -> skip.
+        assert!(!should_fetch_series(
+            false, true, true, Some(NOW + DAY), Some(13), 12, None, NOW
+        ));
+        // Episode 13 just posted: badge rolls to 14 vs max number still 12 ->
+        // fetch. Under the old row-COUNT bug (13) this was `14 > 13+1=14` =
+        // false, i.e. the miss this fix corrects.
+        assert!(should_fetch_series(
+            false, true, true, Some(NOW + DAY), Some(14), 12, None, NOW
         ));
     }
 
