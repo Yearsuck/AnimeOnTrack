@@ -54,6 +54,13 @@ pub struct LibraryItem {
     /// Drives "Viendo"/"Completadas" most-recent-first ordering.
     #[serde(default)]
     pub last_watched_at: Option<String>,
+    /// Mirrors `series.watched_externally` — set by a catalog "Ya lo vi"
+    /// swipe (`decide_catalog_card`'s Seen decision), which never scrapes
+    /// episodes. Lets the frontend classify a zero-episode row as
+    /// "Completadas" instead of reading it as an empty/errored followed
+    /// series. See docs/superpowers/specs/2026-07-12-ya-lo-vi-library-visibility-design.md.
+    #[serde(default)]
+    pub watched_externally: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -92,6 +92,8 @@ export const en: Messages = {
   "library.cardMenuAria": "More options",
   "library.unfollow": "Unfollow",
   "library.moveToWant": 'Move to "Want to watch"',
+  "library.watchedExternally": "✓ Watched elsewhere",
+  "library.markNotWatched": "Mark as not watched",
 
   "seriesDetail.unfollow": "Unfollow",
   "seriesDetail.openPage": "Open series page ↗",

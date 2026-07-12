@@ -7,15 +7,20 @@ type Status = "completed" | "watching" | "plan";
 // Airing filter for the Viendo section.
 type AiringFilter = "all" | "airing" | "finished";
 
-// Status is derived, never stored (no user-set field exists). Completed means
-// the series is FINISHED (not airing) AND everything available is watched —
-// an airing series you're caught up on (allSeen && is_airing) stays in
-// "watching", because more episodes are still coming (it isn't done). A
-// nonzero total is required so a followed-but-never-scraped series (total=0)
-// never reads as completed. Everything with >0 seen that isn't completed is
-// "watching" (incl. caught-up airing and partly-watched finished shows);
-// 0 seen is "plan", never dividing by zero.
+// Status is derived, never stored (no user-set field exists). A catalog "Ya
+// lo vi" swipe (watched_externally) is checked FIRST and unconditionally
+// lands in "completed" — it has 0 scraped episodes (AniList catalog Seen
+// never scrapes), so the total>0 rule below would otherwise misread it as
+// "plan". Completed otherwise means the series is FINISHED (not airing) AND
+// everything available is watched — an airing series you're caught up on
+// (allSeen && is_airing) stays in "watching", because more episodes are
+// still coming (it isn't done). A nonzero total is required so a
+// followed-but-never-scraped series (total=0) never reads as completed.
+// Everything with >0 seen that isn't completed is "watching" (incl.
+// caught-up airing and partly-watched finished shows); 0 seen is "plan",
+// never dividing by zero.
 function statusOf(it: LibraryItem): Status {
+  if (it.watched_externally) return "completed";
   const allSeen = it.total_episodes > 0 && it.seen_episodes === it.total_episodes;
   if (allSeen && !it.series.is_airing) return "completed";
   if (it.seen_episodes > 0) return "watching";
@@ -133,6 +138,13 @@ function LibraryCard({
     if (item.next_episode) openEpisode(item.next_episode.url);
   }
 
+  // The Completed section normally passes showMenu={false} (nothing to
+  // reclassify from "done"), but a watched-externally card ("Ya lo vi" from
+  // the catalog) still needs an undo path — it's a manual mark, not a
+  // derived state — so it always gets a (single-item) menu regardless of
+  // the section's showMenu prop.
+  const effectiveShowMenu = showMenu || item.watched_externally;
+
   return (
     <div
       className="card lib-card"
@@ -143,7 +155,7 @@ function LibraryCard({
       title={item.series.title}
     >
       <div className="poster">
-        {showMenu && (
+        {effectiveShowMenu && (
           <div className="card-menu-wrap" ref={menuRef}>
             <button
               type="button"
@@ -159,12 +171,20 @@ function LibraryCard({
             </button>
             {menuOpen && (
               <div className="card-menu-list" onClick={(e) => e.stopPropagation()}>
-                <button type="button" className="card-menu-item" onClick={unfollow}>
-                  {t("library.unfollow")}
-                </button>
-                <button type="button" className="card-menu-item" onClick={moveToWant}>
-                  {t("library.moveToWant")}
-                </button>
+                {item.watched_externally ? (
+                  <button type="button" className="card-menu-item" onClick={unfollow}>
+                    {t("library.markNotWatched")}
+                  </button>
+                ) : (
+                  <>
+                    <button type="button" className="card-menu-item" onClick={unfollow}>
+                      {t("library.unfollow")}
+                    </button>
+                    <button type="button" className="card-menu-item" onClick={moveToWant}>
+                      {t("library.moveToWant")}
+                    </button>
+                  </>
+                )}
               </div>
             )}
           </div>
@@ -184,23 +204,29 @@ function LibraryCard({
       </div>
       <div className="card-body">
         <div className="card-title">{item.series.title}</div>
-        <div
-          className="progress"
-          role="progressbar"
-          aria-valuenow={item.seen_episodes}
-          aria-valuemin={0}
-          aria-valuemax={item.total_episodes}
-          aria-label={t("library.progressAria", {
-            title: item.series.title,
-            seen: item.seen_episodes,
-            total: item.total_episodes,
-          })}
-        >
-          <span style={{ width: `${pct}%` }} />
-        </div>
-        <div className="lib-progress-text muted">
-          {item.seen_episodes} / {item.total_episodes}
-        </div>
+        {item.watched_externally && item.total_episodes === 0 ? (
+          <div className="lib-progress-text muted">{t("library.watchedExternally")}</div>
+        ) : (
+          <>
+            <div
+              className="progress"
+              role="progressbar"
+              aria-valuenow={item.seen_episodes}
+              aria-valuemin={0}
+              aria-valuemax={item.total_episodes}
+              aria-label={t("library.progressAria", {
+                title: item.series.title,
+                seen: item.seen_episodes,
+                total: item.total_episodes,
+              })}
+            >
+              <span style={{ width: `${pct}%` }} />
+            </div>
+            <div className="lib-progress-text muted">
+              {item.seen_episodes} / {item.total_episodes}
+            </div>
+          </>
+        )}
         {showAction && item.next_episode && (
           <button
             type="button"

@@ -43,6 +43,9 @@ export interface LibraryItem {
   next_episode: NextEpisode | null;
   /** MAX(episodes.seen_at) — when the user last marked an episode seen. */
   last_watched_at: string | null;
+  /** Mirrors series.watched_externally — a catalog "Ya lo vi" swipe, which
+   *  never scrapes episodes (total_episodes stays 0). */
+  watched_externally: boolean;
 }
 
 export interface GenreStat {
