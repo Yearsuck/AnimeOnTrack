@@ -151,6 +151,17 @@ function SwipeView() {
   const queueRef = useRef<SwipeCard[]>([]);
   const fillingRef = useRef(false);
   const cardUrlRef = useRef<string | null>(null);
+  // Every url decided this session (Discard/Want/Seen), so a concurrent
+  // fillQueue round can never re-serve a card the user already swiped even
+  // if its decideCatalogCard upsert hasn't landed in the DB yet (the
+  // reappearance race: the deck only excludes a card once it's persisted).
+  // Cleared per-url when the card legitimately returns to the deck (undo /
+  // returnToDeck).
+  const decidedUrlsRef = useRef<Set<string>>(new Set());
+  // The single most-recently-decided url, so undo() (which only pops the
+  // front of the backend's swipe_history — one step back) knows which url
+  // to release from decidedUrlsRef.
+  const lastDecidedUrlRef = useRef<string | null>(null);
   const { statuses: linkStatuses, enqueue: enqueueLink } = useLinkQueue();
   // Multi-level undo cache: the last ~5 classified cards, newest first.
   const [history, setHistory] = useState<SwipeHistoryItem[]>([]);
@@ -174,10 +185,21 @@ function SwipeView() {
         const results = await Promise.all(Array.from({ length: need }, () => discoverCatalogCard()));
         const seen = new Set(queueRef.current.map((c) => c.url));
         if (cardUrlRef.current) seen.add(cardUrlRef.current);
-        const fresh = results.filter((c): c is SwipeCard => c !== null && !seen.has(c.url));
+        decidedUrlsRef.current.forEach((url) => seen.add(url));
+        // Walk results in order, adding each accepted card's url to `seen`
+        // as it's accepted — this also dedups two concurrent pickers in the
+        // SAME round returning the same not-yet-persisted card (both would
+        // pass a `seen` set built only from before the round started).
+        const fresh: SwipeCard[] = [];
+        for (const c of results) {
+          if (c !== null && !seen.has(c.url)) {
+            seen.add(c.url);
+            fresh.push(c);
+          }
+        }
         // No forward progress this round (either truly empty, or every hit
-        // was a duplicate of something already queued) — stop rather than
-        // burning more rounds of concurrent fetches chasing the same
+        // was a duplicate of something already queued/decided) — stop rather
+        // than burning more rounds of concurrent fetches chasing the same
         // handful of not-yet-decided cards.
         if (fresh.length === 0) break;
         queueRef.current = [...queueRef.current, ...fresh];
@@ -233,6 +255,11 @@ function SwipeView() {
       if (!card || busyRef.current) return;
       busyRef.current = true;
       const activeCard = card;
+      // Synchronously, before anything async: a concurrent fillQueue round
+      // fired from popNext() below must never re-serve this card, even
+      // though its decideCatalogCard upsert is still in flight.
+      decidedUrlsRef.current.add(activeCard.url);
+      lastDecidedUrlRef.current = activeCard.url;
       setOutDirection(direction);
       setCanUndo(false);
       const anilistId = anilistIdFromUrl(activeCard.url);
@@ -279,6 +306,12 @@ function SwipeView() {
     if (!canUndo) return;
     setCanUndo(false);
     await undoLastSwipe();
+    // The card is back in the deck (its series row was hard-deleted) — let
+    // fillQueue serve it again.
+    if (lastDecidedUrlRef.current) {
+      decidedUrlsRef.current.delete(lastDecidedUrlRef.current);
+      lastDecidedUrlRef.current = null;
+    }
     refreshHistory();
   }, [canUndo, refreshHistory]);
 
@@ -295,6 +328,10 @@ function SwipeView() {
   const returnToDeck = useCallback(
     async (item: SwipeHistoryItem) => {
       await undoSwipeEntry(item.series_id);
+      // Same as undo(): the row is hard-deleted, so fillQueue must be
+      // allowed to serve this url again.
+      decidedUrlsRef.current.delete(item.url);
+      if (lastDecidedUrlRef.current === item.url) lastDecidedUrlRef.current = null;
       refreshHistory();
     },
     [refreshHistory]
