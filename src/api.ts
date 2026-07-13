@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   Series,
+  AiringItem,
   Episode,
   PendingItem,
   LibraryItem,
@@ -26,6 +27,10 @@ export const scanAiring = (baseUrl: string) =>
   invoke<Series[]>("scan_airing", { baseUrl });
 
 export const listAiring = () => invoke<Series[]>("list_airing");
+
+// Same series/order as listAiring, each paired with its parsed first-episode
+// date (when known) — feeds AiringGrid's "Esta temporada" filter.
+export const listAiringSeason = () => invoke<AiringItem[]>("list_airing_season");
 
 export const setFollowed = (seriesId: number, followed: boolean) =>
   invoke<void>("set_followed", { seriesId, followed });

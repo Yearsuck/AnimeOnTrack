@@ -13,6 +13,17 @@ export interface Series {
   site_episode_count: number | null;
 }
 
+// One airing series plus its parsed first-episode date, for the "Esta
+// temporada" filter. Most airing series won't have one — episodes are only
+// scraped on-demand (followed/opened), not for the whole catalog — so
+// `first_episode_at: null` means "unknown", not "old".
+export interface AiringItem {
+  series: Series;
+  /** Unix timestamp (seconds) of the series' first scraped episode's release
+   *  date, or null when unknown (no scraped episodes / unparseable date). */
+  first_episode_at: number | null;
+}
+
 export interface Episode {
   id: number;
   series_id: number;

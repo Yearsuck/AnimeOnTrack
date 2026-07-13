@@ -1,9 +1,10 @@
 use crate::adapter::{self, SiteAdapter};
+use crate::dates::parse_spanish_date;
 use crate::db::Db;
 use crate::diff::new_episodes;
 use crate::models::{
-    Episode, FinishedCard, GenreAffinity, GenreStat, Series, SeriesDetail, SeriesGraphNode, TypeStat,
-    WatchSummary,
+    AiringItem, Episode, FinishedCard, GenreAffinity, GenreStat, Series, SeriesDetail, SeriesGraphNode,
+    TypeStat, WatchSummary,
 };
 use crate::player::{AppWindowPlayer, EpisodePlayer};
 use crate::scraper_engine::{fetch_cover_image, fetch_html, ScrapeResult};
@@ -590,6 +591,30 @@ pub fn list_airing(state: State<'_, AppState>) -> Result<Vec<Series>, String> {
     let src = get_source_id(&state)?;
     let db = state.db.lock().unwrap();
     db.list_airing(src).map_err(|e| e.to_string())
+}
+
+/// Same series/order as `list_airing`, each paired with its parsed
+/// first-episode date (when known) for the frontend's "Esta temporada"
+/// filter. See docs/superpowers/specs/2026-07-13-airing-this-season-design.md
+/// — most airing series won't have one, since episodes are only scraped
+/// on-demand (see [[project-scraping-scope]]), not for the whole catalog.
+#[tauri::command]
+pub fn list_airing_season(state: State<'_, AppState>) -> Result<Vec<AiringItem>, String> {
+    let src = get_source_id(&state)?;
+    let db = state.db.lock().unwrap();
+    let series = db.list_airing(src).map_err(|e| e.to_string())?;
+    let first_dates = db.first_episode_dates(src).map_err(|e| e.to_string())?;
+    Ok(series
+        .into_iter()
+        .map(|s| {
+            let first_episode_at = first_dates
+                .get(&s.id)
+                .and_then(|raw| parse_spanish_date(raw))
+                .and_then(|d| d.and_hms_opt(0, 0, 0))
+                .map(|dt| dt.and_utc().timestamp());
+            AiringItem { series: s, first_episode_at }
+        })
+        .collect())
 }
 
 /// Followed series with episode counts, for the library view.

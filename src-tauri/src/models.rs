@@ -24,6 +24,25 @@ pub struct Series {
     pub site_episode_count: Option<i64>,
 }
 
+/// One airing series plus its parsed first-episode date, for the "Esta
+/// temporada" filter (`list_airing_season`). Kept as its own struct rather
+/// than adding a field to `Series` — `Series` is the scan-owned shared model
+/// with many callers/fixtures, and this timestamp is derived read-side from
+/// `episodes.released_at`, not scan-owned. See
+/// docs/superpowers/specs/2026-07-13-airing-this-season-design.md.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AiringItem {
+    pub series: Series,
+    /// Unix timestamp (UTC midnight) of the series' lowest-numbered episode's
+    /// release date, parsed via `dates::parse_spanish_date`. `None` when the
+    /// series has no scraped episodes yet or its first episode's
+    /// `released_at` didn't parse — most airing series fall in this bucket
+    /// (episodes are only scraped on-demand, see [[project-scraping-scope]]),
+    /// so `None` here means "unknown", not "old".
+    #[serde(default)]
+    pub first_episode_at: Option<i64>,
+}
+
 /// The lowest-numbered unseen episode of a followed series (`LibraryItem`'s
 /// "resume here" affordance) — same ordering `list_series_episodes` uses
 /// (`CAST(number AS INTEGER) ASC, id ASC`), so this can never disagree with
@@ -181,6 +200,27 @@ mod tests {
         let j = serde_json::to_string(&s).unwrap();
         let back: Series = serde_json::from_str(&j).unwrap();
         assert_eq!(s, back);
+    }
+
+    #[test]
+    fn airing_item_json_roundtrips() {
+        let item = AiringItem {
+            series: Series {
+                id: 1,
+                slug: "baki-dou".into(),
+                title: "Baki-dou".into(),
+                url: "https://wwv.animeytx.net/tv/baki-dou/".into(),
+                cover_url: None,
+                is_airing: true,
+                followed: false,
+                next_episode_at: None,
+                site_episode_count: None,
+            },
+            first_episode_at: Some(1_780_000_000),
+        };
+        let j = serde_json::to_string(&item).unwrap();
+        let back: AiringItem = serde_json::from_str(&j).unwrap();
+        assert_eq!(item, back);
     }
 
     #[test]
