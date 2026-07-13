@@ -89,7 +89,29 @@ function useLinkQueue() {
   return { statuses, enqueue };
 }
 
-type SubView = "swipe" | "listas" | "filtros";
+type SubView = "swipe" | "listas";
+
+// Deck settings panel's collapsed/open state, persisted the same way as
+// theme.ts / discoverMode.ts (read once for initial state, write on toggle).
+// Local to this file — no other view reads it, so no dedicated module.
+const DECK_PANEL_STORAGE_KEY = "aot.deckPanel";
+
+function getInitialDeckPanelOpen(): boolean {
+  try {
+    return localStorage.getItem(DECK_PANEL_STORAGE_KEY) !== "closed";
+  } catch {
+    return true;
+  }
+}
+
+function persistDeckPanelOpen(open: boolean): void {
+  try {
+    localStorage.setItem(DECK_PANEL_STORAGE_KEY, open ? "open" : "closed");
+  } catch {
+    // localStorage unavailable — the choice just won't persist.
+  }
+}
+
 type SwipeOutDirection = "discard" | "want" | "seen" | null;
 
 // AniList's siteUrl shape is https://anilist.co/anime/{id}/{slug} — catalog
@@ -142,9 +164,9 @@ function TasteChips() {
 }
 
 // Recomendado / Aleatorio segmented control — self-contained (reads/writes
-// `useDiscoverMode` directly, no props) so task 8 can relocate it into a
-// swipe-side panel later without rewiring. Mirrors StatsRings.tsx's
-// bars/rings toggle markup (`.seg`/`.seg-btn`, `role="tablist"`/`"tab"`).
+// `useDiscoverMode` directly, no props). Lives inside DeckPanel now. Mirrors
+// StatsRings.tsx's bars/rings toggle markup (`.seg`/`.seg-btn`,
+// `role="tablist"`/`"tab"`).
 function DiscoverModeToggle() {
   const t = useT();
   const [mode, setMode] = useDiscoverMode();
@@ -286,19 +308,31 @@ function SwipeView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Invalidates the local prefetch buffer and refills it under the
+  // currently-active bans/mode, without discarding whatever card is already
+  // on screen and without touching decidedUrlsRef (already-decided cards
+  // stay excluded regardless). Shared by the discoverMode-change effect
+  // below and by DeckPanel's onBansSaved: saving a ban must have the exact
+  // same effect as switching mode, because SwipeView no longer unmounts when
+  // the deck panel's save button is pressed (it lives inside the Swipe
+  // section now) — up to PREFETCH_TARGET stale-banned cards would otherwise
+  // keep being served from the old queue.
+  const resetQueue = useCallback(() => {
+    queueRef.current = [];
+    fillQueue();
+  }, [fillQueue]);
+
   // Switching Recomendado <-> Aleatorio must refresh the *upcoming* deck
-  // immediately, without discarding whatever card is already on screen and
-  // without touching decidedUrlsRef (already-decided cards stay excluded
-  // regardless of mode). Skip the very first run (mount already filled the
-  // queue in the effect above with the mode current at that time).
+  // immediately (see resetQueue above). Skip the very first run (mount
+  // already filled the queue in the effect above with the mode current at
+  // that time).
   useEffect(() => {
     if (isFirstModeRenderRef.current) {
       isFirstModeRenderRef.current = false;
       return;
     }
-    queueRef.current = [];
-    fillQueue();
-  }, [discoverMode, fillQueue]);
+    resetQueue();
+  }, [discoverMode, resetQueue]);
 
   const decide = useCallback(
     async (decision: SwipeDecision, direction: Exclude<SwipeOutDirection, null>) => {
@@ -410,111 +444,111 @@ function SwipeView() {
   }, [decide, undo]);
 
   return (
-    <div className="swipe-stage">
-      <div style={{ display: "flex", justifyContent: "center", marginBottom: 12 }}>
-        <DiscoverModeToggle />
-      </div>
-      <TasteChips />
-      {exhausted ? (
-        <div className="empty">{t("discover.exhausted")}</div>
-      ) : card ? (
-        <div className={`card swipe-card ${outDirection ? `swipe-out-${outDirection}` : ""}`}>
-          <div
-            className="poster"
-            style={{ cursor: "pointer" }}
-            title={t("discover.openPageTitle")}
-            onClick={(e) => {
-              e.stopPropagation();
-              openEpisode(card.url).catch((err) =>
-                console.error("openEpisode failed for", card.url, err)
-              );
-            }}
-          >
-            <span className="chip">{card.kind}</span>
-            {card.poster_url ? <img src={card.poster_url} alt={card.title} /> : null}
-          </div>
-          <div className="card-body">
-            <div className="card-title" style={{ minHeight: "auto" }}>
-              {card.title}
+    <div className="swipe-layout">
+      <DeckPanel onBansSaved={resetQueue} />
+      <div className="swipe-stage">
+        <TasteChips />
+        {exhausted ? (
+          <div className="empty">{t("discover.exhausted")}</div>
+        ) : card ? (
+          <div className={`card swipe-card ${outDirection ? `swipe-out-${outDirection}` : ""}`}>
+            <div
+              className="poster"
+              style={{ cursor: "pointer" }}
+              title={t("discover.openPageTitle")}
+              onClick={(e) => {
+                e.stopPropagation();
+                openEpisode(card.url).catch((err) =>
+                  console.error("openEpisode failed for", card.url, err)
+                );
+              }}
+            >
+              <span className="chip">{card.kind}</span>
+              {card.poster_url ? <img src={card.poster_url} alt={card.title} /> : null}
             </div>
-            {card.matched_genre && (
-              <div className="muted" style={{ fontSize: 12 }}>
-                {t("discover.genreLabel", { genre: card.matched_genre })}
+            <div className="card-body">
+              <div className="card-title" style={{ minHeight: "auto" }}>
+                {card.title}
               </div>
-            )}
-          </div>
-        </div>
-      ) : (
-        <div className="card swipe-card">
-          <div className="poster" />
-          <div className="card-body">
-            <div className="muted">{loading ? t("common.loading") : ""}</div>
-          </div>
-        </div>
-      )}
-
-      <div className="swipe-actions">
-        <button
-          className="btn btn-discard"
-          title={t("discover.discardTitle")}
-          onClick={() => decide("Discard", "discard")}
-          disabled={!card}
-        >
-          ✕
-        </button>
-        <button
-          className="btn btn-want"
-          title={t("discover.wantTitle")}
-          onClick={() => decide("Want", "want")}
-          disabled={!card}
-        >
-          ★
-        </button>
-        <button
-          className="btn btn-success"
-          title={t("discover.seenTitle")}
-          onClick={() => decide("Seen", "seen")}
-          disabled={!card}
-        >
-          ✓
-        </button>
-        <button
-          className="btn btn-ghost"
-          title={t("discover.undoTitle")}
-          onClick={undo}
-          disabled={!canUndo}
-        >
-          ↺
-        </button>
-      </div>
-      <div className="swipe-hint">{t("discover.hint")}</div>
-      {linkStatuses.length > 0 && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 8 }}>
-          {linkStatuses.map((s) => (
-            <div key={s.id} className="muted" style={{ fontSize: 12 }}>
-              {s.state === "searching" && t("discover.searching", { title: s.title })}
-              {s.state === "linked" && t("discover.linked", { count: s.episodes ?? 0 })}
-              {s.state === "nomatch" && t("discover.noMatch", { title: s.title })}
+              {card.matched_genre && (
+                <div className="muted" style={{ fontSize: 12 }}>
+                  {t("discover.genreLabel", { genre: card.matched_genre })}
+                </div>
+              )}
             </div>
-          ))}
-        </div>
-      )}
-
-      {history.length > 0 && (
-        <div className="swipe-history">
-          <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>
-            {t("discover.historyHeading")}
           </div>
-          {history.map((h) => (
-            <HistoryRow
-              key={h.series_id}
-              item={h}
-              onReclassify={reclassifyHistory}
-              onReturn={returnToDeck}
-            />
-          ))}
+        ) : (
+          <div className="card swipe-card">
+            <div className="poster" />
+            <div className="card-body">
+              <div className="muted">{loading ? t("common.loading") : ""}</div>
+            </div>
+          </div>
+        )}
+
+        <div className="swipe-actions">
+          <button
+            className="btn btn-discard"
+            title={t("discover.discardTitle")}
+            onClick={() => decide("Discard", "discard")}
+            disabled={!card}
+          >
+            ✕
+          </button>
+          <button
+            className="btn btn-want"
+            title={t("discover.wantTitle")}
+            onClick={() => decide("Want", "want")}
+            disabled={!card}
+          >
+            ★
+          </button>
+          <button
+            className="btn btn-success"
+            title={t("discover.seenTitle")}
+            onClick={() => decide("Seen", "seen")}
+            disabled={!card}
+          >
+            ✓
+          </button>
+          <button
+            className="btn btn-ghost"
+            title={t("discover.undoTitle")}
+            onClick={undo}
+            disabled={!canUndo}
+          >
+            ↺
+          </button>
         </div>
-      )}
+        <div className="swipe-hint">{t("discover.hint")}</div>
+        {linkStatuses.length > 0 && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 8 }}>
+            {linkStatuses.map((s) => (
+              <div key={s.id} className="muted" style={{ fontSize: 12 }}>
+                {s.state === "searching" && t("discover.searching", { title: s.title })}
+                {s.state === "linked" && t("discover.linked", { count: s.episodes ?? 0 })}
+                {s.state === "nomatch" && t("discover.noMatch", { title: s.title })}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {history.length > 0 && (
+          <div className="swipe-history">
+            <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>
+              {t("discover.historyHeading")}
+            </div>
+            {history.map((h) => (
+              <HistoryRow
+                key={h.series_id}
+                item={h}
+                onReclassify={reclassifyHistory}
+                onReturn={returnToDeck}
+              />
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -988,17 +1022,26 @@ function ListasView({ onOpenSeries }: { onOpenSeries: (s: Series) => void }) {
   );
 }
 
-// Deck genre/type bans (Section B). Banned chips render "active" (highlighted
-// = excluded from the deck). Genres come from the synced catalog facets;
-// formats are the fixed deck whitelist. Persisted via setDeckBans; takes
-// effect on the next discover_catalog_card.
-function FiltersView() {
+// Deck settings panel — lives inside SwipeView (see the design spec at
+// docs/superpowers/specs/2026-07-13-discover-swipe-sidepanel-design.md).
+// Combines the deck-mode toggle with the genre/type bans (formerly the
+// standalone "Filtros" sub-tab, now collapsible and sticky alongside the
+// card). Banned chips render "active" (highlighted = excluded from the
+// deck). Genres come from the synced catalog facets; formats are the fixed
+// deck whitelist. Persisted via setDeckBans; takes effect on the next
+// discover_catalog_card PROVIDED the caller also invalidates the local
+// prefetch queue — that's what `onBansSaved` is for (SwipeView passes its
+// `resetQueue`), since SwipeView no longer unmounts when this panel is used
+// (it's embedded, not a separate sub-tab) and would otherwise keep serving
+// up to PREFETCH_TARGET already-fetched cards that predate the new bans.
+function DeckPanel({ onBansSaved }: { onBansSaved: () => void }) {
   const t = useT();
   const [allGenres, setAllGenres] = useState<string[]>([]);
   const [bannedGenres, setBannedGenres] = useState<Set<string>>(new Set());
   const [bannedFormats, setBannedFormats] = useState<Set<string>>(new Set());
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [open, setOpen] = useState(getInitialDeckPanelOpen);
 
   useEffect(() => {
     getDeckBans()
@@ -1025,58 +1068,94 @@ function FiltersView() {
     try {
       await setDeckBans([...bannedGenres], [...bannedFormats]);
       setSaved(true);
+      onBansSaved();
     } finally {
       setSaving(false);
     }
   }
 
+  function toggleOpen() {
+    setOpen((prev) => {
+      const next = !prev;
+      persistDeckPanelOpen(next);
+      return next;
+    });
+  }
+
+  const activeBans = bannedGenres.size + bannedFormats.size;
+
   return (
-    <div className="series-block" style={{ padding: 16 }}>
-      <p className="muted" style={{ marginTop: 0, fontSize: 12.5 }}>
-        {t("discover.filtersIntro")}
-      </p>
+    <aside className="deck-panel">
+      <button
+        type="button"
+        className="deck-panel-head"
+        aria-expanded={open}
+        aria-controls="deck-panel-body"
+        aria-label={t("discover.deckPanelToggleAria")}
+        onClick={toggleOpen}
+      >
+        <span className="deck-panel-title">{t("discover.deckPanelTitle")}</span>
+        {!open && activeBans > 0 && (
+          <span className="deck-panel-badge">{t("discover.deckPanelBansBadge", { count: activeBans })}</span>
+        )}
+        <span className={`deck-panel-chevron${open ? " open" : ""}`} aria-hidden="true">
+          ▾
+        </span>
+      </button>
 
-      <h3 className="card-title" style={{ marginBottom: 8 }}>
-        {t("discover.filtersFormatsHeading")}
-      </h3>
-      <div className="chip-row" style={{ marginBottom: 16 }}>
-        {DECK_FORMATS.map((f) => (
-          <button
-            key={f}
-            type="button"
-            className={`chip-toggle${bannedFormats.has(f) ? " active" : ""}`}
-            onClick={() => toggle(bannedFormats, setBannedFormats, f)}
-          >
-            {f}
-          </button>
-        ))}
-      </div>
+      {open && (
+        <div id="deck-panel-body" className="deck-panel-body">
+          <div style={{ display: "flex", justifyContent: "center", marginBottom: 12 }}>
+            <DiscoverModeToggle />
+          </div>
 
-      <h3 className="card-title" style={{ marginBottom: 8 }}>
-        {t("discover.filtersGenresHeading")}
-      </h3>
-      {allGenres.length > 0 && (
-        <div className="chip-row" style={{ marginBottom: 16 }}>
-          {allGenres.map((g) => (
-            <button
-              key={g}
-              type="button"
-              className={`chip-toggle${bannedGenres.has(g) ? " active" : ""}`}
-              onClick={() => toggle(bannedGenres, setBannedGenres, g)}
-            >
-              {g}
+          <p className="muted" style={{ marginTop: 0, fontSize: 12.5 }}>
+            {t("discover.filtersIntro")}
+          </p>
+
+          <h3 className="card-title" style={{ marginBottom: 8 }}>
+            {t("discover.filtersFormatsHeading")}
+          </h3>
+          <div className="chip-row" style={{ marginBottom: 16 }}>
+            {DECK_FORMATS.map((f) => (
+              <button
+                key={f}
+                type="button"
+                className={`chip-toggle${bannedFormats.has(f) ? " active" : ""}`}
+                onClick={() => toggle(bannedFormats, setBannedFormats, f)}
+              >
+                {f}
+              </button>
+            ))}
+          </div>
+
+          <h3 className="card-title" style={{ marginBottom: 8 }}>
+            {t("discover.filtersGenresHeading")}
+          </h3>
+          {allGenres.length > 0 && (
+            <div className="chip-row deck-panel-genres" style={{ marginBottom: 16 }}>
+              {allGenres.map((g) => (
+                <button
+                  key={g}
+                  type="button"
+                  className={`chip-toggle${bannedGenres.has(g) ? " active" : ""}`}
+                  onClick={() => toggle(bannedGenres, setBannedGenres, g)}
+                >
+                  {g}
+                </button>
+              ))}
+            </div>
+          )}
+
+          <div className="row" style={{ alignItems: "center", gap: 12 }}>
+            <button className="btn btn-primary" onClick={save} disabled={saving}>
+              {saving ? t("discover.filtersSaving") : t("discover.filtersSave")}
             </button>
-          ))}
+            {saved && <span className="muted">{t("discover.filtersSaved")}</span>}
+          </div>
         </div>
       )}
-
-      <div className="row" style={{ alignItems: "center", gap: 12 }}>
-        <button className="btn btn-primary" onClick={save} disabled={saving}>
-          {saving ? t("discover.filtersSaving") : t("discover.filtersSave")}
-        </button>
-        {saved && <span className="muted">{t("discover.filtersSaved")}</span>}
-      </div>
-    </div>
+    </aside>
   );
 }
 
@@ -1108,17 +1187,10 @@ export function Descubrir({ onOpenSeries }: { onOpenSeries: (s: Series) => void 
         >
           {t("discover.tabLists")}
         </button>
-        <button
-          className={`tab ${subView === "filtros" ? "active" : ""}`}
-          onClick={() => setSubView("filtros")}
-        >
-          {t("discover.tabFilters")}
-        </button>
       </div>
 
       {subView === "swipe" && <SwipeView />}
       {subView === "listas" && <ListasView onOpenSeries={onOpenSeries} />}
-      {subView === "filtros" && <FiltersView />}
     </div>
   );
 }

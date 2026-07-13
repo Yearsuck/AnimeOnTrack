@@ -171,7 +171,6 @@ export const es = {
   "discover.viewDetails": "Ver detalles",
   "discover.tabSwipe": "Swipe",
   "discover.tabLists": "Listas",
-  "discover.tabFilters": "Filtros",
   // Swipe history strip (multi-level undo cache)
   "discover.historyHeading": "Últimas clasificadas",
   "discover.want": "Quiero ver",
@@ -180,7 +179,7 @@ export const es = {
   "discover.badgeWant": "★ Quiero ver",
   "discover.badgeSeen": "✓ Ya lo vi",
   "discover.badgeDiscard": "✕ Descartada",
-  // Filtros sub-view (deck genre/type bans)
+  // Deck settings panel (Swipe side panel: bans + mode toggle)
   "discover.filtersIntro":
     "Los géneros y tipos que baneés no aparecerán en el mazo de Descubrir. Hentai y Ecchi están siempre excluidos.",
   "discover.filtersGenresHeading": "Géneros baneados",
@@ -188,6 +187,9 @@ export const es = {
   "discover.filtersSave": "Guardar filtros",
   "discover.filtersSaving": "Guardando…",
   "discover.filtersSaved": "Filtros guardados.",
+  "discover.deckPanelTitle": "Ajustes del mazo",
+  "discover.deckPanelToggleAria": "Mostrar u ocultar los ajustes del mazo",
+  "discover.deckPanelBansBadge": "{count} filtros activos",
 
   // Catalog.tsx
   "catalog.anyScore": "Cualquier puntuación",
