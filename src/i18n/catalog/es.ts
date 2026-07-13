@@ -153,6 +153,8 @@ export const es = {
   "discover.discard": "Descartar",
   "discover.moveToWant": "Mover a quiero ver",
   "discover.deleteCompletely": "Eliminar del todo",
+  "discover.searchAriaLabel": "Buscar en las listas",
+  "discover.searchNoResults": "Ningún título coincide con la búsqueda.",
   "discover.wantHeading": "Quiero ver",
   "discover.wantEmpty": "Nada por aquí todavía.",
   "discover.removeFromList": "Quitar de la lista",

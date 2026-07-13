@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   decideCatalogCard,
   deleteSeries,
@@ -856,12 +856,18 @@ function DiscardedRow({ series, onChanged }: { series: Series; onChanged: () => 
 
 type ListTab = "want" | "discarded" | "watched";
 
+// Accent/case-insensitive normalizer for the Listas title search. The
+// replace() class is the combining-diacritics Unicode range U+0300-U+036F,
+// written as escapes so it survives regardless of file encoding.
+const norm = (s: string) => s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+
 function ListasView({ onOpenSeries }: { onOpenSeries: (s: Series) => void }) {
   const t = useT();
   const [want, setWant] = useState<Series[]>([]);
   const [discarded, setDiscarded] = useState<Series[]>([]);
   const [watched, setWatched] = useState<Series[]>([]);
   const [tab, setTab] = useState<ListTab>("want");
+  const [query, setQuery] = useState("");
 
   const load = useCallback(async () => {
     const [w, d, wa] = await Promise.all([
@@ -878,14 +884,52 @@ function ListasView({ onOpenSeries }: { onOpenSeries: (s: Series) => void }) {
     load();
   }, [load]);
 
+  const trimmedQuery = query.trim();
+  const fWant = useMemo(
+    () => (trimmedQuery === "" ? want : want.filter((s) => norm(s.title).includes(norm(trimmedQuery)))),
+    [want, trimmedQuery]
+  );
+  const fDiscarded = useMemo(
+    () =>
+      trimmedQuery === ""
+        ? discarded
+        : discarded.filter((s) => norm(s.title).includes(norm(trimmedQuery))),
+    [discarded, trimmedQuery]
+  );
+  const fWatched = useMemo(
+    () =>
+      trimmedQuery === ""
+        ? watched
+        : watched.filter((s) => norm(s.title).includes(norm(trimmedQuery))),
+    [watched, trimmedQuery]
+  );
+
   const tabs: { key: ListTab; label: string; count: number }[] = [
-    { key: "want", label: t("discover.wantHeading"), count: want.length },
-    { key: "discarded", label: t("discover.discardedHeading"), count: discarded.length },
-    { key: "watched", label: t("discover.watchedHeading"), count: watched.length },
+    { key: "want", label: t("discover.wantHeading"), count: fWant.length },
+    { key: "discarded", label: t("discover.discardedHeading"), count: fDiscarded.length },
+    { key: "watched", label: t("discover.watchedHeading"), count: fWatched.length },
   ];
 
   return (
     <>
+      <div className="listas-toolbar">
+        <div className="search">
+          <span className="icon" aria-hidden="true">
+            ⌕
+          </span>
+          <label htmlFor="listas-search" className="sr-only">
+            {t("discover.searchAriaLabel")}
+          </label>
+          <input
+            id="listas-search"
+            className="input"
+            placeholder={t("common.searchPlaceholder")}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+        </div>
+      </div>
+
       <div className="seg listas-seg" role="tablist">
         {tabs.map((tb) => (
           <button
@@ -905,9 +949,11 @@ function ListasView({ onOpenSeries }: { onOpenSeries: (s: Series) => void }) {
       {tab === "want" &&
         (want.length === 0 ? (
           <div className="empty">{t("discover.wantEmpty")}</div>
+        ) : fWant.length === 0 ? (
+          <div className="empty">{t("discover.searchNoResults")}</div>
         ) : (
           <div className="listas-grid">
-            {want.map((s) => (
+            {fWant.map((s) => (
               <WantRow key={s.id} series={s} onChanged={load} onOpenSeries={onOpenSeries} />
             ))}
           </div>
@@ -916,9 +962,11 @@ function ListasView({ onOpenSeries }: { onOpenSeries: (s: Series) => void }) {
       {tab === "discarded" &&
         (discarded.length === 0 ? (
           <div className="empty">{t("discover.discardedEmpty")}</div>
+        ) : fDiscarded.length === 0 ? (
+          <div className="empty">{t("discover.searchNoResults")}</div>
         ) : (
           <div className="listas-grid">
-            {discarded.map((s) => (
+            {fDiscarded.map((s) => (
               <DiscardedRow key={s.id} series={s} onChanged={load} />
             ))}
           </div>
@@ -927,9 +975,11 @@ function ListasView({ onOpenSeries }: { onOpenSeries: (s: Series) => void }) {
       {tab === "watched" &&
         (watched.length === 0 ? (
           <div className="empty">{t("discover.watchedEmpty")}</div>
+        ) : fWatched.length === 0 ? (
+          <div className="empty">{t("discover.searchNoResults")}</div>
         ) : (
           <div className="listas-grid">
-            {watched.map((s) => (
+            {fWatched.map((s) => (
               <WatchedRow key={s.id} series={s} onChanged={load} />
             ))}
           </div>

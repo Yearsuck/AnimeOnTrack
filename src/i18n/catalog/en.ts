@@ -139,6 +139,8 @@ export const en: Messages = {
   "discover.discard": "Discard",
   "discover.moveToWant": "Move to want to watch",
   "discover.deleteCompletely": "Delete completely",
+  "discover.searchAriaLabel": "Search the lists",
+  "discover.searchNoResults": "No title matches your search.",
   "discover.wantHeading": "Want to watch",
   "discover.wantEmpty": "Nothing here yet.",
   "discover.removeFromList": "Remove from list",
