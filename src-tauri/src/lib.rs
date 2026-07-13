@@ -51,6 +51,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::scan_airing,
             commands::list_airing,
+            commands::list_airing_season,
             commands::list_library,
             commands::get_genre_stats,
             commands::get_type_stats,

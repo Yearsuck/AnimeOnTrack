@@ -1122,6 +1122,40 @@ impl Db {
         )?)
     }
 
+    /// The lowest-numbered episode's `released_at` for every airing series in
+    /// `source_id` that has one — the DB side of the "Esta temporada" filter
+    /// (see docs/superpowers/specs/2026-07-13-airing-this-season-design.md).
+    /// Only 37/118 currently-airing series have any scraped episodes at all
+    /// (episodes are fetched on-demand, not for the whole catalog — see
+    /// [[project-scraping-scope]]), so most airing series are simply absent
+    /// from the returned map; callers must treat that as "unknown", not "old".
+    /// The correlated subquery picks one definite row per series (lowest
+    /// `CAST(number AS INTEGER)`, ties broken by lowest `id`) regardless of
+    /// insertion order, so a re-scraped or out-of-order episode list still
+    /// resolves to episode "1". Rows with a NULL/empty `released_at` (~11 of
+    /// 2195 site-wide) are excluded rather than reported as an unparseable date.
+    pub fn first_episode_dates(&self, source_id: i64) -> Result<std::collections::HashMap<i64, String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT s.id, e.released_at
+             FROM series s
+             JOIN episodes e ON e.series_id = s.id
+             WHERE s.source_id = ?1 AND s.is_airing = 1
+               AND e.id = (
+                 SELECT id FROM episodes e2
+                 WHERE e2.series_id = s.id
+                 ORDER BY CAST(e2.number AS INTEGER) ASC, e2.id ASC
+                 LIMIT 1
+               )
+               AND e.released_at IS NOT NULL AND e.released_at != ''",
+        )?;
+        let rows = stmt
+            .query_map([source_id], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows.into_iter().collect())
+    }
+
     /// Record "this series' episode list was actually fetched just now" —
     /// gates the FINISHED_RECHECK interval for followed series absent from
     /// the airing listing (see `commands::should_fetch_series`).
@@ -1850,6 +1884,73 @@ mod tests {
         // No episodes at all -> 0.
         let sid_c = db.upsert_series(src, &mk_airing("c", "C", None)).unwrap();
         assert_eq!(db.max_episode_number(sid_c).unwrap(), 0);
+    }
+
+    // ---- "Esta temporada" first-episode date (2026-07-13) ----
+
+    /// The lowest-numbered episode must win regardless of insertion order —
+    /// the site's episode list isn't always scraped/inserted in number order.
+    #[test]
+    fn first_episode_dates_picks_lowest_numbered_episode_out_of_order() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let sid = db.upsert_series(src, &mk_airing("a", "A", None)).unwrap();
+
+        // Inserted out of order: 3, 1, 2.
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: sid, number: "3".into(), title: None,
+            url: "https://site/a-3".into(), released_at: Some("agosto 1, 2026".into()), seen: false,
+        }).unwrap();
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: sid, number: "1".into(), title: None,
+            url: "https://site/a-1".into(), released_at: Some("junio 29, 2026".into()), seen: false,
+        }).unwrap();
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: sid, number: "2".into(), title: None,
+            url: "https://site/a-2".into(), released_at: Some("julio 15, 2026".into()), seen: false,
+        }).unwrap();
+
+        let dates = db.first_episode_dates(src).unwrap();
+        assert_eq!(dates.get(&sid), Some(&"junio 29, 2026".to_string()));
+    }
+
+    #[test]
+    fn first_episode_dates_omits_series_with_null_released_at() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let sid = db.upsert_series(src, &mk_airing("a", "A", None)).unwrap();
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: sid, number: "1".into(), title: None,
+            url: "https://site/a-1".into(), released_at: None, seen: false,
+        }).unwrap();
+
+        let dates = db.first_episode_dates(src).unwrap();
+        assert!(dates.get(&sid).is_none());
+    }
+
+    #[test]
+    fn first_episode_dates_omits_non_airing_and_other_source_series() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let other_src = db.upsert_source("Other", "c", "othersite").unwrap();
+
+        let mut not_airing = mk_airing("na", "NotAiring", None);
+        not_airing.is_airing = false;
+        let sid_not_airing = db.upsert_series(src, &not_airing).unwrap();
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: sid_not_airing, number: "1".into(), title: None,
+            url: "https://site/na-1".into(), released_at: Some("mayo 1, 2026".into()), seen: false,
+        }).unwrap();
+
+        let sid_other = db.upsert_series(other_src, &mk_airing("o", "Other", None)).unwrap();
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: sid_other, number: "1".into(), title: None,
+            url: "https://other/o-1".into(), released_at: Some("mayo 1, 2026".into()), seen: false,
+        }).unwrap();
+
+        let dates = db.first_episode_dates(src).unwrap();
+        assert!(dates.get(&sid_not_airing).is_none());
+        assert!(dates.get(&sid_other).is_none());
     }
 
     // ---- Cross-site follow carry-over (2026-07-12) ----
