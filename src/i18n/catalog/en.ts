@@ -97,6 +97,13 @@ export const en: Messages = {
   "library.moveToWant": 'Move to "Want to watch"',
   "library.watchedExternally": "✓ Watched elsewhere",
   "library.markNotWatched": "Mark as not watched",
+  "library.filterStatus": "Status",
+  "library.statusAll": "All",
+  "library.filterType": "Type",
+  "library.typeAll": "All",
+  "library.typeOther": "Other",
+  "library.filterGenre": "Genre",
+  "library.genreAll": "All",
 
   "seriesDetail.unfollow": "Unfollow",
   "seriesDetail.openPage": "Open series page ↗",

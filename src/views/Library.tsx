@@ -6,6 +6,26 @@ import type { LibraryItem, Series } from "../types";
 type Status = "completed" | "watching" | "plan";
 // Airing filter for the Viendo section.
 type AiringFilter = "all" | "airing" | "finished";
+// Estado filter — "all" shows every section (current default behavior); a
+// specific value hides the other sections entirely.
+type StatusFilter = "all" | Status;
+
+// series.kind is dirty scraped free text: real type badges under a Spanish
+// alias ("Pelicula") mixed in with the site's quality/version tags
+// ("4K"/"Blu-Ray"/"Resubido"/"Sin Censura"/"Yaoi") and null. Fold all of
+// that into a fixed, small set for the Tipo filter — the non-type tags (and
+// null) bucket under "OTROS" rather than each becoming its own noisy
+// option. See docs/superpowers/specs/2026-07-13-library-filters-design.md.
+type NormalizedKind = "TV" | "MOVIE" | "OVA" | "ONA" | "SPECIAL" | "OTROS";
+const KNOWN_KINDS: NormalizedKind[] = ["TV", "MOVIE", "OVA", "ONA", "SPECIAL"];
+
+function normalizeKind(raw: string | null): NormalizedKind {
+  if (!raw) return "OTROS";
+  const upper = raw.trim().toUpperCase();
+  if (upper === "PELICULA" || upper === "PELÍCULA") return "MOVIE";
+  if ((KNOWN_KINDS as string[]).includes(upper)) return upper as NormalizedKind;
+  return "OTROS";
+}
 
 // Status is derived, never stored (no user-set field exists). A catalog "Ya
 // lo vi" swipe (watched_externally) is checked FIRST and unconditionally
@@ -291,6 +311,9 @@ export function Library({ onOpenSeries }: { onOpenSeries: (s: Series) => void })
   const [items, setItems] = useState<LibraryItem[]>([]);
   const [query, setQuery] = useState("");
   const [airingFilter, setAiringFilter] = useState<AiringFilter>("all");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [typeFilter, setTypeFilter] = useState<string>("all");
+  const [genreFilter, setGenreFilter] = useState<string>("all");
 
   const load = useCallback(() => {
     listLibrary().then(setItems);
@@ -300,10 +323,31 @@ export function Library({ onOpenSeries }: { onOpenSeries: (s: Series) => void })
     load();
   }, [load]);
 
+  // Option lists are built from the whole library (not the currently
+  // filtered subset), so picking one filter never makes the others' option
+  // lists shrink out from under the user.
+  const typeOptions = useMemo(() => {
+    const present = new Set<NormalizedKind>(items.map((it) => normalizeKind(it.kind)));
+    const ordered = KNOWN_KINDS.filter((k) => present.has(k));
+    if (present.has("OTROS")) ordered.push("OTROS");
+    return ordered;
+  }, [items]);
+
+  const genreOptions = useMemo(() => {
+    const present = new Set<string>();
+    for (const it of items) for (const g of it.genres) present.add(g);
+    return [...present].sort((a, b) => a.localeCompare(b));
+  }, [items]);
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return items.filter((it) => !q || it.series.title.toLowerCase().includes(q));
-  }, [items, query]);
+    return items.filter((it) => {
+      if (q && !it.series.title.toLowerCase().includes(q)) return false;
+      if (typeFilter !== "all" && normalizeKind(it.kind) !== typeFilter) return false;
+      if (genreFilter !== "all" && !it.genres.includes(genreFilter)) return false;
+      return true;
+    });
+  }, [items, query, typeFilter, genreFilter]);
 
   // All "watching" items (before the airing filter) — drives whether the
   // filter control is shown at all.
@@ -329,6 +373,16 @@ export function Library({ onOpenSeries }: { onOpenSeries: (s: Series) => void })
     [filtered]
   );
 
+  // Estado scopes which sections render at all; "all" keeps every section
+  // (current default behavior).
+  const showWatching = statusFilter === "all" || statusFilter === "watching";
+  const showPlan = statusFilter === "all" || statusFilter === "plan";
+  const showCompleted = statusFilter === "all" || statusFilter === "completed";
+  const visibleCount =
+    (showWatching ? watching.length : 0) +
+    (showPlan ? plan.length : 0) +
+    (showCompleted ? completed.length : 0);
+
   return (
     <div className="page">
       <div className="page-head">
@@ -349,7 +403,9 @@ export function Library({ onOpenSeries }: { onOpenSeries: (s: Series) => void })
           />
         </div>
         <div className="spacer" />
-        <span className="muted">{t("common.seriesCount", { count: filtered.length })}</span>
+        <span className="muted">
+          {t("common.seriesCount", { count: items.length === 0 ? 0 : visibleCount })}
+        </span>
       </div>
 
       {items.length === 0 ? (
@@ -358,66 +414,145 @@ export function Library({ onOpenSeries }: { onOpenSeries: (s: Series) => void })
           <br />
           {t("library.emptyHint")}
         </div>
-      ) : filtered.length === 0 ? (
-        <div className="empty">{t("common.noResults")}</div>
       ) : (
         <>
-          {watchingAll.length > 0 && (
-            <div className="lib-filter-bar">
-              <span className="muted" style={{ fontSize: 12 }}>
-                {t("library.filterLabel")}
-              </span>
-              <div className="seg">
-                {(["all", "airing", "finished"] as AiringFilter[]).map((f) => (
-                  <button
-                    key={f}
-                    type="button"
-                    className={`seg-btn${airingFilter === f ? " active" : ""}`}
-                    onClick={() => setAiringFilter(f)}
-                  >
-                    {f === "all"
-                      ? t("library.filterAll")
-                      : f === "airing"
-                        ? t("library.filterAiring")
-                        : t("library.filterFinished")}
-                  </button>
-                ))}
-              </div>
+          <div className="lib-filter-bar">
+            <span className="muted" style={{ fontSize: 12 }}>
+              {t("library.filterStatus")}
+            </span>
+            <div className="seg">
+              {(["all", "watching", "plan", "completed"] as StatusFilter[]).map((f) => (
+                <button
+                  key={f}
+                  type="button"
+                  className={`seg-btn${statusFilter === f ? " active" : ""}`}
+                  onClick={() => setStatusFilter(f)}
+                >
+                  {f === "all"
+                    ? t("library.statusAll")
+                    : f === "watching"
+                      ? t("library.watching")
+                      : f === "plan"
+                        ? t("library.planToWatch")
+                        : t("library.completed")}
+                </button>
+              ))}
             </div>
-          )}
-          {watchingAll.length > 0 && watching.length === 0 ? (
-            <div className="empty" style={{ padding: "12px 0" }}>
-              {t("library.filterNoResults")}
-            </div>
+
+            <label className="sr-only" htmlFor="lib-type-select">
+              {t("library.filterType")}
+            </label>
+            <span className="muted" style={{ fontSize: 12 }}>
+              {t("library.filterType")}
+            </span>
+            <select
+              id="lib-type-select"
+              className="input"
+              style={{ maxWidth: 150 }}
+              value={typeFilter}
+              onChange={(e) => setTypeFilter(e.target.value)}
+            >
+              <option value="all">{t("library.typeAll")}</option>
+              {typeOptions.map((k) => (
+                <option key={k} value={k}>
+                  {k === "OTROS" ? t("library.typeOther") : k}
+                </option>
+              ))}
+            </select>
+
+            {genreOptions.length > 0 && (
+              <>
+                <label className="sr-only" htmlFor="lib-genre-select">
+                  {t("library.filterGenre")}
+                </label>
+                <span className="muted" style={{ fontSize: 12 }}>
+                  {t("library.filterGenre")}
+                </span>
+                <select
+                  id="lib-genre-select"
+                  className="input"
+                  style={{ maxWidth: 150 }}
+                  value={genreFilter}
+                  onChange={(e) => setGenreFilter(e.target.value)}
+                >
+                  <option value="all">{t("library.genreAll")}</option>
+                  {genreOptions.map((g) => (
+                    <option key={g} value={g}>
+                      {g}
+                    </option>
+                  ))}
+                </select>
+              </>
+            )}
+          </div>
+
+          {filtered.length === 0 || visibleCount === 0 ? (
+            <div className="empty">{t("common.noResults")}</div>
           ) : (
-            <LibrarySection
-              title={t("library.watching")}
-              items={watching}
-              defaultOpen
-              showAction
-              showMenu
-              onOpenSeries={onOpenSeries}
-              onChanged={load}
-            />
+            <>
+              {showWatching && watchingAll.length > 0 && (
+                <div className="lib-filter-bar">
+                  <span className="muted" style={{ fontSize: 12 }}>
+                    {t("library.filterLabel")}
+                  </span>
+                  <div className="seg">
+                    {(["all", "airing", "finished"] as AiringFilter[]).map((f) => (
+                      <button
+                        key={f}
+                        type="button"
+                        className={`seg-btn${airingFilter === f ? " active" : ""}`}
+                        onClick={() => setAiringFilter(f)}
+                      >
+                        {f === "all"
+                          ? t("library.filterAll")
+                          : f === "airing"
+                            ? t("library.filterAiring")
+                            : t("library.filterFinished")}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {showWatching &&
+                (watchingAll.length > 0 && watching.length === 0 ? (
+                  <div className="empty" style={{ padding: "12px 0" }}>
+                    {t("library.filterNoResults")}
+                  </div>
+                ) : (
+                  <LibrarySection
+                    title={t("library.watching")}
+                    items={watching}
+                    defaultOpen
+                    showAction
+                    showMenu
+                    onOpenSeries={onOpenSeries}
+                    onChanged={load}
+                  />
+                ))}
+              {showPlan && (
+                <LibrarySection
+                  title={t("library.planToWatch")}
+                  items={plan}
+                  defaultOpen
+                  showAction
+                  showMenu={false}
+                  onOpenSeries={onOpenSeries}
+                  onChanged={load}
+                />
+              )}
+              {showCompleted && (
+                <LibrarySection
+                  title={t("library.completed")}
+                  items={completed}
+                  defaultOpen={false}
+                  showAction={false}
+                  showMenu={false}
+                  onOpenSeries={onOpenSeries}
+                  onChanged={load}
+                />
+              )}
+            </>
           )}
-          <LibrarySection
-            title={t("library.planToWatch")}
-            items={plan}
-            defaultOpen
-            showAction
-            showMenu={false}
-            onOpenSeries={onOpenSeries}
-            onChanged={load}
-          />
-          <LibrarySection
-            title={t("library.completed")}
-            items={completed}
-            defaultOpen={false}
-            showAction={false}
-            showMenu={false}
-            onOpenSeries={onOpenSeries}
-            onChanged={load}
-          />
         </>
       )}
     </div>

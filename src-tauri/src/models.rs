@@ -80,6 +80,16 @@ pub struct LibraryItem {
     /// series. See docs/superpowers/specs/2026-07-12-ya-lo-vi-library-visibility-design.md.
     #[serde(default)]
     pub watched_externally: bool,
+    /// `series.kind` ("TV"/"MOVIE"/"Pelicula"/"OVA"/"ONA"/"SPECIAL"/site
+    /// quality tags like "4K"/"Blu-Ray"/`None`). Raw/unnormalized — the
+    /// frontend buckets the messy values (see the library-filters design
+    /// doc), this is just a passthrough of the column.
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// This series' rows from `series_genres`, sorted by genre. Empty when
+    /// genres haven't been backfilled yet for this series.
+    #[serde(default)]
+    pub genres: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

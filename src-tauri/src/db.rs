@@ -984,7 +984,7 @@ impl Db {
     pub fn list_library(&self, source_id: i64) -> Result<Vec<crate::models::LibraryItem>> {
         let mut stmt = self.conn.prepare(
             "SELECT s.id, s.slug, s.title, s.url, s.cover_url, s.is_airing, s.followed,
-                    s.next_episode_at, s.site_episode_count, s.watched_externally,
+                    s.next_episode_at, s.site_episode_count, s.watched_externally, s.kind,
                     COUNT(e.id) AS total,
                     SUM(CASE WHEN e.seen=1 THEN 1 ELSE 0 END) AS seen,
                     MAX(e.added_at) AS last_added,
@@ -1001,6 +1001,7 @@ impl Db {
                 Ok((
                     series,
                     r.get::<_, i64>("watched_externally")? != 0,
+                    r.get::<_, Option<String>>("kind")?,
                     r.get::<_, i64>("total")?,
                     r.get::<_, Option<i64>>("seen")?.unwrap_or(0),
                     r.get::<_, Option<String>>("last_added")?,
@@ -1009,9 +1010,35 @@ impl Db {
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
 
+        // Bulk-fetch genres for every series in this result set in one extra
+        // statement (not one query per series — see the library-filters
+        // design doc's N+1 warning). `rusqlite` has no native array-bind, so
+        // the IN(...) list is built from `?N` placeholders.
+        let ids: Vec<i64> = rows.iter().map(|(series, ..)| series.id).collect();
+        let mut genres_by_series: std::collections::HashMap<i64, Vec<String>> =
+            std::collections::HashMap::new();
+        if !ids.is_empty() {
+            let placeholders = vec!["?"; ids.len()].join(",");
+            let sql = format!(
+                "SELECT series_id, genre FROM series_genres WHERE series_id IN ({}) ORDER BY genre",
+                placeholders
+            );
+            let mut gstmt = self.conn.prepare(&sql)?;
+            let params = rusqlite::params_from_iter(ids.iter());
+            let grows = gstmt
+                .query_map(params, |r| {
+                    Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            for (series_id, genre) in grows {
+                genres_by_series.entry(series_id).or_default().push(genre);
+            }
+        }
+
         let mut out = Vec::with_capacity(rows.len());
-        for (series, watched_externally, total_episodes, seen_episodes, last_added, last_watched_at) in rows {
+        for (series, watched_externally, kind, total_episodes, seen_episodes, last_added, last_watched_at) in rows {
             let next_episode = self.next_unseen_episode(series.id)?;
+            let genres = genres_by_series.remove(&series.id).unwrap_or_default();
             out.push(crate::models::LibraryItem {
                 series,
                 total_episodes,
@@ -1020,6 +1047,8 @@ impl Db {
                 next_episode,
                 last_watched_at,
                 watched_externally,
+                kind,
+                genres,
             });
         }
         Ok(out)
@@ -2684,6 +2713,39 @@ mod tests {
         let followed_item = items.iter().find(|it| it.series.id == sid_followed).unwrap();
         assert!(!followed_item.watched_externally);
         assert_eq!(followed_item.total_episodes, 1);
+    }
+
+    #[test]
+    fn list_library_returns_kind_and_genres_via_one_bulk_query() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+
+        let s1 = crate::models::Series {
+            id: 0, slug: "s1".into(), title: "S1".into(),
+            url: "u1".into(), cover_url: None, is_airing: false, followed: false, next_episode_at: None, site_episode_count: None,
+        };
+        let sid1 = db.upsert_series(src, &s1).unwrap();
+        db.set_followed(sid1, true).unwrap();
+        db.set_kind(sid1, "TV").unwrap();
+        db.insert_series_genres(sid1, &["Accion".to_string(), "Comedia".to_string()]).unwrap();
+
+        // A second series with no kind/genres set at all — must come back
+        // with kind=None and an empty genres vec, not an error or a missing row.
+        let s2 = crate::models::Series {
+            id: 0, slug: "s2".into(), title: "S2".into(),
+            url: "u2".into(), cover_url: None, is_airing: false, followed: false, next_episode_at: None, site_episode_count: None,
+        };
+        let sid2 = db.upsert_series(src, &s2).unwrap();
+        db.set_followed(sid2, true).unwrap();
+
+        let items = db.list_library(src).unwrap();
+        let item1 = items.iter().find(|it| it.series.id == sid1).unwrap();
+        assert_eq!(item1.kind.as_deref(), Some("TV"));
+        assert_eq!(item1.genres, vec!["Accion".to_string(), "Comedia".to_string()]);
+
+        let item2 = items.iter().find(|it| it.series.id == sid2).unwrap();
+        assert_eq!(item2.kind, None);
+        assert!(item2.genres.is_empty());
     }
 
     #[test]
