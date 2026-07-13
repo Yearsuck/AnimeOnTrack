@@ -1192,11 +1192,15 @@ progress.scanbar-track::-webkit-progress-value {
 }
 
 /* ---------- Stats · 3D graph galaxy backdrop ---------- */
-/* Deep-space panel behind the transparent three.js canvas. Intentionally dark
-   in BOTH themes — a galaxy reads as space regardless of the app theme. Pure
-   CSS (nebula washes + three tiled star layers of differing density); no
-   three.js scene change, so zero impact on the graph's frozen-layout perf. */
-.stats-graph-galaxy {
+/* Deep-space panel behind the transparent three.js canvas. Dark theme keeps
+   the night-sky nebula+stars look below (default / `[data-theme="dark"]`).
+   Light theme gets its own daytime-sky variant right after it — a black
+   backdrop would swallow the (also-dark-limbed) planet nodes and near-white
+   root node on a light app theme, so it's a pale sky wash with faint darker
+   flecks instead of bright stars. Pure CSS in both cases; no three.js scene
+   change, so zero impact on the graph's frozen-layout perf. */
+.stats-graph-galaxy,
+:root[data-theme="dark"] .stats-graph-galaxy {
   background-color: #05060e;
   background-image:
     radial-gradient(ellipse at 22% 28%, rgba(96, 72, 180, 0.28), transparent 55%),
@@ -1205,6 +1209,20 @@ progress.scanbar-track::-webkit-progress-value {
     radial-gradient(1px 1px at 8px 12px, rgba(255, 255, 255, 0.9), transparent 100%),
     radial-gradient(1px 1px at 24px 40px, rgba(210, 225, 255, 0.8), transparent 100%),
     radial-gradient(1px 1px at 50px 22px, rgba(255, 255, 255, 0.65), transparent 100%);
+  background-size:
+    100% 100%, 100% 100%, 100% 100%, 73px 73px, 111px 111px, 149px 149px;
+  background-repeat: no-repeat, no-repeat, no-repeat, repeat, repeat, repeat;
+}
+
+:root[data-theme="light"] .stats-graph-galaxy {
+  background-color: #dbe6f5;
+  background-image:
+    radial-gradient(ellipse at 20% 25%, rgba(255, 255, 255, 0.85), transparent 55%),
+    radial-gradient(ellipse at 82% 75%, rgba(200, 220, 245, 0.7), transparent 55%),
+    radial-gradient(ellipse at 55% 95%, rgba(225, 205, 230, 0.55), transparent 55%),
+    radial-gradient(1.5px 1.5px at 8px 12px, rgba(90, 110, 150, 0.35), transparent 100%),
+    radial-gradient(1.5px 1.5px at 24px 40px, rgba(80, 100, 140, 0.3), transparent 100%),
+    radial-gradient(1.5px 1.5px at 50px 22px, rgba(90, 110, 150, 0.28), transparent 100%);
   background-size:
     100% 100%, 100% 100%, 100% 100%, 73px 73px, 111px 111px, 149px 149px;
   background-repeat: no-repeat, no-repeat, no-repeat, repeat, repeat, repeat;
