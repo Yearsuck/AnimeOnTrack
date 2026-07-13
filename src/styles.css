@@ -997,6 +997,76 @@ progress.scanbar-track::-webkit-progress-value {
   align-items: center;
   justify-content: center;
 }
+
+/* ---------- Descubrir: swipe two-column layout + deck settings panel ---------- */
+.swipe-layout {
+  display: grid;
+  grid-template-columns: minmax(240px, 280px) 1fr;
+  gap: var(--sp-5);
+  align-items: start;
+}
+.deck-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--sp-4);
+  position: sticky;
+  top: 72px;
+}
+.deck-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  padding: 0;
+  font: inherit;
+  text-align: left;
+}
+.deck-panel-title {
+  flex: 1;
+  font-weight: 700;
+  font-size: 14px;
+}
+.deck-panel-badge {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--accent-dim);
+  border-radius: var(--radius-round);
+  padding: 2px 8px;
+  white-space: nowrap;
+}
+.deck-panel-chevron {
+  color: var(--muted);
+  transition: transform 0.15s var(--ease);
+  flex-shrink: 0;
+}
+.deck-panel-chevron.open {
+  transform: rotate(180deg);
+}
+.deck-panel-body {
+  margin-top: var(--sp-4);
+}
+.deck-panel-genres {
+  max-height: 220px;
+  overflow-y: auto;
+}
+@media (max-width: 900px) {
+  .swipe-layout {
+    grid-template-columns: 1fr;
+  }
+  .deck-panel {
+    position: static;
+    max-width: 520px;
+    margin: 0 auto;
+    width: 100%;
+  }
+}
+
 .backlog-row {
   display: flex;
   align-items: center;

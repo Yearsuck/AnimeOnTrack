@@ -157,7 +157,6 @@ export const en: Messages = {
   "discover.viewDetails": "View details",
   "discover.tabSwipe": "Swipe",
   "discover.tabLists": "Lists",
-  "discover.tabFilters": "Filters",
   // Swipe history strip (multi-level undo cache)
   "discover.historyHeading": "Recently classified",
   "discover.want": "Want to watch",
@@ -166,7 +165,7 @@ export const en: Messages = {
   "discover.badgeWant": "★ Want",
   "discover.badgeSeen": "✓ Seen",
   "discover.badgeDiscard": "✕ Discarded",
-  // Filters sub-view (deck genre/type bans)
+  // Deck settings panel (Swipe side panel: bans + mode toggle)
   "discover.filtersIntro":
     "Genres and types you ban won't appear in the Discover deck. Hentai and Ecchi are always excluded.",
   "discover.filtersGenresHeading": "Banned genres",
@@ -174,6 +173,9 @@ export const en: Messages = {
   "discover.filtersSave": "Save filters",
   "discover.filtersSaving": "Saving…",
   "discover.filtersSaved": "Filters saved.",
+  "discover.deckPanelTitle": "Deck settings",
+  "discover.deckPanelToggleAria": "Show or hide the deck settings",
+  "discover.deckPanelBansBadge": "{count} active filters",
 
   "catalog.anyScore": "Any score",
   "catalog.anyDuration": "Any length",
