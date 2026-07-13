@@ -140,7 +140,8 @@ export const getCatalogFacets = () => invoke<CatalogFacets>("get_catalog_facets"
 export const syncAnimeCatalog = (forceFull = false) =>
   invoke<number>("sync_anime_catalog", { forceFull });
 
-export const discoverCatalogCard = () => invoke<SwipeCard | null>("discover_catalog_card");
+export const discoverCatalogCard = (recommended: boolean) =>
+  invoke<SwipeCard | null>("discover_catalog_card", { recommended });
 
 export const decideCatalogCard = (params: {
   anilistId: number;

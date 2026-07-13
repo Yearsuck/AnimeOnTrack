@@ -1822,20 +1822,41 @@ fn filter_candidate_genres(all_genres: Vec<String>, banned_genres: &[String]) ->
 /// (after excluding Hentai/Ecchi) either has zero synced titles passing the
 /// quality floor or every one of them has already been decided, and
 /// `MAX_GENRE_ATTEMPTS` genre picks in a row all came up empty.
+/// `recommended` selects the deck mode (see `DiscoverModeToggle` on the
+/// frontend, persisted in localStorage `aot.discoverMode`): `true` is the
+/// taste-weighted behavior documented above, unchanged. `false` ("Aleatorio")
+/// builds **empty** affinity maps instead — which makes the outer genre pick
+/// degrade to `weighted_pick_index`'s uniform fallback (all-dampened weights
+/// are 0, same cold-start path) — and threads `recommended` into
+/// `random_catalog_anime_in_genre` so the inner per-candidate pick bypasses
+/// scoring too. Empty maps ALONE are not enough for the inner pick: with
+/// `recommended=true` `score_candidate`'s quality term stays active even with
+/// empty genre/format maps, still biasing toward high `average_score` — see
+/// docs/superpowers/specs/2026-07-13-discover-recommendation-toggle-design.md.
 #[tauri::command]
-pub fn discover_catalog_card(state: State<'_, AppState>) -> Result<Option<FinishedCard>, String> {
+pub fn discover_catalog_card(
+    state: State<'_, AppState>,
+    recommended: bool,
+) -> Result<Option<FinishedCard>, String> {
     let src = get_source_id(&state)?;
     let db = state.db.lock().unwrap();
 
-    let affinity = db.get_genre_affinity(src).map_err(|e| e.to_string())?;
+    let affinity = if recommended {
+        db.get_genre_affinity(src).map_err(|e| e.to_string())?
+    } else {
+        HashMap::new()
+    };
     // Format-affinity map for the inner (per-candidate) score — built once
     // per call, not per genre attempt or per candidate (see
     // `recommend::format_affinity_from_type_stats`'s doc comment: empty for
     // a brand-new user with no follows, which reduces the format term to 0
     // for everyone, i.e. cold start behaves like the pre-recommendation-
-    // engine build).
-    let format_affinity =
-        crate::recommend::format_affinity_from_type_stats(&db.get_type_stats(src).map_err(|e| e.to_string())?);
+    // engine build). Also empty in "Aleatorio" mode.
+    let format_affinity = if recommended {
+        crate::recommend::format_affinity_from_type_stats(&db.get_type_stats(src).map_err(|e| e.to_string())?)
+    } else {
+        HashMap::new()
+    };
     // Candidate-genre filter is EXCLUDED_CATALOG_GENRES (always-on baseline:
     // Hentai/Ecchi) union the user's own banned-genre list (Section B) — the
     // baseline can't be lifted by a user setting, bans are additive to it.
@@ -1878,7 +1899,14 @@ pub fn discover_catalog_card(state: State<'_, AppState>) -> Result<Option<Finish
         let genre = &candidates[genre_idx];
 
         if let Some(anime) = db
-            .random_catalog_anime_in_genre(genre, &banned_formats, &excluded_norm_titles, &affinity, &format_affinity)
+            .random_catalog_anime_in_genre(
+                genre,
+                &banned_formats,
+                &excluded_norm_titles,
+                &affinity,
+                &format_affinity,
+                recommended,
+            )
             .map_err(|e| e.to_string())?
         {
             return Ok(Some(FinishedCard {

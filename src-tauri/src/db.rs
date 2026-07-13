@@ -1585,6 +1585,17 @@ impl Db {
     /// from the caller (`commands::discover_catalog_card`) — pass empty maps
     /// for the pre-recommendation-engine behavior (uniform pick over the
     /// batch, still exclusion/ban-correct).
+    ///
+    /// `recommended` selects the final-pick strategy, not the batch/ban/
+    /// quality-floor/exclusion logic above it (that stays identical either
+    /// way): `true` scores the survivors with `recommend::pick_recommended`
+    /// (unchanged prior behavior); `false` bypasses scoring and returns
+    /// `survivors.into_iter().next()` — the batch is already
+    /// `ORDER BY RANDOM()`, so the first survivor is a uniform random pick.
+    /// Passing empty affinity maps alone is NOT equivalent to `false`: an
+    /// empty map still leaves `score_candidate`'s quality term active, which
+    /// biases toward higher `average_score` rather than being genuinely
+    /// uniform — see docs/superpowers/specs/2026-07-13-discover-recommendation-toggle-design.md.
     pub fn random_catalog_anime_in_genre(
         &self,
         genre: &str,
@@ -1592,6 +1603,7 @@ impl Db {
         excluded_norm_titles: &std::collections::HashSet<String>,
         genre_affinity: &std::collections::HashMap<String, f64>,
         format_affinity: &std::collections::HashMap<String, f64>,
+        recommended: bool,
     ) -> Result<Option<crate::anilist::CatalogAnime>> {
         const MIN_POPULARITY: i64 = 500;
         const BATCH_SIZE: i64 = 40;
@@ -1637,7 +1649,11 @@ impl Db {
             anime.genres = self.list_catalog_genres(anime.id)?;
         }
 
-        Ok(crate::recommend::pick_recommended(survivors, genre_affinity, format_affinity, genre))
+        if recommended {
+            Ok(crate::recommend::pick_recommended(survivors, genre_affinity, format_affinity, genre))
+        } else {
+            Ok(survivors.into_iter().next())
+        }
     }
 
     /// Normalized-title exclusion set input: titles of `series` rows the
@@ -3030,13 +3046,13 @@ mod tests {
     #[test]
     fn random_catalog_anime_in_genre_none_when_empty_some_when_populated() {
         let db = Db::open(":memory:").unwrap();
-        assert!(db.random_catalog_anime_in_genre("Drama", &[], &std::collections::HashSet::new(), &std::collections::HashMap::new(), &std::collections::HashMap::new()).unwrap().is_none());
+        assert!(db.random_catalog_anime_in_genre("Drama", &[], &std::collections::HashSet::new(), &std::collections::HashMap::new(), &std::collections::HashMap::new(), true).unwrap().is_none());
         db.upsert_catalog_anime(
             &catalog_anime_with_popularity(1, "Only", &["Drama"], Some(1000)),
             0,
         )
         .unwrap();
-        let picked = db.random_catalog_anime_in_genre("Drama", &[], &std::collections::HashSet::new(), &std::collections::HashMap::new(), &std::collections::HashMap::new()).unwrap().unwrap();
+        let picked = db.random_catalog_anime_in_genre("Drama", &[], &std::collections::HashSet::new(), &std::collections::HashMap::new(), &std::collections::HashMap::new(), true).unwrap().unwrap();
         assert_eq!(picked.id, 1);
         assert_eq!(picked.genres, vec!["Drama".to_string()]);
     }
@@ -3046,7 +3062,7 @@ mod tests {
         let db = Db::open(":memory:").unwrap();
         db.upsert_catalog_anime(&catalog_anime_with_popularity(1, "Dramatic", &["Drama"], Some(1000)), 0).unwrap();
         db.upsert_catalog_anime(&catalog_anime_with_popularity(2, "Actiony", &["Action"], Some(1000)), 1).unwrap();
-        let picked = db.random_catalog_anime_in_genre("Action", &[], &std::collections::HashSet::new(), &std::collections::HashMap::new(), &std::collections::HashMap::new()).unwrap().unwrap();
+        let picked = db.random_catalog_anime_in_genre("Action", &[], &std::collections::HashSet::new(), &std::collections::HashMap::new(), &std::collections::HashMap::new(), true).unwrap().unwrap();
         assert_eq!(picked.title, "Actiony");
     }
 
@@ -3062,7 +3078,7 @@ mod tests {
         // Qualifies on both counts.
         db.upsert_catalog_anime(&catalog_anime_with_popularity(3, "Qualifies", &["Drama"], Some(1000)), 2).unwrap();
 
-        let picked = db.random_catalog_anime_in_genre("Drama", &[], &std::collections::HashSet::new(), &std::collections::HashMap::new(), &std::collections::HashMap::new()).unwrap().unwrap();
+        let picked = db.random_catalog_anime_in_genre("Drama", &[], &std::collections::HashSet::new(), &std::collections::HashMap::new(), &std::collections::HashMap::new(), true).unwrap().unwrap();
         assert_eq!(picked.title, "Qualifies");
     }
 
@@ -3083,7 +3099,7 @@ mod tests {
         db.set_backlog_status(sid, Some("discarded")).unwrap();
 
         for _ in 0..10 {
-            let picked = db.random_catalog_anime_in_genre("Drama", &[], &std::collections::HashSet::new(), &std::collections::HashMap::new(), &std::collections::HashMap::new()).unwrap().unwrap();
+            let picked = db.random_catalog_anime_in_genre("Drama", &[], &std::collections::HashSet::new(), &std::collections::HashMap::new(), &std::collections::HashMap::new(), true).unwrap().unwrap();
             assert_eq!(picked.title, "Undecided");
         }
     }
@@ -3102,7 +3118,7 @@ mod tests {
         db.set_anilist_id(sid, 1).unwrap();
         db.set_backlog_status(sid, Some("want")).unwrap();
 
-        assert!(db.random_catalog_anime_in_genre("Drama", &[], &std::collections::HashSet::new(), &std::collections::HashMap::new(), &std::collections::HashMap::new()).unwrap().is_none());
+        assert!(db.random_catalog_anime_in_genre("Drama", &[], &std::collections::HashSet::new(), &std::collections::HashMap::new(), &std::collections::HashMap::new(), true).unwrap().is_none());
     }
 
     #[test]
@@ -3118,7 +3134,7 @@ mod tests {
         // With MOVIE banned, only the TV entry can ever be picked.
         for _ in 0..10 {
             let picked = db
-                .random_catalog_anime_in_genre("Drama", &["MOVIE".to_string()], &std::collections::HashSet::new(), &std::collections::HashMap::new(), &std::collections::HashMap::new())
+                .random_catalog_anime_in_genre("Drama", &["MOVIE".to_string()], &std::collections::HashSet::new(), &std::collections::HashMap::new(), &std::collections::HashMap::new(), true)
                 .unwrap()
                 .unwrap();
             assert_eq!(picked.title, "ATVShow");
@@ -3136,7 +3152,7 @@ mod tests {
             ["TV", "MOVIE", "OVA", "ONA", "SPECIAL"].iter().map(|s| s.to_string()).collect();
         // An invalid empty SQL IN () would error here if not short-circuited.
         assert!(db
-            .random_catalog_anime_in_genre("Drama", &all_banned, &std::collections::HashSet::new(), &std::collections::HashMap::new(), &std::collections::HashMap::new())
+            .random_catalog_anime_in_genre("Drama", &all_banned, &std::collections::HashSet::new(), &std::collections::HashMap::new(), &std::collections::HashMap::new(), true)
             .unwrap()
             .is_none());
     }
@@ -3179,7 +3195,7 @@ mod tests {
         assert!(excluded.contains(&crate::matching::normalize_title("Overlord IV")));
 
         for _ in 0..10 {
-            let picked = db.random_catalog_anime_in_genre("Fantasy", &[], &excluded, &std::collections::HashMap::new(), &std::collections::HashMap::new()).unwrap().unwrap();
+            let picked = db.random_catalog_anime_in_genre("Fantasy", &[], &excluded, &std::collections::HashMap::new(), &std::collections::HashMap::new(), true).unwrap().unwrap();
             assert_eq!(picked.title, "Some Other Show");
         }
     }
@@ -3206,7 +3222,7 @@ mod tests {
 
         let excluded: std::collections::HashSet<String> =
             db.engaged_series_titles(src).unwrap().iter().map(|t| crate::matching::normalize_title(t)).collect();
-        assert!(db.random_catalog_anime_in_genre("Fantasy", &[], &excluded, &std::collections::HashMap::new(), &std::collections::HashMap::new()).unwrap().is_none());
+        assert!(db.random_catalog_anime_in_genre("Fantasy", &[], &excluded, &std::collections::HashMap::new(), &std::collections::HashMap::new(), true).unwrap().is_none());
     }
 
     #[test]
@@ -3240,6 +3256,7 @@ mod tests {
                     &std::collections::HashSet::new(),
                     &genre_affinity,
                     &format_affinity,
+                    true,
                 )
                 .unwrap()
                 .unwrap();
@@ -3251,6 +3268,96 @@ mod tests {
             taste_match_wins >= 25,
             "expected the secondary-genre-matching candidate to dominate the weighted pick, won {taste_match_wins}/30"
         );
+    }
+
+    #[test]
+    fn random_catalog_anime_in_genre_recommended_false_ignores_affinity_bias() {
+        // Mirrors `..._end_to_end_biases_toward_secondary_genre_affinity` but
+        // with recommended=false: the same heavy Fantasy affinity that
+        // dominates the recommended-mode pick must NOT bias the random-mode
+        // pick — recommended=false bypasses `pick_recommended` entirely and
+        // just returns the first (already `ORDER BY RANDOM()`) survivor.
+        let db = Db::open(":memory:").unwrap();
+        db.upsert_catalog_anime(
+            &catalog_anime_with_popularity(1, "TasteMatch", &["Drama", "Fantasy"], Some(1000)),
+            0,
+        )
+        .unwrap();
+        db.upsert_catalog_anime(&catalog_anime_with_popularity(2, "NoMatch", &["Drama"], Some(1000)), 1).unwrap();
+
+        let mut genre_affinity = std::collections::HashMap::new();
+        genre_affinity.insert("Fantasy".to_string(), 10.0);
+        let format_affinity = std::collections::HashMap::new();
+
+        let mut taste_match_wins = 0;
+        for _ in 0..30 {
+            let picked = db
+                .random_catalog_anime_in_genre(
+                    "Drama",
+                    &[],
+                    &std::collections::HashSet::new(),
+                    &genre_affinity,
+                    &format_affinity,
+                    false,
+                )
+                .unwrap()
+                .unwrap();
+            if picked.title == "TasteMatch" {
+                taste_match_wins += 1;
+            }
+        }
+        // Wide bounds (should land near 15/30) purely to avoid flakiness —
+        // the point is it must NOT dominate like the recommended-mode test
+        // (which asserts >= 25/30).
+        assert!(
+            (5..=25).contains(&taste_match_wins),
+            "expected roughly even split ignoring affinity, got {taste_match_wins}/30 for TasteMatch"
+        );
+    }
+
+    #[test]
+    fn random_catalog_anime_in_genre_recommended_false_still_excludes_engaged_titles() {
+        // recommended=false must skip scoring, not skip exclusion — the
+        // batch-fetch/ban/quality-floor/exclusion logic is shared regardless
+        // of mode.
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        db.upsert_catalog_anime(&catalog_anime_with_popularity(1, "Overlord IV", &["Fantasy"], Some(1000)), 0)
+            .unwrap();
+        db.upsert_catalog_anime(&catalog_anime_with_popularity(2, "Some Other Show", &["Fantasy"], Some(1000)), 1)
+            .unwrap();
+
+        let followed = crate::models::Series {
+            id: 0,
+            slug: "overlord-iv".into(),
+            title: "Overlord IV".into(),
+            url: "https://example.com/tv/overlord-iv".into(),
+            cover_url: None,
+            is_airing: false,
+            followed: true,
+            next_episode_at: None,
+            site_episode_count: None,
+        };
+        let sid = db.upsert_series(src, &followed).unwrap();
+        db.set_followed(sid, true).unwrap();
+
+        let excluded: std::collections::HashSet<String> =
+            db.engaged_series_titles(src).unwrap().iter().map(|t| crate::matching::normalize_title(t)).collect();
+
+        for _ in 0..10 {
+            let picked = db
+                .random_catalog_anime_in_genre(
+                    "Fantasy",
+                    &[],
+                    &excluded,
+                    &std::collections::HashMap::new(),
+                    &std::collections::HashMap::new(),
+                    false,
+                )
+                .unwrap()
+                .unwrap();
+            assert_eq!(picked.title, "Some Other Show");
+        }
     }
 
     #[test]

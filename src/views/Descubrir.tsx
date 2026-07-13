@@ -20,6 +20,7 @@ import {
   undoLastSwipe,
   undoSwipeEntry,
 } from "../api";
+import { useDiscoverMode } from "../discoverMode";
 import { useT } from "../i18n";
 import { categoryColor } from "../lib/categoryColor";
 import { isUnlinkedCatalogRow } from "../lib/catalogLink";
@@ -140,6 +141,37 @@ function TasteChips() {
   );
 }
 
+// Recomendado / Aleatorio segmented control — self-contained (reads/writes
+// `useDiscoverMode` directly, no props) so task 8 can relocate it into a
+// swipe-side panel later without rewiring. Mirrors StatsRings.tsx's
+// bars/rings toggle markup (`.seg`/`.seg-btn`, `role="tablist"`/`"tab"`).
+function DiscoverModeToggle() {
+  const t = useT();
+  const [mode, setMode] = useDiscoverMode();
+  return (
+    <div className="seg" role="tablist" aria-label={t("discover.modeAria")} title={t("discover.modeHint")}>
+      <button
+        type="button"
+        role="tab"
+        aria-selected={mode === "recommended"}
+        className={`seg-btn${mode === "recommended" ? " active" : ""}`}
+        onClick={() => setMode("recommended")}
+      >
+        {t("discover.modeRecommended")}
+      </button>
+      <button
+        type="button"
+        role="tab"
+        aria-selected={mode === "random"}
+        className={`seg-btn${mode === "random" ? " active" : ""}`}
+        onClick={() => setMode("random")}
+      >
+        {t("discover.modeRandom")}
+      </button>
+    </div>
+  );
+}
+
 function SwipeView() {
   const t = useT();
   const [card, setCard] = useState<SwipeCard | null>(null);
@@ -163,6 +195,8 @@ function SwipeView() {
   // to release from decidedUrlsRef.
   const lastDecidedUrlRef = useRef<string | null>(null);
   const { statuses: linkStatuses, enqueue: enqueueLink } = useLinkQueue();
+  const [discoverMode] = useDiscoverMode();
+  const isFirstModeRenderRef = useRef(true);
   // Multi-level undo cache: the last ~5 classified cards, newest first.
   const [history, setHistory] = useState<SwipeHistoryItem[]>([]);
   const refreshHistory = useCallback(() => {
@@ -182,7 +216,9 @@ function SwipeView() {
     try {
       for (let round = 0; round < MAX_FILL_ROUNDS && queueRef.current.length < PREFETCH_TARGET; round++) {
         const need = PREFETCH_TARGET - queueRef.current.length;
-        const results = await Promise.all(Array.from({ length: need }, () => discoverCatalogCard()));
+        const results = await Promise.all(
+          Array.from({ length: need }, () => discoverCatalogCard(discoverMode === "recommended"))
+        );
         const seen = new Set(queueRef.current.map((c) => c.url));
         if (cardUrlRef.current) seen.add(cardUrlRef.current);
         decidedUrlsRef.current.forEach((url) => seen.add(url));
@@ -207,7 +243,7 @@ function SwipeView() {
     } finally {
       fillingRef.current = false;
     }
-  }, []);
+  }, [discoverMode]);
 
   // Pop the next card off the local queue (instant, no network wait in the
   // common case) and kick off a background refill once the buffer runs
@@ -249,6 +285,20 @@ function SwipeView() {
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Switching Recomendado <-> Aleatorio must refresh the *upcoming* deck
+  // immediately, without discarding whatever card is already on screen and
+  // without touching decidedUrlsRef (already-decided cards stay excluded
+  // regardless of mode). Skip the very first run (mount already filled the
+  // queue in the effect above with the mode current at that time).
+  useEffect(() => {
+    if (isFirstModeRenderRef.current) {
+      isFirstModeRenderRef.current = false;
+      return;
+    }
+    queueRef.current = [];
+    fillQueue();
+  }, [discoverMode, fillQueue]);
 
   const decide = useCallback(
     async (decision: SwipeDecision, direction: Exclude<SwipeOutDirection, null>) => {
@@ -361,6 +411,9 @@ function SwipeView() {
 
   return (
     <div className="swipe-stage">
+      <div style={{ display: "flex", justifyContent: "center", marginBottom: 12 }}>
+        <DiscoverModeToggle />
+      </div>
       <TasteChips />
       {exhausted ? (
         <div className="empty">{t("discover.exhausted")}</div>

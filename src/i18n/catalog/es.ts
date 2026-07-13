@@ -117,6 +117,10 @@ export const es = {
   "seriesDetail.noEpisodes": "Sin episodios registrados todavía. Pulsa Actualizar.",
 
   // Descubrir.tsx
+  "discover.modeRecommended": "Recomendado",
+  "discover.modeRandom": "Aleatorio",
+  "discover.modeAria": "Modo del mazo",
+  "discover.modeHint": "Recomendado usa tus géneros y tipos favoritos (local). Aleatorio los ignora.",
   "discover.topGenres": "Tus géneros favoritos:",
   "discover.exhausted": "No se han encontrado más animes por ahora, prueba más tarde.",
   "discover.openPageTitle": "Abrir página del anime",

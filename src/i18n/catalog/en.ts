@@ -103,6 +103,10 @@ export const en: Messages = {
   "seriesDetail.loadingEpisodes": "Loading episodes…",
   "seriesDetail.noEpisodes": "No episodes recorded yet. Hit Refresh.",
 
+  "discover.modeRecommended": "Recommended",
+  "discover.modeRandom": "Random",
+  "discover.modeAria": "Deck mode",
+  "discover.modeHint": "Recommended uses your favorite genres and types (local). Random ignores them.",
   "discover.topGenres": "Your favorite genres:",
   "discover.exhausted": "No more anime found for now, try again later.",
   "discover.openPageTitle": "Open anime page",
