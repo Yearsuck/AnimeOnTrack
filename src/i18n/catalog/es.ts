@@ -109,6 +109,13 @@ export const es = {
   "library.moveToWant": 'Mover a "Quiero ver"',
   "library.watchedExternally": "✓ Vista fuera de la app",
   "library.markNotWatched": "Marcar como no vista",
+  "library.filterStatus": "Estado",
+  "library.statusAll": "Todas",
+  "library.filterType": "Tipo",
+  "library.typeAll": "Todos",
+  "library.typeOther": "Otros",
+  "library.filterGenre": "Género",
+  "library.genreAll": "Todos",
 
   // SeriesDetail.tsx
   "seriesDetail.unfollow": "Dejar de seguir",

@@ -57,6 +57,11 @@ export interface LibraryItem {
   /** Mirrors series.watched_externally — a catalog "Ya lo vi" swipe, which
    *  never scrapes episodes (total_episodes stays 0). */
   watched_externally: boolean;
+  /** Raw series.kind ("TV"/"MOVIE"/"Pelicula"/"OVA"/"ONA"/"SPECIAL"/site
+   *  quality tags/null) — unnormalized, see normalizeKind() in Library.tsx. */
+  kind: string | null;
+  /** This series' genres from series_genres, sorted. */
+  genres: string[];
 }
 
 export interface GenreStat {
