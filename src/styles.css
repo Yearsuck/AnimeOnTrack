@@ -1035,6 +1035,13 @@ progress.scanbar-track::-webkit-progress-value {
 }
 
 /* ---------- Descubrir · Listas (redesigned cards) ---------- */
+.listas-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+  margin-bottom: var(--sp-3);
+}
 .listas-seg {
   margin-bottom: 16px;
 }
