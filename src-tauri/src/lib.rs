@@ -1,6 +1,7 @@
 mod adapter;
 mod anilist;
 mod commands;
+mod dates;
 mod db;
 mod diff;
 mod genres;
