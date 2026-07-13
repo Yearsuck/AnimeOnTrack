@@ -882,6 +882,18 @@ impl Db {
             [source_id],
             |r| r.get(0),
         )?;
+        let airing_followed: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM series WHERE source_id=?1 AND followed=1 AND is_airing=1",
+            [source_id],
+            |r| r.get(0),
+        )?;
+        let pending_to_watch: i64 = self.conn.query_row(
+            "SELECT COUNT(DISTINCT s.id) FROM series s
+             JOIN episodes e ON e.series_id = s.id
+             WHERE s.source_id=?1 AND s.followed=1 AND e.seen=0",
+            [source_id],
+            |r| r.get(0),
+        )?;
         // Distinct animes = distinct franchise keys among the series the user
         // is actually tracking (followed OR watched-externally), so seasons of
         // the same show count once. Grouping is done in Rust (franchise_key)
@@ -902,6 +914,8 @@ impl Db {
             distinct_anime,
             episodes_watched,
             episodes_total,
+            airing_followed,
+            pending_to_watch,
             backlog_want,
         })
     }
@@ -1954,6 +1968,57 @@ mod tests {
         let summary = db.get_watch_summary(src).unwrap();
         assert_eq!(summary.followed_series, 4, "4 followed rows");
         assert_eq!(summary.distinct_anime, 3, "Slime(x3 seasons)=1, Naruto=1, Frieren=1");
+    }
+
+    // ---- Stats stale refresh + metric concepts (2026-07-13) ----
+
+    #[test]
+    fn get_watch_summary_computes_airing_followed_and_pending_to_watch() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+
+        // Followed + still airing + one unseen episode: counts toward both
+        // airing_followed and pending_to_watch.
+        let mut airing = mk_airing("airing1", "Airing Show", None);
+        airing.is_airing = true;
+        let airing_id = db.upsert_series(src, &airing).unwrap();
+        db.set_followed(airing_id, true).unwrap();
+        db.insert_episode(&crate::models::Episode {
+            id: 0,
+            series_id: airing_id,
+            number: "1".into(),
+            title: None,
+            url: "https://site/anime/airing1-capitulo-1/".into(),
+            released_at: None,
+            seen: false,
+        })
+        .unwrap();
+
+        // Followed + finished + fully seen: counts toward neither.
+        let mut finished = mk_airing("finished1", "Finished Show", None);
+        finished.is_airing = false;
+        let finished_id = db.upsert_series(src, &finished).unwrap();
+        db.set_followed(finished_id, true).unwrap();
+        db.insert_episode(&crate::models::Episode {
+            id: 0,
+            series_id: finished_id,
+            number: "1".into(),
+            title: None,
+            url: "https://site/anime/finished1-capitulo-1/".into(),
+            released_at: None,
+            seen: true,
+        })
+        .unwrap();
+
+        // Want-only (never followed): counts toward backlog_want only.
+        let want = mk_airing("want1", "Want Show", None);
+        let want_id = db.upsert_series(src, &want).unwrap();
+        db.set_backlog_status(want_id, Some("want")).unwrap();
+
+        let summary = db.get_watch_summary(src).unwrap();
+        assert_eq!(summary.airing_followed, 1, "only the airing+followed row counts");
+        assert_eq!(summary.pending_to_watch, 1, "only the followed row with an unseen episode counts");
+        assert_eq!(summary.backlog_want, 1, "only the want-only row counts");
     }
 
     #[test]

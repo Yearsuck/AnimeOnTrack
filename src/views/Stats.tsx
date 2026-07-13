@@ -18,11 +18,14 @@ export function Stats({ active }: { active: boolean }) {
   const [backfilling, setBackfilling] = useState(false);
   // Stats now stays mounted forever (App.tsx hides it with CSS instead of
   // unmounting, to keep the graph's three.js/d3-force state alive — see
-  // docs/superpowers/specs/2026-07-10-stats-graph-cache-design.md). That
-  // means it no longer refetches on every tab switch, which is correct but
-  // would otherwise leave it stale after a refresh or a genre backfill
-  // completes while some other tab is showing. `dirty` tracks exactly that.
-  const dirtyRef = useRef(false);
+  // docs/superpowers/specs/2026-07-10-stats-graph-cache-design.md). Keeping
+  // it mounted preserves that three.js/d3-force state; it does NOT require
+  // avoiding data refetches (refetching seriesList doesn't tear down the
+  // graph — StatsGraph already diff-guards layout via its structuralKey). So
+  // every false→true activation reloads unconditionally, regardless of
+  // whether a refresh/backfill happened — that's the only reliable way to
+  // catch follow/unfollow/seen/reclassify mutations made on other tabs,
+  // none of which emit a Tauri event Stats could listen for.
   const wasActiveRef = useRef(active);
 
   async function load() {
@@ -43,28 +46,26 @@ export function Stats({ active }: { active: boolean }) {
 
   // Reuse the same `refresh-progress` Tauri event ProgressBar.tsx already
   // listens to (current >= total marks the cycle complete) rather than
-  // adding a new event. If Estadísticas is visible when a refresh lands,
-  // reload right away; otherwise just mark dirty for the active-transition
-  // effect below to pick up. No polling.
+  // adding a new event. If Estadísticas is visible when a scan finishes,
+  // reload right away — this is the one case the activation reload below
+  // wouldn't catch, since the user never leaves and re-enters the tab.
   useEffect(() => {
     const un = listen<{ current: number; total: number }>("refresh-progress", (e) => {
       if (e.payload.current < e.payload.total) return;
-      if (active) {
-        dirtyRef.current = false;
-        load();
-      } else {
-        dirtyRef.current = true;
-      }
+      if (active) load();
     });
     return () => {
       un.then((f) => f());
     };
   }, [active]);
 
-  // Becoming visible again after data changed while hidden.
+  // Becoming visible again: always reload, unconditionally. Following /
+  // unfollowing a series, marking episodes seen, reclassifying (want /
+  // discarded / ya-vi) and cross-site follow carry-over none emit a Tauri
+  // event Stats could listen for, so the only reliable moment to catch them
+  // is the moment the user actually looks at this screen.
   useEffect(() => {
-    if (active && !wasActiveRef.current && dirtyRef.current) {
-      dirtyRef.current = false;
+    if (active && !wasActiveRef.current) {
       load();
     }
     wasActiveRef.current = active;
@@ -74,7 +75,6 @@ export function Stats({ active }: { active: boolean }) {
     setBackfilling(true);
     try {
       await backfillGenres();
-      dirtyRef.current = false;
       await load();
     } finally {
       setBackfilling(false);
@@ -109,13 +109,25 @@ export function Stats({ active }: { active: boolean }) {
           <div className="card">
             <div className="card-body">
               <div className="muted" style={{ fontSize: 12 }}>{t("stats.followedSeries")}</div>
-              <div style={{ fontSize: 22, fontWeight: 700 }}>{summary.followed_series}</div>
+              <div style={{ fontSize: 22, fontWeight: 700 }}>{summary.airing_followed}</div>
             </div>
           </div>
           <div className="card">
             <div className="card-body">
               <div className="muted" style={{ fontSize: 12 }}>{t("stats.backlogPending")}</div>
+              <div style={{ fontSize: 22, fontWeight: 700 }}>{summary.pending_to_watch}</div>
+              <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
+                {t("stats.backlogPendingHelp")}
+              </div>
+            </div>
+          </div>
+          <div className="card">
+            <div className="card-body">
+              <div className="muted" style={{ fontSize: 12 }}>{t("stats.wishlist")}</div>
               <div style={{ fontSize: 22, fontWeight: 700 }}>{summary.backlog_want}</div>
+              <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
+                {t("stats.wishlistHelp")}
+              </div>
             </div>
           </div>
         </div>
