@@ -41,6 +41,10 @@ pub struct SwipeHistoryRow {
     pub poster_url: Option<String>,
     pub backlog_status: Option<String>,
     pub watched_externally: bool,
+    /// The row's `series.url` — lets the frontend clear this card from its
+    /// client-side decided-set when it legitimately returns to the deck
+    /// (undo / return-to-deck). See the design spec's Fix 1.
+    pub url: String,
 }
 
 /// The subset of a `series` row's fields `link_catalog_series` needs to
@@ -1656,17 +1660,18 @@ impl Db {
 
     /// The subset of a `series` row's fields the swipe-history strip needs
     /// to render one entry (`commands::list_swipe_history`): title, poster,
-    /// and the two decision signals a catalog-swipe row can carry
-    /// (`backlog_status`, `watched_externally` — catalog rows are never
-    /// `followed` by `decide_catalog_card`, so that flag isn't needed here).
-    /// `None` when the row no longer exists (already deleted by an earlier
+    /// url (so the frontend can clear it from its decided-set on undo /
+    /// return-to-deck), and the two decision signals a catalog-swipe row can
+    /// carry (`backlog_status`, `watched_externally` — catalog rows are
+    /// never `followed` by `decide_catalog_card`, so that flag isn't needed
+    /// here). `None` when the row no longer exists (already deleted by an earlier
     /// undo/return-to-deck) — the caller skips it rather than erroring, so
     /// the history strip self-heals.
     pub fn get_series_for_history(&self, series_id: i64) -> Result<Option<SwipeHistoryRow>> {
         Ok(self
             .conn
             .query_row(
-                "SELECT title, cover_url, backlog_status, watched_externally FROM series WHERE id=?1",
+                "SELECT title, cover_url, backlog_status, watched_externally, url FROM series WHERE id=?1",
                 [series_id],
                 |r| {
                     Ok(SwipeHistoryRow {
@@ -1674,6 +1679,7 @@ impl Db {
                         poster_url: r.get(1)?,
                         backlog_status: r.get(2)?,
                         watched_externally: r.get::<_, i64>(3)? != 0,
+                        url: r.get(4)?,
                     })
                 },
             )
@@ -3304,6 +3310,24 @@ mod tests {
     fn get_series_for_history_returns_none_for_a_deleted_row() {
         let db = Db::open(":memory:").unwrap();
         assert!(db.get_series_for_history(999).unwrap().is_none());
+    }
+
+    /// The history strip's client-side reappearance fix needs the row's
+    /// `url` to clear the swiped card from the frontend's decided-set when
+    /// the card legitimately returns to the deck (undo / return-to-deck) —
+    /// see `SwipeHistoryItem::url` and the design spec's Fix 1.
+    #[test]
+    fn get_series_for_history_includes_the_rows_url() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let s = crate::models::Series {
+            id: 0, slug: "anilist-7".into(), title: "T".into(),
+            url: "https://anilist.co/anime/7/t".into(), cover_url: None,
+            is_airing: false, followed: false, next_episode_at: None, site_episode_count: None,
+        };
+        let sid = db.upsert_series(src, &s).unwrap();
+        let row = db.get_series_for_history(sid).unwrap().unwrap();
+        assert_eq!(row.url, "https://anilist.co/anime/7/t");
     }
 
     #[test]
