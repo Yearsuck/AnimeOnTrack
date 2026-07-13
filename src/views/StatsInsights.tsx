@@ -86,6 +86,9 @@ export function StatsInsights({
             <div className="progress" style={{ marginTop: 8 }}>
               <span style={{ width: `${completionPct}%` }} />
             </div>
+            <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
+              {summary.episodes_watched}/{summary.episodes_total}
+            </div>
           </div>
         </div>
         <div className="card">

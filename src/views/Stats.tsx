@@ -104,7 +104,13 @@ export function Stats({ active }: { active: boolean }) {
             <div className="card-body">
               <div className="muted" style={{ fontSize: 12 }}>{t("stats.episodesWatched")}</div>
               <div style={{ fontSize: 22, fontWeight: 700 }}>
-                {summary.episodes_watched}/{summary.episodes_total}
+                {summary.episodes_watched + summary.episodes_watched_external}
+              </div>
+              <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
+                {t("stats.episodesWatchedHelp", {
+                  real: summary.episodes_watched,
+                  external: summary.episodes_watched_external,
+                })}
               </div>
             </div>
           </div>

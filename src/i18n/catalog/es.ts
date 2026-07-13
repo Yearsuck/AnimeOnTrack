@@ -236,8 +236,9 @@ export const es = {
 
   // Stats.tsx
   "stats.episodesWatched": "Episodios vistos",
-  "stats.distinctAnime": "Animes",
-  "stats.distinctAnimeHelp": "temporadas contadas como una",
+  "stats.episodesWatchedHelp": "{real} con seguimiento real · {external} estimados de «Ya vistas»",
+  "stats.distinctAnime": "Animes vistos",
+  "stats.distinctAnimeHelp": "temporadas contadas como una · incluye «Ya vistas»",
   "stats.followedSeries": "Siguiendo en emisión",
   "stats.backlogPending": "Pendientes de ver",
   "stats.backlogPendingHelp": "series seguidas con episodios sin ver",
