@@ -93,6 +93,9 @@ export interface SwipeHistoryItem {
   series_id: number;
   title: string;
   poster_url: string | null;
+  // series.url — lets Descubrir.tsx clear this card from its client-side
+  // decided-set (decidedUrlsRef) when it legitimately returns to the deck.
+  url: string;
   decision: "seen" | "want" | "discard" | "none";
 }
 

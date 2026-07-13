@@ -64,10 +64,14 @@ pub struct AppState {
 /// How many recent swipe decisions `swipe_history` remembers.
 const SWIPE_HISTORY_CAP: usize = 5;
 
-/// Push `sid` to the front of `history`, evicting the oldest entry past
-/// `SWIPE_HISTORY_CAP`. Factored out as a plain function over `VecDeque`
-/// (no `State<AppState>`) so it's unit-testable directly.
+/// Move `sid` to the front of `history` (removing any earlier copy first, so
+/// a re-decided id is never held twice — see
+/// `push_history_dedups_a_repeated_id_instead_of_holding_it_twice`), evicting
+/// the oldest entry past `SWIPE_HISTORY_CAP`. Factored out as a plain
+/// function over `VecDeque` (no `State<AppState>`) so it's unit-testable
+/// directly.
 fn push_history(history: &mut VecDeque<i64>, sid: i64) {
+    history.retain(|&id| id != sid);
     history.push_front(sid);
     history.truncate(SWIPE_HISTORY_CAP);
 }
@@ -1241,6 +1245,11 @@ pub struct SwipeHistoryItem {
     pub series_id: i64,
     pub title: String,
     pub poster_url: Option<String>,
+    /// The row's `series.url` — the frontend uses this to clear the card
+    /// from its client-side decided-set (`decidedUrlsRef`) when it
+    /// legitimately returns to the deck via `returnToDeck`. See the design
+    /// spec's Fix 1.
+    pub url: String,
     /// "seen" | "want" | "discard" | "none", derived from the row's live
     /// `watched_externally`/`backlog_status` — see `decision_for_history_row`.
     pub decision: String,
@@ -1274,6 +1283,7 @@ pub fn list_swipe_history(state: State<'_, AppState>) -> Result<Vec<SwipeHistory
                 series_id: sid,
                 title: row.title.clone(),
                 poster_url: row.poster_url.clone(),
+                url: row.url.clone(),
                 decision: decision_for_history_row(&row),
             });
         }
@@ -2129,15 +2139,18 @@ mod tests {
     }
 
     #[test]
-    fn push_history_reinserts_a_repeated_id_at_the_front() {
-        // Re-deciding the same series id moves it to the front; the deque may
-        // then hold it twice, but list_swipe_history/undo tolerate that
-        // (rows self-heal / retain removes all copies).
+    fn push_history_dedups_a_repeated_id_instead_of_holding_it_twice() {
+        // Re-deciding the same series id (a card the reappearance race let a
+        // concurrent picker re-serve, then the user swiped again) must move
+        // it to the front WITHOUT leaving a second copy behind — a duplicate
+        // sid is what made the "Últimas clasificadas" strip render the same
+        // title twice (list_swipe_history has no dedup of its own).
         let mut h = VecDeque::new();
         push_history(&mut h, 10);
         push_history(&mut h, 20);
         push_history(&mut h, 10);
-        assert_eq!(h.front().copied(), Some(10));
+        assert_eq!(h.iter().copied().collect::<Vec<i64>>(), vec![10, 20]);
+        assert_eq!(h.len(), 2, "10 must appear exactly once, not twice");
     }
 
     #[test]
@@ -2156,22 +2169,22 @@ mod tests {
     #[test]
     fn decision_for_history_row_derives_from_live_flags() {
         let seen = crate::db::SwipeHistoryRow {
-            title: "S".into(), poster_url: None,
+            title: "S".into(), poster_url: None, url: "u".into(),
             backlog_status: None, watched_externally: true,
         };
         assert_eq!(decision_for_history_row(&seen), "seen");
         let want = crate::db::SwipeHistoryRow {
-            title: "W".into(), poster_url: None,
+            title: "W".into(), poster_url: None, url: "u".into(),
             backlog_status: Some("want".into()), watched_externally: false,
         };
         assert_eq!(decision_for_history_row(&want), "want");
         let disc = crate::db::SwipeHistoryRow {
-            title: "D".into(), poster_url: None,
+            title: "D".into(), poster_url: None, url: "u".into(),
             backlog_status: Some("discarded".into()), watched_externally: false,
         };
         assert_eq!(decision_for_history_row(&disc), "discard");
         let none = crate::db::SwipeHistoryRow {
-            title: "N".into(), poster_url: None,
+            title: "N".into(), poster_url: None, url: "u".into(),
             backlog_status: None, watched_externally: false,
         };
         assert_eq!(decision_for_history_row(&none), "none");
