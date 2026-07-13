@@ -240,4 +240,24 @@ export const en: Messages = {
 
   "stats.graphEmpty": "No followed series yet.",
   "stats.graphRootLabel": "Followed",
+
+  // StatsInsights.tsx
+  "stats.insightsHeading": "Summary",
+  "stats.timeWatched": "Time watched (estimated)",
+  "stats.timeWatchedHelp": "estimate: 24 min/episode (100 for movies) · {done} of {total} \"Watched elsewhere\" with data",
+  "stats.completion": "Overall progress",
+  "stats.avgEpisodes": "Average episodes per series",
+  "stats.topSeries": "Top series",
+  "stats.funnelHeading": "Your Discover funnel",
+  "stats.funnelWant": "Want to watch",
+  "stats.funnelDiscarded": "Discarded",
+  "stats.funnelWatched": "Watched elsewhere",
+  "stats.funnelFollowed": "Following",
+  "stats.airingVsFinished": "Followed: airing vs finished",
+  "stats.airing": "Airing",
+  "stats.finished": "Finished",
+  "stats.marksHeading": "Episodes marked per day (last 30 days)",
+  "stats.marksCaveat": "Counts when you marked the episode, not when you watched it; marking a whole series marks all of its earlier episodes at once. Data since {date}.",
+  "stats.hoursUnit": "{hours}h",
+  "stats.daysUnit": "{days}d {hours}h",
 };

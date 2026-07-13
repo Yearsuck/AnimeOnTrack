@@ -92,6 +92,32 @@ export interface SeriesGraphNode {
   kind: string | null;
 }
 
+export interface DayCount {
+  day: string;
+  count: number;
+}
+
+export interface TitleCount {
+  title: string;
+  count: number;
+}
+
+export interface WatchInsights {
+  estimated_minutes_tracked: number;
+  estimated_minutes_external: number;
+  external_titles_estimated: number;
+  external_titles_total: number;
+  avg_episodes_per_series: number;
+  followed_airing: number;
+  followed_finished: number;
+  discarded: number;
+  want: number;
+  watched_externally: number;
+  top_series: TitleCount[];
+  marks_by_day: DayCount[];
+  marks_tracked_since: string | null;
+}
+
 export interface SwipeCard {
   title: string;
   url: string;

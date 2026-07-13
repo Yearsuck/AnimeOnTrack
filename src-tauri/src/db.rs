@@ -152,6 +152,25 @@ pub fn franchise_key(title: &str) -> String {
     }
 }
 
+/// Minutes estimated per episode by format/kind, case-insensitively. The DB
+/// never stores a real duration — AniList has one but it isn't synced (see
+/// `anilist::CatalogAnime`), and the scraped site's own `series.kind` is
+/// free-text vocabulary, not a validated enum (real values seen live:
+/// `TV`, `MOVIE`, `4K`, `Pelicula`, `OVA`, `ONA`, `Sin Censura`, `SPECIAL`,
+/// `Blu-Ray`, `Resubido`, `Yaoi`...). So this is an explicit, documented
+/// *estimate*, not a fact — callers (`get_watch_insights`) must present it as
+/// one. Anything not recognized (including all the site's noise and `None`)
+/// falls back to the plain-TV estimate of 24 minutes.
+pub fn minutes_per_episode(format: Option<&str>) -> i64 {
+    match format.map(|f| f.trim().to_uppercase()).as_deref() {
+        Some("MOVIE") | Some("PELICULA") | Some("PELÍCULA") => 100,
+        Some("MUSIC") => 5,
+        Some("TV_SHORT") => 8,
+        Some("OVA") | Some("SPECIAL") => 26,
+        _ => 24,
+    }
+}
+
 /// Add `column` to `table` if it isn't already there. SQLite has no
 /// `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, so this checks `PRAGMA
 /// table_info` first — needed because `init_schema` runs on every `Db::open`
@@ -921,6 +940,143 @@ impl Db {
             airing_followed,
             pending_to_watch,
             backlog_want,
+        })
+    }
+
+    /// Local-only watch metrics for the Estadísticas "Resumen" block — see
+    /// `docs/superpowers/specs/2026-07-13-stats-new-metrics-design.md`. Pure
+    /// SQL against the local DB; never touches the network. Time is
+    /// estimated via `minutes_per_episode` since neither the scraped site
+    /// nor the synced AniList catalog carry a real per-episode duration.
+    pub fn get_watch_insights(&self, source_id: i64) -> Result<crate::models::WatchInsights> {
+        // Minutes tracked: seen-episode counts grouped by series (and its
+        // `kind`), summed in Rust since SQLite can't run the format->minutes
+        // map itself.
+        let mut stmt = self.conn.prepare(
+            "SELECT s.kind, COUNT(*) AS cnt
+             FROM episodes e JOIN series s ON s.id = e.series_id
+             WHERE e.seen=1 AND s.followed=1 AND s.source_id=?1
+             GROUP BY s.id",
+        )?;
+        let tracked_rows: Vec<(Option<String>, i64)> = stmt
+            .query_map([source_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let estimated_minutes_tracked: i64 = tracked_rows
+            .iter()
+            .map(|(kind, cnt)| minutes_per_episode(kind.as_deref()) * cnt)
+            .sum();
+
+        // Minutes from "Ya vistas" linked to a catalog row with a known
+        // episode count — only those rows can contribute an estimate.
+        let mut stmt = self.conn.prepare(
+            "SELECT c.episodes, c.format
+             FROM series s JOIN anilist_catalog c ON c.id = s.anilist_id
+             WHERE s.source_id=?1 AND s.watched_externally=1 AND c.episodes IS NOT NULL",
+        )?;
+        let external_rows: Vec<(i64, Option<String>)> = stmt
+            .query_map([source_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let estimated_minutes_external: i64 = external_rows
+            .iter()
+            .map(|(episodes, format)| minutes_per_episode(format.as_deref()) * episodes)
+            .sum();
+        let external_titles_estimated = external_rows.len() as i64;
+
+        let external_titles_total: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM series WHERE source_id=?1 AND watched_externally=1",
+            [source_id],
+            |r| r.get(0),
+        )?;
+
+        // Mean episode count (all episodes, not just seen) across followed
+        // series. NULL (no followed series at all) reads as 0.0, not a crash.
+        let avg_episodes_per_series: Option<f64> = self.conn.query_row(
+            "SELECT AVG(cnt) FROM (
+                SELECT s.id, COUNT(e.id) AS cnt
+                FROM series s LEFT JOIN episodes e ON e.series_id = s.id
+                WHERE s.source_id=?1 AND s.followed=1
+                GROUP BY s.id
+             )",
+            [source_id],
+            |r| r.get(0),
+        )?;
+        let avg_episodes_per_series = avg_episodes_per_series.unwrap_or(0.0);
+
+        let followed_airing: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM series WHERE source_id=?1 AND followed=1 AND is_airing=1",
+            [source_id],
+            |r| r.get(0),
+        )?;
+        let followed_finished: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM series WHERE source_id=?1 AND followed=1 AND is_airing=0",
+            [source_id],
+            |r| r.get(0),
+        )?;
+        let discarded: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM series WHERE source_id=?1 AND backlog_status='discarded'",
+            [source_id],
+            |r| r.get(0),
+        )?;
+        let want: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM series WHERE source_id=?1 AND backlog_status='want'",
+            [source_id],
+            |r| r.get(0),
+        )?;
+        let watched_externally: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM series WHERE source_id=?1 AND watched_externally=1",
+            [source_id],
+            |r| r.get(0),
+        )?;
+
+        let mut stmt = self.conn.prepare(
+            "SELECT s.title, COUNT(*) AS cnt
+             FROM episodes e JOIN series s ON s.id = e.series_id
+             WHERE e.seen=1 AND s.source_id=?1
+             GROUP BY s.id
+             ORDER BY cnt DESC, s.title
+             LIMIT 8",
+        )?;
+        let top_series = stmt
+            .query_map([source_id], |r| {
+                Ok(crate::models::TitleCount { title: r.get(0)?, count: r.get(1)? })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        let mut stmt = self.conn.prepare(
+            "SELECT DATE(e.seen_at) AS d, COUNT(*) AS cnt
+             FROM episodes e JOIN series s ON s.id = e.series_id
+             WHERE e.seen_at IS NOT NULL AND s.source_id=?1
+               AND DATE(e.seen_at) >= DATE('now', '-30 days')
+             GROUP BY d
+             ORDER BY d",
+        )?;
+        let marks_by_day = stmt
+            .query_map([source_id], |r| {
+                Ok(crate::models::DayCount { day: r.get(0)?, count: r.get(1)? })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        let marks_tracked_since: Option<String> = self.conn.query_row(
+            "SELECT MIN(DATE(e.seen_at)) FROM episodes e JOIN series s ON s.id = e.series_id
+             WHERE e.seen_at IS NOT NULL AND s.source_id=?1",
+            [source_id],
+            |r| r.get(0),
+        )?;
+
+        Ok(crate::models::WatchInsights {
+            estimated_minutes_tracked,
+            estimated_minutes_external,
+            external_titles_estimated,
+            external_titles_total,
+            avg_episodes_per_series,
+            followed_airing,
+            followed_finished,
+            discarded,
+            want,
+            watched_externally,
+            top_series,
+            marks_by_day,
+            marks_tracked_since,
         })
     }
 
@@ -2171,6 +2327,179 @@ mod tests {
         assert_eq!(summary.airing_followed, 1, "only the airing+followed row counts");
         assert_eq!(summary.pending_to_watch, 1, "only the followed row with an unseen episode counts");
         assert_eq!(summary.backlog_want, 1, "only the want-only row counts");
+    }
+
+    // ---- Stats new metrics: minutes_per_episode + get_watch_insights (2026-07-13) ----
+
+    #[test]
+    fn minutes_per_episode_maps_each_format_branch() {
+        assert_eq!(minutes_per_episode(Some("MOVIE")), 100);
+        assert_eq!(minutes_per_episode(Some("movie")), 100, "case-insensitive");
+        assert_eq!(minutes_per_episode(Some("Pelicula")), 100);
+        assert_eq!(minutes_per_episode(Some("Película")), 100, "accented site vocabulary");
+        assert_eq!(minutes_per_episode(Some("MUSIC")), 5);
+        assert_eq!(minutes_per_episode(Some("TV_SHORT")), 8);
+        assert_eq!(minutes_per_episode(Some("OVA")), 26);
+        assert_eq!(minutes_per_episode(Some("SPECIAL")), 26);
+        assert_eq!(minutes_per_episode(Some("TV")), 24);
+        assert_eq!(minutes_per_episode(Some("ONA")), 24);
+    }
+
+    #[test]
+    fn minutes_per_episode_defaults_to_24_for_real_site_noise_and_none() {
+        // Real dirty `series.kind` vocabulary observed live on 2026-07-13
+        // (see the design doc) must not crash or misclassify — it all falls
+        // back to the plain-TV estimate.
+        for noisy in ["4K", "Blu-Ray", "Resubido", "Sin Censura", "Yaoi"] {
+            assert_eq!(minutes_per_episode(Some(noisy)), 24, "noisy kind: {noisy}");
+        }
+        assert_eq!(minutes_per_episode(None), 24, "no kind at all");
+    }
+
+    #[test]
+    fn get_watch_insights_estimates_minutes_from_seeded_db() {
+        // Mirrors the design doc's acceptance test: a followed series with 3
+        // seen episodes (kind=TV -> 24 min/ep = 72) plus a linked "Ya vista"
+        // whose catalog row has 12 episodes at format TV (24 min/ep = 288).
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+
+        // Followed, airing, TV, 4 episodes numbered 1..4, cascade-mark 1..3 seen.
+        let mut airing = mk_airing("airing1", "Airing Show", None);
+        airing.is_airing = true;
+        let airing_id = db.upsert_series(src, &airing).unwrap();
+        db.set_followed(airing_id, true).unwrap();
+        db.set_kind(airing_id, "TV").unwrap();
+        for n in 1..=4 {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: airing_id, number: n.to_string(), title: None,
+                url: format!("https://site/anime/airing1-capitulo-{n}/"),
+                released_at: None, seen: false,
+            }).unwrap();
+        }
+        db.set_seen_cascade(airing_id, "3", true).unwrap();
+
+        // Followed, finished, MOVIE, 2 episodes already seen (no seen_at —
+        // simulates pre-existing data from before the column existed).
+        let mut finished = mk_airing("finished1", "Finished Show", None);
+        finished.is_airing = false;
+        let finished_id = db.upsert_series(src, &finished).unwrap();
+        db.set_followed(finished_id, true).unwrap();
+        db.set_kind(finished_id, "MOVIE").unwrap();
+        for n in 1..=2 {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: finished_id, number: n.to_string(), title: None,
+                url: format!("https://site/anime/finished1-capitulo-{n}/"),
+                released_at: None, seen: true,
+            }).unwrap();
+        }
+
+        // Want-only.
+        let want_id = db.upsert_series(src, &mk_airing("want1", "Want Show", None)).unwrap();
+        db.set_backlog_status(want_id, Some("want")).unwrap();
+
+        // Discarded-only.
+        let disc_id = db.upsert_series(src, &mk_airing("disc1", "Discarded Show", None)).unwrap();
+        db.set_backlog_status(disc_id, Some("discarded")).unwrap();
+
+        // Watched-externally, linked to a catalog row with 12 TV episodes.
+        db.upsert_catalog_anime(
+            &crate::anilist::CatalogAnime {
+                id: 100, title: "External Show".into(), title_romaji: None, title_english: None,
+                cover_url: None, format: Some("TV".into()), genres: vec![],
+                episodes: Some(12), average_score: None, popularity: None,
+                url: "https://anilist.co/anime/100".into(),
+            },
+            0,
+        ).unwrap();
+        let ext_id = db.upsert_series(src, &mk_airing("ext1", "External Show", None)).unwrap();
+        db.set_watched_externally(ext_id, true).unwrap();
+        db.set_anilist_id(ext_id, 100).unwrap();
+
+        // A second watched-externally row, unlinked (no catalog data) — must
+        // count toward the total but not toward the estimated minutes.
+        let ext2_id = db.upsert_series(src, &mk_airing("ext2", "Unlinked External", None)).unwrap();
+        db.set_watched_externally(ext2_id, true).unwrap();
+
+        let insights = db.get_watch_insights(src).unwrap();
+
+        // Both series are followed (one airing, one finished) — tracked
+        // minutes sum across ALL followed series' seen episodes, not just
+        // airing ones: 3 TV eps * 24 min + 2 MOVIE eps * 100 min.
+        assert_eq!(insights.estimated_minutes_tracked, 272, "3*24 (TV) + 2*100 (MOVIE)");
+        assert_eq!(insights.estimated_minutes_external, 288, "12 eps * 24 min (TV)");
+        assert_eq!(insights.external_titles_estimated, 1, "only the linked row counted");
+        assert_eq!(insights.external_titles_total, 2, "both watched-externally rows");
+        assert_eq!(insights.avg_episodes_per_series, 3.0, "(4 + 2) / 2 followed series");
+        assert_eq!(insights.followed_airing, 1);
+        assert_eq!(insights.followed_finished, 1);
+        assert_eq!(insights.want, 1);
+        assert_eq!(insights.discarded, 1);
+        assert_eq!(insights.watched_externally, 2);
+        assert_eq!(
+            insights.top_series,
+            vec![
+                crate::models::TitleCount { title: "Airing Show".into(), count: 3 },
+                crate::models::TitleCount { title: "Finished Show".into(), count: 2 },
+            ],
+            "ordered by seen-episode count, descending"
+        );
+        assert_eq!(insights.marks_by_day.len(), 1, "only the cascade-marked episodes have seen_at");
+        assert_eq!(insights.marks_by_day[0].count, 3);
+        assert!(insights.marks_tracked_since.is_some());
+    }
+
+    #[test]
+    fn get_watch_insights_matches_design_doc_acceptance_example() {
+        // Literal acceptance scenario from
+        // docs/superpowers/specs/2026-07-13-stats-new-metrics-design.md:
+        // one followed series with 3 seen episodes, plus one linked
+        // watched-externally series whose catalog row has 12 TV episodes.
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+
+        let sid = db.upsert_series(src, &mk_airing("s1", "S1", None)).unwrap();
+        db.set_followed(sid, true).unwrap();
+        db.set_kind(sid, "TV").unwrap();
+        for n in 1..=3 {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: sid, number: n.to_string(), title: None,
+                url: format!("https://site/anime/s1-capitulo-{n}/"),
+                released_at: None, seen: true,
+            }).unwrap();
+        }
+
+        db.upsert_catalog_anime(
+            &crate::anilist::CatalogAnime {
+                id: 200, title: "S2".into(), title_romaji: None, title_english: None,
+                cover_url: None, format: Some("TV".into()), genres: vec![],
+                episodes: Some(12), average_score: None, popularity: None,
+                url: "https://anilist.co/anime/200".into(),
+            },
+            0,
+        ).unwrap();
+        let ext_id = db.upsert_series(src, &mk_airing("s2", "S2", None)).unwrap();
+        db.set_watched_externally(ext_id, true).unwrap();
+        db.set_anilist_id(ext_id, 200).unwrap();
+
+        let insights = db.get_watch_insights(src).unwrap();
+        assert_eq!(insights.estimated_minutes_tracked, 72);
+        assert_eq!(insights.estimated_minutes_external, 288);
+    }
+
+    #[test]
+    fn get_watch_insights_empty_db_has_no_divide_by_zero_and_empty_collections() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+        let insights = db.get_watch_insights(src).unwrap();
+        assert_eq!(insights.estimated_minutes_tracked, 0);
+        assert_eq!(insights.estimated_minutes_external, 0);
+        assert_eq!(insights.external_titles_estimated, 0);
+        assert_eq!(insights.external_titles_total, 0);
+        assert_eq!(insights.avg_episodes_per_series, 0.0);
+        assert!(insights.top_series.is_empty());
+        assert!(insights.marks_by_day.is_empty());
+        assert_eq!(insights.marks_tracked_since, None);
     }
 
     #[test]

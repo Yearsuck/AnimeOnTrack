@@ -259,4 +259,24 @@ export const es = {
   // StatsGraph.tsx
   "stats.graphEmpty": "Sin series seguidas todavía.",
   "stats.graphRootLabel": "Seguidas",
+
+  // StatsInsights.tsx
+  "stats.insightsHeading": "Resumen",
+  "stats.timeWatched": "Tiempo visto (estimado)",
+  "stats.timeWatchedHelp": "estimación: 24 min/episodio (100 películas) · {done} de {total} «Ya vistas» con datos",
+  "stats.completion": "Progreso global",
+  "stats.avgEpisodes": "Media de episodios por serie",
+  "stats.topSeries": "Top series",
+  "stats.funnelHeading": "Tu embudo de Descubrir",
+  "stats.funnelWant": "Quiero ver",
+  "stats.funnelDiscarded": "Descartadas",
+  "stats.funnelWatched": "Ya vistas",
+  "stats.funnelFollowed": "Siguiendo",
+  "stats.airingVsFinished": "Seguidas: en emisión vs finalizadas",
+  "stats.airing": "En emisión",
+  "stats.finished": "Finalizadas",
+  "stats.marksHeading": "Episodios marcados por día (últimos 30 días)",
+  "stats.marksCaveat": "Cuenta cuándo marcaste el episodio, no cuándo lo viste; marcar una serie entera marca de golpe todos sus episodios anteriores. Datos desde {date}.",
+  "stats.hoursUnit": "{hours}h",
+  "stats.daysUnit": "{days}d {hours}h",
 } as const;

@@ -4,7 +4,7 @@ use crate::db::Db;
 use crate::diff::new_episodes;
 use crate::models::{
     AiringItem, Episode, FinishedCard, GenreAffinity, GenreStat, Series, SeriesDetail, SeriesGraphNode,
-    TypeStat, WatchSummary,
+    TypeStat, WatchInsights, WatchSummary,
 };
 use crate::player::{AppWindowPlayer, EpisodePlayer};
 use crate::scraper_engine::{fetch_cover_image, fetch_html, ScrapeResult};
@@ -644,6 +644,16 @@ pub fn get_watch_summary(state: State<'_, AppState>) -> Result<WatchSummary, Str
     let src = get_source_id(&state)?;
     let db = state.db.lock().unwrap();
     db.get_watch_summary(src).map_err(|e| e.to_string())
+}
+
+/// Local watch-insights block for Estadísticas (time watched, funnel, top
+/// series, marks-by-day) — pure SQL, no network, see
+/// `docs/superpowers/specs/2026-07-13-stats-new-metrics-design.md`.
+#[tauri::command]
+pub async fn get_watch_insights(state: State<'_, AppState>) -> Result<WatchInsights, String> {
+    let src = get_source_id(&state)?;
+    let db = state.db.lock().unwrap();
+    db.get_watch_insights(src).map_err(|e| e.to_string())
 }
 
 /// Followed series with genres/kind/cover, for the 3D relationship graph.

@@ -192,6 +192,57 @@ pub struct SeriesGraphNode {
     pub kind: Option<String>,
 }
 
+/// One calendar day's episode-marking count, e.g. `{"2026-07-13", 160}` — see
+/// `Db::marks_by_day`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DayCount {
+    pub day: String,
+    pub count: i64,
+}
+
+/// One series' watched-episode count, e.g. `{"One Piece: Arco de Elbaph",
+/// 114}` — see `Db::top_series_by_episodes_watched`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TitleCount {
+    pub title: String,
+    pub count: i64,
+}
+
+/// Local-only watch metrics for the Estadísticas "Resumen" block — see the
+/// design doc `docs/superpowers/specs/2026-07-13-stats-new-metrics-design.md`.
+/// Computed entirely from SQLite (no network) via `Db::get_watch_insights`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WatchInsights {
+    /// Estimated minutes watched across followed series' seen episodes
+    /// (`series.kind` -> `db::minutes_per_episode`).
+    pub estimated_minutes_tracked: i64,
+    /// Estimated minutes watched across "Ya vistas" (`watched_externally=1`)
+    /// series that are linked to a catalog row with a known episode count.
+    pub estimated_minutes_external: i64,
+    /// How many "Ya vistas" rows actually contributed to
+    /// `estimated_minutes_external` (linked + catalog `episodes` non-NULL).
+    pub external_titles_estimated: i64,
+    /// Total "Ya vistas" rows, for an honest "{estimated} of {total}" caption.
+    pub external_titles_total: i64,
+    /// Mean episode count (all episodes, not just seen) across followed
+    /// series.
+    pub avg_episodes_per_series: f64,
+    pub followed_airing: i64,
+    pub followed_finished: i64,
+    pub discarded: i64,
+    pub want: i64,
+    pub watched_externally: i64,
+    /// Top series by watched-episode count, descending, capped at 8.
+    pub top_series: Vec<TitleCount>,
+    /// Days (within the last 30) that had at least one episode marked seen,
+    /// chronological. Empty if `episodes.seen_at` has no data yet.
+    pub marks_by_day: Vec<DayCount>,
+    /// `MIN(DATE(seen_at))` across all episodes — earliest date the
+    /// "marked seen" data goes back to, for the UI's honesty disclaimer.
+    /// `None` when no episode has ever been marked seen.
+    pub marks_tracked_since: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
