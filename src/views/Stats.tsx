@@ -1,16 +1,25 @@
 import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { getGenreStats, getTypeStats, getWatchSummary, getStatsGraph, backfillGenres } from "../api";
+import {
+  getGenreStats,
+  getTypeStats,
+  getWatchSummary,
+  getWatchInsights,
+  getStatsGraph,
+  backfillGenres,
+} from "../api";
 import { useT } from "../i18n";
-import type { GenreStat, TypeStat, WatchSummary, SeriesGraphNode } from "../types";
+import type { GenreStat, TypeStat, WatchSummary, WatchInsights, SeriesGraphNode } from "../types";
 import { StatsGraph } from "./StatsGraph";
 import { StatsRings } from "./StatsRings";
+import { StatsInsights } from "./StatsInsights";
 
 type StatsView = "grafo" | "barras";
 
 export function Stats({ active }: { active: boolean }) {
   const t = useT();
   const [summary, setSummary] = useState<WatchSummary | null>(null);
+  const [insights, setInsights] = useState<WatchInsights | null>(null);
   const [genres, setGenres] = useState<GenreStat[]>([]);
   const [types, setTypes] = useState<TypeStat[]>([]);
   const [graph, setGraph] = useState<SeriesGraphNode[]>([]);
@@ -29,13 +38,15 @@ export function Stats({ active }: { active: boolean }) {
   const wasActiveRef = useRef(active);
 
   async function load() {
-    const [s, g, t, gr] = await Promise.all([
+    const [s, i, g, t, gr] = await Promise.all([
       getWatchSummary(),
+      getWatchInsights(),
       getGenreStats(),
       getTypeStats(),
       getStatsGraph(),
     ]);
     setSummary(s);
+    setInsights(i);
     setGenres(g);
     setTypes(t);
     setGraph(gr);
@@ -132,6 +143,8 @@ export function Stats({ active }: { active: boolean }) {
           </div>
         </div>
       )}
+
+      {summary && insights && <StatsInsights insights={insights} summary={summary} />}
 
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20 }}>
         <div className="tabs">

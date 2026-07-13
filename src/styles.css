@@ -1268,6 +1268,21 @@ progress.scanbar-track::-webkit-progress-value {
   white-space: nowrap;
 }
 
+/* ---------- Stats · insights block (2026-07-13) ---------- */
+/* Two-up layout for the funnel + en-emisión/finalizadas blocks. Wraps to one
+   column below ~600px so nothing overflows on a narrow window. */
+.stats-cols {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: var(--sp-5);
+}
+.stats-caveat {
+  padding: 10px 16px 14px;
+  font-size: 11.5px;
+  color: var(--muted);
+  border-top: 1px solid var(--border-soft);
+}
+
 /* ---------- Stats · 3D graph galaxy backdrop ---------- */
 /* Deep-space panel behind the transparent three.js canvas. Dark theme keeps
    the night-sky nebula+stars look below (default / `[data-theme="dark"]`).

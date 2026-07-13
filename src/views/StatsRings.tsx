@@ -1,24 +1,9 @@
 import { useEffect, useState } from "react";
 import { useT } from "../i18n";
 import { categoryColor } from "../lib/categoryColor";
+import { useStatsShape, type Shape } from "../lib/statsShape";
 
-// Barras (horizontal bar chart) <-> Círculos (donut ring grid), persisted like
-// language/theme. Bars are the default: for comparing category magnitudes a
-// bar chart reads far clearer than rings.
-type Shape = "bars" | "rings";
-const SHAPE_KEY = "aot.statsShape";
-
-function getInitialShape(): Shape {
-  try {
-    const s = localStorage.getItem(SHAPE_KEY);
-    if (s === "bars" || s === "rings") return s;
-  } catch {
-    // localStorage unavailable — fall through to default.
-  }
-  return "bars";
-}
-
-type Datum = { name: string; count: number };
+export type Datum = { name: string; count: number };
 
 function toData(data: { count: number }[], nameKey: "genre" | "kind"): Datum[] {
   return data.map((d) => ({
@@ -33,7 +18,7 @@ function toData(data: { count: number }[], nameKey: "genre" | "kind"): Datum[] {
 // directly comparable; the value lives in its own right-aligned column so it
 // never sits on top of the bar. Fills grow in from 0 (CSS transition, which the
 // global prefers-reduced-motion rule already neutralizes).
-function BarChart({ data }: { data: Datum[] }) {
+export function BarChart({ data }: { data: Datum[] }) {
   const [grown, setGrown] = useState(false);
   useEffect(() => {
     const id = requestAnimationFrame(() => setGrown(true));
@@ -76,7 +61,7 @@ const RING_STROKE = 9;
 const RING_R = (RING - RING_STROKE) / 2;
 const RING_C = 2 * Math.PI * RING_R;
 
-function RingGrid({ data }: { data: Datum[] }) {
+export function RingGrid({ data }: { data: Datum[] }) {
   const [grown, setGrown] = useState(false);
   useEffect(() => {
     const id = requestAnimationFrame(() => setGrown(true));
@@ -118,16 +103,54 @@ function RingGrid({ data }: { data: Datum[] }) {
   );
 }
 
-function CategoryBlock({ data, shape }: { data: Datum[]; shape: Shape }) {
-  const t = useT();
+// Shape-aware bars/rings block, keyed by shape so switching remounts and
+// re-triggers the grow-in animation. Shared by StatsRings (géneros/tipos)
+// and StatsInsights (embudo, en emisión vs finalizadas) so the app never
+// grows a third visual language for "category magnitudes".
+export function CategoryBlock({
+  data,
+  shape,
+  emptyMessage,
+}: {
+  data: Datum[];
+  shape: Shape;
+  emptyMessage: string;
+}) {
   if (data.length === 0) {
-    return <div className="empty">{t("stats.ringsEmpty")}</div>;
+    return <div className="empty">{emptyMessage}</div>;
   }
-  // Key by shape so switching remounts and re-triggers the grow-in animation.
   return shape === "bars" ? (
     <BarChart key="bars" data={data} />
   ) : (
     <RingGrid key="rings" data={data} />
+  );
+}
+
+// One shared segmented Barras/Círculos toggle, reusable anywhere on the
+// Estadísticas screen that needs to let the user flip `aot.statsShape`.
+export function ShapeToggle({ shape, onChange }: { shape: Shape; onChange: (s: Shape) => void }) {
+  const t = useT();
+  return (
+    <div className="seg" role="tablist" aria-label={t("stats.shapeToggleAria")}>
+      <button
+        type="button"
+        role="tab"
+        aria-selected={shape === "bars"}
+        className={`seg-btn${shape === "bars" ? " active" : ""}`}
+        onClick={() => onChange("bars")}
+      >
+        {t("stats.shapeBars")}
+      </button>
+      <button
+        type="button"
+        role="tab"
+        aria-selected={shape === "rings"}
+        className={`seg-btn${shape === "rings" ? " active" : ""}`}
+        onClick={() => onChange("rings")}
+      >
+        {t("stats.shapeRings")}
+      </button>
+    </div>
   );
 }
 
@@ -139,55 +162,29 @@ export function StatsRings({
   types: { kind: string; count: number }[];
 }) {
   const t = useT();
-  const [shape, setShape] = useState<Shape>(getInitialShape);
-
-  function pick(next: Shape) {
-    setShape(next);
-    try {
-      localStorage.setItem(SHAPE_KEY, next);
-    } catch {
-      // choice just won't persist
-    }
-  }
+  const [shape, setShape] = useStatsShape();
 
   const genreData = toData(genres, "genre");
   const typeData = toData(types, "kind");
 
   return (
     <>
-      <div className="seg" style={{ marginBottom: 20 }} role="tablist" aria-label={t("stats.shapeToggleAria")}>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={shape === "bars"}
-          className={`seg-btn${shape === "bars" ? " active" : ""}`}
-          onClick={() => pick("bars")}
-        >
-          {t("stats.shapeBars")}
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={shape === "rings"}
-          className={`seg-btn${shape === "rings" ? " active" : ""}`}
-          onClick={() => pick("rings")}
-        >
-          {t("stats.shapeRings")}
-        </button>
+      <div style={{ marginBottom: 20 }}>
+        <ShapeToggle shape={shape} onChange={setShape} />
       </div>
 
       <div className="series-block" style={{ marginBottom: 20 }}>
         <div className="series-head">
           <h3 className="card-title">{t("stats.byGenre")}</h3>
         </div>
-        <CategoryBlock data={genreData} shape={shape} />
+        <CategoryBlock data={genreData} shape={shape} emptyMessage={t("stats.ringsEmpty")} />
       </div>
 
       <div className="series-block">
         <div className="series-head">
           <h3 className="card-title">{t("stats.byType")}</h3>
         </div>
-        <CategoryBlock data={typeData} shape={shape} />
+        <CategoryBlock data={typeData} shape={shape} emptyMessage={t("stats.ringsEmpty")} />
       </div>
     </>
   );
