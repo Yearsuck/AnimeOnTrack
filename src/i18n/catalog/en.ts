@@ -33,6 +33,9 @@ export const en: Messages = {
   "airing.followingChip": "FOLLOWING",
   "airing.followingBtn": "✓ Following",
   "airing.followBtn": "+ Follow",
+  "airing.filterAll": "All",
+  "airing.filterSeason": "This season",
+  "airing.seasonHint": "Followed series that premiered less than 3 months ago",
 
   "pending.episodesToWatch": "{count} episodes to watch",
   "pending.sortLabel": "Sort:",

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { listAiring, setFollowed } from "../api";
+import { listAiringSeason, setFollowed } from "../api";
 import { useT } from "../i18n";
-import type { Series } from "../types";
+import type { AiringItem, Series } from "../types";
 
 // Human label for the next-episode countdown the backend sorting is based
 // on — makes the newest-first ordering legible instead of mysterious.
@@ -21,6 +21,17 @@ function countdownLabel(nextEpisodeAt: number | null): string | null {
   return diffMs >= 0 ? `en ${span}` : `hace ${span}`;
 }
 
+// "Esta temporada" cutoff: the series' first scraped episode aired within
+// the last 3 calendar months. Computed frontend-side (see the design spec)
+// so "now" is the user's own clock and a day-rollover never needs a re-query.
+function isWithinLastThreeMonths(firstEpisodeAt: number): boolean {
+  const cutoff = new Date();
+  cutoff.setMonth(cutoff.getMonth() - 3);
+  return firstEpisodeAt * 1000 >= cutoff.getTime();
+}
+
+type SeasonFilter = "all" | "season";
+
 export function AiringGrid({
   onOpenSeries,
   refreshSignal,
@@ -29,12 +40,13 @@ export function AiringGrid({
   refreshSignal?: number;
 }) {
   const t = useT();
-  const [series, setSeries] = useState<Series[]>([]);
+  const [items, setItems] = useState<AiringItem[]>([]);
   const [query, setQuery] = useState("");
   const [onlyFollowed, setOnlyFollowed] = useState(false);
+  const [seasonFilter, setSeasonFilter] = useState<SeasonFilter>("all");
 
   async function load() {
-    setSeries(await listAiring());
+    setItems(await listAiringSeason());
   }
   useEffect(() => {
     load();
@@ -49,12 +61,20 @@ export function AiringGrid({
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return series.filter(
-      (s) => (!onlyFollowed || s.followed) && (!q || s.title.toLowerCase().includes(q))
-    );
-  }, [series, query, onlyFollowed]);
+    return items
+      .filter(
+        (it) =>
+          (!onlyFollowed || it.series.followed) &&
+          (!q || it.series.title.toLowerCase().includes(q))
+      )
+      .filter(
+        (it) =>
+          seasonFilter === "all" ||
+          (it.first_episode_at != null && isWithinLastThreeMonths(it.first_episode_at))
+      );
+  }, [items, query, onlyFollowed, seasonFilter]);
 
-  const followedCount = series.filter((s) => s.followed).length;
+  const followedCount = items.filter((it) => it.series.followed).length;
 
   return (
     <div className="page">
@@ -69,6 +89,26 @@ export function AiringGrid({
             onChange={(e) => setQuery(e.target.value)}
           />
         </div>
+        <div className="seg" role="tablist" aria-label={t("nav.airing")}>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={seasonFilter === "all"}
+            className={`seg-btn${seasonFilter === "all" ? " active" : ""}`}
+            onClick={() => setSeasonFilter("all")}
+          >
+            {t("airing.filterAll")}
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={seasonFilter === "season"}
+            className={`seg-btn${seasonFilter === "season" ? " active" : ""}`}
+            onClick={() => setSeasonFilter("season")}
+          >
+            {t("airing.filterSeason")}
+          </button>
+        </div>
         <button
           className={`btn ${onlyFollowed ? "btn-success" : "btn-ghost"}`}
           onClick={() => setOnlyFollowed((v) => !v)}
@@ -79,11 +119,17 @@ export function AiringGrid({
         <span className="muted">{t("common.seriesCount", { count: filtered.length })}</span>
       </div>
 
+      {seasonFilter === "season" && (
+        <p className="muted" style={{ marginTop: 0, fontSize: 12.5, padding: "0 4px 12px" }}>
+          {t("airing.seasonHint")}
+        </p>
+      )}
+
       {filtered.length === 0 ? (
         <div className="empty">{t("common.noResults")}</div>
       ) : (
         <div className="grid">
-          {filtered.map((s) => (
+          {filtered.map(({ series: s }) => (
             <div key={s.id} className="card" onClick={() => onOpenSeries(s)}>
               <div className="poster">
                 {s.followed && <span className="chip">{t("airing.followingChip")}</span>}

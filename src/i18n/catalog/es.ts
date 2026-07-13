@@ -41,6 +41,9 @@ export const es = {
   "airing.followingChip": "SIGUIENDO",
   "airing.followingBtn": "✓ Siguiendo",
   "airing.followBtn": "+ Seguir",
+  "airing.filterAll": "Todas",
+  "airing.filterSeason": "Esta temporada",
+  "airing.seasonHint": "Series seguidas que estrenaron hace menos de 3 meses",
 
   // Pending.tsx
   "pending.episodesToWatch": "{count} episodios por ver",
