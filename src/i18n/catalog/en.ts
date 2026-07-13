@@ -219,8 +219,9 @@ export const en: Messages = {
   "progress.completed": "Complete",
 
   "stats.episodesWatched": "Episodes watched",
-  "stats.distinctAnime": "Anime",
-  "stats.distinctAnimeHelp": "seasons counted as one",
+  "stats.episodesWatchedHelp": "{real} tracked · {external} estimated from \"Already watched\"",
+  "stats.distinctAnime": "Anime watched",
+  "stats.distinctAnimeHelp": "seasons counted once · includes \"Already watched\"",
   "stats.followedSeries": "Currently airing (followed)",
   "stats.backlogPending": "Pending to watch",
   "stats.backlogPendingHelp": "followed series with unseen episodes",

@@ -146,6 +146,11 @@ pub struct WatchSummary {
     pub distinct_anime: i64,
     pub episodes_watched: i64,
     pub episodes_total: i64,
+    /// Episodes attributed to "Ya vistas" (`watched_externally=1`) series via
+    /// the catalog's episode count — only for series with NO real seen
+    /// episode data (real data always wins; see `Db::get_watch_summary`).
+    #[serde(default)]
+    pub episodes_watched_external: i64,
     /// Followed series still airing (`followed=1 AND is_airing=1`) — the
     /// "Siguiendo en emisión" tile.
     #[serde(default)]

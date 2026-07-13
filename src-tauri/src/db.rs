@@ -892,13 +892,37 @@ impl Db {
             [source_id],
             |r| r.get(0),
         )?;
-        let (episodes_watched, episodes_total): (i64, i64) = self.conn.query_row(
-            "SELECT COALESCE(SUM(CASE WHEN e.seen=1 THEN 1 ELSE 0 END), 0), COUNT(e.id)
-             FROM episodes e
+        // Real seen-episode count across ALL series, followed or not — a
+        // "Ya lo vi" swipe whose site-link scraped real episodes must count
+        // too (see the episode/anime-counts-fix design doc). `episodes_total`
+        // stays scoped to series that mean something for a "how far along
+        // am I" denominator: followed, or with at least one real seen
+        // episode — so discarded/never-touched scraped rows don't inflate it.
+        let episodes_watched: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM episodes e
              JOIN series s ON s.id = e.series_id
-             WHERE s.source_id=?1 AND s.followed=1",
+             WHERE s.source_id=?1 AND e.seen=1",
             [source_id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| r.get(0),
+        )?;
+        let episodes_total: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM episodes e
+             JOIN series s ON s.id = e.series_id
+             WHERE s.source_id=?1
+               AND (s.followed=1 OR EXISTS (SELECT 1 FROM episodes x WHERE x.series_id=s.id AND x.seen=1))",
+            [source_id],
+            |r| r.get(0),
+        )?;
+        // Episodes attributed to "Ya vistas" via the catalog estimate — only
+        // for series with NO real seen-episode data, so real data always
+        // wins and nothing is double-counted against `episodes_watched`.
+        let episodes_watched_external: i64 = self.conn.query_row(
+            "SELECT COALESCE(SUM(c.episodes), 0)
+             FROM series s JOIN anilist_catalog c ON c.id = s.anilist_id
+             WHERE s.source_id=?1 AND s.watched_externally=1 AND c.episodes IS NOT NULL
+               AND NOT EXISTS (SELECT 1 FROM episodes e WHERE e.series_id=s.id AND e.seen=1)",
+            [source_id],
+            |r| r.get(0),
         )?;
         let backlog_want: i64 = self.conn.query_row(
             "SELECT COUNT(*) FROM series WHERE source_id=?1 AND backlog_status='want'",
@@ -917,13 +941,18 @@ impl Db {
             [source_id],
             |r| r.get(0),
         )?;
-        // Distinct animes = distinct franchise keys among the series the user
-        // is actually tracking (followed OR watched-externally), so seasons of
-        // the same show count once. Grouping is done in Rust (franchise_key)
+        // Distinct animes = distinct franchise keys among series with actual
+        // watch evidence — watched-externally (a "Ya lo vi" swipe) OR at
+        // least one real seen episode — so seasons of the same show count
+        // once. A followed series with zero seen episodes has no evidence of
+        // having been watched and is excluded (it's "in my library", not "in
+        // my watched anime"). Grouping is done in Rust (franchise_key)
         // because SQLite can't run the normalization/marker-stripping.
         let mut stmt = self.conn.prepare(
-            "SELECT title FROM series
-             WHERE source_id=?1 AND (followed=1 OR watched_externally=1)",
+            "SELECT s.title FROM series s
+             WHERE s.source_id=?1
+               AND (s.watched_externally=1
+                    OR EXISTS (SELECT 1 FROM episodes e WHERE e.series_id=s.id AND e.seen=1))",
         )?;
         let franchises: std::collections::HashSet<String> = stmt
             .query_map([source_id], |r| r.get::<_, String>(0))?
@@ -937,6 +966,7 @@ impl Db {
             distinct_anime,
             episodes_watched,
             episodes_total,
+            episodes_watched_external,
             airing_followed,
             pending_to_watch,
             backlog_want,
@@ -951,11 +981,14 @@ impl Db {
     pub fn get_watch_insights(&self, source_id: i64) -> Result<crate::models::WatchInsights> {
         // Minutes tracked: seen-episode counts grouped by series (and its
         // `kind`), summed in Rust since SQLite can't run the format->minutes
-        // map itself.
+        // map itself. All series with real seen episodes count, followed or
+        // not — a "Ya lo vi" swipe whose site-link scraped real episodes
+        // must contribute its real minutes too (see the episode/anime-
+        // counts-fix design doc).
         let mut stmt = self.conn.prepare(
             "SELECT s.kind, COUNT(*) AS cnt
              FROM episodes e JOIN series s ON s.id = e.series_id
-             WHERE e.seen=1 AND s.followed=1 AND s.source_id=?1
+             WHERE e.seen=1 AND s.source_id=?1
              GROUP BY s.id",
         )?;
         let tracked_rows: Vec<(Option<String>, i64)> = stmt
@@ -967,11 +1000,15 @@ impl Db {
             .sum();
 
         // Minutes from "Ya vistas" linked to a catalog row with a known
-        // episode count — only those rows can contribute an estimate.
+        // episode count — only those rows can contribute an estimate, AND
+        // only when the series has no real seen-episode data already
+        // counted above (otherwise it double-counts: real minutes above,
+        // catalog-estimated minutes here, for the same episodes).
         let mut stmt = self.conn.prepare(
             "SELECT c.episodes, c.format
              FROM series s JOIN anilist_catalog c ON c.id = s.anilist_id
-             WHERE s.source_id=?1 AND s.watched_externally=1 AND c.episodes IS NOT NULL",
+             WHERE s.source_id=?1 AND s.watched_externally=1 AND c.episodes IS NOT NULL
+               AND NOT EXISTS (SELECT 1 FROM episodes e WHERE e.series_id=s.id AND e.seen=1)",
         )?;
         let external_rows: Vec<(i64, Option<String>)> = stmt
             .query_map([source_id], |r| Ok((r.get(0)?, r.get(1)?)))?
@@ -2257,7 +2294,10 @@ mod tests {
         let db = Db::open(":memory:").unwrap();
         let src = db.upsert_source("A", "a", "animeytx").unwrap();
 
-        // Three followed rows that are the same franchise (S1/S2/S3).
+        // Three followed rows that are the same franchise (S1/S2/S3), each
+        // with at least one real seen episode — distinct_anime now requires
+        // watch evidence (see the episode/anime-counts-fix design doc), not
+        // just `followed=1`.
         for (slug, title) in [
             ("slime1", "Tensei shitara Slime Datta Ken"),
             ("slime2", "Tensei shitara Slime Datta Ken Temporada 2"),
@@ -2265,10 +2305,12 @@ mod tests {
         ] {
             let id = db.upsert_series(src, &mk_airing(slug, title, None)).unwrap();
             db.set_followed(id, true).unwrap();
+            insert_eps_seen_up_to(&db, id, 1, 1);
         }
-        // A different followed franchise.
+        // A different followed franchise, also with a seen episode.
         let n = db.upsert_series(src, &mk_airing("naruto", "Naruto", None)).unwrap();
         db.set_followed(n, true).unwrap();
+        insert_eps_seen_up_to(&db, n, 1, 1);
         // A watched-externally-only franchise (counts too, even if not followed).
         let w = db.upsert_series(src, &mk_airing("frieren", "Frieren", None)).unwrap();
         db.set_watched_externally(w, true).unwrap();
@@ -2500,6 +2542,144 @@ mod tests {
         assert!(insights.top_series.is_empty());
         assert!(insights.marks_by_day.is_empty());
         assert_eq!(insights.marks_tracked_since, None);
+    }
+
+    // ---- Episode/anime counts fix: real data preferred over catalog estimate,
+    // no double counting (2026-07-14) ----
+
+    #[test]
+    fn unfollowed_watched_externally_series_with_real_seen_episodes_counts_as_real_not_catalog() {
+        // followed=0, watched_externally=1, 3 real seen episodes, but ALSO
+        // linked to a catalog row with 12 episodes. The real data must win:
+        // the 3 seen episodes count in episodes_watched, and the catalog's
+        // 12 episodes must NOT also count in episodes_watched_external.
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+
+        db.upsert_catalog_anime(
+            &crate::anilist::CatalogAnime {
+                id: 300, title: "Ext".into(), title_romaji: None, title_english: None,
+                cover_url: None, format: Some("TV".into()), genres: vec![],
+                episodes: Some(12), average_score: None, popularity: None,
+                url: "https://anilist.co/anime/300".into(),
+            },
+            0,
+        ).unwrap();
+        let sid = db.upsert_series(src, &mk_airing("ext1", "Ext", None)).unwrap();
+        db.set_watched_externally(sid, true).unwrap();
+        db.set_anilist_id(sid, 300).unwrap();
+        db.set_kind(sid, "TV").unwrap();
+        for n in 1..=3 {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: sid, number: n.to_string(), title: None,
+                url: format!("https://site/anime/ext1-capitulo-{n}/"),
+                released_at: None, seen: true,
+            }).unwrap();
+        }
+
+        let summary = db.get_watch_summary(src).unwrap();
+        assert_eq!(summary.episodes_watched, 3, "the 3 real seen episodes count, even though the series isn't followed");
+        assert_eq!(summary.episodes_watched_external, 0, "catalog estimate suppressed — real data exists for this series");
+
+        let insights = db.get_watch_insights(src).unwrap();
+        assert_eq!(insights.estimated_minutes_tracked, 72, "3 seen eps * 24 min (TV), tracked minutes aren't followed-only anymore");
+        assert_eq!(insights.estimated_minutes_external, 0, "no catalog minutes — real seen episodes take precedence");
+    }
+
+    #[test]
+    fn watched_externally_series_without_episodes_counts_via_catalog_estimate() {
+        // watched_externally=1, no scraped episodes at all: falls back to the
+        // catalog's episode count for both the episode count and the minutes.
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+
+        db.upsert_catalog_anime(
+            &crate::anilist::CatalogAnime {
+                id: 301, title: "Ext2".into(), title_romaji: None, title_english: None,
+                cover_url: None, format: Some("TV".into()), genres: vec![],
+                episodes: Some(12), average_score: None, popularity: None,
+                url: "https://anilist.co/anime/301".into(),
+            },
+            0,
+        ).unwrap();
+        let sid = db.upsert_series(src, &mk_airing("ext2", "Ext2", None)).unwrap();
+        db.set_watched_externally(sid, true).unwrap();
+        db.set_anilist_id(sid, 301).unwrap();
+
+        let summary = db.get_watch_summary(src).unwrap();
+        assert_eq!(summary.episodes_watched, 0, "no real episodes for this series");
+        assert_eq!(summary.episodes_watched_external, 12, "falls back to the catalog's episode count");
+
+        let insights = db.get_watch_insights(src).unwrap();
+        assert_eq!(insights.estimated_minutes_external, 12 * 24, "12 catalog eps * minutes_per_episode(TV)");
+    }
+
+    #[test]
+    fn followed_series_with_no_seen_episodes_excluded_from_distinct_anime() {
+        // followed=1 with zero seen episodes must NOT count toward
+        // distinct_anime — it has no watch evidence. A watched-externally
+        // series (with seen evidence) still counts.
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+
+        // Followed, zero episodes seen — must be excluded.
+        let unseen_id = db.upsert_series(src, &mk_airing("unseen1", "Unseen Show", None)).unwrap();
+        db.set_followed(unseen_id, true).unwrap();
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: unseen_id, number: "1".into(), title: None,
+            url: "https://site/anime/unseen1-capitulo-1/".into(),
+            released_at: None, seen: false,
+        }).unwrap();
+
+        // Watched-externally, no scraped episodes — has watch evidence via
+        // the flag itself, must count.
+        let ext_id = db.upsert_series(src, &mk_airing("ext3", "Ext3", None)).unwrap();
+        db.set_watched_externally(ext_id, true).unwrap();
+
+        let summary = db.get_watch_summary(src).unwrap();
+        assert_eq!(summary.distinct_anime, 1, "only the watched-externally show counts; the unwatched followed show is excluded");
+    }
+
+    #[test]
+    fn followed_and_watched_externally_series_with_seen_episodes_counts_once_in_hours() {
+        // followed=1 AND watched_externally=1, linked to a catalog row, with
+        // real seen episodes: must contribute minutes exactly once (from the
+        // real data), not twice (real + catalog estimate).
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+
+        db.upsert_catalog_anime(
+            &crate::anilist::CatalogAnime {
+                id: 302, title: "Both".into(), title_romaji: None, title_english: None,
+                cover_url: None, format: Some("TV".into()), genres: vec![],
+                episodes: Some(12), average_score: None, popularity: None,
+                url: "https://anilist.co/anime/302".into(),
+            },
+            0,
+        ).unwrap();
+        let sid = db.upsert_series(src, &mk_airing("both1", "Both", None)).unwrap();
+        db.set_followed(sid, true).unwrap();
+        db.set_watched_externally(sid, true).unwrap();
+        db.set_anilist_id(sid, 302).unwrap();
+        db.set_kind(sid, "TV").unwrap();
+        for n in 1..=3 {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: sid, number: n.to_string(), title: None,
+                url: format!("https://site/anime/both1-capitulo-{n}/"),
+                released_at: None, seen: true,
+            }).unwrap();
+        }
+
+        let insights = db.get_watch_insights(src).unwrap();
+        assert_eq!(insights.estimated_minutes_tracked, 72, "3 seen eps * 24 min (TV)");
+        assert_eq!(insights.estimated_minutes_external, 0, "no double count — the catalog estimate is suppressed for this series");
+
+        // Criterion 4: episodes and hours cover the exact same universe —
+        // episodes_watched + episodes_watched_external episode total matches
+        // what the minutes were computed from (3 real eps, 0 catalog eps).
+        let summary = db.get_watch_summary(src).unwrap();
+        assert_eq!(summary.episodes_watched, 3);
+        assert_eq!(summary.episodes_watched_external, 0);
     }
 
     #[test]
