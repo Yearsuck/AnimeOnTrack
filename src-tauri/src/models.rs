@@ -108,6 +108,8 @@ pub struct SeriesDetail {
 /// `source_id` and to `followed=1` series (except `backlog_want`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WatchSummary {
+    /// Kept for compatibility (still used by the graph/other callers); no
+    /// longer drives a "en seguimiento" tile — see `airing_followed`.
     pub followed_series: i64,
     /// Distinct animes among followed/watched-externally series, collapsing
     /// seasons of the same show into one (see `db::franchise_key`).
@@ -115,6 +117,17 @@ pub struct WatchSummary {
     pub distinct_anime: i64,
     pub episodes_watched: i64,
     pub episodes_total: i64,
+    /// Followed series still airing (`followed=1 AND is_airing=1`) — the
+    /// "Siguiendo en emisión" tile.
+    #[serde(default)]
+    pub airing_followed: i64,
+    /// Followed series with at least one unseen episode — the real
+    /// "Pendientes de ver" backlog.
+    #[serde(default)]
+    pub pending_to_watch: i64,
+    /// The `Quiero ver` wishlist from Descubrir (`backlog_status='want'`),
+    /// unrelated to episodes actually pending. Surfaced under its own
+    /// unambiguous label.
     pub backlog_want: i64,
 }
 

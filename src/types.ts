@@ -63,6 +63,8 @@ export interface WatchSummary {
   distinct_anime: number;
   episodes_watched: number;
   episodes_total: number;
+  airing_followed: number;
+  pending_to_watch: number;
   backlog_want: number;
 }
 
