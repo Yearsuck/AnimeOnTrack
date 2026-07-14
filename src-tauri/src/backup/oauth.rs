@@ -145,3 +145,86 @@ mod tests {
         assert_eq!(t.refresh_token, None);
     }
 }
+
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
+
+const REDIRECT_HTML: &str = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n\r\n\
+<html><body style='font-family:sans-serif;background:#0d1117;color:#e6edf3'>\
+<h2>AnimeOnTrack</h2><p>Autenticación completada. Puedes cerrar esta pestaña.</p></body></html>";
+
+/// Bind a loopback listener, open the system browser to Google's consent
+/// screen, and block until Google redirects back with `?code=`. Returns the
+/// authorization code and the `redirect_uri` actually used (needed verbatim
+/// in the token exchange).
+pub async fn run_loopback_and_get_code<F: Fn(&str)>(
+    client_id: &str,
+    challenge: &str,
+    open_browser: F,
+) -> Result<(String, String), String> {
+    let listener = TcpListener::bind("127.0.0.1:0").await.map_err(|e| format!("bind: {e}"))?;
+    let port = listener.local_addr().map_err(|e| format!("addr: {e}"))?.port();
+    let redirect_uri = format!("http://127.0.0.1:{port}");
+    open_browser(&build_auth_url(client_id, &redirect_uri, challenge));
+
+    let (mut stream, _) = listener.accept().await.map_err(|e| format!("accept: {e}"))?;
+    let mut buf = [0u8; 2048];
+    let n = stream.read(&mut buf).await.map_err(|e| format!("read: {e}"))?;
+    let request = String::from_utf8_lossy(&buf[..n]);
+    let first_line = request.lines().next().unwrap_or("");
+    let result = parse_redirect_line(first_line);
+    stream.write_all(REDIRECT_HTML.as_bytes()).await.ok();
+    stream.flush().await.ok();
+
+    match result {
+        Some(RedirectResult::Code(c)) => Ok((c, redirect_uri)),
+        Some(RedirectResult::Error(e)) => Err(format!("consent error: {e}")),
+        None => Err("no authorization code in redirect".into()),
+    }
+}
+
+pub async fn exchange_code(
+    client_id: &str,
+    client_secret: &str,
+    code: &str,
+    verifier: &str,
+    redirect_uri: &str,
+) -> Result<TokenSet, String> {
+    let body = [
+        ("client_id", client_id),
+        ("client_secret", client_secret),
+        ("code", code),
+        ("code_verifier", verifier),
+        ("grant_type", "authorization_code"),
+        ("redirect_uri", redirect_uri),
+    ];
+    let resp = reqwest::Client::new()
+        .post(TOKEN_ENDPOINT)
+        .form(&body)
+        .send()
+        .await
+        .map_err(|e| format!("token request: {e}"))?;
+    let text = resp.text().await.map_err(|e| format!("token body: {e}"))?;
+    parse_token_response(&text)
+}
+
+pub async fn refresh_access_token(
+    client_id: &str,
+    client_secret: &str,
+    refresh_token: &str,
+) -> Result<String, String> {
+    let body = [
+        ("client_id", client_id),
+        ("client_secret", client_secret),
+        ("refresh_token", refresh_token),
+        ("grant_type", "refresh_token"),
+    ];
+    let resp = reqwest::Client::new()
+        .post(TOKEN_ENDPOINT)
+        .form(&body)
+        .send()
+        .await
+        .map_err(|e| format!("refresh request: {e}"))?;
+    let text = resp.text().await.map_err(|e| format!("refresh body: {e}"))?;
+    Ok(parse_token_response(&text)?.access_token)
+}

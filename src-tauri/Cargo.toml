@@ -26,7 +26,7 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 scraper = "0.20"
 anyhow = "1"
 url = "2"
-tokio = { version = "1", features = ["time", "sync", "macros"] }
+tokio = { version = "1", features = ["time", "sync", "macros", "net", "io-util"] }
 # AniList's public GraphQL API is a normal, non-Cloudflare-protected service
 # (unlike the scraped site) — plain HTTP via reqwest is fine here, no need
 # for the WebView2 scraping dance.
