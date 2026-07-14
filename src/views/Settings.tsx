@@ -8,10 +8,95 @@ import {
   listSites,
   getActiveSite,
   setActiveSite,
+  backupStatus,
+  connectDrive,
+  disconnectDrive,
+  backupNow,
+  restoreLatest,
 } from "../api";
 import { LANGS, useLang, useT } from "../i18n";
 import { THEMES, useTheme } from "../theme";
-import type { SiteSummary } from "../types";
+import type { SiteSummary, BackupStatus } from "../types";
+
+/// "Copia de seguridad" card: connect/disconnect Google Drive, back up now,
+/// restore the latest backup. Self-contained (fetches its own status) so it
+/// drops into Settings without threading state through the parent.
+function BackupCard() {
+  const t = useT();
+  const [status, setStatus] = useState<BackupStatus | null>(null);
+  const [busy, setBusy] = useState<null | "connect" | "backup" | "restore">(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    backupStatus().then(setStatus).catch((e) => setError(String(e)));
+  }, []);
+
+  const run = async (kind: "connect" | "backup" | "restore", fn: () => Promise<unknown>) => {
+    setBusy(kind);
+    setError(null);
+    try {
+      const r = await fn();
+      if (kind !== "restore") setStatus(r as BackupStatus);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  if (!status) return null;
+
+  return (
+    <div className="series-block" style={{ padding: 16, marginTop: 16 }}>
+      <h3 className="card-title" style={{ marginTop: 0 }}>{t("settings.backupHeading")}</h3>
+      <p className="muted" style={{ fontSize: 12.5 }}>{t("settings.backupIntro")}</p>
+
+      {!status.configured ? (
+        <p className="muted">{t("settings.backupNotConfigured")}</p>
+      ) : !status.connected ? (
+        <button
+          className="btn btn-primary"
+          disabled={busy !== null}
+          onClick={() => run("connect", connectDrive)}
+        >
+          {busy === "connect" ? t("settings.backupConnecting") : t("settings.backupConnect")}
+        </button>
+      ) : (
+        <>
+          <p className="muted">{t("settings.backupConnected")}</p>
+          <p className="muted" style={{ fontSize: 12 }}>
+            {status.last_at ? t("settings.backupLast", { when: status.last_at }) : t("settings.backupNever")}
+            {status.size_bytes
+              ? ` · ${t("settings.backupSize", { size: `${Math.round(status.size_bytes / 1024)} KB` })}`
+              : ""}
+          </p>
+          <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+            <button className="btn btn-primary" disabled={busy !== null} onClick={() => run("backup", backupNow)}>
+              {busy === "backup" ? t("settings.backupWorking") : t("settings.backupNow")}
+            </button>
+            <button
+              className="btn"
+              disabled={busy !== null}
+              onClick={() => {
+                if (confirm(t("settings.backupRestoreConfirm"))) run("restore", restoreLatest);
+              }}
+            >
+              {busy === "restore" ? t("settings.backupRestoring") : t("settings.backupRestore")}
+            </button>
+            <button className="btn btn-ghost" disabled={busy !== null} onClick={() => run("connect", disconnectDrive)}>
+              {t("settings.backupDisconnect")}
+            </button>
+          </div>
+        </>
+      )}
+      {error && (
+        <p className="muted" style={{ color: "var(--danger)", fontSize: 12 }}>
+          {t("settings.backupError", { msg: error })}
+        </p>
+      )}
+    </div>
+  );
+}
 
 export function Settings({ onSiteChanged }: { onSiteChanged?: (site: SiteSummary) => void }) {
   const t = useT();
@@ -251,6 +336,8 @@ export function Settings({ onSiteChanged }: { onSiteChanged?: (site: SiteSummary
           {forcing ? t("settings.forcing") : t("settings.forceRefresh")}
         </button>
       </div>
+
+      <BackupCard />
     </div>
   );
 }
