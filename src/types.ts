@@ -212,3 +212,10 @@ export interface CatalogSyncProgress {
   synced: number;
   total: number;
 }
+
+export interface BackupStatus {
+  configured: boolean;
+  connected: boolean;
+  last_at: string | null;
+  size_bytes: number | null;
+}

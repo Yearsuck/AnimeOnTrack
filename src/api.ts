@@ -22,6 +22,7 @@ import type {
   Classification,
   SwipeHistoryItem,
   DeckBans,
+  BackupStatus,
 } from "./types";
 
 export const scanAiring = (baseUrl: string) =>
@@ -163,3 +164,9 @@ export const decideCatalogCard = (params: {
 
 export const linkCatalogSeries = (seriesId: number) =>
   invoke<LinkOutcome>("link_catalog_series", { seriesId });
+
+export const backupStatus = () => invoke<BackupStatus>("backup_status");
+export const connectDrive = () => invoke<BackupStatus>("connect_drive");
+export const disconnectDrive = () => invoke<BackupStatus>("disconnect_drive");
+export const backupNow = () => invoke<BackupStatus>("backup_now");
+export const restoreLatest = () => invoke<void>("restore_latest");
