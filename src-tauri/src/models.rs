@@ -248,6 +248,17 @@ pub struct WatchInsights {
     pub marks_tracked_since: Option<String>,
 }
 
+/// Snapshot of cloud-backup state shown in Settings — whether Google
+/// credentials were compiled in, whether the user connected their Drive,
+/// and the last backup's timestamp/size.
+#[derive(serde::Serialize)]
+pub struct BackupStatus {
+    pub configured: bool,
+    pub connected: bool,
+    pub last_at: Option<String>,
+    pub size_bytes: Option<i64>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

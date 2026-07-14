@@ -63,6 +63,59 @@ pub fn is_auto_backup_due(last_at: Option<i64>, now: i64, last_sig: &str, cur_si
     }
 }
 
+use crate::db::Db;
+
+const RESTORE_STAGED: &str = "animeontrack.sqlite.restored";
+const RESTORE_MARKER: &str = ".restore_pending";
+
+/// Produce the consistent snapshot bytes for upload. `db_path` is the live DB
+/// file's directory-mate: we snapshot next to it then read+delete.
+pub fn snapshot_bytes(db: &Db, dir: &std::path::Path) -> Result<Vec<u8>, String> {
+    let tmp = dir.join(format!("animeontrack.snapshot.{}.sqlite", std::process::id()));
+    db.snapshot_to(tmp.to_str().ok_or("bad path")?).map_err(|e| format!("snapshot: {e}"))?;
+    let bytes = std::fs::read(&tmp).map_err(|e| format!("read snapshot: {e}"))?;
+    std::fs::remove_file(&tmp).ok();
+    Ok(bytes)
+}
+
+/// Get a fresh access token from the stored refresh token, or an error the
+/// caller surfaces to the UI.
+pub async fn access_token(db_refresh: &str) -> Result<String, String> {
+    let cid = credentials::client_id().ok_or("Google credentials not configured")?;
+    let secret = credentials::client_secret().ok_or("Google credentials not configured")?;
+    oauth::refresh_access_token(cid, secret, db_refresh).await
+}
+
+/// Stage validated restore bytes and write the marker; the swap happens on the
+/// next startup, before the DB is opened. Returns Ok once staged.
+pub fn stage_restore(bytes: &[u8], dir: &std::path::Path) -> Result<(), String> {
+    validate_restore_bytes(bytes)?;
+    std::fs::write(dir.join(RESTORE_STAGED), bytes).map_err(|e| format!("stage write: {e}"))?;
+    std::fs::write(dir.join(RESTORE_MARKER), b"1").map_err(|e| format!("marker write: {e}"))?;
+    Ok(())
+}
+
+/// Called from `.setup` BEFORE `Db::open`. If a validated staged restore is
+/// pending, swap it over the live file. Never leaves the app unopenable: on
+/// any inconsistency it clears the marker and returns without swapping.
+pub fn apply_pending_restore(dir: &std::path::Path) {
+    let marker = dir.join(RESTORE_MARKER);
+    let staged = dir.join(RESTORE_STAGED);
+    if !marker.exists() { return; }
+    if staged.exists() {
+        let live = dir.join(BACKUP_FILE_NAME);
+        // Best-effort atomic-ish swap: remove live, rename staged in.
+        let _ = std::fs::remove_file(&live);
+        if std::fs::rename(&staged, &live).is_err() {
+            // Cross-device fallback: copy then delete.
+            let _ = std::fs::copy(&staged, &live);
+            let _ = std::fs::remove_file(&staged);
+        }
+    }
+    let _ = std::fs::remove_file(&marker);
+    let _ = std::fs::remove_file(&staged);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
