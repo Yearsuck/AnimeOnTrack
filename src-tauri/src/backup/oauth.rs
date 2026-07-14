@@ -46,6 +46,44 @@ pub fn build_auth_url(client_id: &str, redirect_uri: &str, challenge: &str) -> S
     )
 }
 
+#[derive(Debug, PartialEq)]
+pub enum RedirectResult {
+    Code(String),
+    Error(String),
+}
+
+/// Parse the first request line of the loopback redirect. Extracts `code` or
+/// `error` from the query string, ignoring anything else (e.g. favicon).
+pub fn parse_redirect_line(line: &str) -> Option<RedirectResult> {
+    let path = line.split_whitespace().nth(1)?; // "/?code=..."
+    let query = path.split_once('?')?.1;
+    let mut code = None;
+    let mut error = None;
+    for pair in query.split('&') {
+        let (k, v) = pair.split_once('=')?;
+        match k {
+            "code" => code = Some(v.to_string()),
+            "error" => error = Some(v.to_string()),
+            _ => {}
+        }
+    }
+    if let Some(e) = error { return Some(RedirectResult::Error(e)); }
+    code.map(RedirectResult::Code)
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct TokenSet {
+    pub access_token: String,
+    #[serde(default)]
+    pub refresh_token: Option<String>,
+    #[serde(default)]
+    pub expires_in: i64,
+}
+
+pub fn parse_token_response(json: &str) -> Result<TokenSet, String> {
+    serde_json::from_str(json).map_err(|e| format!("token parse: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -71,5 +109,39 @@ mod tests {
         assert!(url.contains("access_type=offline"));
         assert!(url.contains("scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive.appdata"));
         assert!(url.contains("redirect_uri=http%3A%2F%2F127.0.0.1%3A5000"));
+    }
+
+    #[test]
+    fn parse_redirect_extracts_code() {
+        let line = "GET /?code=4/abcDEF&scope=https://www.googleapis.com/auth/drive.appdata HTTP/1.1";
+        assert_eq!(parse_redirect_line(line), Some(RedirectResult::Code("4/abcDEF".into())));
+    }
+
+    #[test]
+    fn parse_redirect_extracts_error() {
+        let line = "GET /?error=access_denied HTTP/1.1";
+        assert_eq!(parse_redirect_line(line), Some(RedirectResult::Error("access_denied".into())));
+    }
+
+    #[test]
+    fn parse_redirect_ignores_junk() {
+        assert_eq!(parse_redirect_line("GET /favicon.ico HTTP/1.1"), None);
+    }
+
+    #[test]
+    fn parse_token_reads_fields() {
+        let json = r#"{"access_token":"ya29.x","refresh_token":"1//rt","expires_in":3599,"token_type":"Bearer"}"#;
+        let t = parse_token_response(json).unwrap();
+        assert_eq!(t.access_token, "ya29.x");
+        assert_eq!(t.refresh_token.as_deref(), Some("1//rt"));
+        assert_eq!(t.expires_in, 3599);
+    }
+
+    #[test]
+    fn parse_token_allows_missing_refresh() {
+        // A refresh (grant_type=refresh_token) response omits refresh_token.
+        let json = r#"{"access_token":"ya29.y","expires_in":3599,"token_type":"Bearer"}"#;
+        let t = parse_token_response(json).unwrap();
+        assert_eq!(t.refresh_token, None);
     }
 }
