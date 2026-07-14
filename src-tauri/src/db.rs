@@ -671,6 +671,11 @@ impl Db {
         Ok(())
     }
 
+    pub fn delete_setting(&self, key: &str) -> Result<()> {
+        self.conn.execute("DELETE FROM settings WHERE key=?1", [key])?;
+        Ok(())
+    }
+
     /// Global (not per-site) user-configured genre ban list for the
     /// Descubrir catalog deck — un-prefixed `banned_genres` settings key,
     /// newline-joined like the per-site mirror list (see
