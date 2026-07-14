@@ -1,5 +1,6 @@
 mod adapter;
 mod anilist;
+mod backup;
 mod commands;
 mod dates;
 mod db;
@@ -24,6 +25,12 @@ pub fn run() {
         .setup(|app| {
             let dir = app.path().app_data_dir().expect("app data dir");
             std::fs::create_dir_all(&dir).ok();
+            // If a validated restore was staged by `restore_latest` on the
+            // previous run, swap it in now, before the DB connection is
+            // opened (Windows won't let us touch the file while it's held
+            // open). Never leaves the app unopenable — any inconsistency
+            // just clears the marker and falls through to the existing DB.
+            backup::apply_pending_restore(&dir);
             let db_path = dir.join("animeontrack.sqlite");
             let db = db::Db::open(db_path.to_str().unwrap()).expect("open db");
             // Restore the active site from settings (installs that predate
@@ -46,6 +53,15 @@ pub fn run() {
                 swipe_history: Mutex::new(std::collections::VecDeque::new()),
                 html_cache: Mutex::new(html_cache::HtmlCache::default()),
             });
+
+            // Opportunistic startup cloud backup: silently does nothing
+            // unless Google credentials are configured, Drive is connected,
+            // and the throttle (24h + changed signature) says it's due.
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let _ = commands::auto_backup_if_due(handle).await;
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -95,6 +111,12 @@ pub fn run() {
             commands::undo_swipe_entry,
             commands::get_deck_bans,
             commands::set_deck_bans,
+            commands::backup_status,
+            commands::connect_drive,
+            commands::disconnect_drive,
+            commands::backup_now,
+            commands::restore_latest,
+            commands::auto_backup_if_due,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

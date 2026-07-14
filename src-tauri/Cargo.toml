@@ -26,14 +26,19 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 scraper = "0.20"
 anyhow = "1"
 url = "2"
-tokio = { version = "1", features = ["time", "sync", "macros"] }
+tokio = { version = "1", features = ["time", "sync", "macros", "net", "io-util"] }
 # AniList's public GraphQL API is a normal, non-Cloudflare-protected service
 # (unlike the scraped site) — plain HTTP via reqwest is fine here, no need
 # for the WebView2 scraping dance.
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "multipart"] }
 # Only used for current-year partition math (catalog sync) and the
 # full_sync_completed_at timestamp — already pulled in transitively.
 chrono = "0.4"
+# Cloud backup (src-tauri/src/backup/): PKCE challenge hashing, base64url
+# encode/decode for the verifier/challenge, and URL-encoding OAuth params.
+sha2 = "0.10"
+base64 = "0.22"
+urlencoding = "2"
 
 # Windows-only: drive WebView2 ExecuteScript host-side to extract rendered HTML
 # from external (Cloudflare-protected) pages without exposing app IPC to them.

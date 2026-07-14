@@ -1,6 +1,7 @@
 use anyhow::Result;
 use rusqlite::types::Value;
 use rusqlite::Connection;
+use rusqlite::OptionalExtension;
 use serde::Deserialize;
 
 /// Filters for browsing the locally-synced AniList catalog (`Catalog.tsx`'s
@@ -670,6 +671,11 @@ impl Db {
         Ok(())
     }
 
+    pub fn delete_setting(&self, key: &str) -> Result<()> {
+        self.conn.execute("DELETE FROM settings WHERE key=?1", [key])?;
+        Ok(())
+    }
+
     /// Global (not per-site) user-configured genre ban list for the
     /// Descubrir catalog deck — un-prefixed `banned_genres` settings key,
     /// newline-joined like the per-site mirror list (see
@@ -1327,6 +1333,30 @@ impl Db {
             [series_id],
             |r| r.get(0),
         )?)
+    }
+
+    /// Write a consistent single-file copy of the whole database using
+    /// SQLite's `VACUUM INTO` — safe to read even with this connection open
+    /// (unlike copying the file bytes, which can catch a torn WAL/journal).
+    pub fn snapshot_to(&self, path: &str) -> Result<()> {
+        // VACUUM INTO refuses to overwrite an existing file.
+        let _ = std::fs::remove_file(path);
+        self.conn.execute("VACUUM INTO ?1", [path])?;
+        Ok(())
+    }
+
+    /// A cheap fingerprint of the data, used to skip a redundant auto-backup
+    /// when nothing changed since the last one.
+    pub fn signature_counts(&self) -> Result<(i64, i64, i64, Option<String>)> {
+        let series: i64 = self.conn.query_row("SELECT COUNT(*) FROM series", [], |r| r.get(0))?;
+        let eps: i64 = self.conn.query_row("SELECT COUNT(*) FROM episodes", [], |r| r.get(0))?;
+        let max_ep: i64 = self.conn
+            .query_row("SELECT COALESCE(MAX(id),0) FROM episodes", [], |r| r.get(0))?;
+        let max_seen: Option<String> = self.conn
+            .query_row("SELECT MAX(seen_at) FROM episodes", [], |r| r.get(0))
+            .optional()?
+            .flatten();
+        Ok((series, eps, max_ep, max_seen))
     }
 
     /// Highest numeric episode number we have for a series — the correct DB
@@ -4428,5 +4458,38 @@ mod tests {
             page += 1;
         }
         assert_eq!(seen.len() as i64, total);
+    }
+
+    #[test]
+    fn snapshot_to_produces_valid_sqlite() {
+        let db = Db::open(":memory:").unwrap();
+        let dir = std::env::temp_dir();
+        let out = dir.join(format!("aot_snap_{}.sqlite", std::process::id()));
+        db.snapshot_to(out.to_str().unwrap()).unwrap();
+        // Re-open the snapshot and integrity-check it.
+        let conn = rusqlite::Connection::open(&out).unwrap();
+        let ok: String = conn.query_row("PRAGMA integrity_check", [], |r| r.get(0)).unwrap();
+        assert_eq!(ok, "ok");
+        let has_sources: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='sources'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(has_sources, 1);
+        drop(conn);
+        std::fs::remove_file(&out).ok();
+    }
+
+    #[test]
+    fn signature_changes_when_episode_marked_seen() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let series = db.upsert_series(src, &mk_airing("x", "X", None)).unwrap();
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: series, number: "1".into(), title: None,
+            url: "https://site/x-1".into(), released_at: None, seen: false,
+        }).unwrap();
+        let before = db.signature_counts().unwrap();
+        db.set_seen_cascade(series, "1", true).unwrap();
+        let after = db.signature_counts().unwrap();
+        assert_ne!(before, after);
     }
 }
