@@ -1,5 +1,6 @@
 mod adapter;
 mod anilist;
+mod backup;
 mod commands;
 mod dates;
 mod db;
