@@ -1,5 +1,4 @@
 use anyhow::Result;
-use rusqlite::types::Value;
 use rusqlite::Connection;
 use rusqlite::OptionalExtension;
 use serde::Deserialize;
