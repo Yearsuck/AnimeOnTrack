@@ -25,31 +25,29 @@ import { useT } from "../i18n";
 import { categoryColor } from "../lib/categoryColor";
 import { isUnlinkedCatalogRow } from "../lib/catalogLink";
 import type {
-  Classification,
   GenreAffinity,
   Series,
   SwipeCard,
   SwipeDecision,
   SwipeHistoryItem,
 } from "../types";
-
-// The deck's format whitelist (backend DEFAULT_FORMATS in
-// db::random_catalog_anime_in_genre) — the "tipos" the Filtros view can ban.
-const DECK_FORMATS = ["TV", "MOVIE", "OVA", "ONA", "SPECIAL"];
-
-// Map a history-strip re-classify action to its reclassify_series target.
-const RECLASSIFY_TARGET: Record<"discard" | "want" | "seen", Classification> = {
-  discard: "Discarded",
-  want: "Want",
-  seen: "WatchedExternally",
-};
-
-type LinkStatus = {
-  id: number;
-  title: string;
-  state: "searching" | "linked" | "nomatch";
-  episodes?: number;
-};
+import {
+  DECISION_BADGE,
+  DECK_FORMATS,
+  MAX_FILL_ROUNDS,
+  PREFETCH_TARGET,
+  RECLASSIFY_TARGET,
+  REFILL_THRESHOLD,
+  TOP_GENRES_LIMIT,
+} from "./Descubrir/constants";
+import type { LinkStatus, ListTab, SubView, SwipeOutDirection } from "./Descubrir/types";
+import {
+  anilistIdFromUrl,
+  getInitialDeckPanelOpen,
+  norm,
+  persistDeckPanelOpen,
+} from "./Descubrir/helpers";
+import { OverflowMenu, PosterThumb } from "./Descubrir/components";
 
 /// Serializes `linkCatalogSeries` calls through a single promise chain so
 /// rapid swiping never spawns unbounded parallel scrapes — the backend's
@@ -88,49 +86,6 @@ function useLinkQueue() {
 
   return { statuses, enqueue };
 }
-
-type SubView = "swipe" | "listas";
-
-// Deck settings panel's collapsed/open state, persisted the same way as
-// theme.ts / discoverMode.ts (read once for initial state, write on toggle).
-// Local to this file — no other view reads it, so no dedicated module.
-const DECK_PANEL_STORAGE_KEY = "aot.deckPanel";
-
-function getInitialDeckPanelOpen(): boolean {
-  try {
-    return localStorage.getItem(DECK_PANEL_STORAGE_KEY) !== "closed";
-  } catch {
-    return true;
-  }
-}
-
-function persistDeckPanelOpen(open: boolean): void {
-  try {
-    localStorage.setItem(DECK_PANEL_STORAGE_KEY, open ? "open" : "closed");
-  } catch {
-    // localStorage unavailable — the choice just won't persist.
-  }
-}
-
-type SwipeOutDirection = "discard" | "want" | "seen" | null;
-
-// AniList's siteUrl shape is https://anilist.co/anime/{id}/{slug} — catalog
-// cards carry that as their url, this pulls the id back out for
-// decide_catalog_card (which needs it to key the synthetic series row).
-function anilistIdFromUrl(url: string): number | null {
-  const m = url.match(/anilist\.co\/anime\/(\d+)/);
-  return m ? Number(m[1]) : null;
-}
-
-const TOP_GENRES_LIMIT = 5;
-// Prefetch buffer: keep this many cards ready locally so a decision shows
-// the next card instantly instead of waiting on a fresh discover_catalog_card
-// round-trip. discover_catalog_card is a local SQLite read (no Cloudflare
-// exposure, no network at all), so filling this concurrently is cheap and
-// safe — unlike the scraped-site path, there's no rate limit to respect here.
-const PREFETCH_TARGET = 10;
-const REFILL_THRESHOLD = 4;
-const MAX_FILL_ROUNDS = 5;
 
 function TasteChips() {
   const t = useT();
@@ -553,13 +508,6 @@ function SwipeView() {
   );
 }
 
-const DECISION_BADGE = {
-  want: "discover.badgeWant",
-  seen: "discover.badgeSeen",
-  discard: "discover.badgeDiscard",
-  none: "discover.badgeDiscard",
-} as const;
-
 // One row of the swipe-history strip: poster, title, current-decision badge,
 // quick re-classify buttons, and a "return to deck" undo for this one card.
 function HistoryRow({
@@ -616,85 +564,6 @@ function HistoryRow({
           ↺
         </button>
       </div>
-    </div>
-  );
-}
-
-// ---- Shared Listas card bits (poster+initials fallback, status chip, and an
-// outside-click overflow menu — same visual language as the Library cards). ----
-
-function listasInitials(title: string): string {
-  const chars = title
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((w) => w[0]?.toUpperCase() ?? "")
-    .join("");
-  return chars || "?";
-}
-
-function PosterThumb({ series }: { series: Series }) {
-  const [failed, setFailed] = useState(false);
-  const showFallback = !series.cover_url || failed;
-  return (
-    <div className="listas-poster">
-      {showFallback ? (
-        <div className="poster-fallback" aria-hidden="true">
-          {listasInitials(series.title)}
-        </div>
-      ) : (
-        <img src={series.cover_url!} alt="" loading="lazy" onError={() => setFailed(true)} />
-      )}
-    </div>
-  );
-}
-
-function OverflowMenu({
-  label,
-  items,
-}: {
-  label: string;
-  items: { label: string; onClick: () => void }[];
-}) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    function onDown(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    }
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
-  }, [open]);
-  if (items.length === 0) return null;
-  return (
-    <div className="card-menu-wrap" ref={ref}>
-      <button
-        type="button"
-        className="card-menu-btn"
-        aria-label={label}
-        onClick={() => setOpen((v) => !v)}
-      >
-        ⋯
-      </button>
-      {open && (
-        <div className="card-menu-list">
-          {items.map((it, i) => (
-            <button
-              key={i}
-              type="button"
-              className="card-menu-item"
-              onClick={() => {
-                setOpen(false);
-                it.onClick();
-              }}
-            >
-              {it.label}
-            </button>
-          ))}
-        </div>
-      )}
     </div>
   );
 }
@@ -887,13 +756,6 @@ function DiscardedRow({ series, onChanged }: { series: Series; onChanged: () => 
     </div>
   );
 }
-
-type ListTab = "want" | "discarded" | "watched";
-
-// Accent/case-insensitive normalizer for the Listas title search. The
-// replace() class is the combining-diacritics Unicode range U+0300-U+036F,
-// written as escapes so it survives regardless of file encoding.
-const norm = (s: string) => s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
 
 function ListasView({ onOpenSeries }: { onOpenSeries: (s: Series) => void }) {
   const t = useT();
