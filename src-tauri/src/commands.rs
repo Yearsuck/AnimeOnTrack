@@ -105,10 +105,6 @@ fn push_history(history: &mut VecDeque<i64>, sid: i64) {
     history.truncate(SWIPE_HISTORY_CAP);
 }
 
-/// Prefix for the per-site cached genre-archive list
-/// (`genre_list:{site_id}`) — see `ensure_genre_list`.
-const GENRE_LIST_KEY_PREFIX: &str = "genre_list";
-
 /// The active site's adapter, looked up from `state.active_site_id`. `Err`
 /// only if `active_site_id` somehow holds a slug `adapter::adapter_for`
 /// doesn't recognize (can't happen through normal use — `set_active_site`
