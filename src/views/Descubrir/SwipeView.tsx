@@ -1,71 +1,30 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   decideCatalogCard,
   discoverCatalogCard,
-  linkCatalogSeries,
-  listBacklog,
   listSwipeHistory,
-  listWatchedExternally,
   openEpisode,
   reclassifySeries,
   undoLastSwipe,
   undoSwipeEntry,
-} from "../api";
-import { useDiscoverMode } from "../discoverMode";
-import { useT } from "../i18n";
-import type { Series, SwipeCard, SwipeDecision, SwipeHistoryItem } from "../types";
+} from "../../api";
+import { useDiscoverMode } from "../../discoverMode";
+import { useT } from "../../i18n";
+import type { SwipeCard, SwipeDecision, SwipeHistoryItem } from "../../types";
 import {
   MAX_FILL_ROUNDS,
   PREFETCH_TARGET,
   RECLASSIFY_TARGET,
   REFILL_THRESHOLD,
-} from "./Descubrir/constants";
-import type { LinkStatus, ListTab, SubView, SwipeOutDirection } from "./Descubrir/types";
-import { anilistIdFromUrl, norm } from "./Descubrir/helpers";
-import { DeckPanel } from "./Descubrir/DeckPanel";
-import { HistoryRow } from "./Descubrir/HistoryRow";
-import { TasteChips } from "./Descubrir/TasteChips";
-import { DiscardedRow, WantRow, WatchedRow } from "./Descubrir/rows";
+} from "./constants";
+import type { SwipeOutDirection } from "./types";
+import { anilistIdFromUrl } from "./helpers";
+import { DeckPanel } from "./DeckPanel";
+import { HistoryRow } from "./HistoryRow";
+import { TasteChips } from "./TasteChips";
+import { useLinkQueue } from "./useLinkQueue";
 
-/// Serializes `linkCatalogSeries` calls through a single promise chain so
-/// rapid swiping never spawns unbounded parallel scrapes — the backend's
-/// SCRAPE_PERMITS semaphore would otherwise just queue them behind whatever
-/// the deck's own prefetching needs, defeating the point of not blocking the
-/// swipe on the link. Keeps the most recent 2 statuses for display.
-function useLinkQueue() {
-  const chainRef = useRef<Promise<void>>(Promise.resolve());
-  const [statuses, setStatuses] = useState<LinkStatus[]>([]);
-
-  const upsert = useCallback((next: LinkStatus) => {
-    setStatuses((prev) => [next, ...prev.filter((s) => s.id !== next.id)].slice(0, 2));
-  }, []);
-
-  const enqueue = useCallback(
-    (seriesId: number, title: string) => {
-      upsert({ id: seriesId, title, state: "searching" });
-      chainRef.current = chainRef.current
-        .then(() => linkCatalogSeries(seriesId))
-        .then((outcome) => {
-          if (outcome.type === "Linked") {
-            upsert({ id: seriesId, title, state: "linked", episodes: outcome.episodes });
-          } else if (outcome.type === "NoMatch") {
-            upsert({ id: seriesId, title, state: "nomatch" });
-          }
-          // AlreadyLinked: nothing to show — a freshly-decided card is never
-          // already linked, this only matters for the manual retry button.
-        })
-        .catch((err) => {
-          console.error("linkCatalogSeries failed for", seriesId, err);
-          upsert({ id: seriesId, title, state: "nomatch" });
-        });
-    },
-    [upsert]
-  );
-
-  return { statuses, enqueue };
-}
-
-function SwipeView() {
+export function SwipeView() {
   const t = useT();
   const [card, setCard] = useState<SwipeCard | null>(null);
   const [outDirection, setOutDirection] = useState<SwipeOutDirection>(null);
@@ -420,169 +379,6 @@ function SwipeView() {
           </div>
         )}
       </div>
-    </div>
-  );
-}
-
-function ListasView({ onOpenSeries }: { onOpenSeries: (s: Series) => void }) {
-  const t = useT();
-  const [want, setWant] = useState<Series[]>([]);
-  const [discarded, setDiscarded] = useState<Series[]>([]);
-  const [watched, setWatched] = useState<Series[]>([]);
-  const [tab, setTab] = useState<ListTab>("want");
-  const [query, setQuery] = useState("");
-
-  const load = useCallback(async () => {
-    const [w, d, wa] = await Promise.all([
-      listBacklog("want"),
-      listBacklog("discarded"),
-      listWatchedExternally(),
-    ]);
-    setWant(w);
-    setDiscarded(d);
-    setWatched(wa);
-  }, []);
-
-  useEffect(() => {
-    load();
-  }, [load]);
-
-  const trimmedQuery = query.trim();
-  const fWant = useMemo(
-    () => (trimmedQuery === "" ? want : want.filter((s) => norm(s.title).includes(norm(trimmedQuery)))),
-    [want, trimmedQuery]
-  );
-  const fDiscarded = useMemo(
-    () =>
-      trimmedQuery === ""
-        ? discarded
-        : discarded.filter((s) => norm(s.title).includes(norm(trimmedQuery))),
-    [discarded, trimmedQuery]
-  );
-  const fWatched = useMemo(
-    () =>
-      trimmedQuery === ""
-        ? watched
-        : watched.filter((s) => norm(s.title).includes(norm(trimmedQuery))),
-    [watched, trimmedQuery]
-  );
-
-  const tabs: { key: ListTab; label: string; count: number }[] = [
-    { key: "want", label: t("discover.wantHeading"), count: fWant.length },
-    { key: "discarded", label: t("discover.discardedHeading"), count: fDiscarded.length },
-    { key: "watched", label: t("discover.watchedHeading"), count: fWatched.length },
-  ];
-
-  return (
-    <>
-      <div className="listas-toolbar">
-        <div className="search">
-          <span className="icon" aria-hidden="true">
-            ⌕
-          </span>
-          <label htmlFor="listas-search" className="sr-only">
-            {t("discover.searchAriaLabel")}
-          </label>
-          <input
-            id="listas-search"
-            className="input"
-            placeholder={t("common.searchPlaceholder")}
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-          />
-        </div>
-      </div>
-
-      <div className="seg listas-seg" role="tablist">
-        {tabs.map((tb) => (
-          <button
-            key={tb.key}
-            type="button"
-            role="tab"
-            aria-selected={tab === tb.key}
-            className={`seg-btn${tab === tb.key ? " active" : ""}`}
-            onClick={() => setTab(tb.key)}
-          >
-            {tb.label}
-            <span className="listas-seg-count">{tb.count}</span>
-          </button>
-        ))}
-      </div>
-
-      {tab === "want" &&
-        (want.length === 0 ? (
-          <div className="empty">{t("discover.wantEmpty")}</div>
-        ) : fWant.length === 0 ? (
-          <div className="empty">{t("discover.searchNoResults")}</div>
-        ) : (
-          <div className="listas-grid">
-            {fWant.map((s) => (
-              <WantRow key={s.id} series={s} onChanged={load} onOpenSeries={onOpenSeries} />
-            ))}
-          </div>
-        ))}
-
-      {tab === "discarded" &&
-        (discarded.length === 0 ? (
-          <div className="empty">{t("discover.discardedEmpty")}</div>
-        ) : fDiscarded.length === 0 ? (
-          <div className="empty">{t("discover.searchNoResults")}</div>
-        ) : (
-          <div className="listas-grid">
-            {fDiscarded.map((s) => (
-              <DiscardedRow key={s.id} series={s} onChanged={load} />
-            ))}
-          </div>
-        ))}
-
-      {tab === "watched" &&
-        (watched.length === 0 ? (
-          <div className="empty">{t("discover.watchedEmpty")}</div>
-        ) : fWatched.length === 0 ? (
-          <div className="empty">{t("discover.searchNoResults")}</div>
-        ) : (
-          <div className="listas-grid">
-            {fWatched.map((s) => (
-              <WatchedRow key={s.id} series={s} onChanged={load} />
-            ))}
-          </div>
-        ))}
-    </>
-  );
-}
-
-// onOpenSeries is the same App.tsx-owned navigation callback Pending/Library/
-// AiringGrid already use to open SeriesDetail. Wiring it into Listas' "Quiero
-// ver" rows is what makes trigger (c) from the design spec ("SeriesDetail
-// opened on an unlinked catalog row" — see SeriesDetail.tsx's link-on-open
-// effect) actually reachable: without a click-through here, an unfollowed
-// catalog row had no UI path into SeriesDetail at all.
-export function Descubrir({ onOpenSeries }: { onOpenSeries: (s: Series) => void }) {
-  const t = useT();
-  const [subView, setSubView] = useState<SubView>("swipe");
-
-  return (
-    <div className="page">
-      <div className="page-head">
-        <h2 className="page-title">{t("nav.discover")}</h2>
-      </div>
-      <div className="tabs" style={{ marginBottom: 20 }}>
-        <button
-          className={`tab ${subView === "swipe" ? "active" : ""}`}
-          onClick={() => setSubView("swipe")}
-        >
-          {t("discover.tabSwipe")}
-        </button>
-        <button
-          className={`tab ${subView === "listas" ? "active" : ""}`}
-          onClick={() => setSubView("listas")}
-        >
-          {t("discover.tabLists")}
-        </button>
-      </div>
-
-      {subView === "swipe" && <SwipeView />}
-      {subView === "listas" && <ListasView onOpenSeries={onOpenSeries} />}
     </div>
   );
 }
