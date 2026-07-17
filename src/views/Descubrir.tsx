@@ -1,53 +1,31 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   decideCatalogCard,
-  deleteSeries,
   discoverCatalogCard,
-  getCatalogFacets,
-  getDeckBans,
-  getSeriesGenres,
-  getTopGenres,
   linkCatalogSeries,
   listBacklog,
   listSwipeHistory,
   listWatchedExternally,
   openEpisode,
-  promoteDiscarded,
   reclassifySeries,
-  setBacklogStatus,
-  setDeckBans,
-  startWatching,
   undoLastSwipe,
   undoSwipeEntry,
 } from "../api";
 import { useDiscoverMode } from "../discoverMode";
 import { useT } from "../i18n";
-import { categoryColor } from "../lib/categoryColor";
-import { isUnlinkedCatalogRow } from "../lib/catalogLink";
-import type {
-  GenreAffinity,
-  Series,
-  SwipeCard,
-  SwipeDecision,
-  SwipeHistoryItem,
-} from "../types";
+import type { Series, SwipeCard, SwipeDecision, SwipeHistoryItem } from "../types";
 import {
-  DECISION_BADGE,
-  DECK_FORMATS,
   MAX_FILL_ROUNDS,
   PREFETCH_TARGET,
   RECLASSIFY_TARGET,
   REFILL_THRESHOLD,
-  TOP_GENRES_LIMIT,
 } from "./Descubrir/constants";
 import type { LinkStatus, ListTab, SubView, SwipeOutDirection } from "./Descubrir/types";
-import {
-  anilistIdFromUrl,
-  getInitialDeckPanelOpen,
-  norm,
-  persistDeckPanelOpen,
-} from "./Descubrir/helpers";
-import { OverflowMenu, PosterThumb } from "./Descubrir/components";
+import { anilistIdFromUrl, norm } from "./Descubrir/helpers";
+import { DeckPanel } from "./Descubrir/DeckPanel";
+import { HistoryRow } from "./Descubrir/HistoryRow";
+import { TasteChips } from "./Descubrir/TasteChips";
+import { DiscardedRow, WantRow, WatchedRow } from "./Descubrir/rows";
 
 /// Serializes `linkCatalogSeries` calls through a single promise chain so
 /// rapid swiping never spawns unbounded parallel scrapes — the backend's
@@ -85,68 +63,6 @@ function useLinkQueue() {
   );
 
   return { statuses, enqueue };
-}
-
-function TasteChips() {
-  const t = useT();
-  const [genres, setGenres] = useState<GenreAffinity[]>([]);
-  useEffect(() => {
-    getTopGenres(TOP_GENRES_LIMIT).then(setGenres);
-  }, []);
-  if (genres.length === 0) return null;
-  return (
-    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
-      <span className="muted" style={{ fontSize: 12 }}>
-        {t("discover.topGenres")}
-      </span>
-      {genres.map((g) => (
-        <span
-          key={g.genre}
-          style={{
-            fontSize: 12,
-            fontWeight: 600,
-            padding: "3px 10px",
-            borderRadius: "var(--radius-round)",
-            background: categoryColor(g.genre),
-            color: "#05121f",
-          }}
-        >
-          {g.genre}
-        </span>
-      ))}
-    </div>
-  );
-}
-
-// Recomendado / Aleatorio segmented control — self-contained (reads/writes
-// `useDiscoverMode` directly, no props). Lives inside DeckPanel now. Mirrors
-// StatsRings.tsx's bars/rings toggle markup (`.seg`/`.seg-btn`,
-// `role="tablist"`/`"tab"`).
-function DiscoverModeToggle() {
-  const t = useT();
-  const [mode, setMode] = useDiscoverMode();
-  return (
-    <div className="seg" role="tablist" aria-label={t("discover.modeAria")} title={t("discover.modeHint")}>
-      <button
-        type="button"
-        role="tab"
-        aria-selected={mode === "recommended"}
-        className={`seg-btn${mode === "recommended" ? " active" : ""}`}
-        onClick={() => setMode("recommended")}
-      >
-        {t("discover.modeRecommended")}
-      </button>
-      <button
-        type="button"
-        role="tab"
-        aria-selected={mode === "random"}
-        className={`seg-btn${mode === "random" ? " active" : ""}`}
-        onClick={() => setMode("random")}
-      >
-        {t("discover.modeRandom")}
-      </button>
-    </div>
-  );
 }
 
 function SwipeView() {
@@ -508,255 +424,6 @@ function SwipeView() {
   );
 }
 
-// One row of the swipe-history strip: poster, title, current-decision badge,
-// quick re-classify buttons, and a "return to deck" undo for this one card.
-function HistoryRow({
-  item,
-  onReclassify,
-  onReturn,
-}: {
-  item: SwipeHistoryItem;
-  onReclassify: (item: SwipeHistoryItem, action: "discard" | "want" | "seen") => void;
-  onReturn: (item: SwipeHistoryItem) => void;
-}) {
-  const t = useT();
-  return (
-    <div className="swipe-history-row">
-      {item.poster_url && <img src={item.poster_url} alt="" />}
-      <div className="swipe-history-main">
-        <div className="swipe-history-title" title={item.title}>
-          {item.title}
-        </div>
-        <div className="muted" style={{ fontSize: 11 }}>
-          {t(DECISION_BADGE[item.decision])}
-        </div>
-      </div>
-      <div className="swipe-history-actions">
-        <button
-          className="btn btn-ghost"
-          title={t("discover.discard")}
-          onClick={() => onReclassify(item, "discard")}
-          disabled={item.decision === "discard"}
-        >
-          ✕
-        </button>
-        <button
-          className="btn btn-ghost"
-          title={t("discover.want")}
-          onClick={() => onReclassify(item, "want")}
-          disabled={item.decision === "want"}
-        >
-          ★
-        </button>
-        <button
-          className="btn btn-ghost"
-          title={t("discover.seen")}
-          onClick={() => onReclassify(item, "seen")}
-          disabled={item.decision === "seen"}
-        >
-          ✓
-        </button>
-        <button
-          className="btn btn-ghost"
-          title={t("discover.returnToDeck")}
-          onClick={() => onReturn(item)}
-        >
-          ↺
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function WantRow({
-  series,
-  onChanged,
-  onOpenSeries,
-}: {
-  series: Series;
-  onChanged: () => void;
-  onOpenSeries: (s: Series) => void;
-}) {
-  const t = useT();
-  const [genres, setGenres] = useState<string[]>([]);
-  const [linking, setLinking] = useState(false);
-  const [starting, setStarting] = useState(false);
-  const [noMatch, setNoMatch] = useState(false);
-  const unlinked = isUnlinkedCatalogRow(series);
-  useEffect(() => {
-    getSeriesGenres(series.id).then(setGenres);
-  }, [series.id]);
-
-  const retryLink = async () => {
-    setLinking(true);
-    try {
-      await linkCatalogSeries(series.id);
-    } finally {
-      setLinking(false);
-      onChanged();
-    }
-  };
-
-  // start_watching links an unlinked catalog row (searches the site) before
-  // marking it followed -- the button-press trigger from the design spec,
-  // so unlike the swipe-to-Seen path it awaits and shows a spinner. A
-  // NoMatch keeps the row in "want" (backend never sets followed) and
-  // surfaces the same "not found" message the retry button would show.
-  const handleStartWatching = async () => {
-    setStarting(true);
-    setNoMatch(false);
-    try {
-      const outcome = await startWatching(series.id);
-      if (outcome.type === "NoMatch") {
-        setNoMatch(true);
-      } else {
-        onChanged();
-      }
-    } finally {
-      setStarting(false);
-    }
-  };
-
-  return (
-    <div className="listas-card">
-      <PosterThumb series={series} />
-      <div className="backlog-main">
-        <div className="listas-card-head">
-          <span
-            className="listas-title"
-            onClick={() => onOpenSeries(series)}
-            style={{ cursor: "pointer" }}
-            title={t("discover.viewDetailsTitle")}
-          >
-            {series.title}
-          </span>
-          <span className="listas-chip listas-chip-want">{t("discover.chipWant")}</span>
-        </div>
-        {genres.length > 0 && <div className="backlog-genres">{genres.join(", ")}</div>}
-        {unlinked && (
-          <div className="muted" style={{ fontSize: 11 }} title={t("discover.notFoundYetTitle")}>
-            {t("discover.unlinked")}
-          </div>
-        )}
-        {noMatch && (
-          <div className="muted" style={{ fontSize: 11, color: "var(--danger)" }}>
-            {t("discover.notFoundInSite")}
-          </div>
-        )}
-      </div>
-      <div className="listas-actions">
-        <button className="btn btn-primary" onClick={handleStartWatching} disabled={starting}>
-          {starting ? t("discover.searchingBtn") : t("discover.startWatching")}
-        </button>
-        <OverflowMenu
-          label={t("discover.moreActions")}
-          items={[
-            {
-              label: t("discover.discard"),
-              onClick: async () => {
-                await setBacklogStatus(series.id, "discarded");
-                onChanged();
-              },
-            },
-            {
-              label: t("discover.removeFromList"),
-              onClick: async () => {
-                await reclassifySeries(series.id, "None");
-                onChanged();
-              },
-            },
-            ...(unlinked
-              ? [
-                  {
-                    label: linking ? t("discover.searchingBtn") : t("discover.searchOnSite"),
-                    onClick: retryLink,
-                  },
-                ]
-              : []),
-            { label: t("discover.viewDetails"), onClick: () => onOpenSeries(series) },
-          ]}
-        />
-      </div>
-    </div>
-  );
-}
-
-function WatchedRow({ series, onChanged }: { series: Series; onChanged: () => void }) {
-  const t = useT();
-  return (
-    <div className="listas-card">
-      <PosterThumb series={series} />
-      <div className="backlog-main">
-        <div className="listas-card-head">
-          <span className="listas-title">{series.title}</span>
-          <span className="listas-chip listas-chip-watched">{t("discover.chipWatched")}</span>
-        </div>
-      </div>
-      <div className="listas-actions">
-        <button
-          className="btn"
-          onClick={async () => {
-            await reclassifySeries(series.id, "None");
-            onChanged();
-          }}
-        >
-          {t("discover.markUnwatched")}
-        </button>
-        <OverflowMenu
-          label={t("discover.moreActions")}
-          items={[
-            {
-              label: t("discover.moveToWantFromWatched"),
-              onClick: async () => {
-                await reclassifySeries(series.id, "Want");
-                onChanged();
-              },
-            },
-          ]}
-        />
-      </div>
-    </div>
-  );
-}
-
-function DiscardedRow({ series, onChanged }: { series: Series; onChanged: () => void }) {
-  const t = useT();
-  return (
-    <div className="listas-card">
-      <PosterThumb series={series} />
-      <div className="backlog-main">
-        <div className="listas-card-head">
-          <span className="listas-title">{series.title}</span>
-          <span className="listas-chip listas-chip-discarded">{t("discover.chipDiscarded")}</span>
-        </div>
-      </div>
-      <div className="listas-actions">
-        <button
-          className="btn btn-primary"
-          onClick={async () => {
-            await promoteDiscarded(series.id);
-            onChanged();
-          }}
-        >
-          {t("discover.moveToWant")}
-        </button>
-        <OverflowMenu
-          label={t("discover.moreActions")}
-          items={[
-            {
-              label: t("discover.deleteCompletely"),
-              onClick: async () => {
-                await deleteSeries(series.id);
-                onChanged();
-              },
-            },
-          ]}
-        />
-      </div>
-    </div>
-  );
-}
-
 function ListasView({ onOpenSeries }: { onOpenSeries: (s: Series) => void }) {
   const t = useT();
   const [want, setWant] = useState<Series[]>([]);
@@ -881,143 +548,6 @@ function ListasView({ onOpenSeries }: { onOpenSeries: (s: Series) => void }) {
           </div>
         ))}
     </>
-  );
-}
-
-// Deck settings panel — lives inside SwipeView (see the design spec at
-// docs/superpowers/specs/2026-07-13-discover-swipe-sidepanel-design.md).
-// Combines the deck-mode toggle with the genre/type bans (formerly the
-// standalone "Filtros" sub-tab, now collapsible and sticky alongside the
-// card). Banned chips render "active" (highlighted = excluded from the
-// deck). Genres come from the synced catalog facets; formats are the fixed
-// deck whitelist. Persisted via setDeckBans; takes effect on the next
-// discover_catalog_card PROVIDED the caller also invalidates the local
-// prefetch queue — that's what `onBansSaved` is for (SwipeView passes its
-// `resetQueue`), since SwipeView no longer unmounts when this panel is used
-// (it's embedded, not a separate sub-tab) and would otherwise keep serving
-// up to PREFETCH_TARGET already-fetched cards that predate the new bans.
-function DeckPanel({ onBansSaved }: { onBansSaved: () => void }) {
-  const t = useT();
-  const [allGenres, setAllGenres] = useState<string[]>([]);
-  const [bannedGenres, setBannedGenres] = useState<Set<string>>(new Set());
-  const [bannedFormats, setBannedFormats] = useState<Set<string>>(new Set());
-  const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
-  const [open, setOpen] = useState(getInitialDeckPanelOpen);
-
-  useEffect(() => {
-    getDeckBans()
-      .then((b) => {
-        setBannedGenres(new Set(b.genres));
-        setBannedFormats(new Set(b.formats));
-      })
-      .catch((err) => console.error("getDeckBans failed", err));
-    getCatalogFacets()
-      .then((f) => setAllGenres(f.genres))
-      .catch((err) => console.error("getCatalogFacets failed", err));
-  }, []);
-
-  function toggle(set: Set<string>, setter: (s: Set<string>) => void, value: string) {
-    const next = new Set(set);
-    if (next.has(value)) next.delete(value);
-    else next.add(value);
-    setter(next);
-    setSaved(false);
-  }
-
-  async function save() {
-    setSaving(true);
-    try {
-      await setDeckBans([...bannedGenres], [...bannedFormats]);
-      setSaved(true);
-      onBansSaved();
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  function toggleOpen() {
-    setOpen((prev) => {
-      const next = !prev;
-      persistDeckPanelOpen(next);
-      return next;
-    });
-  }
-
-  const activeBans = bannedGenres.size + bannedFormats.size;
-
-  return (
-    <aside className="deck-panel">
-      <button
-        type="button"
-        className="deck-panel-head"
-        aria-expanded={open}
-        aria-controls="deck-panel-body"
-        aria-label={t("discover.deckPanelToggleAria")}
-        onClick={toggleOpen}
-      >
-        <span className="deck-panel-title">{t("discover.deckPanelTitle")}</span>
-        {!open && activeBans > 0 && (
-          <span className="deck-panel-badge">{t("discover.deckPanelBansBadge", { count: activeBans })}</span>
-        )}
-        <span className={`deck-panel-chevron${open ? " open" : ""}`} aria-hidden="true">
-          ▾
-        </span>
-      </button>
-
-      {open && (
-        <div id="deck-panel-body" className="deck-panel-body">
-          <div style={{ display: "flex", justifyContent: "center", marginBottom: 12 }}>
-            <DiscoverModeToggle />
-          </div>
-
-          <p className="muted" style={{ marginTop: 0, fontSize: 12.5 }}>
-            {t("discover.filtersIntro")}
-          </p>
-
-          <h3 className="card-title" style={{ marginBottom: 8 }}>
-            {t("discover.filtersFormatsHeading")}
-          </h3>
-          <div className="chip-row" style={{ marginBottom: 16 }}>
-            {DECK_FORMATS.map((f) => (
-              <button
-                key={f}
-                type="button"
-                className={`chip-toggle${bannedFormats.has(f) ? " active" : ""}`}
-                onClick={() => toggle(bannedFormats, setBannedFormats, f)}
-              >
-                {f}
-              </button>
-            ))}
-          </div>
-
-          <h3 className="card-title" style={{ marginBottom: 8 }}>
-            {t("discover.filtersGenresHeading")}
-          </h3>
-          {allGenres.length > 0 && (
-            <div className="chip-row deck-panel-genres" style={{ marginBottom: 16 }}>
-              {allGenres.map((g) => (
-                <button
-                  key={g}
-                  type="button"
-                  className={`chip-toggle${bannedGenres.has(g) ? " active" : ""}`}
-                  onClick={() => toggle(bannedGenres, setBannedGenres, g)}
-                >
-                  {g}
-                </button>
-              ))}
-            </div>
-          )}
-
-          <div className="row" style={{ alignItems: "center", gap: 12 }}>
-            <button className="btn btn-primary" onClick={save} disabled={saving}>
-              {saving ? t("discover.filtersSaving") : t("discover.filtersSave")}
-            </button>
-            {saved && <span className="muted">{t("discover.filtersSaved")}</span>}
-          </div>
-        </div>
-      )}
-    </aside>
   );
 }
 
