@@ -11,7 +11,7 @@ export const es = {
   // Nav tabs (App.tsx) + shared page titles reused by their own view.
   "nav.pending": "Pendientes",
   "nav.airing": "En emisión",
-  "nav.library": "Biblioteca",
+  "nav.library": "Mi biblioteca",
   "nav.discover": "Descubrir",
   "nav.catalog": "Catálogo",
   "nav.stats": "Estadísticas",
