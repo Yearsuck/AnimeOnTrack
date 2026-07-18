@@ -51,6 +51,19 @@ export function SwipeView() {
   const isFirstModeRenderRef = useRef(true);
   // Multi-level undo cache: the last ~5 classified cards, newest first.
   const [history, setHistory] = useState<SwipeHistoryItem[]>([]);
+  // Ctrl+Z is a global hotkey with no confirmation and stays armed
+  // indefinitely after any decision (until the next one) — an accidental
+  // press (e.g. reflexive undo muscle-memory) silently reverts a real
+  // decision with zero feedback, which reads as "I already classified this
+  // and it keeps reappearing." This message makes every undo (button or
+  // hotkey) visible for a few seconds so it's never silent.
+  const [undoneMessage, setUndoneMessage] = useState<string | null>(null);
+  const undoneMessageTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    return () => {
+      if (undoneMessageTimerRef.current) clearTimeout(undoneMessageTimerRef.current);
+    };
+  }, []);
   const refreshHistory = useCallback(() => {
     listSwipeHistory()
       .then(setHistory)
@@ -219,6 +232,9 @@ export function SwipeView() {
   const undo = useCallback(async () => {
     if (!canUndo) return;
     setCanUndo(false);
+    // Captured before the delete — history[0] is the card undoLastSwipe is
+    // about to remove (it's the most recently decided, still-live row).
+    const undoneTitle = history[0]?.title;
     await undoLastSwipe();
     // The card is back in the deck (its series row was hard-deleted) — let
     // fillQueue serve it again.
@@ -226,8 +242,13 @@ export function SwipeView() {
       decidedUrlsRef.current.delete(lastDecidedUrlRef.current);
       lastDecidedUrlRef.current = null;
     }
+    if (undoneTitle) {
+      setUndoneMessage(t("discover.undone", { title: undoneTitle }));
+      if (undoneMessageTimerRef.current) clearTimeout(undoneMessageTimerRef.current);
+      undoneMessageTimerRef.current = setTimeout(() => setUndoneMessage(null), 5000);
+    }
     refreshHistory();
-  }, [canUndo, refreshHistory]);
+  }, [canUndo, history, refreshHistory, t]);
 
   // History-strip actions. Re-classifying a past card moves it between lists
   // (local, via the shared reclassify inverse); returning it to the deck
@@ -351,6 +372,11 @@ export function SwipeView() {
           </button>
         </div>
         <div className="swipe-hint">{t("discover.hint")}</div>
+        {undoneMessage && (
+          <div className="muted" style={{ fontSize: 12, color: "var(--danger)" }}>
+            {undoneMessage}
+          </div>
+        )}
         {linkStatuses.length > 0 && (
           <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 8 }}>
             {linkStatuses.map((s) => (

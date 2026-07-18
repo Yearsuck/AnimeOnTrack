@@ -155,6 +155,7 @@ export const es = {
   "discover.wantTitle": "Quiero ver (→)",
   "discover.seenTitle": "Ya lo vi (↑)",
   "discover.undoTitle": "Volver a decidir (Ctrl+Z)",
+  "discover.undone": "↺ Deshecho: \"{title}\" vuelve al mazo.",
   "discover.hint": "← Descartar · ↑ Ya lo vi · → Quiero ver · Ctrl+Z Volver a decidir",
   "discover.searching": "Buscando {title} en la web…",
   "discover.linked": "✓ Enlazado ({count} episodios)",

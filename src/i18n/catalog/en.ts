@@ -141,6 +141,7 @@ export const en: Messages = {
   "discover.wantTitle": "Want to watch (→)",
   "discover.seenTitle": "Already seen it (↑)",
   "discover.undoTitle": "Reconsider (Ctrl+Z)",
+  "discover.undone": "↺ Undone: \"{title}\" is back in the deck.",
   "discover.hint": "← Discard · ↑ Already seen it · → Want to watch · Ctrl+Z Reconsider",
   "discover.searching": "Searching for {title} on the site…",
   "discover.linked": "✓ Linked ({count} episodes)",
