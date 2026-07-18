@@ -155,6 +155,23 @@ function shadeHex(hex: string, amt: number): string {
   return `rgb(${r}, ${g}, ${b})`;
 }
 
+// Linearly blend two #rrggbb hex colors by t in [0, 1] (0 = a, 1 = b). Used by
+// the "ice" planet variant to push its palette toward a cool cyan/white tint.
+// Deterministic (t is always a fixed constant or seed-derived value here,
+// never Math.random).
+function mixHex(a: string, b: string, t: number): string {
+  const ma = /^#?([0-9a-f]{6})$/i.exec(a.trim());
+  const mb = /^#?([0-9a-f]{6})$/i.exec(b.trim());
+  if (!ma || !mb) return a;
+  const na = parseInt(ma[1], 16);
+  const nb = parseInt(mb[1], 16);
+  const lerp = (x: number, y: number) => Math.max(0, Math.min(255, Math.round(x + (y - x) * t)));
+  const r = lerp((na >> 16) & 0xff, (nb >> 16) & 0xff);
+  const g = lerp((na >> 8) & 0xff, (nb >> 8) & 0xff);
+  const bch = lerp(na & 0xff, nb & 0xff);
+  return `rgb(${r}, ${g}, ${bch})`;
+}
+
 // Deterministic pseudo-random hash + bilinear-smoothed value noise, used to
 // bake latitude-band wobble and blotch/storm texture below. Deterministic
 // (not Math.random) so the same hub color always bakes the same surface —
@@ -192,13 +209,25 @@ function fbm(x: number, y: number, octaves: number): number {
   return total / maxAmp;
 }
 
+// Cool cyan/white tint targets for the "ice" planet variant (mixed in via
+// mixHex, never used raw) — kept as constants so the blend ratios below read
+// clearly against a named target instead of a bare hex literal.
+const ICE_LIGHT_TINT = "#eaf9ff";
+const ICE_DARK_TINT = "#4f7690";
+
 // A baked planet disc: sphere-shaded gradient (light side / dark limb —
-// the terminator) plus latitude bands, low-frequency blotch noise, limb
-// darkening, and a faint atmospheric glow. Painted within a circular clip on
-// a square canvas — mapped onto the unlit SphereGeometry's default (front-
-// facing) UV patch, the same "baked lit disc" trick as before, just with a
-// real surface instead of a flat gradient. Single CanvasTexture on a
-// MeshBasicMaterial — no scene light (react-force-graph-3d ships none).
+// the terminator) plus latitude bands, low-frequency blotch noise, optional
+// craters, limb darkening, and a faint atmospheric glow. Painted within a
+// circular clip on a square canvas — mapped onto the unlit SphereGeometry's
+// default (front-facing) UV patch, the same "baked lit disc" trick as
+// before, just with a real surface instead of a flat gradient. Single
+// CanvasTexture on a MeshBasicMaterial — no scene light (react-force-graph-3d
+// ships none).
+//
+// Each node bakes one of three deterministic look variants, chosen from the
+// node's own color seed (never Math.random, so a rebuild never re-rolls the
+// look): 0 "rocky" (blotches + craters), 1 "gas giant" (wide smooth bands,
+// sparse blotches), 2 "ice" (cool-tinted, sparse bright blotches).
 function planetTexture(color: string): THREE.CanvasTexture {
   const size = 256;
   const canvas = document.createElement("canvas");
@@ -210,15 +239,21 @@ function planetTexture(color: string): THREE.CanvasTexture {
   const r = size / 2 - 2;
 
   // Per-color seed so different hubs don't all bake the exact same band/
-  // blotch layout.
+  // blotch layout, and so the same seed always picks the same variant.
   let seed = 0;
   for (let i = 0; i < color.length; i++) seed += color.charCodeAt(i);
   const nx = seed * 0.13;
   const ny = seed * 0.071;
+  const variant = Math.floor(seed) % 3; // 0 rocky, 1 gas giant, 2 ice
+  const isGasGiant = variant === 1;
+  const isIce = variant === 2;
 
-  const lightC = shadeHex(color, 0.4);
-  const darkC = shadeHex(color, -0.35);
-  const limbC = shadeHex(color, -0.65);
+  const lightC = isIce ? mixHex(shadeHex(color, 0.4), ICE_LIGHT_TINT, 0.55) : shadeHex(color, 0.4);
+  const darkC = isIce ? mixHex(shadeHex(color, -0.35), ICE_DARK_TINT, 0.45) : shadeHex(color, -0.35);
+  const limbC = isIce ? mixHex(shadeHex(color, -0.65), ICE_DARK_TINT, 0.35) : shadeHex(color, -0.65);
+  // The gradient's own middle stop (see step 1) also gets the ice tint so the
+  // "flat" band between light and dark limb isn't left in the original hue.
+  const baseMid = isIce ? mixHex(color, ICE_LIGHT_TINT, 0.35) : color;
 
   ctx.save();
   ctx.beginPath();
@@ -226,43 +261,86 @@ function planetTexture(color: string): THREE.CanvasTexture {
   ctx.clip();
 
   // 1) Base sphere-shaded gradient: the terminator (light side upper-left,
-  // dark limb lower-right) — this alone was the previous texture.
+  // dark limb lower-right). Midpoint narrowed from 0.45 -> 0.32 so the
+  // light/dark transition reads more like a lit sphere and less like a
+  // flat tinted disc with a soft smear in the middle.
+  //
+  // Band alpha (step 2, 0.35 for rocky/ice) is left as-is: the bands are
+  // painted as a flat-alpha tint layer on top of the gradient rather than
+  // scaled by it, so narrowing the gradient's midpoint doesn't wash them
+  // out — they read the same regardless of how sharp the terminator is.
   const base = ctx.createRadialGradient(cx - r * 0.35, cy - r * 0.38, r * 0.05, cx, cy, r * 1.05);
   base.addColorStop(0, lightC);
-  base.addColorStop(0.45, color);
+  base.addColorStop(0.32, baseMid);
   base.addColorStop(1, darkC);
   ctx.fillStyle = base;
   ctx.fillRect(0, 0, size, size);
 
   // 2) Latitude bands (gas-giant-style stripes), wobbled by low-freq noise so
-  // they read as organic, not ruled lines.
-  const bandCount = 7;
+  // they read as organic, not ruled lines. Gas giants get wider, smoother
+  // (less wobble), higher-contrast bands; rocky/ice keep the original
+  // narrower, noisier stripe look (ice additionally tints each band cooler).
+  const bandCount = isGasGiant ? 5 : 7;
+  const bandWobbleScale = isGasGiant ? 0.025 : 0.06;
+  const bandToneBase = isGasGiant ? 0.12 : 0.05;
+  const bandToneNoise = isGasGiant ? 0.06 : 0.05;
+  const bandAlpha = isGasGiant ? 0.5 : 0.35;
   for (let i = 0; i < bandCount; i++) {
     const bandY = (i / bandCount) * size;
-    const wobble = (fbm(i * 0.7 + nx, ny, 2) - 0.5) * size * 0.06;
+    const wobble = (fbm(i * 0.7 + nx, ny, 2) - 0.5) * size * bandWobbleScale;
     const bandHeight = size / bandCount;
-    const toneAmt = (i % 2 === 0 ? 1 : -1) * (0.05 + 0.05 * fbm(i * 1.3 + nx, ny + 5, 2));
-    ctx.globalAlpha = 0.35;
-    ctx.fillStyle = shadeHex(color, toneAmt);
+    const toneAmt = (i % 2 === 0 ? 1 : -1) * (bandToneBase + bandToneNoise * fbm(i * 1.3 + nx, ny + 5, 2));
+    ctx.globalAlpha = bandAlpha;
+    ctx.fillStyle = isIce ? mixHex(shadeHex(color, toneAmt), ICE_LIGHT_TINT, 0.3) : shadeHex(color, toneAmt);
     ctx.fillRect(0, bandY + wobble, size, bandHeight);
   }
   ctx.globalAlpha = 1;
 
-  // 3) Low-frequency blotch noise (continents/storms), painted at a coarse
-  // cell size so it stays cheap while reading as organic.
-  const cell = 4;
-  for (let y = 0; y < size; y += cell) {
-    for (let x = 0; x < size; x += cell) {
+  // 3) Low-frequency blotch noise, painted at a coarse cell size so it stays
+  // cheap while reading as organic. Rocky: continents/storms (dark-toned,
+  // as before). Gas giant: much sparser (higher threshold, bigger cell,
+  // lower alpha) since the bands already carry the surface texture. Ice:
+  // sparser but brighter blotches (ice caps/cracks) instead of dark storms.
+  const blotchCell = isGasGiant ? 8 : 4;
+  const blotchThreshold = isGasGiant ? 0.78 : isIce ? 0.64 : 0.56;
+  const blotchAlphaScale = isGasGiant ? 0.3 : 0.9;
+  const blotchMaxAlpha = isGasGiant ? 0.25 : 0.45;
+  for (let y = 0; y < size; y += blotchCell) {
+    for (let x = 0; x < size; x += blotchCell) {
       const n = fbm(x * 0.045 + nx, y * 0.045 + ny, 3);
-      if (n > 0.56) {
-        const amt = (n - 0.56) * 0.9;
-        ctx.globalAlpha = Math.min(0.45, amt);
-        ctx.fillStyle = n > 0.68 ? lightC : darkC;
-        ctx.fillRect(x, y, cell, cell);
+      if (n > blotchThreshold) {
+        const amt = (n - blotchThreshold) * blotchAlphaScale;
+        ctx.globalAlpha = Math.min(blotchMaxAlpha, amt);
+        ctx.fillStyle = isIce ? mixHex(lightC, "#ffffff", 0.5) : n > blotchThreshold + 0.12 ? lightC : darkC;
+        ctx.fillRect(x, y, blotchCell, blotchCell);
       }
     }
   }
   ctx.globalAlpha = 1;
+
+  // 3.5) Rocky variant only: a handful of small crater marks (darker rim
+  // ring + slightly darker floor), positioned via hash2 (never Math.random)
+  // so each node's craters are stable across rebuilds. Count (4-8) is itself
+  // seed-derived.
+  if (variant === 0) {
+    const craterCount = 4 + Math.floor(hash2(nx, ny) * 5); // 4-8
+    for (let i = 0; i < craterCount; i++) {
+      const ang = hash2(nx + i * 2.31, ny - i * 1.17) * Math.PI * 2;
+      const dist = Math.sqrt(hash2(nx - i * 3.73, ny + i * 4.19)) * r * 0.82;
+      const px = cx + Math.cos(ang) * dist;
+      const py = cy + Math.sin(ang) * dist;
+      const craterR = r * (0.04 + hash2(nx + i * 5.07, ny + i * 2.63) * 0.05);
+
+      ctx.beginPath();
+      ctx.arc(px, py, craterR, 0, Math.PI * 2);
+      ctx.fillStyle = shadeHex(color, -0.22);
+      ctx.fill();
+
+      ctx.lineWidth = Math.max(1, craterR * 0.22);
+      ctx.strokeStyle = shadeHex(color, -0.42);
+      ctx.stroke();
+    }
+  }
 
   // 4) Limb darkening: a radial vignette darkening toward the disc's rim
   // regardless of the terminator gradient above — the "sphere, not flat
@@ -277,8 +355,12 @@ function planetTexture(color: string): THREE.CanvasTexture {
   ctx.restore();
 
   // 5) Faint atmospheric glow just outside the disc edge (after the clip is
-  // released) — suggests a thin atmosphere without a scene light.
-  const glowRgb = /^rgb\(([^)]+)\)$/.exec(shadeHex(color, 0.15))?.[1] ?? "255, 255, 255";
+  // released) — suggests a thin atmosphere without a scene light. Ice worlds
+  // get a cooler-tinted glow to match the tinted surface underneath (a plain
+  // shadeHex lighten here would glow in the original hub hue, clashing with
+  // the icy surface baked above).
+  const glowBase = isIce ? mixHex(color, ICE_LIGHT_TINT, 0.4) : shadeHex(color, 0.15);
+  const glowRgb = /^rgb\(([^)]+)\)$/.exec(glowBase)?.[1] ?? "255, 255, 255";
   const glow = ctx.createRadialGradient(cx, cy, r * 0.97, cx, cy, r * 1.18);
   glow.addColorStop(0, `rgba(${glowRgb}, 0.35)`);
   glow.addColorStop(1, "rgba(0, 0, 0, 0)");
