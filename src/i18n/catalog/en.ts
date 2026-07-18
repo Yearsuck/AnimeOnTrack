@@ -187,6 +187,8 @@ export const en: Messages = {
   "discover.filtersGenresHeading": "Banned genres",
   "discover.filtersFormatsHeading": "Banned types",
   "discover.filtersHideUpcoming": "Hide upcoming (not yet aired) titles",
+  "discover.filtersHideUpcomingNeedsSync":
+    "No release-status data synced yet — this filter won't take effect until you sync the catalog (Catálogo tab).",
   "discover.filtersSave": "Save filters",
   "discover.filtersSaving": "Saving…",
   "discover.filtersSaved": "Filters saved.",

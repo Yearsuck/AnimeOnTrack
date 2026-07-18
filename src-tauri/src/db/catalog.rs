@@ -246,6 +246,20 @@ impl Db {
         Ok(genres)
     }
 
+    /// Whether at least one synced catalog row has a non-NULL `status` —
+    /// i.e. whether a sync has run since the `status` column was added.
+    /// `hide_upcoming` silently excludes nothing while this is `false` (see
+    /// `random_catalog_anime_in_genre`'s NULL-is-kept behavior), so the
+    /// frontend uses this to warn the user their toggle won't take effect
+    /// until they sync — see docs/superpowers/specs/2026-07-18-hide-upcoming-releases-design.md.
+    pub fn has_synced_catalog_status(&self) -> Result<bool> {
+        Ok(self
+            .conn
+            .query_row("SELECT EXISTS(SELECT 1 FROM anilist_catalog WHERE status IS NOT NULL)", [], |r| {
+                r.get::<_, bool>(0)
+            })?)
+    }
+
     /// A random synced entry carrying `genre`, subject to a quality floor —
     /// powers Descubrir's catalog-only swipe deck. The command layer
     /// (`discover_catalog_card`) owns the taste-weighted *genre* pick (via
@@ -485,6 +499,20 @@ mod tests {
         let page2 = db.list_catalog(2, 2).unwrap();
         assert_eq!(page1.iter().map(|a| a.id).collect::<Vec<_>>(), vec![0, 1]);
         assert_eq!(page2.iter().map(|a| a.id).collect::<Vec<_>>(), vec![2, 3]);
+    }
+
+    #[test]
+    fn has_synced_catalog_status_false_when_empty_or_all_null_true_once_one_row_has_status() {
+        let db = Db::open(":memory:").unwrap();
+        assert_eq!(db.has_synced_catalog_status().unwrap(), false);
+
+        db.upsert_catalog_anime(&catalog_anime_with_popularity(1, "Unsynced", &["Drama"], Some(1000)), 0).unwrap();
+        assert_eq!(db.has_synced_catalog_status().unwrap(), false, "a NULL-status row alone must not count as synced");
+
+        let mut synced = catalog_anime_with_popularity(2, "Synced", &["Drama"], Some(1000));
+        synced.status = Some("RELEASING".into());
+        db.upsert_catalog_anime(&synced, 1).unwrap();
+        assert_eq!(db.has_synced_catalog_status().unwrap(), true);
     }
 
     #[test]

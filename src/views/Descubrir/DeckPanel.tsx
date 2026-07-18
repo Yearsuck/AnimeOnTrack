@@ -23,6 +23,7 @@ export function DeckPanel({ onBansSaved }: { onBansSaved: () => void }) {
   const [bannedGenres, setBannedGenres] = useState<Set<string>>(new Set());
   const [bannedFormats, setBannedFormats] = useState<Set<string>>(new Set());
   const [hideUpcoming, setHideUpcoming] = useState(false);
+  const [statusDataSynced, setStatusDataSynced] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [open, setOpen] = useState(getInitialDeckPanelOpen);
@@ -33,6 +34,7 @@ export function DeckPanel({ onBansSaved }: { onBansSaved: () => void }) {
         setBannedGenres(new Set(b.genres));
         setBannedFormats(new Set(b.formats));
         setHideUpcoming(b.hide_upcoming);
+        setStatusDataSynced(b.status_data_synced);
       })
       .catch((err) => console.error("getDeckBans failed", err));
     getCatalogFacets()
@@ -143,6 +145,11 @@ export function DeckPanel({ onBansSaved }: { onBansSaved: () => void }) {
             />
             {t("discover.filtersHideUpcoming")}
           </label>
+          {hideUpcoming && !statusDataSynced && (
+            <p className="muted" style={{ marginTop: -8, marginBottom: 16, fontSize: 12.5, color: "var(--danger)" }}>
+              {t("discover.filtersHideUpcomingNeedsSync")}
+            </p>
+          )}
 
           <div className="row" style={{ alignItems: "center", gap: 12 }}>
             <button className="btn btn-primary" onClick={save} disabled={saving}>

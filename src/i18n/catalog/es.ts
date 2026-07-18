@@ -201,6 +201,8 @@ export const es = {
   "discover.filtersGenresHeading": "Géneros baneados",
   "discover.filtersFormatsHeading": "Tipos baneados",
   "discover.filtersHideUpcoming": "Ocultar próximos estrenos (aún no emitidos)",
+  "discover.filtersHideUpcomingNeedsSync":
+    "Todavía no hay datos de estreno sincronizados — este filtro no tendrá efecto hasta que sincronices el catálogo (pestaña Catálogo).",
   "discover.filtersSave": "Guardar filtros",
   "discover.filtersSaving": "Guardando…",
   "discover.filtersSaved": "Filtros guardados.",

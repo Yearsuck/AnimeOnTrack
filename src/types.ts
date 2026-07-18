@@ -148,6 +148,7 @@ export interface DeckBans {
   genres: string[];
   formats: string[];
   hide_upcoming: boolean;
+  status_data_synced: boolean;
 }
 
 export type LinkOutcome =

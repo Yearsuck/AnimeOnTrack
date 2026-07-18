@@ -254,6 +254,12 @@ pub struct DeckBans {
     pub genres: Vec<String>,
     pub formats: Vec<String>,
     pub hide_upcoming: bool,
+    /// Whether `hide_upcoming` can actually take effect right now — `false`
+    /// means no catalog sync has run since the `status` column was added,
+    /// so every row is NULL-status and the exclusion is a silent no-op (see
+    /// `Db::has_synced_catalog_status`). The frontend shows a warning when
+    /// `hide_upcoming` is on but this is `false`.
+    pub status_data_synced: bool,
 }
 
 /// Read the current deck bans for the Descubrir "Filtros" sub-view.
@@ -263,7 +269,8 @@ pub fn get_deck_bans(state: State<'_, AppState>) -> Result<DeckBans, String> {
     let genres = db.get_banned_genres().map_err(|e| e.to_string())?;
     let formats = db.get_banned_formats().map_err(|e| e.to_string())?;
     let hide_upcoming = db.get_hide_upcoming_releases().map_err(|e| e.to_string())?;
-    Ok(DeckBans { genres, formats, hide_upcoming })
+    let status_data_synced = db.has_synced_catalog_status().map_err(|e| e.to_string())?;
+    Ok(DeckBans { genres, formats, hide_upcoming, status_data_synced })
 }
 
 /// Persist the deck bans. Takes effect on the very next `discover_catalog_card`
