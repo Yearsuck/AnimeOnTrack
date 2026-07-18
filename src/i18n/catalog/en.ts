@@ -186,7 +186,8 @@ export const en: Messages = {
     "Genres and types you ban won't appear in the Discover deck. Hentai and Ecchi are always excluded.",
   "discover.filtersGenresHeading": "Banned genres",
   "discover.filtersFormatsHeading": "Banned types",
-  "discover.filtersHideUpcoming": "Hide upcoming (not yet aired) titles",
+  "discover.filtersOtherHeading": "Other filters",
+  "discover.filtersHideUpcoming": "Hide upcoming titles",
   "discover.filtersHideUpcomingNeedsSync":
     "No release-status data synced yet — this filter won't take effect until you sync the catalog (Catálogo tab).",
   "discover.filtersSave": "Save filters",

@@ -134,17 +134,21 @@ export function DeckPanel({ onBansSaved }: { onBansSaved: () => void }) {
             </div>
           )}
 
-          <label className="row" style={{ alignItems: "center", gap: 8, marginBottom: 16, cursor: "pointer" }}>
-            <input
-              type="checkbox"
-              checked={hideUpcoming}
-              onChange={(e) => {
-                setHideUpcoming(e.target.checked);
+          <h3 className="card-title" style={{ marginBottom: 8 }}>
+            {t("discover.filtersOtherHeading")}
+          </h3>
+          <div className="chip-row" style={{ marginBottom: hideUpcoming && !statusDataSynced ? 8 : 16 }}>
+            <button
+              type="button"
+              className={`chip-toggle${hideUpcoming ? " active" : ""}`}
+              onClick={() => {
+                setHideUpcoming((prev) => !prev);
                 setSaved(false);
               }}
-            />
-            {t("discover.filtersHideUpcoming")}
-          </label>
+            >
+              {t("discover.filtersHideUpcoming")}
+            </button>
+          </div>
           {hideUpcoming && !statusDataSynced && (
             <p className="muted" style={{ marginTop: -8, marginBottom: 16, fontSize: 12.5, color: "var(--danger)" }}>
               {t("discover.filtersHideUpcomingNeedsSync")}
