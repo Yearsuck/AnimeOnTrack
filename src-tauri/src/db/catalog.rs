@@ -21,6 +21,8 @@ pub struct CatalogFilter {
     /// Episode-count bucket: "1" | "2-12" | "13-26" | "27+" | "unknown"
     /// (`unknown` = `episodes IS NULL`). Unrecognized values are ignored.
     pub episodes: Option<String>,
+    /// Exact match against `anilist_catalog.studio`.
+    pub studio: Option<String>,
 }
 
 impl Db {
@@ -49,17 +51,18 @@ impl Db {
         sort_order: i64,
     ) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO anilist_catalog(id, title, title_romaji, title_english, cover_url, format, episodes, average_score, popularity, url, sort_order, status)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            "INSERT INTO anilist_catalog(id, title, title_romaji, title_english, cover_url, format, episodes, average_score, popularity, url, sort_order, status, duration, studio)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
              ON CONFLICT(id) DO UPDATE SET
                 title=excluded.title, title_romaji=excluded.title_romaji, title_english=excluded.title_english,
                 cover_url=excluded.cover_url, format=excluded.format,
                 episodes=excluded.episodes, average_score=excluded.average_score,
                 popularity=excluded.popularity, url=excluded.url, sort_order=excluded.sort_order,
-                status=excluded.status",
+                status=excluded.status, duration=excluded.duration, studio=excluded.studio",
             (
                 anime.id, &anime.title, &anime.title_romaji, &anime.title_english, &anime.cover_url, &anime.format,
                 anime.episodes, anime.average_score, anime.popularity, &anime.url, sort_order, &anime.status,
+                anime.duration, &anime.studio,
             ),
         )?;
         self.conn.execute("DELETE FROM anilist_catalog_genres WHERE anilist_id=?1", [anime.id])?;
@@ -98,6 +101,12 @@ impl Db {
         if let Some(format) = format {
             conditions.push("format = ?".to_string());
             params.push(Value::Text(format.to_string()));
+        }
+
+        let studio = filter.studio.as_deref().map(str::trim).filter(|s| !s.is_empty());
+        if let Some(studio) = studio {
+            conditions.push("studio = ?".to_string());
+            params.push(Value::Text(studio.to_string()));
         }
 
         if let Some(min_score) = filter.min_score {
@@ -154,7 +163,7 @@ impl Db {
         let offset = (page.max(1) - 1) * per_page;
         let (where_sql, mut params) = Self::build_catalog_where(filter);
         let sql = format!(
-            "SELECT id, title, title_romaji, title_english, cover_url, format, episodes, average_score, popularity, url, status
+            "SELECT id, title, title_romaji, title_english, cover_url, format, episodes, average_score, popularity, url, status, duration, studio
              FROM anilist_catalog WHERE {where_sql}
              ORDER BY popularity DESC NULLS LAST, id LIMIT ? OFFSET ?"
         );
@@ -206,6 +215,18 @@ impl Db {
         Ok(formats)
     }
 
+    /// Distinct, non-null studio vocabulary from the synced catalog,
+    /// alphabetical — drives the Catálogo filter bar's studio select.
+    pub fn distinct_catalog_studios(&self) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT studio FROM anilist_catalog WHERE studio IS NOT NULL ORDER BY studio COLLATE NOCASE",
+        )?;
+        let studios = stmt
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(studios)
+    }
+
     fn row_to_catalog_anime(r: &rusqlite::Row) -> rusqlite::Result<crate::anilist::CatalogAnime> {
         let id: i64 = r.get("id")?;
         Ok(crate::anilist::CatalogAnime {
@@ -220,6 +241,8 @@ impl Db {
             popularity: r.get("popularity")?,
             url: r.get("url")?,
             status: r.get("status")?,
+            duration: r.get("duration")?,
+            studio: r.get("studio")?,
             genres: Vec::new(), // filled in by callers that need it — see list_catalog
         })
     }
@@ -352,7 +375,7 @@ impl Db {
         let upcoming_clause =
             if hide_upcoming { "AND (c.status IS NULL OR c.status != 'NOT_YET_RELEASED')" } else { "" };
         let sql = format!(
-            "SELECT c.id, c.title, c.title_romaji, c.title_english, c.cover_url, c.format, c.episodes, c.average_score, c.popularity, c.url, c.status
+            "SELECT c.id, c.title, c.title_romaji, c.title_english, c.cover_url, c.format, c.episodes, c.average_score, c.popularity, c.url, c.status, c.duration, c.studio
              FROM anilist_catalog c
              JOIN anilist_catalog_genres g ON g.anilist_id = c.id
              WHERE g.genre = ?
@@ -940,6 +963,40 @@ mod tests {
     }
 
     #[test]
+    fn list_catalog_filtered_studio_exact_match() {
+        let db = Db::open(":memory:").unwrap();
+        let mut a = catalog_anime_with_popularity(1, "MadeByA", &["Drama"], Some(1000));
+        a.studio = Some("Studio A".into());
+        db.upsert_catalog_anime(&a, 0).unwrap();
+        let mut b = catalog_anime_with_popularity(2, "MadeByB", &["Drama"], Some(1000));
+        b.studio = Some("Studio B".into());
+        db.upsert_catalog_anime(&b, 1).unwrap();
+        // No studio at all — must not match either filter value.
+        db.upsert_catalog_anime(&catalog_anime_with_popularity(3, "NoStudio", &["Drama"], Some(1000)), 2).unwrap();
+
+        let filter = CatalogFilter { studio: Some("Studio A".into()), ..Default::default() };
+        let rows = db.list_catalog_filtered(1, 100, &filter).unwrap();
+        assert_eq!(rows.iter().map(|a| a.title.as_str()).collect::<Vec<_>>(), vec!["MadeByA"]);
+        assert_eq!(db.catalog_count_filtered(&filter).unwrap(), 1);
+    }
+
+    #[test]
+    fn distinct_catalog_studios_returns_alphabetical_non_null() {
+        let db = Db::open(":memory:").unwrap();
+        let mut a = catalog_anime_with_popularity(1, "First", &[], Some(1000));
+        a.studio = Some("Zeta Studio".into());
+        db.upsert_catalog_anime(&a, 0).unwrap();
+        let mut b = catalog_anime_with_popularity(2, "Second", &[], Some(1000));
+        b.studio = Some("Alpha Studio".into());
+        db.upsert_catalog_anime(&b, 1).unwrap();
+        // No studio — must not produce a NULL entry in the vocabulary.
+        db.upsert_catalog_anime(&catalog_anime_with_popularity(3, "Third", &[], Some(1000)), 2).unwrap();
+
+        let studios = db.distinct_catalog_studios().unwrap();
+        assert_eq!(studios, vec!["Alpha Studio".to_string(), "Zeta Studio".to_string()]);
+    }
+
+    #[test]
     fn list_catalog_filtered_min_score_is_inclusive_floor() {
         let db = Db::open(":memory:").unwrap();
         seed_filter_catalog(&db);
@@ -987,6 +1044,7 @@ mod tests {
             format: Some("TV".into()),
             min_score: Some(60),
             episodes: Some("13-26".into()),
+            ..Default::default()
         };
         let rows = db.list_catalog_filtered(1, 100, &filter).unwrap();
         assert_eq!(rows.iter().map(|a| a.title.as_str()).collect::<Vec<_>>(), vec!["MidRun"]);
@@ -1032,6 +1090,8 @@ mod tests {
             popularity: Some(1000),
             url: "https://anilist.co/anime/42".into(),
             status: None,
+            duration: None,
+            studio: None,
         };
         db.upsert_catalog_anime(&anime, 0).unwrap();
 
@@ -1039,5 +1099,106 @@ mod tests {
         assert_eq!(title, "Attack on Titan");
         assert_eq!(romaji.as_deref(), Some("Shingeki no Kyojin"));
         assert_eq!(english.as_deref(), Some("Attack on Titan"));
+    }
+
+    #[test]
+    fn upsert_catalog_anime_round_trips_duration() {
+        let db = Db::open(":memory:").unwrap();
+
+        // A row with a real synced duration.
+        let with_duration = crate::anilist::CatalogAnime {
+            id: 43,
+            title: "Timed Show".into(),
+            title_romaji: None,
+            title_english: None,
+            cover_url: None,
+            format: Some("TV".into()),
+            genres: vec![],
+            episodes: Some(12),
+            average_score: None,
+            popularity: None,
+            url: "https://anilist.co/anime/43".into(),
+            status: None,
+            duration: Some(23),
+            studio: None,
+        };
+        db.upsert_catalog_anime(&with_duration, 0).unwrap();
+
+        // A row that never sets duration (mirrors a pre-existing/unsynced
+        // row) — must default to None, not error or coerce to 0.
+        let without_duration = crate::anilist::CatalogAnime {
+            id: 44,
+            title: "Undated Show".into(),
+            title_romaji: None,
+            title_english: None,
+            cover_url: None,
+            format: Some("TV".into()),
+            genres: vec![],
+            episodes: Some(12),
+            average_score: None,
+            popularity: None,
+            url: "https://anilist.co/anime/44".into(),
+            status: None,
+            duration: None,
+            studio: None,
+        };
+        db.upsert_catalog_anime(&without_duration, 1).unwrap();
+
+        let page = db.list_catalog(1, 10).unwrap();
+        let read_with = page.iter().find(|a| a.id == 43).unwrap();
+        assert_eq!(read_with.duration, Some(23), "real synced duration must round-trip");
+        let read_without = page.iter().find(|a| a.id == 44).unwrap();
+        assert_eq!(read_without.duration, None, "unset duration must read back as None, not 0");
+    }
+
+    #[test]
+    fn upsert_catalog_anime_round_trips_studio() {
+        let db = Db::open(":memory:").unwrap();
+
+        // A row with a real synced studio.
+        let with_studio = crate::anilist::CatalogAnime {
+            id: 45,
+            title: "Studio Show".into(),
+            title_romaji: None,
+            title_english: None,
+            cover_url: None,
+            format: Some("TV".into()),
+            genres: vec![],
+            episodes: Some(12),
+            average_score: None,
+            popularity: None,
+            url: "https://anilist.co/anime/45".into(),
+            status: None,
+            duration: None,
+            studio: Some("Studio Ghibli".into()),
+        };
+        db.upsert_catalog_anime(&with_studio, 0).unwrap();
+
+        // A row that never sets studio (mirrors a pre-existing/unsynced row,
+        // or a title AniList credits no studio for) — must default to None,
+        // not error or coerce to an empty string.
+        let without_studio = crate::anilist::CatalogAnime {
+            id: 46,
+            title: "No Studio Show".into(),
+            title_romaji: None,
+            title_english: None,
+            cover_url: None,
+            format: Some("TV".into()),
+            genres: vec![],
+            episodes: Some(12),
+            average_score: None,
+            popularity: None,
+            url: "https://anilist.co/anime/46".into(),
+            status: None,
+            duration: None,
+            studio: None,
+        };
+        db.upsert_catalog_anime(&without_studio, 1).unwrap();
+
+        let page = db.list_catalog(1, 10).unwrap();
+        let read_with = page.iter().find(|a| a.id == 45).unwrap();
+        assert_eq!(read_with.studio.as_deref(), Some("Studio Ghibli"), "real synced studio must round-trip");
+        let read_without = page.iter().find(|a| a.id == 46).unwrap();
+        assert_eq!(read_without.studio, None, "unset studio must read back as None, not empty string");
     }
 }

@@ -132,6 +132,8 @@ export const es = {
   "library.typeOther": "Otros",
   "library.filterGenre": "Género",
   "library.genreAll": "Todos",
+  "library.filterStudio": "Estudio",
+  "library.studioAll": "Todos",
 
   // SeriesDetail.tsx
   "seriesDetail.unfollow": "Dejar de seguir",
@@ -231,6 +233,7 @@ export const es = {
   "catalog.loadError": "No se pudo cargar el catálogo:",
   "catalog.searchPlaceholder": "Buscar por título…",
   "catalog.anyFormat": "Cualquier formato",
+  "catalog.anyStudio": "Cualquier estudio",
   "catalog.clearFilters": "Limpiar filtros",
   "catalog.resultsCount": "{count} resultados",
   "catalog.noResultsFiltered": "Sin resultados con estos filtros.",

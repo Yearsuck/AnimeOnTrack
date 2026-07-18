@@ -364,9 +364,11 @@ impl Db {
                     COUNT(e.id) AS total,
                     SUM(CASE WHEN e.seen=1 THEN 1 ELSE 0 END) AS seen,
                     MAX(e.added_at) AS last_added,
-                    MAX(e.seen_at) AS last_watched_at
+                    MAX(e.seen_at) AS last_watched_at,
+                    c.studio AS studio
              FROM series s
              LEFT JOIN episodes e ON e.series_id = s.id
+             LEFT JOIN anilist_catalog c ON c.id = s.anilist_id
              WHERE s.source_id=?1 AND (s.followed=1 OR s.watched_externally=1)
              GROUP BY s.id
              ORDER BY s.title",
@@ -382,6 +384,7 @@ impl Db {
                     r.get::<_, Option<i64>>("seen")?.unwrap_or(0),
                     r.get::<_, Option<String>>("last_added")?,
                     r.get::<_, Option<String>>("last_watched_at")?,
+                    r.get::<_, Option<String>>("studio")?,
                 ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -412,7 +415,7 @@ impl Db {
         }
 
         let mut out = Vec::with_capacity(rows.len());
-        for (series, watched_externally, kind, total_episodes, seen_episodes, last_added, last_watched_at) in rows {
+        for (series, watched_externally, kind, total_episodes, seen_episodes, last_added, last_watched_at, studio) in rows {
             let next_episode = self.next_unseen_episode(series.id)?;
             let genres = genres_by_series.remove(&series.id).unwrap_or_default();
             out.push(crate::models::LibraryItem {
@@ -425,6 +428,7 @@ impl Db {
                 watched_externally,
                 kind,
                 genres,
+                studio,
             });
         }
         Ok(out)
@@ -587,7 +591,8 @@ mod tests {
                 id: 300, title: "Ext".into(), title_romaji: None, title_english: None,
                 cover_url: None, format: Some("TV".into()), genres: vec![],
                 episodes: Some(12), average_score: None, popularity: None,
-                url: "https://anilist.co/anime/300".into(), status: None,
+                url: "https://anilist.co/anime/300".into(), status: None, duration: None,
+                studio: None,
             },
             0,
         ).unwrap();
@@ -624,7 +629,8 @@ mod tests {
                 id: 301, title: "Ext2".into(), title_romaji: None, title_english: None,
                 cover_url: None, format: Some("TV".into()), genres: vec![],
                 episodes: Some(12), average_score: None, popularity: None,
-                url: "https://anilist.co/anime/301".into(), status: None,
+                url: "https://anilist.co/anime/301".into(), status: None, duration: None,
+                studio: None,
             },
             0,
         ).unwrap();
@@ -679,7 +685,8 @@ mod tests {
                 id: 302, title: "Both".into(), title_romaji: None, title_english: None,
                 cover_url: None, format: Some("TV".into()), genres: vec![],
                 episodes: Some(12), average_score: None, popularity: None,
-                url: "https://anilist.co/anime/302".into(), status: None,
+                url: "https://anilist.co/anime/302".into(), status: None, duration: None,
+                studio: None,
             },
             0,
         ).unwrap();
@@ -868,6 +875,41 @@ mod tests {
         let item2 = items.iter().find(|it| it.series.id == sid2).unwrap();
         assert_eq!(item2.kind, None);
         assert!(item2.genres.is_empty());
+    }
+
+    #[test]
+    fn list_library_returns_studio_only_for_linked_series() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+
+        // A catalog row carrying a studio, linked to a followed series via
+        // anilist_id.
+        let mut linked_anime = catalog_anime_with_popularity(500, "Linked", &["Drama"], Some(1000));
+        linked_anime.studio = Some("Studio Ghibli".into());
+        db.upsert_catalog_anime(&linked_anime, 0).unwrap();
+        let linked = crate::models::Series {
+            id: 0, slug: "linked".into(), title: "Linked".into(),
+            url: "u1".into(), cover_url: None, is_airing: false, followed: false, next_episode_at: None, site_episode_count: None,
+        };
+        let sid_linked = db.upsert_series(src, &linked).unwrap();
+        db.set_followed(sid_linked, true).unwrap();
+        db.set_anilist_id(sid_linked, 500).unwrap();
+
+        // An unlinked followed series — must come back with studio: None,
+        // not an error or a stray value from another row.
+        let unlinked = crate::models::Series {
+            id: 0, slug: "unlinked".into(), title: "Unlinked".into(),
+            url: "u2".into(), cover_url: None, is_airing: false, followed: false, next_episode_at: None, site_episode_count: None,
+        };
+        let sid_unlinked = db.upsert_series(src, &unlinked).unwrap();
+        db.set_followed(sid_unlinked, true).unwrap();
+
+        let items = db.list_library(src).unwrap();
+        let linked_item = items.iter().find(|it| it.series.id == sid_linked).unwrap();
+        assert_eq!(linked_item.studio.as_deref(), Some("Studio Ghibli"));
+
+        let unlinked_item = items.iter().find(|it| it.series.id == sid_unlinked).unwrap();
+        assert_eq!(unlinked_item.studio, None);
     }
 
     #[test]

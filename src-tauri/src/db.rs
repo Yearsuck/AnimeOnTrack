@@ -186,6 +186,17 @@ impl Db {
         // NULL until the next sync backfills it. See
         // db/catalog.rs::random_catalog_anime_in_genre's hide_upcoming param.
         ensure_column(&self.conn, "anilist_catalog", "status", "TEXT")?;
+        // AniList's real per-episode minutes, when it has one. NULL for rows
+        // synced before this column existed (backfills on the next sync) or
+        // when AniList itself has no duration for the title — falls back to
+        // db/stats.rs::minutes_per_episode's estimate in that case.
+        ensure_column(&self.conn, "anilist_catalog", "duration", "INTEGER")?;
+        // First `isMain` studio's name, when AniList has one. NULL for rows
+        // synced before this column existed (backfills on the next sync) or
+        // when AniList reports no credited studio at all. Co-productions with
+        // multiple mains only keep the first — see
+        // `anilist::CatalogAnime::studio`'s doc comment.
+        ensure_column(&self.conn, "anilist_catalog", "studio", "TEXT")?;
         self.conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_catalog_popularity ON anilist_catalog(popularity DESC);
              CREATE INDEX IF NOT EXISTS idx_catalog_genre ON anilist_catalog_genres(genre);",

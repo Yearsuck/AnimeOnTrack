@@ -90,6 +90,11 @@ pub struct LibraryItem {
     /// genres haven't been backfilled yet for this series.
     #[serde(default)]
     pub genres: Vec<String>,
+    /// Only populated for series linked to an AniList catalog row
+    /// (`anilist_id` set) — scraped-only followed series have no native
+    /// studio data and this stays `None`.
+    #[serde(default)]
+    pub studio: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

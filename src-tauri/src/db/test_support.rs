@@ -51,6 +51,8 @@ pub(crate) fn catalog_anime_with_popularity(
         popularity,
         url: format!("https://anilist.co/anime/{id}"),
         status: None,
+        duration: None,
+        studio: None,
     }
 }
 
@@ -75,6 +77,8 @@ pub(crate) fn catalog_anime_full(
         popularity: Some(100 - id),
         url: format!("https://anilist.co/anime/{id}"),
         status: None,
+        duration: None,
+        studio: None,
     }
 }
 

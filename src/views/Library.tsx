@@ -314,6 +314,7 @@ export function Library({ onOpenSeries }: { onOpenSeries: (s: Series) => void })
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [typeFilter, setTypeFilter] = useState<string>("all");
   const [genreFilter, setGenreFilter] = useState<string>("all");
+  const [studioFilter, setStudioFilter] = useState<string>("all");
 
   const load = useCallback(() => {
     listLibrary().then(setItems);
@@ -339,15 +340,30 @@ export function Library({ onOpenSeries }: { onOpenSeries: (s: Series) => void })
     return [...present].sort((a, b) => a.localeCompare(b));
   }, [items]);
 
+  // Derived client-side (not a backend facets call, unlike Catálogo's studio
+  // select) — Library's full item list is already loaded client-side, same
+  // reasoning as genreOptions above. Most rows will have studio: null
+  // (unlinked followed series never get native studio data — see
+  // LibraryItem.studio's doc comment), so those rows simply never
+  // contribute an option here; they still show under the "all" default.
+  const studioOptions = useMemo(() => {
+    const present = new Set<string>();
+    for (const it of items) if (it.studio) present.add(it.studio);
+    return [...present].sort((a, b) => a.localeCompare(b));
+  }, [items]);
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return items.filter((it) => {
       if (q && !it.series.title.toLowerCase().includes(q)) return false;
       if (typeFilter !== "all" && normalizeKind(it.kind) !== typeFilter) return false;
       if (genreFilter !== "all" && !it.genres.includes(genreFilter)) return false;
+      // "all" never hides unlinked (studio: null) rows — only an explicit
+      // studio selection filters them out.
+      if (studioFilter !== "all" && it.studio !== studioFilter) return false;
       return true;
     });
-  }, [items, query, typeFilter, genreFilter]);
+  }, [items, query, typeFilter, genreFilter, studioFilter]);
 
   // All "watching" items (before the airing filter) — drives whether the
   // filter control is shown at all.
@@ -479,6 +495,31 @@ export function Library({ onOpenSeries }: { onOpenSeries: (s: Series) => void })
                   {genreOptions.map((g) => (
                     <option key={g} value={g}>
                       {g}
+                    </option>
+                  ))}
+                </select>
+              </>
+            )}
+
+            {studioOptions.length > 0 && (
+              <>
+                <label className="sr-only" htmlFor="lib-studio-select">
+                  {t("library.filterStudio")}
+                </label>
+                <span className="muted" style={{ fontSize: 12 }}>
+                  {t("library.filterStudio")}
+                </span>
+                <select
+                  id="lib-studio-select"
+                  className="input"
+                  style={{ maxWidth: 150 }}
+                  value={studioFilter}
+                  onChange={(e) => setStudioFilter(e.target.value)}
+                >
+                  <option value="all">{t("library.studioAll")}</option>
+                  {studioOptions.map((s) => (
+                    <option key={s} value={s}>
+                      {s}
                     </option>
                   ))}
                 </select>

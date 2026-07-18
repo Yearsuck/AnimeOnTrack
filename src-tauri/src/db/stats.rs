@@ -39,15 +39,18 @@ pub(crate) fn franchise_key(title: &str) -> String {
     }
 }
 
-/// Minutes estimated per episode by format/kind, case-insensitively. The DB
-/// never stores a real duration — AniList has one but it isn't synced (see
-/// `anilist::CatalogAnime`), and the scraped site's own `series.kind` is
-/// free-text vocabulary, not a validated enum (real values seen live:
-/// `TV`, `MOVIE`, `4K`, `Pelicula`, `OVA`, `ONA`, `Sin Censura`, `SPECIAL`,
-/// `Blu-Ray`, `Resubido`, `Yaoi`...). So this is an explicit, documented
-/// *estimate*, not a fact — callers (`get_watch_insights`) must present it as
-/// one. Anything not recognized (including all the site's noise and `None`)
-/// falls back to the plain-TV estimate of 24 minutes.
+/// Minutes estimated per episode by format/kind, case-insensitively. This is
+/// the *fallback* estimate — `anilist_catalog.duration` (AniList's real
+/// per-episode minutes, synced per `anilist::CatalogAnime::duration`) wins
+/// over this whenever a series is linked to a catalog row that has one; see
+/// `get_watch_insights`. This function only ever runs for unlinked series, or
+/// catalog rows synced before `duration` existed / with no duration on
+/// AniList. The scraped site's own `series.kind` is free-text vocabulary, not
+/// a validated enum (real values seen live: `TV`, `MOVIE`, `4K`, `Pelicula`,
+/// `OVA`, `ONA`, `Sin Censura`, `SPECIAL`, `Blu-Ray`, `Resubido`, `Yaoi`...),
+/// so this remains an explicit, documented *estimate*, not a fact — callers
+/// must present it as one. Anything not recognized (including all the site's
+/// noise and `None`) falls back to the plain-TV estimate of 24 minutes.
 pub(crate) fn minutes_per_episode(format: Option<&str>) -> i64 {
     match format.map(|f| f.trim().to_uppercase()).as_deref() {
         Some("MOVIE") | Some("PELICULA") | Some("PELÍCULA") => 100,
@@ -256,9 +259,11 @@ impl Db {
 
     /// Local-only watch metrics for the Estadísticas "Resumen" block — see
     /// `docs/superpowers/specs/2026-07-13-stats-new-metrics-design.md`. Pure
-    /// SQL against the local DB; never touches the network. Time is
-    /// estimated via `minutes_per_episode` since neither the scraped site
-    /// nor the synced AniList catalog carry a real per-episode duration.
+    /// SQL against the local DB; never touches the network. Time uses
+    /// AniList's real per-episode `duration` when a series is linked to a
+    /// synced catalog row that has one, falling back to `minutes_per_episode`'s
+    /// format/kind-based estimate otherwise (unsynced/unlinked rows, or rows
+    /// synced before `duration` existed).
     pub fn get_watch_insights(&self, source_id: i64) -> Result<crate::models::WatchInsights> {
         // Minutes tracked: seen-episode counts grouped by series (and its
         // `kind`), summed in Rust since SQLite can't run the format->minutes
@@ -266,37 +271,47 @@ impl Db {
         // not — a "Ya lo vi" swipe whose site-link scraped real episodes
         // must contribute its real minutes too (see the episode/anime-
         // counts-fix design doc).
+        // LEFT JOINed so series with `anilist_id IS NULL` (the common case —
+        // most followed/site-scraped series have no catalog link at all)
+        // still come through with `duration = NULL`, falling back to the
+        // exact same `kind`-based estimate as before the join was added.
         let mut stmt = self.conn.prepare(
-            "SELECT s.kind, COUNT(*) AS cnt
+            "SELECT s.kind, COUNT(*) AS cnt, c.duration
              FROM episodes e JOIN series s ON s.id = e.series_id
+             LEFT JOIN anilist_catalog c ON c.id = s.anilist_id
              WHERE e.seen=1 AND s.source_id=?1
              GROUP BY s.id",
         )?;
-        let tracked_rows: Vec<(Option<String>, i64)> = stmt
-            .query_map([source_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+        let tracked_rows: Vec<(Option<String>, i64, Option<i64>)> = stmt
+            .query_map([source_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let estimated_minutes_tracked: i64 = tracked_rows
             .iter()
-            .map(|(kind, cnt)| minutes_per_episode(kind.as_deref()) * cnt)
+            .map(|(kind, cnt, duration)| {
+                duration.unwrap_or_else(|| minutes_per_episode(kind.as_deref())) * cnt
+            })
             .sum();
 
         // Minutes from "Ya vistas" linked to a catalog row with a known
         // episode count — only those rows can contribute an estimate, AND
         // only when the series has no real seen-episode data already
         // counted above (otherwise it double-counts: real minutes above,
-        // catalog-estimated minutes here, for the same episodes).
+        // catalog-estimated minutes here, for the same episodes). Real
+        // AniList `duration` wins over the format-based estimate when synced.
         let mut stmt = self.conn.prepare(
-            "SELECT c.episodes, c.format
+            "SELECT c.episodes, c.format, c.duration
              FROM series s JOIN anilist_catalog c ON c.id = s.anilist_id
              WHERE s.source_id=?1 AND s.watched_externally=1 AND c.episodes IS NOT NULL
                AND NOT EXISTS (SELECT 1 FROM episodes e WHERE e.series_id=s.id AND e.seen=1)",
         )?;
-        let external_rows: Vec<(i64, Option<String>)> = stmt
-            .query_map([source_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+        let external_rows: Vec<(i64, Option<String>, Option<i64>)> = stmt
+            .query_map([source_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let estimated_minutes_external: i64 = external_rows
             .iter()
-            .map(|(episodes, format)| minutes_per_episode(format.as_deref()) * episodes)
+            .map(|(episodes, format, duration)| {
+                duration.unwrap_or_else(|| minutes_per_episode(format.as_deref())) * episodes
+            })
             .sum();
         let external_titles_estimated = external_rows.len() as i64;
 
@@ -587,7 +602,8 @@ mod tests {
                 id: 100, title: "External Show".into(), title_romaji: None, title_english: None,
                 cover_url: None, format: Some("TV".into()), genres: vec![],
                 episodes: Some(12), average_score: None, popularity: None,
-                url: "https://anilist.co/anime/100".into(), status: None,
+                url: "https://anilist.co/anime/100".into(), status: None, duration: None,
+                studio: None,
             },
             0,
         ).unwrap();
@@ -653,7 +669,8 @@ mod tests {
                 id: 200, title: "S2".into(), title_romaji: None, title_english: None,
                 cover_url: None, format: Some("TV".into()), genres: vec![],
                 episodes: Some(12), average_score: None, popularity: None,
-                url: "https://anilist.co/anime/200".into(), status: None,
+                url: "https://anilist.co/anime/200".into(), status: None, duration: None,
+                studio: None,
             },
             0,
         ).unwrap();
@@ -664,6 +681,58 @@ mod tests {
         let insights = db.get_watch_insights(src).unwrap();
         assert_eq!(insights.estimated_minutes_tracked, 72);
         assert_eq!(insights.estimated_minutes_external, 288);
+    }
+
+    #[test]
+    fn get_watch_insights_uses_real_duration_when_synced() {
+        // Same shape as the design-doc acceptance test, but the linked
+        // catalog row has a real synced `duration` of 23 min/ep — that must
+        // win over the format-based estimate (TV -> 24 min/ep, which would
+        // give 288). 23 * 12 = 276.
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+
+        db.upsert_catalog_anime(
+            &crate::anilist::CatalogAnime {
+                id: 201, title: "S3".into(), title_romaji: None, title_english: None,
+                cover_url: None, format: Some("TV".into()), genres: vec![],
+                episodes: Some(12), average_score: None, popularity: None,
+                url: "https://anilist.co/anime/201".into(), status: None, duration: Some(23),
+                studio: None,
+            },
+            0,
+        ).unwrap();
+        let ext_id = db.upsert_series(src, &mk_airing("s3", "S3", None)).unwrap();
+        db.set_watched_externally(ext_id, true).unwrap();
+        db.set_anilist_id(ext_id, 201).unwrap();
+
+        let insights = db.get_watch_insights(src).unwrap();
+        assert_eq!(insights.estimated_minutes_external, 276, "23 min/ep * 12 eps beats the 24 min/ep TV estimate");
+    }
+
+    #[test]
+    fn get_watch_insights_falls_back_to_estimate_when_duration_is_null() {
+        // Same shape, but `duration: None` (unsynced/no-duration catalog row)
+        // — must fall back to today's format-based estimate: 24 * 12 = 288.
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+
+        db.upsert_catalog_anime(
+            &crate::anilist::CatalogAnime {
+                id: 202, title: "S4".into(), title_romaji: None, title_english: None,
+                cover_url: None, format: Some("TV".into()), genres: vec![],
+                episodes: Some(12), average_score: None, popularity: None,
+                url: "https://anilist.co/anime/202".into(), status: None, duration: None,
+                studio: None,
+            },
+            0,
+        ).unwrap();
+        let ext_id = db.upsert_series(src, &mk_airing("s4", "S4", None)).unwrap();
+        db.set_watched_externally(ext_id, true).unwrap();
+        db.set_anilist_id(ext_id, 202).unwrap();
+
+        let insights = db.get_watch_insights(src).unwrap();
+        assert_eq!(insights.estimated_minutes_external, 288, "falls back to 24 min/ep (TV) estimate, unchanged");
     }
 
     #[test]

@@ -120,6 +120,8 @@ export const en: Messages = {
   "library.typeOther": "Other",
   "library.filterGenre": "Genre",
   "library.genreAll": "All",
+  "library.filterStudio": "Studio",
+  "library.studioAll": "All",
 
   "seriesDetail.unfollow": "Unfollow",
   "seriesDetail.openPage": "Open series page ↗",
@@ -216,6 +218,7 @@ export const en: Messages = {
   "catalog.loadError": "Couldn't load the catalog:",
   "catalog.searchPlaceholder": "Search by title…",
   "catalog.anyFormat": "Any format",
+  "catalog.anyStudio": "Any studio",
   "catalog.clearFilters": "Clear filters",
   "catalog.resultsCount": "{count} results",
   "catalog.noResultsFiltered": "No results with these filters.",

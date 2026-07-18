@@ -64,10 +64,11 @@ pub fn get_anime_catalog(
 pub struct CatalogFacets {
     pub genres: Vec<String>,
     pub formats: Vec<String>,
+    pub studios: Vec<String>,
 }
 
-/// Distinct genre/format vocabularies from the synced catalog — drives the
-/// Catálogo filter bar's chips/select without hardcoding AniList's own
+/// Distinct genre/format/studio vocabularies from the synced catalog — drives
+/// the Catálogo filter bar's chips/selects without hardcoding AniList's own
 /// vocabulary (which can grow over time). Cheap `SELECT DISTINCT`s; the
 /// frontend loads this once per mount, tolerating staleness until the next
 /// sync (facets only change after a re-sync).
@@ -76,7 +77,8 @@ pub fn get_catalog_facets(state: State<'_, AppState>) -> Result<CatalogFacets, S
     let db = state.db.lock().unwrap();
     let genres = db.distinct_catalog_genres().map_err(|e| e.to_string())?;
     let formats = db.distinct_catalog_formats().map_err(|e| e.to_string())?;
-    Ok(CatalogFacets { genres, formats })
+    let studios = db.distinct_catalog_studios().map_err(|e| e.to_string())?;
+    Ok(CatalogFacets { genres, formats, studios })
 }
 
 #[derive(Serialize, Clone)]

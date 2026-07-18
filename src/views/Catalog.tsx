@@ -26,7 +26,7 @@ function decideArgs(a: CatalogAnime, decision: "Want" | "Seen") {
   } as const;
 }
 
-const EMPTY_FACETS: CatalogFacets = { genres: [], formats: [] };
+const EMPTY_FACETS: CatalogFacets = { genres: [], formats: [], studios: [] };
 
 export function Catalog() {
   const t = useT();
@@ -69,6 +69,7 @@ export function Catalog() {
   const [format, setFormat] = useState("");
   const [minScore, setMinScore] = useState("");
   const [episodes, setEpisodes] = useState("");
+  const [studio, setStudio] = useState("");
 
   // Multi-select + batch actions. The selected map holds the full card object
   // (not just the id) so a selection survives pagination / scroll-out.
@@ -144,12 +145,18 @@ export function Catalog() {
       format: format || undefined,
       min_score: minScore ? Number(minScore) : undefined,
       episodes: episodes || undefined,
+      studio: studio || undefined,
     }),
-    [search, selectedGenres, format, minScore, episodes]
+    [search, selectedGenres, format, minScore, episodes, studio]
   );
 
   const anyFilterActive =
-    search !== "" || selectedGenres.length > 0 || format !== "" || minScore !== "" || episodes !== "";
+    search !== "" ||
+    selectedGenres.length > 0 ||
+    format !== "" ||
+    minScore !== "" ||
+    episodes !== "" ||
+    studio !== "";
 
   const loadPage = useCallback(
     async (targetPage: number) => {
@@ -220,6 +227,7 @@ export function Catalog() {
     setFormat("");
     setMinScore("");
     setEpisodes("");
+    setStudio("");
   }
 
   return (
@@ -285,6 +293,19 @@ export function Catalog() {
             {facets.formats.map((f) => (
               <option key={f} value={f}>
                 {f}
+              </option>
+            ))}
+          </select>
+          <select
+            className="input"
+            style={{ width: 170 }}
+            value={studio}
+            onChange={(e) => setStudio(e.target.value)}
+          >
+            <option value="">{t("catalog.anyStudio")}</option>
+            {facets.studios.map((s) => (
+              <option key={s} value={s}>
+                {s}
               </option>
             ))}
           </select>
