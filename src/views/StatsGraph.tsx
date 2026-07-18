@@ -21,9 +21,11 @@ const MIN_HEIGHT = 500;
 const BOTTOM_MARGIN = 24;
 // Spread nodes far enough apart that the edges between hubs and series read
 // clearly (the earlier -260 / 90 packed them into an unreadable ball). The
-// wider layout is re-framed once via zoomToFit on the first settle.
-const CHARGE_STRENGTH = -520;
-const LINK_DISTANCE = 150;
+// wider layout is re-framed once via zoomToFit on the first settle. Values
+// were bumped again from -520 / 150 to -700 / 180 to further improve edge
+// legibility between hubs and series.
+const CHARGE_STRENGTH = -700;
+const LINK_DISTANCE = 180;
 // Bound the initial layout run instead of letting it simulate indefinitely
 // (the library's own cooldownTime default is 15s of wall time). Once the
 // engine stops (or this many ticks pass), onEngineStop below snapshots
