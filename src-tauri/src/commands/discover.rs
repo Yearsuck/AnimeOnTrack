@@ -290,13 +290,6 @@ pub fn set_deck_bans(
     Ok(())
 }
 
-/// Genres never offered by the catalog swipe deck, regardless of taste
-/// weighting — hardcoded, not a setting (see spec). `Hentai` alone is 1,652
-/// of the ~22,400 synced rows (~7%); left in, a uniform-ish deck would show
-/// it disproportionately often relative to how any real user wants to
-/// browse. `Ecchi` is excluded alongside it for the same reason (adjacent
-/// content policy, not a taste signal worth surfacing here).
-const EXCLUDED_CATALOG_GENRES: &[&str] = &["Hentai", "Ecchi"];
 
 /// Bounded retry count for `discover_catalog_card`'s genre pick: if the
 /// weighted-picked genre turns out to have no undecided candidate left
@@ -304,16 +297,14 @@ const EXCLUDED_CATALOG_GENRES: &[&str] = &["Hentai", "Ecchi"];
 /// immediately declaring the deck exhausted.
 const MAX_GENRE_ATTEMPTS: usize = 5;
 
-/// Genres eligible for the catalog deck: every synced genre except the
-/// always-on baseline (`EXCLUDED_CATALOG_GENRES` — Hentai/Ecchi) and the
-/// user's own banned-genre list (Section B, `get_banned_genres`), unioned.
-/// The baseline can't be lifted by a user setting; bans are strictly
-/// additive to it. Factored out of `discover_catalog_card` so the filter is
-/// unit-testable without a `State<AppState>`.
+/// Genres eligible for the catalog deck: every synced genre except those
+/// in the user's own banned-genre list (Section B, `get_banned_genres`).
+/// Filtering is purely user-driven; there is no hardcoded baseline exclusion.
+/// Factored out of `discover_catalog_card` so the filter is unit-testable
+/// without a `State<AppState>`.
 fn filter_candidate_genres(all_genres: Vec<String>, banned_genres: &[String]) -> Vec<String> {
     all_genres
         .into_iter()
-        .filter(|g| !EXCLUDED_CATALOG_GENRES.iter().any(|ex| ex.eq_ignore_ascii_case(g)))
         .filter(|g| !banned_genres.iter().any(|b| b.eq_ignore_ascii_case(g)))
         .collect()
 }
@@ -340,9 +331,9 @@ fn filter_candidate_genres(all_genres: Vec<String>, banned_genres: &[String]) ->
 /// fallback: dampening never turns a non-positive score into a positive one.
 ///
 /// `Ok(None)` means the deck is genuinely exhausted: every candidate genre
-/// (after excluding Hentai/Ecchi) either has zero synced titles passing the
-/// quality floor or every one of them has already been decided, and
-/// `MAX_GENRE_ATTEMPTS` genre picks in a row all came up empty.
+/// either has zero synced titles passing the quality floor or every one of
+/// them has already been decided, and `MAX_GENRE_ATTEMPTS` genre picks in a
+/// row all came up empty.
 /// `recommended` selects the deck mode (see `DiscoverModeToggle` on the
 /// frontend, persisted in localStorage `aot.discoverMode`): `true` is the
 /// taste-weighted behavior documented above, unchanged. `false` ("Aleatorio")
@@ -378,9 +369,8 @@ pub fn discover_catalog_card(
     } else {
         HashMap::new()
     };
-    // Candidate-genre filter is EXCLUDED_CATALOG_GENRES (always-on baseline:
-    // Hentai/Ecchi) union the user's own banned-genre list (Section B) — the
-    // baseline can't be lifted by a user setting, bans are additive to it.
+    // Candidate-genre filter: only the user's own banned-genre list (Section B).
+    // Filtering is purely user-driven; there is no hardcoded baseline exclusion.
     let banned_genres = db.get_banned_genres().map_err(|e| e.to_string())?;
     let banned_formats = db.get_banned_formats().map_err(|e| e.to_string())?;
     let hide_upcoming = db.get_hide_upcoming_releases().map_err(|e| e.to_string())?;
@@ -510,16 +500,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn filter_candidate_genres_drops_baseline_and_user_bans_case_insensitively() {
+    fn filter_candidate_genres_drops_only_user_bans_case_insensitively() {
         let all = vec![
             "Action".to_string(),
-            "Hentai".to_string(),  // always-on baseline
-            "ecchi".to_string(),   // baseline, different case
+            "Hentai".to_string(),  // no longer baseline-excluded
+            "ecchi".to_string(),   // no longer baseline-excluded
             "Horror".to_string(),  // user-banned below
             "Drama".to_string(),
         ];
         let out = filter_candidate_genres(all, &["horror".to_string()]);
-        assert_eq!(out, vec!["Action".to_string(), "Drama".to_string()]);
+        assert_eq!(out, vec!["Action".to_string(), "Hentai".to_string(), "ecchi".to_string(), "Drama".to_string()]);
+    }
+
+    #[test]
+    fn filter_candidate_genres_no_longer_excludes_hentai_ecchi_by_default() {
+        let all = vec!["Hentai".to_string(), "Ecchi".to_string(), "Action".to_string()];
+        let result = filter_candidate_genres(all, &[]);
+        assert_eq!(result, vec!["Hentai".to_string(), "Ecchi".to_string(), "Action".to_string()]);
     }
 
     #[test]

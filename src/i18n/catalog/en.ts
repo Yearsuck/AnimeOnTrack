@@ -184,7 +184,7 @@ export const en: Messages = {
   "discover.badgeDiscard": "✕ Discarded",
   // Deck settings panel (Swipe side panel: bans + mode toggle)
   "discover.filtersIntro":
-    "Genres and types you ban won't appear in the Discover deck. Hentai and Ecchi are always excluded.",
+    "Genres and types you ban won't appear in the Discover deck.",
   "discover.filtersGenresHeading": "Banned genres",
   "discover.filtersFormatsHeading": "Banned types",
   "discover.filtersOtherHeading": "Other filters",

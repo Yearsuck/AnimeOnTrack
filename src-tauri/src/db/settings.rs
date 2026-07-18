@@ -30,8 +30,7 @@ impl Db {
     /// newline-joined like the per-site mirror list (see
     /// `commands::{load_mirrors, save_mirrors}`), but global because taste
     /// bans are a user preference, not tied to whichever site happens to be
-    /// active. Additive to `EXCLUDED_CATALOG_GENRES` (Hentai/Ecchi), not a
-    /// replacement for it.
+    /// active. No hardcoded baseline exclusion — purely user-driven.
     pub fn get_banned_genres(&self) -> Result<Vec<String>> {
         Ok(self
             .get_setting("banned_genres")?

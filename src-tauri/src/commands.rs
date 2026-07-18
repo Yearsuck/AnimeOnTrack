@@ -230,48 +230,6 @@ pub fn get_active_site(state: State<'_, AppState>) -> Result<SiteSummary, String
 
 
 
-
-
-/// Pick a taste-weighted genre (mirroring `discover_swipe_card`'s scheme:
-/// `get_genre_affinity` + `weighted_pick_index`, uniform fallback when
-/// nothing's been decided yet — but see the dampening note below) and ask
-/// the DB for a taste-scored undecided, quality-floored catalog entry in it
-/// (`recommend::pick_recommended`, see
-/// docs/superpowers/specs/2026-07-12-discover-recommendation-engine-design.md).
-/// Local + instant (no live AniList call per swipe, so no rate-limit
-/// exposure from normal browsing). Catalog cards carry no episode data
-/// (AniList is metadata-only), so they're decided through
-/// `decide_catalog_card` rather than `decide_swipe`, which assumes a
-/// scraped-site URL it can fetch an episode list from.
-///
-/// The outer genre-pick weights are run through
-/// `recommend::dampen_genre_weight` (sub-linear, `w' = max(0,score)^0.6`)
-/// before `weighted_pick_index` — raw affinity sums let one heavily-followed
-/// genre swamp every other candidate; dampening compresses that lead without
-/// flipping the order, so the deck still favors the user's top genre without
-/// collapsing into showing only that genre. Cold start (nothing
-/// followed/decided) still degrades to `weighted_pick_index`'s uniform
-/// fallback: dampening never turns a non-positive score into a positive one.
-///
-/// `Ok(None)` means the deck is genuinely exhausted: every candidate genre
-/// (after excluding Hentai/Ecchi) either has zero synced titles passing the
-/// quality floor or every one of them has already been decided, and
-/// `MAX_GENRE_ATTEMPTS` genre picks in a row all came up empty.
-/// `recommended` selects the deck mode (see `DiscoverModeToggle` on the
-/// frontend, persisted in localStorage `aot.discoverMode`): `true` is the
-/// taste-weighted behavior documented above, unchanged. `false` ("Aleatorio")
-/// builds **empty** affinity maps instead — which makes the outer genre pick
-/// degrade to `weighted_pick_index`'s uniform fallback (all-dampened weights
-/// are 0, same cold-start path) — and threads `recommended` into
-/// `random_catalog_anime_in_genre` so the inner per-candidate pick bypasses
-/// scoring too. Empty maps ALONE are not enough for the inner pick: with
-/// `recommended=true` `score_candidate`'s quality term stays active even with
-/// empty genre/format maps, still biasing toward high `average_score` — see
-/// docs/superpowers/specs/2026-07-13-discover-recommendation-toggle-design.md.
-
-
-
-
 // ---------------------------------------------------------------------------
 // Cloud backup (Google Drive appDataFolder) — see src/backup/. reqwest here
 // only ever talks to accounts.google.com/oauth2.googleapis.com/googleapis.com

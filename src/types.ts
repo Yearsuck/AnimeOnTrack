@@ -143,7 +143,7 @@ export interface SwipeHistoryItem {
 }
 
 // The Descubrir deck's user-configured genre/format bans (global, not
-// per-site). Additive to the always-on Hentai/Ecchi baseline.
+// per-site). No hardcoded baseline exclusion — purely user-driven.
 export interface DeckBans {
   genres: string[];
   formats: string[];

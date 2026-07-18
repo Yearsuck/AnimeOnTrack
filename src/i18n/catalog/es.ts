@@ -198,7 +198,7 @@ export const es = {
   "discover.badgeDiscard": "✕ Descartada",
   // Deck settings panel (Swipe side panel: bans + mode toggle)
   "discover.filtersIntro":
-    "Los géneros y tipos que baneés no aparecerán en el mazo de Descubrir. Hentai y Ecchi están siempre excluidos.",
+    "Los géneros y tipos que baneés no aparecerán en el mazo de Descubrir.",
   "discover.filtersGenresHeading": "Géneros baneados",
   "discover.filtersFormatsHeading": "Tipos baneados",
   "discover.filtersOtherHeading": "Otros filtros",
