@@ -35,7 +35,7 @@ export const en: Messages = {
   "airing.followBtn": "+ Follow",
   "airing.filterAll": "All",
   "airing.filterSeason": "This season",
-  "airing.seasonHint": "Followed series that premiered less than 3 months ago",
+  "airing.seasonHint": "Only shows a known premiere date (usually followed/previously-opened series) — not every airing show that started this season has that data",
 
   "pending.episodesToWatch": "{count} episodes to watch",
   "pending.sortLabel": "Sort:",

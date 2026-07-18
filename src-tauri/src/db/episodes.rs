@@ -400,6 +400,39 @@ mod tests {
     }
 
     #[test]
+    fn first_episode_dates_includes_unfollowed_series_with_episodes() {
+        // The DB layer has no followed requirement: unfollowed airing series
+        // with episode data should be included in first_episode_dates results.
+        // The filter logic lives in the frontend (AiringGrid.tsx), not here.
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+
+        // Create an unfollowed airing series (never call set_followed).
+        let sid = db.upsert_series(src, &mk_airing("unfollowed", "Unfollowed", None)).unwrap();
+        assert_eq!(
+            db.conn
+                .query_row("SELECT followed FROM series WHERE id=?1", [sid], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            0,
+            "series must be unfollowed by default"
+        );
+
+        // Insert an episode with a non-null released_at.
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: sid, number: "1".into(), title: None,
+            url: "https://site/unfollowed-1".into(), released_at: Some("julio 15, 2026".into()), seen: false,
+        }).unwrap();
+
+        // Unfollowed series with episode data IS included in first_episode_dates.
+        let dates = db.first_episode_dates(src).unwrap();
+        assert_eq!(
+            dates.get(&sid),
+            Some(&"julio 15, 2026".to_string()),
+            "unfollowed series with episodes must be included"
+        );
+    }
+
+    #[test]
     fn seen_cascade_handles_non_integer_episode_numbers() {
         // Regression: episode numbers like "1x05" (season-prefixed) used to
         // fail Rust's strict i64 parse (-> 0) while SQLite's CAST still read
