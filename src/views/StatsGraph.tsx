@@ -10,6 +10,10 @@ import type { SeriesGraphNode } from "../types";
 // light theme's pale backdrop — pick per theme instead of a single constant.
 const ROOT_COLOR_DARK = "#e9ecef";
 const ROOT_COLOR_LIGHT = "#33414f";
+// Connection lines fall back to near-white in the library's default, invisible
+// on light theme's pale background — pick per theme for readability.
+const LINK_COLOR_DARK = "rgba(255, 255, 255, 0.25)";
+const LINK_COLOR_LIGHT = "rgba(23, 34, 46, 0.35)";
 const HUB_MIN_R = 6;
 const HUB_MAX_R = 22;
 const SERIES_SPRITE_SIZE = 18;
@@ -294,6 +298,7 @@ export function StatsGraph({
   const t = useT();
   const { theme } = useTheme();
   const rootColor = theme === "light" ? ROOT_COLOR_LIGHT : ROOT_COLOR_DARK;
+  const linkColor = theme === "light" ? LINK_COLOR_LIGHT : LINK_COLOR_DARK;
   const graphRef = useRef<ForceGraphMethods<NodeObject<GNode>, GLink> | undefined>(undefined);
   const containerRef = useRef<HTMLDivElement>(null);
   const [height, setHeight] = useState(MIN_HEIGHT);
@@ -544,6 +549,7 @@ export function StatsGraph({
         height={height}
         graphData={{ nodes, links }}
         backgroundColor="#00000000"
+        linkColor={() => linkColor}
         cooldownTicks={COOLDOWN_TICKS}
         onEngineStop={handleEngineStop}
         nodeLabel={(node) =>
