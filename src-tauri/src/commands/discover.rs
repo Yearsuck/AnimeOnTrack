@@ -253,6 +253,7 @@ pub fn undo_swipe_entry(state: State<'_, AppState>, series_id: i64) -> Result<()
 pub struct DeckBans {
     pub genres: Vec<String>,
     pub formats: Vec<String>,
+    pub hide_upcoming: bool,
 }
 
 /// Read the current deck bans for the Descubrir "Filtros" sub-view.
@@ -261,17 +262,24 @@ pub fn get_deck_bans(state: State<'_, AppState>) -> Result<DeckBans, String> {
     let db = state.db.lock().unwrap();
     let genres = db.get_banned_genres().map_err(|e| e.to_string())?;
     let formats = db.get_banned_formats().map_err(|e| e.to_string())?;
-    Ok(DeckBans { genres, formats })
+    let hide_upcoming = db.get_hide_upcoming_releases().map_err(|e| e.to_string())?;
+    Ok(DeckBans { genres, formats, hide_upcoming })
 }
 
 /// Persist the deck bans. Takes effect on the very next `discover_catalog_card`
 /// call — no cache to invalidate, `discover_catalog_card` reads the settings
 /// table fresh every time it's called.
 #[tauri::command]
-pub fn set_deck_bans(state: State<'_, AppState>, genres: Vec<String>, formats: Vec<String>) -> Result<(), String> {
+pub fn set_deck_bans(
+    state: State<'_, AppState>,
+    genres: Vec<String>,
+    formats: Vec<String>,
+    hide_upcoming: bool,
+) -> Result<(), String> {
     let db = state.db.lock().unwrap();
     db.set_banned_genres(&genres).map_err(|e| e.to_string())?;
     db.set_banned_formats(&formats).map_err(|e| e.to_string())?;
+    db.set_hide_upcoming_releases(hide_upcoming).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -368,6 +376,7 @@ pub fn discover_catalog_card(
     // baseline can't be lifted by a user setting, bans are additive to it.
     let banned_genres = db.get_banned_genres().map_err(|e| e.to_string())?;
     let banned_formats = db.get_banned_formats().map_err(|e| e.to_string())?;
+    let hide_upcoming = db.get_hide_upcoming_releases().map_err(|e| e.to_string())?;
     let candidates = filter_candidate_genres(
         db.distinct_catalog_genres().map_err(|e| e.to_string())?,
         &banned_genres,
@@ -412,6 +421,7 @@ pub fn discover_catalog_card(
                 &affinity,
                 &format_affinity,
                 recommended,
+                hide_upcoming,
             )
             .map_err(|e| e.to_string())?
         {

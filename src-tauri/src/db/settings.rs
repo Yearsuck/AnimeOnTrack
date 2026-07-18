@@ -62,6 +62,18 @@ impl Db {
         self.set_setting("banned_formats", &formats.join("\n"))
     }
 
+    /// Global toggle: exclude `NOT_YET_RELEASED` titles from the Descubrir
+    /// catalog deck (see `db::catalog::random_catalog_anime_in_genre`'s
+    /// `hide_upcoming` param). Absent key (never set) defaults to `false` —
+    /// the deck's pre-existing behavior.
+    pub fn get_hide_upcoming_releases(&self) -> Result<bool> {
+        Ok(self.get_setting("hide_upcoming_releases")?.as_deref() == Some("true"))
+    }
+
+    pub fn set_hide_upcoming_releases(&self, hide: bool) -> Result<()> {
+        self.set_setting("hide_upcoming_releases", if hide { "true" } else { "false" })
+    }
+
     /// Record "this series' episode list was actually fetched just now" —
     /// gates the FINISHED_RECHECK interval for followed series absent from
     /// the airing listing (see `commands::should_fetch_series`).
@@ -113,5 +125,17 @@ mod tests {
 
         assert_eq!(db.get_banned_genres().unwrap(), vec!["Horror".to_string(), "Mecha".to_string()]);
         assert_eq!(db.get_banned_formats().unwrap(), vec!["OVA".to_string()]);
+    }
+
+    #[test]
+    fn hide_upcoming_releases_defaults_false_and_round_trips_through_settings() {
+        let db = Db::open(":memory:").unwrap();
+        assert_eq!(db.get_hide_upcoming_releases().unwrap(), false);
+
+        db.set_hide_upcoming_releases(true).unwrap();
+        assert_eq!(db.get_hide_upcoming_releases().unwrap(), true);
+
+        db.set_hide_upcoming_releases(false).unwrap();
+        assert_eq!(db.get_hide_upcoming_releases().unwrap(), false);
     }
 }

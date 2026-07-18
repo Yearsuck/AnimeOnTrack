@@ -51,6 +51,7 @@ query ($page: Int, $perPage: Int, $startDateGreater: FuzzyDateInt, $startDateLes
       averageScore
       popularity
       siteUrl
+      status
     }
   }
 }
@@ -81,6 +82,13 @@ pub struct CatalogAnime {
     pub average_score: Option<i64>,
     pub popularity: Option<i64>,
     pub url: String,
+    /// AniList's own vocabulary (`RELEASING`/`NOT_YET_RELEASED`/`FINISHED`/
+    /// `CANCELLED`/`HIATUS`), stored as-is — no local translation. `None`
+    /// for rows synced before this field existed (backfills on the next
+    /// sync). Used by `db::random_catalog_anime_in_genre`'s `hide_upcoming`
+    /// exclusion.
+    #[serde(default)]
+    pub status: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -130,6 +138,8 @@ struct MediaEntry {
     popularity: Option<i64>,
     #[serde(rename = "siteUrl")]
     site_url: String,
+    #[serde(default)]
+    status: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -158,6 +168,7 @@ impl From<MediaEntry> for CatalogAnime {
             average_score: m.average_score,
             popularity: m.popularity,
             url: m.site_url,
+            status: m.status,
         }
     }
 }

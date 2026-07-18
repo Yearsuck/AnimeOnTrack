@@ -182,6 +182,10 @@ impl Db {
         // the next incremental sync; NULL until then is expected, not an error.
         ensure_column(&self.conn, "anilist_catalog", "title_romaji", "TEXT")?;
         ensure_column(&self.conn, "anilist_catalog", "title_english", "TEXT")?;
+        // AniList's own status vocabulary (RELEASING/NOT_YET_RELEASED/...) —
+        // NULL until the next sync backfills it. See
+        // db/catalog.rs::random_catalog_anime_in_genre's hide_upcoming param.
+        ensure_column(&self.conn, "anilist_catalog", "status", "TEXT")?;
         self.conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_catalog_popularity ON anilist_catalog(popularity DESC);
              CREATE INDEX IF NOT EXISTS idx_catalog_genre ON anilist_catalog_genres(genre);",

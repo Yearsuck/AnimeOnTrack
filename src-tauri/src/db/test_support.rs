@@ -50,6 +50,7 @@ pub(crate) fn catalog_anime_with_popularity(
         average_score: Some(80),
         popularity,
         url: format!("https://anilist.co/anime/{id}"),
+        status: None,
     }
 }
 
@@ -73,6 +74,7 @@ pub(crate) fn catalog_anime_full(
         average_score,
         popularity: Some(100 - id),
         url: format!("https://anilist.co/anime/{id}"),
+        status: None,
     }
 }
 

@@ -587,7 +587,7 @@ mod tests {
                 id: 300, title: "Ext".into(), title_romaji: None, title_english: None,
                 cover_url: None, format: Some("TV".into()), genres: vec![],
                 episodes: Some(12), average_score: None, popularity: None,
-                url: "https://anilist.co/anime/300".into(),
+                url: "https://anilist.co/anime/300".into(), status: None,
             },
             0,
         ).unwrap();
@@ -624,7 +624,7 @@ mod tests {
                 id: 301, title: "Ext2".into(), title_romaji: None, title_english: None,
                 cover_url: None, format: Some("TV".into()), genres: vec![],
                 episodes: Some(12), average_score: None, popularity: None,
-                url: "https://anilist.co/anime/301".into(),
+                url: "https://anilist.co/anime/301".into(), status: None,
             },
             0,
         ).unwrap();
@@ -679,7 +679,7 @@ mod tests {
                 id: 302, title: "Both".into(), title_romaji: None, title_english: None,
                 cover_url: None, format: Some("TV".into()), genres: vec![],
                 episodes: Some(12), average_score: None, popularity: None,
-                url: "https://anilist.co/anime/302".into(),
+                url: "https://anilist.co/anime/302".into(), status: None,
             },
             0,
         ).unwrap();

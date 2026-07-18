@@ -587,7 +587,7 @@ mod tests {
                 id: 100, title: "External Show".into(), title_romaji: None, title_english: None,
                 cover_url: None, format: Some("TV".into()), genres: vec![],
                 episodes: Some(12), average_score: None, popularity: None,
-                url: "https://anilist.co/anime/100".into(),
+                url: "https://anilist.co/anime/100".into(), status: None,
             },
             0,
         ).unwrap();
@@ -653,7 +653,7 @@ mod tests {
                 id: 200, title: "S2".into(), title_romaji: None, title_english: None,
                 cover_url: None, format: Some("TV".into()), genres: vec![],
                 episodes: Some(12), average_score: None, popularity: None,
-                url: "https://anilist.co/anime/200".into(),
+                url: "https://anilist.co/anime/200".into(), status: None,
             },
             0,
         ).unwrap();
