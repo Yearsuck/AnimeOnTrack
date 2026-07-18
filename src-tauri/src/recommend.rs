@@ -159,6 +159,7 @@ mod tests {
             status: None,
             duration: None,
             studio: None,
+            start_date: None,
         }
     }
 

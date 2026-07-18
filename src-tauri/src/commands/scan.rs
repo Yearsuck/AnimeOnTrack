@@ -212,25 +212,35 @@ pub fn list_airing(state: State<'_, AppState>) -> Result<Vec<Series>, String> {
     db.list_airing(src).map_err(|e| e.to_string())
 }
 
-/// Same series/order as `list_airing`, each paired with its parsed
-/// first-episode date (when known) for the frontend's "Esta temporada"
-/// filter. See docs/superpowers/specs/2026-07-13-airing-this-season-design.md
-/// — most airing series won't have one, since episodes are only scraped
-/// on-demand (see [[project-scraping-scope]]), not for the whole catalog.
+/// Same series/order as `list_airing`, each paired with a real premiere date
+/// (when known) for the frontend's "Esta temporada" filter. See
+/// docs/superpowers/specs/2026-07-13-airing-this-season-design.md and its
+/// 2026-07 addendum: a scraped first episode (`db::first_episode_dates`) is
+/// preferred when present — day-accurate, from the actual episode — with a
+/// fallback to the locally-synced AniList catalog's `start_date`
+/// (`db::catalog_start_dates_by_normalized_title`) so unfollowed/unopened
+/// airing series (which have no scraped episode data at all) still resolve a
+/// verdict instead of being silently excluded. The catalog fallback requires
+/// a Catálogo sync to have populated `start_date`; still `None` when neither
+/// source has a date (title not found in the synced catalog, or synced
+/// before this field existed).
 #[tauri::command]
 pub fn list_airing_season(state: State<'_, AppState>) -> Result<Vec<AiringItem>, String> {
     let src = get_source_id(&state)?;
     let db = state.db.lock().unwrap();
     let series = db.list_airing(src).map_err(|e| e.to_string())?;
     let first_dates = db.first_episode_dates(src).map_err(|e| e.to_string())?;
+    let catalog_dates = db.catalog_start_dates_by_normalized_title().map_err(|e| e.to_string())?;
     Ok(series
         .into_iter()
         .map(|s| {
-            let first_episode_at = first_dates
+            let scraped = first_dates
                 .get(&s.id)
                 .and_then(|raw| parse_spanish_date(raw))
                 .and_then(|d| d.and_hms_opt(0, 0, 0))
                 .map(|dt| dt.and_utc().timestamp());
+            let first_episode_at = scraped
+                .or_else(|| catalog_dates.get(&crate::matching::normalize_title(&s.title)).copied());
             AiringItem { series: s, first_episode_at }
         })
         .collect())

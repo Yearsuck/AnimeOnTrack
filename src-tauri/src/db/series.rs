@@ -592,7 +592,7 @@ mod tests {
                 cover_url: None, format: Some("TV".into()), genres: vec![],
                 episodes: Some(12), average_score: None, popularity: None,
                 url: "https://anilist.co/anime/300".into(), status: None, duration: None,
-                studio: None,
+                studio: None, start_date: None,
             },
             0,
         ).unwrap();
@@ -630,7 +630,7 @@ mod tests {
                 cover_url: None, format: Some("TV".into()), genres: vec![],
                 episodes: Some(12), average_score: None, popularity: None,
                 url: "https://anilist.co/anime/301".into(), status: None, duration: None,
-                studio: None,
+                studio: None, start_date: None,
             },
             0,
         ).unwrap();
@@ -686,7 +686,7 @@ mod tests {
                 cover_url: None, format: Some("TV".into()), genres: vec![],
                 episodes: Some(12), average_score: None, popularity: None,
                 url: "https://anilist.co/anime/302".into(), status: None, duration: None,
-                studio: None,
+                studio: None, start_date: None,
             },
             0,
         ).unwrap();

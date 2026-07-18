@@ -54,6 +54,7 @@ query ($page: Int, $perPage: Int, $startDateGreater: FuzzyDateInt, $startDateLes
       siteUrl
       status
       studios(isMain: true) { nodes { name } }
+      startDate { year month day }
     }
   }
 }
@@ -104,6 +105,16 @@ pub struct CatalogAnime {
     /// existed or when AniList reports no credited studio at all.
     #[serde(default)]
     pub studio: Option<String>,
+    /// Real AniList premiere date, as a Unix timestamp (midnight UTC) — used
+    /// to answer "did this air this season" for airing-site rows that have
+    /// no scraped episode data (most unfollowed ones; see
+    /// `db::episodes::first_episode_dates`'s doc comment). `None` for rows
+    /// synced before this field existed, a fuzzy/partial AniList date
+    /// (year-only or year+month, common for older/unannounced titles) that
+    /// can't resolve to a real calendar date, or when AniList has no start
+    /// date at all.
+    #[serde(default)]
+    pub start_date: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -159,6 +170,8 @@ struct MediaEntry {
     status: Option<String>,
     #[serde(default)]
     studios: Option<StudioConnection>,
+    #[serde(rename = "startDate", default)]
+    start_date: Option<FuzzyDate>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -169,6 +182,27 @@ struct StudioConnection {
 #[derive(Debug, Deserialize)]
 struct StudioNode {
     name: String,
+}
+
+/// AniList's `FuzzyDate` output type — any of `year`/`month`/`day` can be
+/// `null` (e.g. a title with only a known year). Only a fully-specified
+/// date resolves to a real calendar date; see `FuzzyDate::to_timestamp`.
+#[derive(Debug, Deserialize)]
+struct FuzzyDate {
+    year: Option<i32>,
+    month: Option<u32>,
+    day: Option<u32>,
+}
+
+impl FuzzyDate {
+    /// Midnight-UTC Unix timestamp for a fully-specified date, `None` when
+    /// any component is missing/fuzzy or the combination isn't a real date.
+    fn to_timestamp(&self) -> Option<i64> {
+        let (year, month, day) = (self.year?, self.month?, self.day?);
+        chrono::NaiveDate::from_ymd_opt(year, month, day)
+            .and_then(|d| d.and_hms_opt(0, 0, 0))
+            .map(|dt| dt.and_utc().timestamp())
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -200,6 +234,7 @@ impl From<MediaEntry> for CatalogAnime {
             status: m.status,
             duration: m.duration,
             studio: m.studios.and_then(|s| s.nodes.into_iter().next()).map(|n| n.name),
+            start_date: m.start_date.and_then(|d| d.to_timestamp()),
         }
     }
 }
@@ -436,6 +471,28 @@ pub async fn fetch_partition_page(partition: &Partition, page: i64, per_page: i6
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fuzzy_date_resolves_a_fully_specified_date() {
+        let d = FuzzyDate { year: Some(2026), month: Some(4), day: Some(15) };
+        let ts = d.to_timestamp().expect("fully-specified date must resolve");
+        assert_eq!(
+            chrono::DateTime::from_timestamp(ts, 0).unwrap().format("%Y-%m-%d").to_string(),
+            "2026-04-15"
+        );
+    }
+
+    #[test]
+    fn fuzzy_date_year_only_is_none() {
+        let d = FuzzyDate { year: Some(2026), month: None, day: None };
+        assert_eq!(d.to_timestamp(), None);
+    }
+
+    #[test]
+    fn fuzzy_date_all_missing_is_none() {
+        let d = FuzzyDate { year: None, month: None, day: None };
+        assert_eq!(d.to_timestamp(), None);
+    }
 
     #[test]
     fn build_partitions_starts_with_pre_1940_and_ends_with_catch_all() {
