@@ -11,7 +11,7 @@ export const es = {
   // Nav tabs (App.tsx) + shared page titles reused by their own view.
   "nav.pending": "Pendientes",
   "nav.airing": "En emisión",
-  "nav.library": "Biblioteca",
+  "nav.library": "Mi biblioteca",
   "nav.discover": "Descubrir",
   "nav.catalog": "Catálogo",
   "nav.stats": "Estadísticas",
@@ -43,7 +43,7 @@ export const es = {
   "airing.followBtn": "+ Seguir",
   "airing.filterAll": "Todas",
   "airing.filterSeason": "Esta temporada",
-  "airing.seasonHint": "Series seguidas que estrenaron hace menos de 3 meses",
+  "airing.seasonHint": "Solo se muestran series con fecha de estreno registrada (normalmente seguidas o abiertas antes) — no todo lo en emisión estrenó esta temporada tiene ese dato",
 
   // Pending.tsx
   "pending.episodesToWatch": "{count} episodios por ver",
@@ -132,6 +132,8 @@ export const es = {
   "library.typeOther": "Otros",
   "library.filterGenre": "Género",
   "library.genreAll": "Todos",
+  "library.filterStudio": "Estudio",
+  "library.studioAll": "Todos",
 
   // SeriesDetail.tsx
   "seriesDetail.unfollow": "Dejar de seguir",
@@ -155,6 +157,7 @@ export const es = {
   "discover.wantTitle": "Quiero ver (→)",
   "discover.seenTitle": "Ya lo vi (↑)",
   "discover.undoTitle": "Volver a decidir (Ctrl+Z)",
+  "discover.undone": "↺ Deshecho: \"{title}\" vuelve al mazo.",
   "discover.hint": "← Descartar · ↑ Ya lo vi · → Quiero ver · Ctrl+Z Volver a decidir",
   "discover.searching": "Buscando {title} en la web…",
   "discover.linked": "✓ Enlazado ({count} episodios)",
@@ -197,9 +200,13 @@ export const es = {
   "discover.badgeDiscard": "✕ Descartada",
   // Deck settings panel (Swipe side panel: bans + mode toggle)
   "discover.filtersIntro":
-    "Los géneros y tipos que baneés no aparecerán en el mazo de Descubrir. Hentai y Ecchi están siempre excluidos.",
+    "Los géneros y tipos que baneés no aparecerán en el mazo de Descubrir.",
   "discover.filtersGenresHeading": "Géneros baneados",
   "discover.filtersFormatsHeading": "Tipos baneados",
+  "discover.filtersOtherHeading": "Otros filtros",
+  "discover.filtersHideUpcoming": "Ocultar próximos estrenos",
+  "discover.filtersHideUpcomingNeedsSync":
+    "Todavía no hay datos de estreno sincronizados — este filtro no tendrá efecto hasta que sincronices el catálogo (pestaña Catálogo).",
   "discover.filtersSave": "Guardar filtros",
   "discover.filtersSaving": "Guardando…",
   "discover.filtersSaved": "Filtros guardados.",
@@ -226,6 +233,7 @@ export const es = {
   "catalog.loadError": "No se pudo cargar el catálogo:",
   "catalog.searchPlaceholder": "Buscar por título…",
   "catalog.anyFormat": "Cualquier formato",
+  "catalog.anyStudio": "Cualquier estudio",
   "catalog.clearFilters": "Limpiar filtros",
   "catalog.resultsCount": "{count} resultados",
   "catalog.noResultsFiltered": "Sin resultados con estos filtros.",

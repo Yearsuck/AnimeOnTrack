@@ -35,7 +35,7 @@ export const en: Messages = {
   "airing.followBtn": "+ Follow",
   "airing.filterAll": "All",
   "airing.filterSeason": "This season",
-  "airing.seasonHint": "Followed series that premiered less than 3 months ago",
+  "airing.seasonHint": "Only shows a known premiere date (usually followed/previously-opened series) — not every airing show that started this season has that data",
 
   "pending.episodesToWatch": "{count} episodes to watch",
   "pending.sortLabel": "Sort:",
@@ -120,6 +120,8 @@ export const en: Messages = {
   "library.typeOther": "Other",
   "library.filterGenre": "Genre",
   "library.genreAll": "All",
+  "library.filterStudio": "Studio",
+  "library.studioAll": "All",
 
   "seriesDetail.unfollow": "Unfollow",
   "seriesDetail.openPage": "Open series page ↗",
@@ -141,6 +143,7 @@ export const en: Messages = {
   "discover.wantTitle": "Want to watch (→)",
   "discover.seenTitle": "Already seen it (↑)",
   "discover.undoTitle": "Reconsider (Ctrl+Z)",
+  "discover.undone": "↺ Undone: \"{title}\" is back in the deck.",
   "discover.hint": "← Discard · ↑ Already seen it · → Want to watch · Ctrl+Z Reconsider",
   "discover.searching": "Searching for {title} on the site…",
   "discover.linked": "✓ Linked ({count} episodes)",
@@ -183,9 +186,13 @@ export const en: Messages = {
   "discover.badgeDiscard": "✕ Discarded",
   // Deck settings panel (Swipe side panel: bans + mode toggle)
   "discover.filtersIntro":
-    "Genres and types you ban won't appear in the Discover deck. Hentai and Ecchi are always excluded.",
+    "Genres and types you ban won't appear in the Discover deck.",
   "discover.filtersGenresHeading": "Banned genres",
   "discover.filtersFormatsHeading": "Banned types",
+  "discover.filtersOtherHeading": "Other filters",
+  "discover.filtersHideUpcoming": "Hide upcoming titles",
+  "discover.filtersHideUpcomingNeedsSync":
+    "No release-status data synced yet — this filter won't take effect until you sync the catalog (Catálogo tab).",
   "discover.filtersSave": "Save filters",
   "discover.filtersSaving": "Saving…",
   "discover.filtersSaved": "Filters saved.",
@@ -211,6 +218,7 @@ export const en: Messages = {
   "catalog.loadError": "Couldn't load the catalog:",
   "catalog.searchPlaceholder": "Search by title…",
   "catalog.anyFormat": "Any format",
+  "catalog.anyStudio": "Any studio",
   "catalog.clearFilters": "Clear filters",
   "catalog.resultsCount": "{count} results",
   "catalog.noResultsFiltered": "No results with these filters.",

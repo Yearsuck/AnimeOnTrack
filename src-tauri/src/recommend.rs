@@ -156,6 +156,9 @@ mod tests {
             average_score,
             popularity: Some(1000),
             url: format!("https://anilist.co/anime/{id}"),
+            status: None,
+            duration: None,
+            studio: None,
         }
     }
 

@@ -62,6 +62,10 @@ export interface LibraryItem {
   kind: string | null;
   /** This series' genres from series_genres, sorted. */
   genres: string[];
+  /** Only populated for series linked to an AniList catalog row (anilist_id
+   *  set) — scraped-only followed series have no native studio data and this
+   *  stays null. */
+  studio: string | null;
 }
 
 export interface GenreStat {
@@ -143,10 +147,12 @@ export interface SwipeHistoryItem {
 }
 
 // The Descubrir deck's user-configured genre/format bans (global, not
-// per-site). Additive to the always-on Hentai/Ecchi baseline.
+// per-site). No hardcoded baseline exclusion — purely user-driven.
 export interface DeckBans {
   genres: string[];
   formats: string[];
+  hide_upcoming: boolean;
+  status_data_synced: boolean;
 }
 
 export type LinkOutcome =
@@ -186,6 +192,10 @@ export interface CatalogAnime {
   average_score: number | null;
   popularity: number | null;
   url: string;
+  /** The first isMain studio's name, when AniList has one; co-productions
+   *  with multiple mains only keep the first — an approximation, not
+   *  exhaustive credit data. */
+  studio: string | null;
 }
 
 export interface CatalogPage {
@@ -201,11 +211,13 @@ export interface CatalogFilter {
   format?: string;
   min_score?: number;
   episodes?: string;
+  studio?: string;
 }
 
 export interface CatalogFacets {
   genres: string[];
   formats: string[];
+  studios: string[];
 }
 
 export interface CatalogSyncProgress {

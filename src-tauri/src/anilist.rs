@@ -48,9 +48,12 @@ query ($page: Int, $perPage: Int, $startDateGreater: FuzzyDateInt, $startDateLes
       format
       genres
       episodes
+      duration
       averageScore
       popularity
       siteUrl
+      status
+      studios(isMain: true) { nodes { name } }
     }
   }
 }
@@ -81,6 +84,26 @@ pub struct CatalogAnime {
     pub average_score: Option<i64>,
     pub popularity: Option<i64>,
     pub url: String,
+    /// AniList's own vocabulary (`RELEASING`/`NOT_YET_RELEASED`/`FINISHED`/
+    /// `CANCELLED`/`HIATUS`), stored as-is — no local translation. `None`
+    /// for rows synced before this field existed (backfills on the next
+    /// sync). Used by `db::random_catalog_anime_in_genre`'s `hide_upcoming`
+    /// exclusion.
+    #[serde(default)]
+    pub status: Option<String>,
+    /// AniList's real per-episode duration in minutes, when it has one.
+    /// `None` for rows synced before this field existed (backfills on the
+    /// next sync) or when AniList itself has no duration for the title —
+    /// callers fall back to `db::stats::minutes_per_episode`'s estimate in
+    /// that case.
+    #[serde(default)]
+    pub duration: Option<i64>,
+    /// The first `isMain` studio's name, when AniList has one; co-productions
+    /// with multiple mains only keep the first — an approximation, not
+    /// exhaustive credit data. `None` for rows synced before this field
+    /// existed or when AniList reports no credited studio at all.
+    #[serde(default)]
+    pub studio: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -125,11 +148,27 @@ struct MediaEntry {
     format: Option<String>,
     genres: Vec<String>,
     episodes: Option<i64>,
+    #[serde(default)]
+    duration: Option<i64>,
     #[serde(rename = "averageScore")]
     average_score: Option<i64>,
     popularity: Option<i64>,
     #[serde(rename = "siteUrl")]
     site_url: String,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    studios: Option<StudioConnection>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StudioConnection {
+    nodes: Vec<StudioNode>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StudioNode {
+    name: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -158,6 +197,9 @@ impl From<MediaEntry> for CatalogAnime {
             average_score: m.average_score,
             popularity: m.popularity,
             url: m.site_url,
+            status: m.status,
+            duration: m.duration,
+            studio: m.studios.and_then(|s| s.nodes.into_iter().next()).map(|n| n.name),
         }
     }
 }
