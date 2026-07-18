@@ -67,6 +67,8 @@ impl SiteAdapter for AnimeytxAdapter {
         let a_sel = Selector::parse("a").unwrap();
         let tt_sel = Selector::parse(".tt").unwrap();
         let img_sel = Selector::parse("img").unwrap();
+        let cndwn_sel = Selector::parse(".epx.cndwn").unwrap();
+        let sb_sel = Selector::parse(".sb").unwrap();
 
         let mut out = Vec::new();
         for card in doc.select(&card_sel) {
@@ -74,6 +76,19 @@ impl SiteAdapter for AnimeytxAdapter {
                 Some(b) => b,
                 None => continue,
             };
+            // data-rlsdt is the unix timestamp of the NEXT episode's release
+            // (data-cndwn is the redundant seconds-remaining countdown, stale
+            // the instant it's parsed — ignored). Missing on a card with no
+            // countdown span at all.
+            let next_episode_at = card
+                .select(&cndwn_sel)
+                .next()
+                .and_then(|el| el.value().attr("data-rlsdt"))
+                .and_then(|s| s.parse::<i64>().ok());
+            // .sb is the site's reported episode count. Not always numeric —
+            // observed live values include "2", "14", and "??" — so this
+            // must parse to None rather than panic or coerce to 0.
+            let site_episode_count = text_of(card, &sb_sel).and_then(|s| s.parse::<i64>().ok());
             out.push(Series {
                 id: 0,
                 slug: slug_from_url(&url),
@@ -82,6 +97,8 @@ impl SiteAdapter for AnimeytxAdapter {
                 cover_url,
                 is_airing: true,
                 followed: false,
+                next_episode_at,
+                site_episode_count,
             });
         }
         Ok(out)
@@ -176,7 +193,7 @@ impl SiteAdapter for AnimeytxAdapter {
             // NOT reliably match (e.g. class="typez Music" with text
             // "Donghua" observed live), so this must read text, never class.
             let kind = text_of(card, &typez_sel).unwrap_or_default();
-            out.push(FinishedCard { title, url, poster_url, kind });
+            out.push(FinishedCard { title, url, poster_url, kind, matched_genre: None });
         }
         Ok(out)
     }
@@ -225,6 +242,45 @@ impl SiteAdapter for AnimeytxAdapter {
 
         Ok(SeriesDetail { genres, kind, synopsis })
     }
+
+    fn search_url(&self, base_url: &str, query: &str) -> String {
+        // DooPlay serves search at {base}/?s={urlencoded}, confirmed against
+        // real captured search-results HTML (see tests/fixtures/animeytx_search_*.html).
+        let encoded: String = url::form_urlencoded::byte_serialize(query.as_bytes()).collect();
+        format!("{}/?s={}", base_url.trim_end_matches('/'), encoded)
+    }
+
+    fn parse_search_results(&self, html: &str) -> Result<Vec<FinishedCard>> {
+        let doc = Html::parse_document(html);
+        // `.listupd` wraps the results area on both search and genre-listing
+        // pages (confirmed live): present-but-empty (just a "No se
+        // encuentra" message, no `.bsx` cards) for a genuine zero-hit search,
+        // and absent entirely only when the page isn't recognizable as this
+        // site's layout at all (wrong/incompatible mirror) — that's the only
+        // case this returns Err.
+        let container_sel = Selector::parse(".listupd").unwrap();
+        if doc.select(&container_sel).next().is_none() {
+            return Err(anyhow::anyhow!(
+                "no .listupd container found; not a recognizable search-results page"
+            ));
+        }
+        let card_sel = Selector::parse(".listupd .bsx").unwrap();
+        let a_sel = Selector::parse("a").unwrap();
+        let tt_sel = Selector::parse(".tt").unwrap();
+        let typez_sel = Selector::parse(".typez").unwrap();
+        let img_sel = Selector::parse("img").unwrap();
+
+        let mut out = Vec::new();
+        for card in doc.select(&card_sel) {
+            let (title, url, poster_url) = match card_basics(card, &a_sel, &tt_sel, &img_sel) {
+                Some(b) => b,
+                None => continue,
+            };
+            let kind = text_of(card, &typez_sel).unwrap_or_default();
+            out.push(FinishedCard { title, url, poster_url, kind, matched_genre: None });
+        }
+        Ok(out)
+    }
 }
 
 #[cfg(test)]
@@ -252,11 +308,40 @@ mod tests {
         assert_eq!(first.url, "https://wwv.animeytx.net/tv/world-is-dancing/");
         assert!(first.cover_url.as_deref().unwrap().contains("wp-content"));
         assert!(first.is_airing);
+        // World Is Dancing's card: data-rlsdt="1783350140", <span class="sb Sub">2</span>.
+        assert_eq!(first.next_episode_at, Some(1783350140));
+        assert_eq!(first.site_episode_count, Some(2));
         for s in &out {
             assert!(!s.url.is_empty());
             assert!(!s.slug.is_empty());
             assert!(!s.title.is_empty());
         }
+    }
+
+    #[test]
+    fn parses_airing_fixture_non_numeric_episode_count_is_none() {
+        // Third card (Higeki no Genkyou...) has <span class="sb Sub">??</span>
+        // — must parse to None, not panic or coerce to 0.
+        let html = include_str!("../../tests/fixtures/airing.html");
+        let out = AnimeytxAdapter.parse_airing(html).unwrap();
+        let third = &out[2];
+        assert_eq!(third.next_episode_at, Some(1783434000));
+        assert_eq!(third.site_episode_count, None);
+    }
+
+    #[test]
+    fn parses_airing_card_with_no_countdown_span_as_none() {
+        let html = r#"<div class="bsx">
+            <a href="https://wwv.animeytx.net/tv/no-countdown/" title="No Countdown">
+                <div class="limit"><div class="bt"><span class="sb Sub">5</span></div>
+                <img src="https://wwv.animeytx.net/wp-content/x.jpg"></div>
+                <div class="tt">No Countdown</div>
+            </a>
+        </div>"#;
+        let out = AnimeytxAdapter.parse_airing(html).unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].next_episode_at, None);
+        assert_eq!(out[0].site_episode_count, Some(5));
     }
 
     #[test]
@@ -338,5 +423,48 @@ mod tests {
         );
         assert_eq!(d.kind.as_deref(), Some("TV"));
         assert!(d.synopsis.unwrap().contains("Nao Kanzaki"));
+    }
+
+    #[test]
+    fn search_url_is_urlencoded_query_string() {
+        let a = AnimeytxAdapter;
+        assert_eq!(
+            a.search_url("https://wwv.animeytx.net/", "naruto"),
+            "https://wwv.animeytx.net/?s=naruto"
+        );
+        assert_eq!(
+            a.search_url("https://wwv.animeytx.net", "Shingeki no Kyojin"),
+            "https://wwv.animeytx.net/?s=Shingeki+no+Kyojin"
+        );
+    }
+
+    // Both fixtures below are real HTML captured live via scraper_engine::fetch_html
+    // against https://wwv.animeytx.net/?s=naruto and /?s=xyzzyqqqnonexistentanimetitle999
+    // (2026-07-10) — not hand-written, per the design spec's requirement that
+    // parse_search_results not be built against guessed markup.
+
+    #[test]
+    fn parses_search_hits_fixture() {
+        let html = include_str!("../../tests/fixtures/animeytx_search_hits.html");
+        let out = AnimeytxAdapter.parse_search_results(html).unwrap();
+        assert_eq!(out.len(), 1, "the 'naruto' search fixture has exactly one .bsx result card");
+        let first = &out[0];
+        assert_eq!(first.title, "Boruto: Naruto Next Generations");
+        assert_eq!(first.url, "https://wwv.animeytx.net/tv/boruto-naruto-next-generations/");
+        assert_eq!(first.kind, "TV");
+        assert!(first.poster_url.as_deref().unwrap().contains("wp-content"));
+    }
+
+    #[test]
+    fn parses_search_empty_fixture_as_zero_results_not_an_error() {
+        let html = include_str!("../../tests/fixtures/animeytx_search_empty.html");
+        let out = AnimeytxAdapter.parse_search_results(html).unwrap();
+        assert!(out.is_empty(), "a genuine zero-hit search must parse to Ok(vec![]), not Err");
+    }
+
+    #[test]
+    fn parse_search_results_errs_on_unrecognizable_page() {
+        let err = AnimeytxAdapter.parse_search_results("<html><body>not this site</body></html>");
+        assert!(err.is_err(), "a page with no .listupd at all must be treated as a broken/wrong mirror");
     }
 }

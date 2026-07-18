@@ -16,6 +16,17 @@
   --success-dim: rgba(70, 209, 158, 0.16);
   --danger: #ff5c7c;
 
+  /* Tokenized dark-baked overlay/scrim/border colors (theme selector,
+     docs/superpowers/specs/2026-07-12-theme-light-dark-design.md).
+     --overlay-bg = the topbar's sticky blurred bar only.
+     --overlay-strong = modal/scrim/pill backgrounds (originally a mix of
+     rgba(5,18,31,.7/.8) and rgba(11,21,33,.92) at slightly different
+     alphas across 4 call sites) — collapsed to one value for consistency;
+     the alpha differences were subtle enough not to be worth a 4th token. */
+  --overlay-bg: rgba(11, 21, 33, 0.85);
+  --overlay-strong: rgba(5, 18, 31, 0.8);
+  --border-soft: rgba(36, 56, 74, 0.5);
+
   /* 4px spacing scale */
   --sp-1: 4px;
   --sp-2: 8px;
@@ -38,6 +49,36 @@
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
 
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+/* Light theme — overrides color tokens only (spacing/radius/ease/font stay
+   shared). Applied via `data-theme="light"` on <html>, set by src/theme.ts.
+   See docs/superpowers/specs/2026-07-12-theme-light-dark-design.md. */
+:root[data-theme="light"] {
+  --bg: #f4f7fb;
+  --surface: #ffffff;
+  --surface-2: #eef2f7;
+  --surface-3: #e2e8f0;
+  --surface-4: #dbe3ec99;
+  --border: #d3dde8;
+  --text: #17222e;
+  --muted: #5a6b7d;
+  --muted-2: #8394a5;
+  --accent: #1f88e6;
+  --accent-hover: #1670c8;
+  --accent-dim: rgba(31, 136, 230, 0.12);
+  --success: #1f9d6b;
+  --success-dim: rgba(31, 157, 107, 0.14);
+  --danger: #d83a5a;
+
+  --overlay-bg: rgba(244, 247, 251, 0.85);
+  --overlay-strong: rgba(255, 255, 255, 0.85);
+  --border-soft: rgba(211, 221, 232, 0.6);
+
+  /* Softer shadows on a light ground than the dark ramp's near-black ones. */
+  --shadow-sm: 0 2px 6px rgba(23, 34, 46, 0.08);
+  --shadow-md: 0 6px 20px rgba(23, 34, 46, 0.12);
+  --shadow-lg: 0 16px 40px rgba(23, 34, 46, 0.16);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -100,7 +141,7 @@ a:hover {
   align-items: center;
   gap: 16px;
   padding: 12px 20px;
-  background: rgba(11, 21, 33, 0.85);
+  background: var(--overlay-bg);
   backdrop-filter: blur(10px);
   border-bottom: 1px solid var(--border);
 }
@@ -238,6 +279,49 @@ a:hover {
   color: var(--muted-2);
 }
 
+/* ---------- Filter bar (Catálogo search/filters) ---------- */
+.filter-bar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-5);
+}
+.filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-3);
+}
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+.chip-toggle {
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--muted);
+  padding: 6px 13px;
+  border-radius: var(--radius-round);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s var(--ease), border-color 0.15s var(--ease), color 0.15s var(--ease);
+}
+.chip-toggle:hover {
+  color: var(--text);
+  background: var(--surface-3);
+}
+.chip-toggle.active {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+.chip-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 /* ---------- Layout ---------- */
 .page {
   padding: 20px;
@@ -301,11 +385,20 @@ a:hover {
   left: 8px;
   padding: 3px 8px;
   border-radius: 6px;
-  background: rgba(5, 18, 31, 0.8);
+  background: var(--overlay-strong);
   font-size: 11px;
   font-weight: 700;
   color: var(--accent);
   backdrop-filter: blur(4px);
+}
+/* Next-episode countdown ("en 2 h" / "hace 5 h") — same chip treatment as
+   SIGUIENDO but anchored to the opposite corner so both can coexist, and in
+   the neutral text color: it's schedule info, not a followed-state accent. */
+.poster .chip.chip-countdown {
+  left: auto;
+  right: 8px;
+  color: var(--text);
+  font-weight: 600;
 }
 .card-body {
   padding: 10px 10px 12px;
@@ -372,7 +465,7 @@ a:hover {
   align-items: center;
   gap: 12px;
   padding: 10px 14px;
-  border-bottom: 1px solid rgba(36, 56, 74, 0.5);
+  border-bottom: 1px solid var(--border-soft);
   transition: background 0.15s var(--ease), opacity 0.25s var(--ease),
     transform 0.25s var(--ease);
 }
@@ -383,44 +476,248 @@ a:hover {
   background: var(--surface-2);
 }
 /* ---------- Library ---------- */
-.lib-row {
+/* Status-grouped disclosures ("Viendo" / "Pendientes de empezar" /
+   "Completadas") — <details>/<summary> gives keyboard + screen-reader
+   behavior (Tab reaches it, Enter/Space toggle it) for free. */
+.lib-section {
+  margin-bottom: var(--sp-6);
+}
+.lib-section:not(:last-child) {
+  padding-bottom: var(--sp-5);
+  border-bottom: 1px solid var(--border);
+}
+.lib-section-summary {
   display: flex;
   align-items: center;
-  gap: 14px;
-  padding: 10px 14px;
-  border-bottom: 1px solid rgba(36, 56, 74, 0.5);
+  gap: var(--sp-2);
   cursor: pointer;
-  transition: background 0.15s var(--ease);
-}
-.lib-row:last-child {
-  border-bottom: none;
-}
-.lib-row:hover {
-  background: var(--surface-2);
-}
-.lib-row img {
-  width: 42px;
-  height: 60px;
-  object-fit: cover;
-  border-radius: 6px;
-  background: var(--surface-3);
-  flex-shrink: 0;
-}
-.lib-main {
-  flex: 1;
-  min-width: 0;
-}
-.lib-title {
-  font-weight: 600;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.lib-count {
-  text-align: right;
+  list-style: none;
+  padding: var(--sp-2) 0;
+  font-size: 15px;
   font-weight: 700;
-  font-size: 13px;
-  flex-shrink: 0;
+  color: var(--text);
+  user-select: none;
+  border-radius: var(--radius-sm);
+}
+.lib-section-summary::-webkit-details-marker {
+  display: none;
+}
+.lib-section-summary::before {
+  content: "▸";
+  display: inline-block;
+  color: var(--muted);
+  font-size: 12px;
+  transition: transform 0.15s var(--ease);
+}
+.lib-section[open] > .lib-section-summary::before {
+  transform: rotate(90deg);
+}
+.lib-section-summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.lib-filter-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-2);
+}
+.seg {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-round);
+  overflow: hidden;
+}
+.seg-btn {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 5px 12px;
+  cursor: pointer;
+}
+.seg-btn:not(:last-child) {
+  border-right: 1px solid var(--border);
+}
+.seg-btn.active {
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+/* Catalog multi-select + batch */
+.batch-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 10px 14px;
+  margin-bottom: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  /* Opaque so scrolled content never shows through the pinned bar. */
+  background: var(--overlay-strong);
+  backdrop-filter: blur(10px);
+  /* Pin just below the sticky top nav (~56px tall), under it in the stack. */
+  position: sticky;
+  top: 56px;
+  z-index: 40;
+}
+.card.selected {
+  outline: 2px solid var(--accent);
+  outline-offset: 0;
+}
+.card-info-btn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-round);
+  border: none;
+  background: var(--overlay-strong);
+  color: #fff;
+  font-size: 14px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2;
+}
+.card-info-btn:hover {
+  background: var(--accent);
+  color: #05121f;
+}
+.card-select-check {
+  position: absolute;
+  bottom: 6px;
+  right: 6px;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-round);
+  background: var(--accent);
+  color: #05121f;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2;
+}
+.lib-section-count {
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 12.5px;
+  background: var(--surface-2);
+  padding: 2px 9px;
+  border-radius: var(--radius-round);
+}
+.lib-section .grid {
+  margin-top: var(--sp-4);
+}
+
+/* Card is a div[role=button], not a real <button>, because it contains a
+   real nested <button> (the play action) — button-in-button is invalid
+   HTML. Keyboard/focus semantics are wired by hand in Library.tsx. */
+.lib-card {
+  cursor: pointer;
+  text-align: left;
+}
+.lib-card:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+/* Text-only poster fallback when cover_url is null — never a broken <img>. */
+.poster-fallback {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface-3);
+  color: var(--text);
+  font-weight: 800;
+  font-size: 26px;
+  letter-spacing: 0.5px;
+}
+.lib-progress-text {
+  margin-top: 5px;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+.lib-play-btn {
+  width: 100%;
+  margin-top: 9px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+/* Overflow "⋯" menu on Watching library cards (reclassify actions:
+   unfollow / move to want) — anchored inside .poster, which already has
+   position: relative for the chip corners. */
+.card-menu-wrap {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 5;
+}
+.card-menu-btn {
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-round);
+  border: 1px solid var(--border);
+  background: var(--overlay-strong);
+  color: var(--text);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+}
+.card-menu-btn:hover {
+  color: var(--accent);
+}
+.card-menu-list {
+  position: absolute;
+  top: 30px;
+  right: 0;
+  min-width: 170px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md);
+  overflow: hidden;
+  z-index: 10;
+}
+.card-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 12px;
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.card-menu-item:hover {
+  background: var(--surface-3);
+}
+
+/* Visually-hidden but screen-reader-visible label (e.g. the library
+   search box's real <label>, kept off-screen since the placeholder already
+   carries the visual hint). */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .ep-row.removing {
@@ -595,4 +892,430 @@ progress.scanbar-track::-webkit-progress-value {
   background: var(--accent);
   border-radius: var(--radius-round);
   transition: width 0.2s var(--ease);
+}
+
+/* ---------- Descubrir (swipe mode) ---------- */
+.swipe-stage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+  padding-top: 8px;
+}
+.swipe-card {
+  width: 280px;
+  transition: opacity 0.18s var(--ease-out), transform 0.18s var(--ease-out);
+}
+.swipe-card.swipe-out-discard {
+  opacity: 0;
+  transform: translateX(-60px) rotate(-6deg);
+}
+.swipe-card.swipe-out-want {
+  opacity: 0;
+  transform: translateY(-40px) scale(0.96);
+}
+.swipe-card.swipe-out-seen {
+  opacity: 0;
+  transform: translateX(60px) rotate(6deg);
+}
+.swipe-actions {
+  display: flex;
+  gap: 12px;
+}
+.swipe-actions .btn {
+  width: 56px;
+  height: 56px;
+  border-radius: var(--radius-round);
+  font-size: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.swipe-actions .btn-discard {
+  color: var(--danger);
+  border-color: rgba(255, 92, 124, 0.4);
+}
+.swipe-actions .btn-discard:hover {
+  background: rgba(255, 92, 124, 0.12);
+}
+.swipe-actions .btn-want {
+  color: var(--accent);
+  border-color: rgba(74, 168, 255, 0.4);
+}
+.swipe-actions .btn-want:hover {
+  background: var(--accent-dim);
+}
+.swipe-hint {
+  font-size: 12px;
+  color: var(--muted-2);
+  text-align: center;
+}
+.swipe-history {
+  width: 100%;
+  max-width: 420px;
+  margin-top: 16px;
+}
+.swipe-history-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.swipe-history-row:last-child {
+  border-bottom: none;
+}
+.swipe-history-row img {
+  width: 32px;
+  height: 44px;
+  object-fit: cover;
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+}
+.swipe-history-main {
+  flex: 1;
+  min-width: 0;
+}
+.swipe-history-title {
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.swipe-history-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.swipe-history-actions .btn {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: var(--radius-round);
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ---------- Descubrir: swipe two-column layout + deck settings panel ---------- */
+.swipe-layout {
+  display: grid;
+  grid-template-columns: minmax(240px, 280px) 1fr;
+  gap: var(--sp-5);
+  align-items: start;
+}
+.deck-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--sp-4);
+  position: sticky;
+  top: 72px;
+}
+.deck-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  padding: 0;
+  font: inherit;
+  text-align: left;
+}
+.deck-panel-title {
+  flex: 1;
+  font-weight: 700;
+  font-size: 14px;
+}
+.deck-panel-badge {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--accent-dim);
+  border-radius: var(--radius-round);
+  padding: 2px 8px;
+  white-space: nowrap;
+}
+.deck-panel-chevron {
+  color: var(--muted);
+  transition: transform 0.15s var(--ease);
+  flex-shrink: 0;
+}
+.deck-panel-chevron.open {
+  transform: rotate(180deg);
+}
+.deck-panel-body {
+  margin-top: var(--sp-4);
+}
+.deck-panel-genres {
+  max-height: 220px;
+  overflow-y: auto;
+}
+@media (max-width: 900px) {
+  .swipe-layout {
+    grid-template-columns: 1fr;
+  }
+  .deck-panel {
+    position: static;
+    max-width: 520px;
+    margin: 0 auto;
+    width: 100%;
+  }
+}
+
+.backlog-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.backlog-row:last-child {
+  border-bottom: none;
+}
+.backlog-row img {
+  width: 42px;
+  height: 60px;
+  object-fit: cover;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  flex-shrink: 0;
+}
+.backlog-main {
+  flex: 1;
+  min-width: 0;
+}
+.backlog-title {
+  font-weight: 600;
+  font-size: 13.5px;
+}
+.backlog-genres {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 2px;
+}
+.backlog-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* ---------- Descubrir · Listas (redesigned cards) ---------- */
+.listas-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+  margin-bottom: var(--sp-3);
+}
+.listas-seg {
+  margin-bottom: 16px;
+}
+.listas-seg-count {
+  margin-left: 6px;
+  opacity: 0.7;
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.listas-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.listas-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  transition: border-color 0.15s var(--ease), background 0.15s var(--ease);
+}
+.listas-card:hover {
+  border-color: var(--surface-3);
+}
+.listas-poster {
+  width: 42px;
+  height: 60px;
+  flex-shrink: 0;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--surface-2);
+}
+.listas-poster img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.listas-poster .poster-fallback {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--muted);
+  background: var(--surface-2);
+}
+.listas-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.listas-title {
+  font-weight: 600;
+  font-size: 13.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.listas-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.listas-chip {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  padding: 2px 8px;
+  border-radius: var(--radius-round);
+  flex-shrink: 0;
+}
+.listas-chip-want {
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+.listas-chip-discarded {
+  background: var(--surface-3);
+  color: var(--muted);
+}
+.listas-chip-watched {
+  background: var(--success-dim);
+  color: var(--success);
+}
+
+/* ---------- Stats · bar chart & ring grid ---------- */
+.barchart {
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.bar-row {
+  display: grid;
+  grid-template-columns: 130px 1fr 46px;
+  align-items: center;
+  gap: 12px;
+}
+.bar-label {
+  font-size: 12.5px;
+  color: var(--text);
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bar-track {
+  position: relative;
+  height: 20px;
+  background: var(--surface-3);
+  border-radius: var(--radius-round);
+  overflow: hidden;
+}
+.bar-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 100%;
+  min-width: 4px;
+  border-radius: var(--radius-round);
+  transition: width 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.bar-val {
+  font-size: 12.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  text-align: right;
+}
+.ringgrid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  padding: 14px 16px;
+}
+.ringcell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 96px;
+}
+.ringcell-label {
+  font-size: 11.5px;
+  color: var(--muted);
+  margin-top: 6px;
+  text-align: center;
+  max-width: 96px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------- Stats · insights block (2026-07-13) ---------- */
+/* Two-up layout for the funnel + en-emisión/finalizadas blocks. Wraps to one
+   column below ~600px so nothing overflows on a narrow window. */
+.stats-cols {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: var(--sp-5);
+}
+.stats-caveat {
+  padding: 10px 16px 14px;
+  font-size: 11.5px;
+  color: var(--muted);
+  border-top: 1px solid var(--border-soft);
+}
+
+/* ---------- Stats · 3D graph galaxy backdrop ---------- */
+/* Deep-space panel behind the transparent three.js canvas. Dark theme keeps
+   the night-sky nebula+stars look below (default / `[data-theme="dark"]`).
+   Light theme gets its own daytime-sky variant right after it — a black
+   backdrop would swallow the (also-dark-limbed) planet nodes and near-white
+   root node on a light app theme, so it's a pale sky wash with faint darker
+   flecks instead of bright stars. Pure CSS in both cases; no three.js scene
+   change, so zero impact on the graph's frozen-layout perf. */
+.stats-graph-galaxy,
+:root[data-theme="dark"] .stats-graph-galaxy {
+  background-color: #05060e;
+  background-image:
+    radial-gradient(ellipse at 22% 28%, rgba(96, 72, 180, 0.28), transparent 55%),
+    radial-gradient(ellipse at 80% 70%, rgba(46, 104, 176, 0.24), transparent 55%),
+    radial-gradient(ellipse at 60% 92%, rgba(150, 66, 132, 0.18), transparent 50%),
+    radial-gradient(1px 1px at 8px 12px, rgba(255, 255, 255, 0.9), transparent 100%),
+    radial-gradient(1px 1px at 24px 40px, rgba(210, 225, 255, 0.8), transparent 100%),
+    radial-gradient(1px 1px at 50px 22px, rgba(255, 255, 255, 0.65), transparent 100%);
+  background-size:
+    100% 100%, 100% 100%, 100% 100%, 73px 73px, 111px 111px, 149px 149px;
+  background-repeat: no-repeat, no-repeat, no-repeat, repeat, repeat, repeat;
+}
+
+:root[data-theme="light"] .stats-graph-galaxy {
+  background-color: #dbe6f5;
+  background-image:
+    radial-gradient(ellipse at 20% 25%, rgba(255, 255, 255, 0.85), transparent 55%),
+    radial-gradient(ellipse at 82% 75%, rgba(200, 220, 245, 0.7), transparent 55%),
+    radial-gradient(ellipse at 55% 95%, rgba(225, 205, 230, 0.55), transparent 55%),
+    radial-gradient(1.5px 1.5px at 8px 12px, rgba(90, 110, 150, 0.35), transparent 100%),
+    radial-gradient(1.5px 1.5px at 24px 40px, rgba(80, 100, 140, 0.3), transparent 100%),
+    radial-gradient(1.5px 1.5px at 50px 22px, rgba(90, 110, 150, 0.28), transparent 100%);
+  background-size:
+    100% 100%, 100% 100%, 100% 100%, 73px 73px, 111px 111px, 149px 149px;
+  background-repeat: no-repeat, no-repeat, no-repeat, repeat, repeat, repeat;
 }

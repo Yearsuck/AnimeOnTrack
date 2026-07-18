@@ -1,30 +1,9 @@
 use anyhow::Result;
 use rusqlite::Connection;
+use rusqlite::OptionalExtension;
+use serde::Deserialize;
 
-/// Extract the leading numeric portion of an episode-number string, e.g.
-/// "12" -> 12.0, "12.5" -> 12.5 (OVA/special numbering), "1x05" -> 1.0
-/// (season-prefixed numbering seen on multi-cour series pages). Returns
-/// `None` when there are no leading digits at all (e.g. "OVA"), so callers
-/// can fall back to an exact-string match instead of guessing an ordering.
-fn parse_ep_number(s: &str) -> Option<f64> {
-    let trimmed = s.trim();
-    let mut end = 0;
-    let mut seen_dot = false;
-    for (i, c) in trimmed.char_indices() {
-        if c.is_ascii_digit() {
-            end = i + c.len_utf8();
-        } else if c == '.' && !seen_dot && end > 0 {
-            seen_dot = true;
-        } else {
-            break;
-        }
-    }
-    if end == 0 {
-        None
-    } else {
-        trimmed[..end].parse().ok()
-    }
-}
+
 
 /// Add `column` to `table` if it isn't already there. SQLite has no
 /// `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, so this checks `PRAGMA
@@ -99,6 +78,67 @@ impl Db {
         // against an enum, the live site's own vocabulary is inconsistent.
         ensure_column(&self.conn, "series", "backlog_status", "TEXT")?;
         ensure_column(&self.conn, "series", "kind", "TEXT")?;
+        // anilist_id: real numeric AniList id for `series` rows created from
+        // a catalog swipe decision (slug `anilist-{id}`). Added so the
+        // catalog swipe picker can exclude already-decided titles with a
+        // plain indexed-friendly `NOT IN` instead of parsing it back out of
+        // the slug on every query. Backfilled below from any pre-existing
+        // `anilist-{id}` slug so rows written before this column existed
+        // still get excluded correctly.
+        ensure_column(&self.conn, "series", "anilist_id", "INTEGER")?;
+        self.conn.execute(
+            "UPDATE series SET anilist_id = CAST(SUBSTR(slug, 9) AS INTEGER)
+             WHERE slug LIKE 'anilist-%' AND anilist_id IS NULL",
+            [],
+        )?;
+        // watched_externally: set by decide_catalog_card's "seen" decision —
+        // "I've watched this outside the app, don't show it to me again,
+        // don't put it in my backlog." No episode data backs this (AniList
+        // never hosts video), so it's a flag, not real progress tracking.
+        ensure_column(&self.conn, "series", "watched_externally", "INTEGER DEFAULT 0")?;
+        // next_episode_at: unix timestamp of the next episode's release,
+        // parsed from the airing listing's `data-rlsdt`; site_episode_count:
+        // the site's own reported episode count (`.sb` badge), NULL when
+        // non-numeric (e.g. "??"). Both scan-owned (see `upsert_series`) —
+        // added for the scraper-performance skip logic (optimization A) and
+        // the airing grid's newest-first default sort. last_checked_at: ISO
+        // 8601 timestamp of the last time a followed series NOT on the
+        // current airing listing (a finished show) had its episode list
+        // actually fetched — gates the `FINISHED_RECHECK` interval in
+        // `refresh()` so a completed series isn't re-fetched every refresh.
+        ensure_column(&self.conn, "series", "next_episode_at", "INTEGER")?;
+        ensure_column(&self.conn, "series", "site_episode_count", "INTEGER")?;
+        ensure_column(&self.conn, "series", "last_checked_at", "TEXT")?;
+        // series.carried_seen_number: cross-site follow carry-over (see
+        // docs/superpowers/specs/2026-07-12-cross-site-follow-carryover-design.md).
+        // When switching sites, a followed series matched by title on the new
+        // site gets its follow carried and this set to the highest *seen*
+        // episode number from the old site. `refresh()` applies it once (via
+        // `set_seen_cascade`) the first time the new site's episodes are
+        // fetched, then clears it back to NULL — so it never re-forces "seen".
+        ensure_column(&self.conn, "series", "carried_seen_number", "INTEGER")?;
+        // episodes.seen_at: ISO 8601 timestamp set by `set_seen`/
+        // `set_seen_cascade` when an episode is marked seen, cleared (NULL)
+        // when un-marked — including every row a cascade touches, not just
+        // the one explicitly toggled. Distinct from `added_at` (when the row
+        // was scraped): this is when the user actually watched it, and is
+        // the only thing that can drive "continue watching, most recent
+        // first" in the library view (see the library-redesign design doc).
+        ensure_column(&self.conn, "episodes", "seen_at", "TEXT")?;
+        self.conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_series_next_ep ON series(source_id, is_airing, next_episode_at);",
+        )?;
+        // site_id: stable adapter slug (e.g. "animeytx") — see
+        // `adapter::SiteInfo`/`adapter::adapter_for`. Never the base_url,
+        // which changes with every mirror. Before this column existed there
+        // was exactly one supported site, so every pre-existing row is
+        // backfilled to "animeytx" rather than left NULL (verified via
+        // `SELECT * FROM sources` before writing this migration — one row).
+        ensure_column(&self.conn, "sources", "site_id", "TEXT")?;
+        self.conn.execute(
+            "UPDATE sources SET site_id = 'animeytx' WHERE site_id IS NULL",
+            [],
+        )?;
         self.conn.execute_batch(
             r#"
             CREATE TABLE IF NOT EXISTS series_genres (
@@ -108,377 +148,93 @@ impl Db {
             );
             "#,
         )?;
-        Ok(())
-    }
-
-    pub fn upsert_source(&self, name: &str, base_url: &str) -> Result<i64> {
-        self.conn.execute(
-            "INSERT INTO sources(name, base_url) VALUES(?1, ?2)
-             ON CONFLICT(base_url) DO UPDATE SET name=excluded.name",
-            (name, base_url),
+        // Local mirror of AniList's catalog (see anilist.rs / sync_anime_catalog)
+        // — browsing and Descubrir's "Catálogo completo" source read from this
+        // table, not from AniList live, once synced. `sort_order` is kept as
+        // the within-sync sequence items were written in, but display
+        // ordering reads `popularity` instead — the sync now crawls
+        // partitioned by id/date, not by popularity, so `sort_order` no
+        // longer encodes popularity (see anilist.rs module docs).
+        self.conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS anilist_catalog (
+                id INTEGER PRIMARY KEY,
+                title TEXT NOT NULL,
+                cover_url TEXT,
+                format TEXT,
+                episodes INTEGER,
+                average_score INTEGER,
+                url TEXT NOT NULL,
+                sort_order INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS anilist_catalog_genres (
+                anilist_id INTEGER NOT NULL REFERENCES anilist_catalog(id),
+                genre TEXT NOT NULL,
+                PRIMARY KEY(anilist_id, genre)
+            );
+            "#,
         )?;
-        let id: i64 = self.conn.query_row(
-            "SELECT id FROM sources WHERE base_url=?1",
-            [base_url],
-            |r| r.get(0),
-        )?;
-        Ok(id)
-    }
-
-    pub fn get_source_base_url(&self, source_id: i64) -> Result<Option<String>> {
-        Ok(self
-            .conn
-            .query_row("SELECT base_url FROM sources WHERE id=?1", [source_id], |r| {
-                r.get::<_, String>(0)
-            })
-            .ok())
-    }
-
-    pub fn get_series_url(&self, series_id: i64) -> Result<Option<String>> {
-        Ok(self
-            .conn
-            .query_row("SELECT url FROM series WHERE id=?1", [series_id], |r| {
-                r.get::<_, String>(0)
-            })
-            .ok())
-    }
-
-    pub fn upsert_series(&self, source_id: i64, s: &crate::models::Series) -> Result<i64> {
-        self.conn.execute(
-            "INSERT INTO series(source_id, slug, title, url, cover_url, is_airing)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6)
-             ON CONFLICT(source_id, slug) DO UPDATE SET
-                title=excluded.title, url=excluded.url,
-                cover_url=excluded.cover_url, is_airing=excluded.is_airing",
-            (
-                source_id, &s.slug, &s.title, &s.url,
-                &s.cover_url, s.is_airing as i64,
-            ),
-        )?;
-        let id: i64 = self.conn.query_row(
-            "SELECT id FROM series WHERE source_id=?1 AND slug=?2",
-            (source_id, &s.slug),
-            |r| r.get(0),
-        )?;
-        Ok(id)
-    }
-
-    pub fn set_followed(&self, series_id: i64, followed: bool) -> Result<()> {
-        self.conn.execute(
-            "UPDATE series SET followed=?1 WHERE id=?2",
-            (followed as i64, series_id),
+        ensure_column(&self.conn, "anilist_catalog", "popularity", "INTEGER")?;
+        // title_romaji/title_english: kept alongside `title` (which collapses
+        // to english-or-romaji) so matching.rs's best_match can try both when
+        // looking a catalog title up on the scraped site — see
+        // `anilist::CatalogAnime`'s field comments. Existing rows backfill on
+        // the next incremental sync; NULL until then is expected, not an error.
+        ensure_column(&self.conn, "anilist_catalog", "title_romaji", "TEXT")?;
+        ensure_column(&self.conn, "anilist_catalog", "title_english", "TEXT")?;
+        // AniList's own status vocabulary (RELEASING/NOT_YET_RELEASED/...) —
+        // NULL until the next sync backfills it. See
+        // db/catalog.rs::random_catalog_anime_in_genre's hide_upcoming param.
+        ensure_column(&self.conn, "anilist_catalog", "status", "TEXT")?;
+        // AniList's real per-episode minutes, when it has one. NULL for rows
+        // synced before this column existed (backfills on the next sync) or
+        // when AniList itself has no duration for the title — falls back to
+        // db/stats.rs::minutes_per_episode's estimate in that case.
+        ensure_column(&self.conn, "anilist_catalog", "duration", "INTEGER")?;
+        // First `isMain` studio's name, when AniList has one. NULL for rows
+        // synced before this column existed (backfills on the next sync) or
+        // when AniList reports no credited studio at all. Co-productions with
+        // multiple mains only keep the first — see
+        // `anilist::CatalogAnime::studio`'s doc comment.
+        ensure_column(&self.conn, "anilist_catalog", "studio", "TEXT")?;
+        self.conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_catalog_popularity ON anilist_catalog(popularity DESC);
+             CREATE INDEX IF NOT EXISTS idx_catalog_genre ON anilist_catalog_genres(genre);",
         )?;
         Ok(())
     }
 
-    /// Update a series' canonical URL (used when a mirror fallback succeeds on
-    /// a different host than the one currently stored).
-    pub fn update_series_url(&self, series_id: i64, url: &str) -> Result<()> {
-        self.conn
-            .execute("UPDATE series SET url=?1 WHERE id=?2", (url, series_id))?;
+    /// Write a consistent single-file copy of the whole database using
+    /// SQLite's `VACUUM INTO` — safe to read even with this connection open
+    /// (unlike copying the file bytes, which can catch a torn WAL/journal).
+    pub fn snapshot_to(&self, path: &str) -> Result<()> {
+        // VACUUM INTO refuses to overwrite an existing file.
+        let _ = std::fs::remove_file(path);
+        self.conn.execute("VACUUM INTO ?1", [path])?;
         Ok(())
-    }
-
-    /// Replace a series' cover with a fetched base64 data URI.
-    pub fn update_series_cover(&self, series_id: i64, cover_url: &str) -> Result<()> {
-        self.conn.execute(
-            "UPDATE series SET cover_url=?1 WHERE id=?2",
-            (cover_url, series_id),
-        )?;
-        Ok(())
-    }
-
-    pub fn get_setting(&self, key: &str) -> Result<Option<String>> {
-        let v = self
-            .conn
-            .query_row("SELECT value FROM settings WHERE key=?1", [key], |r| {
-                r.get::<_, String>(0)
-            })
-            .ok();
-        Ok(v)
-    }
-
-    pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
-        self.conn.execute(
-            "INSERT INTO settings(key, value) VALUES(?1, ?2)
-             ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            (key, value),
-        )?;
-        Ok(())
-    }
-
-    pub fn set_backlog_status(&self, series_id: i64, status: Option<&str>) -> Result<()> {
-        self.conn
-            .execute("UPDATE series SET backlog_status=?1 WHERE id=?2", (status, series_id))?;
-        Ok(())
-    }
-
-    pub fn get_backlog_status(&self, series_id: i64) -> Result<Option<String>> {
-        Ok(self.conn.query_row(
-            "SELECT backlog_status FROM series WHERE id=?1",
-            [series_id],
-            |r| r.get::<_, Option<String>>(0),
-        )?)
-    }
-
-    pub fn set_kind(&self, series_id: i64, kind: &str) -> Result<()> {
-        self.conn
-            .execute("UPDATE series SET kind=?1 WHERE id=?2", (kind, series_id))?;
-        Ok(())
-    }
-
-    /// Insert genres for a series; already-present (series_id, genre) pairs
-    /// are left alone (genres are static once fetched, no need to delete).
-    pub fn insert_series_genres(&self, series_id: i64, genres: &[String]) -> Result<()> {
-        for g in genres {
-            self.conn.execute(
-                "INSERT INTO series_genres(series_id, genre) VALUES(?1, ?2)
-                 ON CONFLICT(series_id, genre) DO NOTHING",
-                (series_id, g),
-            )?;
-        }
-        Ok(())
-    }
-
-    pub fn list_series_genres(&self, series_id: i64) -> Result<Vec<String>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT genre FROM series_genres WHERE series_id=?1 ORDER BY genre")?;
-        let rows = stmt
-            .query_map([series_id], |r| r.get::<_, String>(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
-    }
-
-    /// Every URL that already has a `series` row for this source — any
-    /// `backlog_status` or `followed` value counts as "already decided", so
-    /// the swipe deck never re-offers a card the user has already acted on.
-    pub fn known_series_urls(&self, source_id: i64) -> Result<std::collections::HashSet<String>> {
-        let mut stmt = self.conn.prepare("SELECT url FROM series WHERE source_id=?1")?;
-        let urls = stmt
-            .query_map([source_id], |r| r.get::<_, String>(0))?
-            .collect::<rusqlite::Result<std::collections::HashSet<_>>>()?;
-        Ok(urls)
-    }
-
-    fn row_to_series(r: &rusqlite::Row) -> rusqlite::Result<crate::models::Series> {
-        Ok(crate::models::Series {
-            id: r.get("id")?,
-            slug: r.get("slug")?,
-            title: r.get("title")?,
-            url: r.get("url")?,
-            cover_url: r.get("cover_url")?,
-            is_airing: r.get::<_, i64>("is_airing")? != 0,
-            followed: r.get::<_, i64>("followed")? != 0,
-        })
-    }
-
-    pub fn list_airing(&self, source_id: i64) -> Result<Vec<crate::models::Series>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, slug, title, url, cover_url, is_airing, followed
-             FROM series WHERE source_id=?1 AND is_airing=1 ORDER BY title",
-        )?;
-        let rows = stmt
-            .query_map([source_id], Self::row_to_series)?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
-    }
-
-    /// Followed series with their episode counts (total, seen) and the most
-    /// recent episode's `added_at`, for the library view. Series with zero
-    /// scraped episodes still appear (`total=0`).
-    pub fn list_library(&self, source_id: i64) -> Result<Vec<crate::models::LibraryItem>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT s.id, s.slug, s.title, s.url, s.cover_url, s.is_airing, s.followed,
-                    COUNT(e.id) AS total,
-                    SUM(CASE WHEN e.seen=1 THEN 1 ELSE 0 END) AS seen,
-                    MAX(e.added_at) AS last_added
-             FROM series s
-             LEFT JOIN episodes e ON e.series_id = s.id
-             WHERE s.source_id=?1 AND s.followed=1
-             GROUP BY s.id
-             ORDER BY s.title",
-        )?;
-        let rows = stmt
-            .query_map([source_id], |r| {
-                let series = Self::row_to_series(r)?;
-                Ok(crate::models::LibraryItem {
-                    series,
-                    total_episodes: r.get("total")?,
-                    seen_episodes: r.get::<_, Option<i64>>("seen")?.unwrap_or(0),
-                    last_added: r.get("last_added")?,
-                })
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
-    }
-
-    pub fn list_followed(&self, source_id: i64) -> Result<Vec<crate::models::Series>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, slug, title, url, cover_url, is_airing, followed
-             FROM series WHERE source_id=?1 AND followed=1 ORDER BY title",
-        )?;
-        let rows = stmt
-            .query_map([source_id], Self::row_to_series)?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
-    }
-
-    pub fn existing_episode_urls(&self, series_id: i64) -> Result<std::collections::HashSet<String>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT url FROM episodes WHERE series_id=?1")?;
-        let urls = stmt
-            .query_map([series_id], |r| r.get::<_, String>(0))?
-            .collect::<rusqlite::Result<std::collections::HashSet<_>>>()?;
-        Ok(urls)
-    }
-
-    /// Insert episode if its (series_id, url) is new. Returns the row id either way.
-    pub fn insert_episode(&self, e: &crate::models::Episode) -> Result<i64> {
-        self.conn.execute(
-            "INSERT INTO episodes(series_id, number, title, url, released_at, seen)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6)
-             ON CONFLICT(series_id, url) DO NOTHING",
-            (
-                e.series_id, &e.number, &e.title, &e.url,
-                &e.released_at, e.seen as i64,
-            ),
-        )?;
-        let id: i64 = self.conn.query_row(
-            "SELECT id FROM episodes WHERE series_id=?1 AND url=?2",
-            (e.series_id, &e.url),
-            |r| r.get(0),
-        )?;
-        Ok(id)
-    }
-
-    /// Set an episode's seen flag either way (lets the user un-mark).
-    pub fn set_seen(&self, episode_id: i64, seen: bool) -> Result<()> {
-        self.conn.execute(
-            "UPDATE episodes SET seen=?1 WHERE id=?2",
-            (seen as i64, episode_id),
-        )?;
-        Ok(())
-    }
-
-    /// Enforce sequential watching: marking an episode seen also marks every
-    /// earlier episode of that series seen (no gaps like "watched 10 but not
-    /// 6-9"); un-marking an episode also un-marks every later one (you can't
-    /// have watched what comes after something you're un-marking).
-    ///
-    /// Comparison happens in Rust via `parse_ep_number`, not SQLite's
-    /// `CAST(... AS INTEGER)` — the two disagreed on numbers like "1x05"
-    /// (season-prefixed) or "12.5" (specials): SQLite's cast still read a
-    /// leading digit while Rust's old strict `i64::parse` failed to 0,
-    /// which made un-marking such an episode wipe the *whole series'*
-    /// watched history instead of just the later episodes.
-    pub fn set_seen_cascade(&self, series_id: i64, number: &str, seen: bool) -> Result<()> {
-        let Some(target) = parse_ep_number(number) else {
-            // No leading digits at all: ordering is meaningless, so just
-            // toggle the exact-matching episode(s) rather than cascade.
-            self.conn.execute(
-                "UPDATE episodes SET seen=?1 WHERE series_id=?2 AND number=?3",
-                (seen as i64, series_id, number),
-            )?;
-            return Ok(());
-        };
-        let mut stmt = self
-            .conn
-            .prepare("SELECT id, number FROM episodes WHERE series_id=?1")?;
-        let rows: Vec<(i64, String)> = stmt
-            .query_map([series_id], |r| Ok((r.get(0)?, r.get(1)?)))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        for (id, num) in rows {
-            let matches = match parse_ep_number(&num) {
-                Some(v) if seen => v <= target,
-                Some(v) => v >= target,
-                None => false,
-            };
-            if matches {
-                self.conn
-                    .execute("UPDATE episodes SET seen=?1 WHERE id=?2", (seen as i64, id))?;
-            }
-        }
-        Ok(())
-    }
-
-    /// All episodes of a series (seen or not), oldest number first — the
-    /// progress view for "which episode am I on".
-    pub fn list_series_episodes(&self, series_id: i64) -> Result<Vec<crate::models::Episode>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, series_id, number, title, url, released_at, seen
-             FROM episodes WHERE series_id=?1
-             ORDER BY CAST(number AS INTEGER) ASC, id ASC",
-        )?;
-        let rows = stmt
-            .query_map([series_id], |r| {
-                Ok(crate::models::Episode {
-                    id: r.get(0)?,
-                    series_id: r.get(1)?,
-                    number: r.get(2)?,
-                    title: r.get(3)?,
-                    url: r.get(4)?,
-                    released_at: r.get(5)?,
-                    seen: r.get::<_, i64>(6)? != 0,
-                })
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
-    }
-
-    /// Unseen episodes of currently-followed series only — unfollowing a
-    /// series must drop its episodes out of the pending count immediately.
-    pub fn pending_count(&self) -> Result<i64> {
-        let n: i64 = self.conn.query_row(
-            "SELECT count(*) FROM episodes e JOIN series s ON s.id = e.series_id
-             WHERE e.seen=0 AND s.followed=1",
-            [],
-            |r| r.get(0),
-        )?;
-        Ok(n)
-    }
-
-    /// Unseen episodes of currently-followed series, joined with their
-    /// series, newest first.
-    pub fn list_pending(&self) -> Result<Vec<(crate::models::Series, crate::models::Episode)>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT s.id, s.slug, s.title, s.url, s.cover_url, s.is_airing, s.followed,
-                    e.id, e.series_id, e.number, e.title, e.url, e.released_at, e.seen
-             FROM episodes e JOIN series s ON s.id = e.series_id
-             WHERE e.seen=0 AND s.followed=1
-             ORDER BY s.title, e.added_at DESC",
-        )?;
-        let rows = stmt
-            .query_map([], |r| {
-                let series = crate::models::Series {
-                    id: r.get(0)?,
-                    slug: r.get(1)?,
-                    title: r.get(2)?,
-                    url: r.get(3)?,
-                    cover_url: r.get(4)?,
-                    is_airing: r.get::<_, i64>(5)? != 0,
-                    followed: r.get::<_, i64>(6)? != 0,
-                };
-                let ep = crate::models::Episode {
-                    id: r.get(7)?,
-                    series_id: r.get(8)?,
-                    number: r.get(9)?,
-                    title: r.get(10)?,
-                    url: r.get(11)?,
-                    released_at: r.get(12)?,
-                    seen: r.get::<_, i64>(13)? != 0,
-                };
-                Ok((series, ep))
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
     }
 }
+
+mod sources;
+mod settings;
+mod episodes;
+mod catalog;
+mod stats;
+mod airing;
+mod series;
+
+pub use series::{SeriesForLink, SwipeHistoryRow};
+pub use catalog::CatalogFilter;
+pub use airing::PendingSort;
+
+#[cfg(test)]
+mod test_support;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::test_support::*;
+    use super::stats::franchise_key;
 
     #[test]
     fn open_creates_schema() {
@@ -532,165 +288,95 @@ mod tests {
     }
 
     #[test]
-    fn upsert_source_and_series_then_follow() {
-        let db = Db::open(":memory:").unwrap();
-        let src = db.upsert_source("AnimeYT", "https://wwv.animeytx.net").unwrap();
-
-        let s = crate::models::Series {
-            id: 0,
-            slug: "baki-dou".into(),
-            title: "Baki-dou".into(),
-            url: "https://wwv.animeytx.net/tv/baki-dou/".into(),
-            cover_url: None,
-            is_airing: true,
-            followed: false,
-        };
-        let sid = db.upsert_series(src, &s).unwrap();
-        // upsert again with new title => same row updated, not duplicated
-        let s2 = crate::models::Series { title: "Baki-dou 2".into(), ..s.clone() };
-        let sid2 = db.upsert_series(src, &s2).unwrap();
-        assert_eq!(sid, sid2);
-
-        db.set_followed(sid, true).unwrap();
-        let airing = db.list_airing(src).unwrap();
-        assert_eq!(airing.len(), 1);
-        assert!(airing[0].followed);
-        assert_eq!(airing[0].title, "Baki-dou 2");
+    fn anilist_id_is_backfilled_from_synthetic_slug_on_migration() {
+        let path = std::env::temp_dir().join(format!("aot_anilist_id_migration_test_{}.sqlite", std::process::id()));
+        let path_str = path.to_str().unwrap();
+        let _ = std::fs::remove_file(&path);
+        {
+            let db = Db::open(path_str).unwrap();
+            let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+            // Simulate a pre-migration row: slug carries the anilist id but
+            // the anilist_id column (added by this migration) is unset.
+            let s = crate::models::Series {
+                id: 0, slug: "anilist-777".into(), title: "Legacy".into(),
+                url: "u".into(), cover_url: None, is_airing: false, followed: false, next_episode_at: None, site_episode_count: None,
+            };
+            db.upsert_series(src, &s).unwrap();
+        }
+        // Re-opening re-runs init_schema/migration on the same on-disk DB.
+        let db = Db::open(path_str).unwrap();
+        let anilist_id: Option<i64> = db
+            .conn
+            .query_row("SELECT anilist_id FROM series WHERE slug='anilist-777'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(anilist_id, Some(777));
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
-    fn seen_cascade_handles_non_integer_episode_numbers() {
-        // Regression: episode numbers like "1x05" (season-prefixed) used to
-        // fail Rust's strict i64 parse (-> 0) while SQLite's CAST still read
-        // the leading digit, so un-marking one used to wipe every episode's
-        // seen flag in the series instead of just the later ones.
+    fn followed_titles_with_watermark_excludes_active_source_and_computes_seen_high_water() {
         let db = Db::open(":memory:").unwrap();
-        let src = db.upsert_source("AnimeYT", "https://wwv.animeytx.net").unwrap();
-        let s = crate::models::Series {
-            id: 0, slug: "x".into(), title: "X".into(),
-            url: "u".into(), cover_url: None, is_airing: true, followed: false,
-        };
-        let sid = db.upsert_series(src, &s).unwrap();
+        let src_a = db.upsert_source("A", "a", "animeytx").unwrap();
+        let src_b = db.upsert_source("B", "b", "tioanime").unwrap();
 
-        let mk = |n: &str, url: &str| crate::models::Episode {
-            id: 0, series_id: sid, number: n.into(), title: None,
-            url: url.into(), released_at: None, seen: false,
-        };
-        db.insert_episode(&mk("1x01", "https://site/e1")).unwrap();
-        db.insert_episode(&mk("1x02", "https://site/e2")).unwrap();
-        db.insert_episode(&mk("1x03", "https://site/e3")).unwrap();
+        // src_a: one followed with eps 1..5 seen up to 3, one followed with a
+        // recap row + nothing seen, and one UN-followed (must be excluded).
+        let a1 = db.upsert_series(src_a, &mk_airing("frieren", "Frieren", None)).unwrap();
+        db.set_followed(a1, true).unwrap();
+        insert_eps_seen_up_to(&db, a1, 5, 3);
 
-        // marking "1x02" seen cascades to "1x01" too, but not "1x03"
-        db.set_seen_cascade(sid, "1x02", true).unwrap();
-        let eps = db.list_series_episodes(sid).unwrap();
-        assert!(eps.iter().find(|e| e.number == "1x01").unwrap().seen);
-        assert!(eps.iter().find(|e| e.number == "1x02").unwrap().seen);
-        assert!(!eps.iter().find(|e| e.number == "1x03").unwrap().seen);
-
-        // un-marking "1x02" un-marks "1x02"/"1x03" but must leave "1x01" alone
-        db.set_seen_cascade(sid, "1x02", false).unwrap();
-        let eps = db.list_series_episodes(sid).unwrap();
-        assert!(eps.iter().find(|e| e.number == "1x01").unwrap().seen);
-        assert!(!eps.iter().find(|e| e.number == "1x02").unwrap().seen);
-        assert!(!eps.iter().find(|e| e.number == "1x03").unwrap().seen);
-    }
-
-    #[test]
-    fn insert_episode_dedups_and_marks_seen() {
-        let db = Db::open(":memory:").unwrap();
-        let src = db.upsert_source("AnimeYT", "https://wwv.animeytx.net").unwrap();
-        let s = crate::models::Series {
-            id: 0, slug: "x".into(), title: "X".into(),
-            url: "u".into(), cover_url: None, is_airing: true, followed: false,
-        };
-        let sid = db.upsert_series(src, &s).unwrap();
-        db.set_followed(sid, true).unwrap();
-
-        let ep = crate::models::Episode {
-            id: 0, series_id: sid, number: "1".into(), title: None,
-            url: "https://site/ep1".into(), released_at: None, seen: false,
-        };
-        let eid = db.insert_episode(&ep).unwrap();
-        // same url again => no new row
-        let eid_dup = db.insert_episode(&ep).unwrap();
-        assert_eq!(eid, eid_dup);
-
-        assert_eq!(db.pending_count().unwrap(), 1);
-        db.set_seen(eid, true).unwrap();
-        assert_eq!(db.pending_count().unwrap(), 0);
-    }
-
-    #[test]
-    fn existing_episode_urls_returns_known_urls() {
-        let db = Db::open(":memory:").unwrap();
-        let src = db.upsert_source("AnimeYT", "b").unwrap();
-        let s = crate::models::Series {
-            id: 0, slug: "x".into(), title: "X".into(),
-            url: "u".into(), cover_url: None, is_airing: true, followed: true,
-        };
-        let sid = db.upsert_series(src, &s).unwrap();
+        let a2 = db.upsert_series(src_a, &mk_airing("bocchi", "Bocchi the Rock!", None)).unwrap();
+        db.set_followed(a2, true).unwrap();
         db.insert_episode(&crate::models::Episode {
-            id: 0, series_id: sid, number: "1".into(), title: None,
-            url: "https://site/ep1".into(), released_at: None, seen: false,
+            id: 0, series_id: a2, number: "0 | Recap".into(), title: None,
+            url: "https://site/a2-recap".into(), released_at: None, seen: false,
         }).unwrap();
-        let urls = db.existing_episode_urls(sid).unwrap();
-        assert!(urls.contains("https://site/ep1"));
-        assert_eq!(urls.len(), 1);
+
+        let a3 = db.upsert_series(src_a, &mk_airing("unfollowed", "Unfollowed Show", None)).unwrap();
+        let _ = a3;
+
+        // src_b has its own followed series — must NOT come back when we
+        // exclude src_b.
+        let b1 = db.upsert_series(src_b, &mk_airing("frieren", "Frieren", None)).unwrap();
+        db.set_followed(b1, true).unwrap();
+
+        let mut got = db.followed_titles_with_watermark(src_b).unwrap();
+        got.sort();
+        assert_eq!(
+            got,
+            vec![("Bocchi the Rock!".to_string(), 0), ("Frieren".to_string(), 3)]
+        );
     }
 
     #[test]
-    fn series_genres_insert_is_idempotent_and_lists_sorted() {
-        let db = Db::open(":memory:").unwrap();
-        let src = db.upsert_source("AnimeYT", "b").unwrap();
-        let s = crate::models::Series {
-            id: 0, slug: "x".into(), title: "X".into(),
-            url: "u".into(), cover_url: None, is_airing: false, followed: false,
-        };
-        let sid = db.upsert_series(src, &s).unwrap();
-
-        db.insert_series_genres(sid, &["Seinen".to_string(), "Drama".to_string()]).unwrap();
-        // inserting the same genres again must not error or duplicate
-        db.insert_series_genres(sid, &["Drama".to_string()]).unwrap();
-
-        let genres = db.list_series_genres(sid).unwrap();
-        assert_eq!(genres, vec!["Drama".to_string(), "Seinen".to_string()]);
+    fn franchise_key_collapses_seasons_and_parts() {
+        // Season suffix collapses onto the base.
+        assert_eq!(
+            franchise_key("Tensei shitara Slime Datta Ken Temporada 4"),
+            franchise_key("Tensei shitara Slime Datta Ken")
+        );
+        // Roman-numeral season collapses onto the base.
+        assert_eq!(franchise_key("Overlord IV"), franchise_key("Overlord"));
+        // English "Season N" and "Nth Season" both collapse.
+        assert_eq!(franchise_key("Vinland Saga Season 2"), franchise_key("Vinland Saga"));
+        assert_eq!(franchise_key("Bocchi the Rock! 2nd Season"), franchise_key("Bocchi the Rock!"));
     }
 
     #[test]
-    fn backlog_status_and_kind_round_trip() {
+    fn snapshot_to_produces_valid_sqlite() {
         let db = Db::open(":memory:").unwrap();
-        let src = db.upsert_source("AnimeYT", "b").unwrap();
-        let s = crate::models::Series {
-            id: 0, slug: "x".into(), title: "X".into(),
-            url: "u".into(), cover_url: None, is_airing: false, followed: false,
-        };
-        let sid = db.upsert_series(src, &s).unwrap();
-
-        assert_eq!(db.get_backlog_status(sid).unwrap(), None);
-        db.set_backlog_status(sid, Some("want")).unwrap();
-        assert_eq!(db.get_backlog_status(sid).unwrap(), Some("want".to_string()));
-        db.set_kind(sid, "TV").unwrap();
-
-        // start_watching's transition: 'want' -> followed, backlog_status cleared
-        db.set_followed(sid, true).unwrap();
-        db.set_backlog_status(sid, None).unwrap();
-        assert_eq!(db.get_backlog_status(sid).unwrap(), None);
-        assert!(db.list_followed(src).unwrap().iter().any(|f| f.id == sid));
-    }
-
-    #[test]
-    fn known_series_urls_reflects_any_decided_row() {
-        let db = Db::open(":memory:").unwrap();
-        let src = db.upsert_source("AnimeYT", "b").unwrap();
-        let s = crate::models::Series {
-            id: 0, slug: "x".into(), title: "X".into(),
-            url: "https://site/tv/x/".into(), cover_url: None, is_airing: false, followed: false,
-        };
-        let sid = db.upsert_series(src, &s).unwrap();
-        db.set_backlog_status(sid, Some("discarded")).unwrap();
-
-        let known = db.known_series_urls(src).unwrap();
-        assert!(known.contains("https://site/tv/x/"));
-        assert_eq!(known.len(), 1);
+        let dir = std::env::temp_dir();
+        let out = dir.join(format!("aot_snap_{}.sqlite", std::process::id()));
+        db.snapshot_to(out.to_str().unwrap()).unwrap();
+        // Re-open the snapshot and integrity-check it.
+        let conn = rusqlite::Connection::open(&out).unwrap();
+        let ok: String = conn.query_row("PRAGMA integrity_check", [], |r| r.get(0)).unwrap();
+        assert_eq!(ok, "ok");
+        let has_sources: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='sources'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(has_sources, 1);
+        drop(conn);
+        std::fs::remove_file(&out).ok();
     }
 }

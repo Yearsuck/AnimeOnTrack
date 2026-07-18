@@ -1,5 +1,13 @@
 import { useEffect, useRef, useState } from "react";
-import { listEpisodes, openEpisode, setSeenCascade } from "../api";
+import {
+  linkCatalogSeries,
+  listEpisodes,
+  openEpisode,
+  reclassifySeries,
+  setSeenCascade,
+} from "../api";
+import { useT } from "../i18n";
+import { isUnlinkedCatalogRow } from "../lib/catalogLink";
 import type { Episode, Series } from "../types";
 
 // Mirrors the backend's parse_ep_number (src-tauri/src/db.rs): leading
@@ -22,20 +30,51 @@ export function SeriesDetail({
   onBack: () => void;
   onChanged: () => void;
 }) {
+  const t = useT();
   const [episodes, setEpisodes] = useState<Episode[]>([]);
   const [loading, setLoading] = useState(true);
+  const [linking, setLinking] = useState(false);
   const rowRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+  // Guards the link-on-open trigger against React StrictMode's dev-only
+  // double-invoke (same pattern as App.tsx's startup effect) — otherwise
+  // opening an unlinked catalog row would fire two scrapes.
+  const linkTriedRef = useRef<number | null>(null);
 
-  async function load() {
+  async function load(): Promise<Episode[]> {
     setLoading(true);
     try {
-      setEpisodes(await listEpisodes(series.id));
+      const eps = await listEpisodes(series.id);
+      setEpisodes(eps);
+      return eps;
     } finally {
       setLoading(false);
     }
   }
   useEffect(() => {
-    load();
+    linkTriedRef.current = null;
+    (async () => {
+      const eps = await load();
+      // Opening the detail view of an unlinked catalog row (synthetic
+      // `anilist-{id}` slug, no episodes yet) is one of the three explicit
+      // link triggers in the design spec: the user asked to see episode
+      // titles, so scrape the site for this one title, then reload. Only
+      // when there are genuinely no episodes and it's still an unlinked
+      // catalog row — a real site series with no episodes must not scrape.
+      if (eps.length === 0 && isUnlinkedCatalogRow(series) && linkTriedRef.current !== series.id) {
+        linkTriedRef.current = series.id;
+        setLinking(true);
+        try {
+          await linkCatalogSeries(series.id);
+        } catch (err) {
+          console.error("linkCatalogSeries failed for", series.id, err);
+        } finally {
+          setLinking(false);
+        }
+        await load();
+        onChanged();
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [series.id]);
 
   // Cascading + optimistic: update local state immediately (no reload, so
@@ -58,6 +97,17 @@ export function SeriesDetail({
     setSeenCascade(series.id, ep.number, nextSeen).then(onChanged);
   }
 
+  // Local/instant, no scrape — the universal reclassify inverse (see
+  // docs/superpowers/specs/2026-07-11-reversibility-classifications-design.md).
+  // Re-following later goes through the existing Airing "+ Seguir" toggle,
+  // which still finds the episode rows intact (reclassify never touches
+  // episodes/seen).
+  async function unfollow() {
+    await reclassifySeries(series.id, "None");
+    onChanged();
+    onBack();
+  }
+
   function jumpToCurrent() {
     const firstUnseen = episodes.find((e) => !e.seen);
     const target = firstUnseen ?? episodes[episodes.length - 1];
@@ -72,7 +122,7 @@ export function SeriesDetail({
   return (
     <div className="page">
       <button className="btn btn-ghost" onClick={onBack} style={{ marginBottom: 14 }}>
-        ← Volver
+        {t("common.back")}
       </button>
 
       <div className="page-head" style={{ alignItems: "flex-start" }}>
@@ -88,11 +138,11 @@ export function SeriesDetail({
             {series.title}
           </h2>
           <a href={series.url} target="_blank" rel="noreferrer">
-            Abrir página de la serie ↗
+            {t("seriesDetail.openPage")}
           </a>
           <div style={{ marginTop: 10 }}>
             <div className="muted" style={{ marginBottom: 4, fontSize: 12.5 }}>
-              {seenCount} / {episodes.length} vistos
+              {t("seriesDetail.seenCount", { seen: seenCount, total: episodes.length })}
             </div>
             <div className="progress">
               <span style={{ width: `${pct}%` }} />
@@ -101,15 +151,22 @@ export function SeriesDetail({
         </div>
         {episodes.length > 0 && (
           <button className="btn" onClick={jumpToCurrent}>
-            ⇒ Ir al episodio actual
+            {t("seriesDetail.jumpToCurrent")}
+          </button>
+        )}
+        {series.followed && (
+          <button className="btn btn-ghost" onClick={unfollow}>
+            {t("seriesDetail.unfollow")}
           </button>
         )}
       </div>
 
-      {loading ? (
-        <div className="empty">Cargando episodios…</div>
+      {linking ? (
+        <div className="empty">{t("seriesDetail.linking")}</div>
+      ) : loading ? (
+        <div className="empty">{t("seriesDetail.loadingEpisodes")}</div>
       ) : episodes.length === 0 ? (
-        <div className="empty">Sin episodios registrados todavía. Pulsa Actualizar.</div>
+        <div className="empty">{t("seriesDetail.noEpisodes")}</div>
       ) : (
         <div className="series-block">
           {episodes.map((ep) => (
@@ -124,17 +181,17 @@ export function SeriesDetail({
               <span className="ep-num">{ep.number}</span>
               <div className="ep-main">
                 <div className="ep-title" onClick={() => openEpisode(ep.url)}>
-                  {ep.title ?? `Episodio ${ep.number}`}
+                  {ep.title ?? t("common.episodeNumber", { number: ep.number })}
                 </div>
                 {ep.released_at && <div className="ep-date">{ep.released_at}</div>}
               </div>
               <div className="ep-actions">
                 <button className="btn" onClick={() => openEpisode(ep.url)}>
-                  ▶ Ver
+                  {t("common.watch")}
                 </button>
                 <button
                   className={`check ${ep.seen ? "on" : ""}`}
-                  title={ep.seen ? "Marcar como no visto" : "Marcar como visto"}
+                  title={ep.seen ? t("common.markUnseen") : t("common.markSeen")}
                   onClick={() => toggleSeen(ep)}
                 >
                   ✓

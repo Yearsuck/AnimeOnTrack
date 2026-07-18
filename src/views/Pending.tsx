@@ -1,8 +1,10 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { listPending, openEpisode, setSeenCascade } from "../api";
+import { useT } from "../i18n";
 import type { PendingItem, Series } from "../types";
 
 const REMOVE_MS = 220;
+type PendingSort = "remaining_asc" | "remaining_desc";
 
 export function Pending({
   onOpenSeries,
@@ -11,15 +13,17 @@ export function Pending({
   onOpenSeries: (s: Series) => void;
   onChanged: () => void;
 }) {
+  const t = useT();
   const [items, setItems] = useState<PendingItem[]>([]);
   const [removing, setRemoving] = useState<Set<number>>(new Set());
+  const [sort, setSort] = useState<PendingSort>("remaining_asc");
 
-  async function load() {
-    setItems(await listPending());
-  }
+  const load = useCallback(async () => {
+    setItems(await listPending(sort));
+  }, [sort]);
   useEffect(() => {
     load();
-  }, []);
+  }, [load]);
 
   async function watch(it: PendingItem) {
     await openEpisode(it.episode.url);
@@ -43,15 +47,39 @@ export function Pending({
   return (
     <div className="page">
       <div className="page-head">
-        <h2 className="page-title">Pendientes</h2>
-        <span className="muted">{items.length} episodios por ver</span>
+        <h2 className="page-title">{t("nav.pending")}</h2>
+        <span className="muted">{t("pending.episodesToWatch", { count: items.length })}</span>
+        <div className="spacer" />
+        {items.length > 0 && (
+          <div className="lib-filter-bar">
+            <span className="muted" style={{ fontSize: 12 }}>
+              {t("pending.sortLabel")}
+            </span>
+            <div className="seg">
+              <button
+                type="button"
+                className={`seg-btn${sort === "remaining_asc" ? " active" : ""}`}
+                onClick={() => setSort("remaining_asc")}
+              >
+                {t("pending.sortFewest")}
+              </button>
+              <button
+                type="button"
+                className={`seg-btn${sort === "remaining_desc" ? " active" : ""}`}
+                onClick={() => setSort("remaining_desc")}
+              >
+                {t("pending.sortMost")}
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {items.length === 0 ? (
         <div className="empty">
-          No hay episodios pendientes.
+          {t("pending.empty")}
           <br />
-          Sigue algún anime en “En emisión” y pulsa Actualizar.
+          {t("pending.emptyHint")}
         </div>
       ) : (
         [...groups.entries()].map(([title, eps]) => {
@@ -62,7 +90,9 @@ export function Pending({
                 {series.cover_url && <img src={series.cover_url} alt="" />}
                 <div>
                   <div className="name">{title}</div>
-                  <div className="count">{eps.length} nuevo{eps.length === 1 ? "" : "s"}</div>
+                  <div className="count">
+                    {t(eps.length === 1 ? "pending.new" : "pending.newPlural", { count: eps.length })}
+                  </div>
                 </div>
               </div>
               {eps.map((it) => (
@@ -73,7 +103,7 @@ export function Pending({
                   <span className="ep-num">{it.episode.number}</span>
                   <div className="ep-main">
                     <div className="ep-title" onClick={() => watch(it)}>
-                      {it.episode.title ?? `Episodio ${it.episode.number}`}
+                      {it.episode.title ?? t("common.episodeNumber", { number: it.episode.number })}
                     </div>
                     {it.episode.released_at && (
                       <div className="ep-date">{it.episode.released_at}</div>
@@ -81,11 +111,11 @@ export function Pending({
                   </div>
                   <div className="ep-actions">
                     <button className="btn" onClick={() => watch(it)}>
-                      ▶ Ver
+                      {t("common.watch")}
                     </button>
                     <button
                       className={`check ${removing.has(it.episode.id) ? "on" : ""}`}
-                      title="Marcar como visto"
+                      title={t("common.markSeen")}
                       onClick={() => markSeen(it)}
                     >
                       ✓
