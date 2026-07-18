@@ -22,6 +22,7 @@ export function DeckPanel({ onBansSaved }: { onBansSaved: () => void }) {
   const [allGenres, setAllGenres] = useState<string[]>([]);
   const [bannedGenres, setBannedGenres] = useState<Set<string>>(new Set());
   const [bannedFormats, setBannedFormats] = useState<Set<string>>(new Set());
+  const [hideUpcoming, setHideUpcoming] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [open, setOpen] = useState(getInitialDeckPanelOpen);
@@ -31,6 +32,7 @@ export function DeckPanel({ onBansSaved }: { onBansSaved: () => void }) {
       .then((b) => {
         setBannedGenres(new Set(b.genres));
         setBannedFormats(new Set(b.formats));
+        setHideUpcoming(b.hide_upcoming);
       })
       .catch((err) => console.error("getDeckBans failed", err));
     getCatalogFacets()
@@ -49,7 +51,7 @@ export function DeckPanel({ onBansSaved }: { onBansSaved: () => void }) {
   async function save() {
     setSaving(true);
     try {
-      await setDeckBans([...bannedGenres], [...bannedFormats]);
+      await setDeckBans([...bannedGenres], [...bannedFormats], hideUpcoming);
       setSaved(true);
       onBansSaved();
     } finally {
@@ -129,6 +131,18 @@ export function DeckPanel({ onBansSaved }: { onBansSaved: () => void }) {
               ))}
             </div>
           )}
+
+          <label className="row" style={{ alignItems: "center", gap: 8, marginBottom: 16, cursor: "pointer" }}>
+            <input
+              type="checkbox"
+              checked={hideUpcoming}
+              onChange={(e) => {
+                setHideUpcoming(e.target.checked);
+                setSaved(false);
+              }}
+            />
+            {t("discover.filtersHideUpcoming")}
+          </label>
 
           <div className="row" style={{ alignItems: "center", gap: 12 }}>
             <button className="btn btn-primary" onClick={save} disabled={saving}>

@@ -147,6 +147,7 @@ export interface SwipeHistoryItem {
 export interface DeckBans {
   genres: string[];
   formats: string[];
+  hide_upcoming: boolean;
 }
 
 export type LinkOutcome =

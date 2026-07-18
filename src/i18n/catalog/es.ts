@@ -200,6 +200,7 @@ export const es = {
     "Los géneros y tipos que baneés no aparecerán en el mazo de Descubrir. Hentai y Ecchi están siempre excluidos.",
   "discover.filtersGenresHeading": "Géneros baneados",
   "discover.filtersFormatsHeading": "Tipos baneados",
+  "discover.filtersHideUpcoming": "Ocultar próximos estrenos (aún no emitidos)",
   "discover.filtersSave": "Guardar filtros",
   "discover.filtersSaving": "Guardando…",
   "discover.filtersSaved": "Filtros guardados.",
