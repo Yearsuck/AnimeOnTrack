@@ -63,7 +63,7 @@ function buildGraphData(
   seriesList: SeriesGraphNode[],
   rootLabel: string
 ): { nodes: GNode[]; links: GLink[] } {
-  const nodes: GNode[] = [{ id: "root", kind: "root", label: rootLabel }];
+  const nodes: GNode[] = [{ id: "root", kind: "root", label: rootLabel, count: seriesList.length }];
   const links: GLink[] = [];
 
   const genreCounts = new Map<string, number>();
