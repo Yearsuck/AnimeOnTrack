@@ -101,6 +101,14 @@ pub async fn backup_now(app: AppHandle, state: State<'_, AppState>) -> Result<Ba
         let db = state.db.lock().unwrap();
         db.get_setting("gdrive_file_id").ok().flatten()
     };
+    // Same reason as `restore_latest`: without the by-name lookup, backing up
+    // from a second machine (or after a restore, which replaces the settings
+    // table with the snapshot's) would upload a *second* file into
+    // appDataFolder and the two machines would silently stop converging.
+    let existing = match existing {
+        Some(id) => Some(id),
+        None => backup::drive::find_backup_file(&token).await.ok().flatten(),
+    };
     let file_id = match existing {
         Some(id) => {
             backup::drive::update_backup(&token, &id, bytes).await?;

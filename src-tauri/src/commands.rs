@@ -278,14 +278,20 @@ pub async fn restore_latest(app: AppHandle, state: State<'_, AppState>) -> Resul
             .ok()
             .flatten()
             .ok_or("Not connected to Google Drive")?;
-        let file_id = db
-            .get_setting("gdrive_file_id")
-            .ok()
-            .flatten()
-            .ok_or("No backup found in Drive yet")?;
+        let file_id = db.get_setting("gdrive_file_id").ok().flatten();
         (client, refresh, file_id)
     };
     let token = backup_lib::access_token(&client, &refresh).await?;
+    // Falling back to a lookup by name is what makes "restore onto a new
+    // machine" — the whole point of the feature — actually work: a fresh
+    // install has an empty settings table, so `gdrive_file_id` is only ever
+    // present on the machine that uploaded the backup in the first place.
+    let file_id = match file_id {
+        Some(id) => id,
+        None => backup_lib::drive::find_backup_file(&token)
+            .await?
+            .ok_or("No backup found in Drive yet")?,
+    };
     let bytes = backup_lib::drive::download_backup(&token, &file_id).await?;
     backup_lib::stage_restore(&bytes, &dir)?; // validates before staging
     app.restart();
