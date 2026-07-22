@@ -12,9 +12,23 @@
   --accent: #4aa8ff;
   --accent-hover: #6fbcff;
   --accent-dim: rgba(74, 168, 255, 0.14);
+  /* The accent as a *fill*, plus the only foreground guaranteed readable on
+     it. Kept apart from --accent (which is a text/border colour) because the
+     two themes need opposite answers: a bright accent on a dark ground takes
+     dark text, while the same hue on white needs to darken before white text
+     clears 4.5:1. Both used to be one hardcoded #05121f. */
+  --accent-solid: #4aa8ff;
+  --accent-solid-hover: #6fbcff;
+  --on-accent: #05121f;
+  --on-success: #04140d;
   --success: #46d19e;
   --success-dim: rgba(70, 209, 158, 0.16);
   --danger: #ff5c7c;
+  /* Tinted danger fill/border, the red counterpart to --accent-dim. The swipe
+     buttons hardcoded these as literal dark-theme rgba, so they didn't shift
+     in light mode. */
+  --danger-dim: rgba(255, 92, 124, 0.12);
+  --danger-border: rgba(255, 92, 124, 0.4);
 
   /* Tokenized dark-baked overlay/scrim/border colors (theme selector,
      docs/superpowers/specs/2026-07-12-theme-light-dark-design.md).
@@ -103,9 +117,15 @@
   --accent: #1f88e6;
   --accent-hover: #1670c8;
   --accent-dim: rgba(31, 136, 230, 0.12);
+  --accent-solid: #1670c8;
+  --accent-solid-hover: #1257a0;
+  --on-accent: #ffffff;
+  --on-success: #04140d;
   --success: #1f9d6b;
   --success-dim: rgba(31, 157, 107, 0.14);
   --danger: #d83a5a;
+  --danger-dim: rgba(216, 58, 90, 0.1);
+  --danger-border: rgba(216, 58, 90, 0.35);
 
   --overlay-bg: rgba(244, 247, 251, 0.85);
   --overlay-strong: rgba(255, 255, 255, 0.85);
@@ -242,8 +262,8 @@ a:hover {
   height: 18px;
   padding: 0 var(--sp-1);
   border-radius: var(--radius-round);
-  background: var(--accent);
-  color: #05121f;
+  background: var(--accent-solid);
+  color: var(--on-accent);
   font-size: var(--fs-xs);
   font-weight: var(--fw-bold);
   font-variant-numeric: tabular-nums;
@@ -296,14 +316,14 @@ a:hover {
   cursor: not-allowed;
 }
 .btn-primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #05121f;
+  background: var(--accent-solid);
+  border-color: var(--accent-solid);
+  color: var(--on-accent);
   box-shadow: var(--shadow-sm);
 }
 .btn-primary:hover:not(:disabled) {
-  background: var(--accent-hover);
-  border-color: var(--accent-hover);
+  background: var(--accent-solid-hover);
+  border-color: var(--accent-solid-hover);
   box-shadow: var(--shadow-sm), var(--focus-ring);
 }
 .btn-success {
@@ -809,17 +829,18 @@ textarea.input {
   border-radius: var(--radius-round);
   border: none;
   background: var(--overlay-strong);
-  color: #fff;
+  color: var(--text);
   font-size: var(--fs-md);
   cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 2;
 }
 .card-info-btn:hover {
-  background: var(--accent);
-  color: #05121f;
+  background: var(--accent-solid);
+  color: var(--on-accent);
 }
 .card-select-check {
   position: absolute;
@@ -828,8 +849,8 @@ textarea.input {
   width: 26px;
   height: 26px;
   border-radius: var(--radius-round);
-  background: var(--accent);
-  color: #05121f;
+  background: var(--accent-solid);
+  color: var(--on-accent);
   font-weight: var(--fw-bold);
   display: flex;
   align-items: center;
@@ -999,7 +1020,7 @@ textarea.input {
   opacity: 0.55;
 }
 .ep-row.seen .ep-num {
-  background: rgba(70, 209, 158, 0.18);
+  background: var(--success-dim);
   color: var(--success);
 }
 
@@ -1032,7 +1053,7 @@ textarea.input {
 .check.on {
   background: var(--success);
   border-color: var(--success);
-  color: #05121f;
+  color: var(--on-success);
   box-shadow: 0 0 0 4px var(--success-dim);
   animation: check-pop 0.3s var(--ease-out);
 }
@@ -1171,14 +1192,15 @@ progress.scanbar-track::-webkit-progress-value {
 }
 .swipe-actions .btn-discard {
   color: var(--danger);
-  border-color: rgba(255, 92, 124, 0.4);
+  border-color: var(--danger-border);
 }
-.swipe-actions .btn-discard:hover {
-  background: rgba(255, 92, 124, 0.12);
+.swipe-actions .btn-discard:hover:not(:disabled) {
+  background: var(--danger-dim);
+  border-color: var(--danger);
 }
 .swipe-actions .btn-want {
   color: var(--accent);
-  border-color: rgba(74, 168, 255, 0.4);
+  border-color: var(--accent-dim);
 }
 .swipe-actions .btn-want:hover {
   background: var(--accent-dim);
@@ -1614,7 +1636,10 @@ progress.scanbar-track::-webkit-progress-value {
    its caption need horizontal room that a 150px poster column doesn't. */
 .stat-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  /* auto-fit, not auto-fill: with five tiles on a 1500px window auto-fill
+     lays out seven 190px tracks and leaves two of them empty, so the row
+     reads as a stranded cluster on the left instead of a dashboard. */
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
   gap: var(--sp-3);
   margin-bottom: var(--sp-6);
 }
@@ -1653,4 +1678,33 @@ progress.scanbar-track::-webkit-progress-value {
 }
 .notice-danger p {
   color: var(--danger);
+}
+
+/* ---------- Descubrir · taste chips ---------- */
+.taste-chips {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  margin-bottom: var(--sp-4);
+}
+.taste-chips-label {
+  font-size: var(--fs-sm);
+}
+.taste-chip {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  padding: 3px var(--sp-3);
+  border-radius: var(--radius-round);
+  /* Genre colours are bright fills; the readable foreground on them is the
+     same near-black the success check uses, in both themes. */
+  color: var(--on-success);
+}
+
+/* Undefined until now: Library rendered <span class="lib-section-title"> with
+   no rule, relying on inherited styling. Give it the shared heading. */
+.lib-section-title {
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  letter-spacing: -0.01em;
 }
