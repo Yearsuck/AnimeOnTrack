@@ -192,12 +192,12 @@ function LibraryCard({
             {menuOpen && (
               <div className="card-menu-list" onClick={(e) => e.stopPropagation()}>
                 {item.watched_externally ? (
-                  <button type="button" className="card-menu-item" onClick={unfollow}>
+                  <button type="button" className="card-menu-item danger" onClick={unfollow}>
                     {t("library.markNotWatched")}
                   </button>
                 ) : (
                   <>
-                    <button type="button" className="card-menu-item" onClick={unfollow}>
+                    <button type="button" className="card-menu-item danger" onClick={unfollow}>
                       {t("library.unfollow")}
                     </button>
                     <button type="button" className="card-menu-item" onClick={moveToWant}>

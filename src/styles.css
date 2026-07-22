@@ -950,15 +950,25 @@ textarea.input {
   display: block;
   width: 100%;
   text-align: left;
-  padding: 8px 12px;
+  padding: var(--sp-2) var(--sp-3);
   background: none;
   border: none;
   color: var(--text);
+  font-family: inherit;
   font-size: var(--fs-sm);
   cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 .card-menu-item:hover {
   background: var(--surface-3);
+}
+/* Destructive entry (unfollow / mark-not-watched): red text, red tint on
+   hover, so a reversible-but-consequential action reads as one. */
+.card-menu-item.danger {
+  color: var(--danger);
+}
+.card-menu-item.danger:hover {
+  background: var(--danger-dim);
 }
 
 /* Visually-hidden but screen-reader-visible label (e.g. the library
@@ -1090,19 +1100,35 @@ textarea.input {
   max-width: 460px;
   margin: 14vh auto 0;
   text-align: center;
-  padding: 20px;
+  padding: var(--sp-5);
+}
+.onboard-brand {
+  justify-content: center;
+  font-size: var(--fs-xl);
+  margin-bottom: var(--sp-4);
 }
 .onboard h1 {
   font-size: var(--fs-3xl);
-  margin: 0 0 6px;
+  font-weight: var(--fw-bold);
+  letter-spacing: -0.02em;
+  line-height: var(--lh-tight);
+  margin: 0 0 var(--sp-2);
 }
 .onboard p {
   color: var(--muted);
-  margin: 0 0 22px;
+  margin: 0 0 var(--sp-6);
 }
-.onboard .row {
+.onboard-form {
   display: flex;
-  gap: 8px;
+  gap: var(--sp-2);
+}
+.onboard-note {
+  margin-top: var(--sp-4);
+}
+.onboard-error {
+  color: var(--danger);
+  margin-top: var(--sp-4);
+  word-break: break-word;
 }
 
 /* ---------- Scan/refresh progress bar ---------- */
