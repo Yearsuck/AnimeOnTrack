@@ -13,22 +13,10 @@ export function TasteChips() {
   }, []);
   if (genres.length === 0) return null;
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
-      <span className="muted" style={{ fontSize: 12 }}>
-        {t("discover.topGenres")}
-      </span>
+    <div className="taste-chips">
+      <span className="muted taste-chips-label">{t("discover.topGenres")}</span>
       {genres.map((g) => (
-        <span
-          key={g.genre}
-          style={{
-            fontSize: 12,
-            fontWeight: 600,
-            padding: "3px 10px",
-            borderRadius: "var(--radius-round)",
-            background: categoryColor(g.genre),
-            color: "#05121f",
-          }}
-        >
+        <span key={g.genre} className="taste-chip" style={{ background: categoryColor(g.genre) }}>
           {g.genre}
         </span>
       ))}

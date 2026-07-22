@@ -12,9 +12,23 @@
   --accent: #4aa8ff;
   --accent-hover: #6fbcff;
   --accent-dim: rgba(74, 168, 255, 0.14);
+  /* The accent as a *fill*, plus the only foreground guaranteed readable on
+     it. Kept apart from --accent (which is a text/border colour) because the
+     two themes need opposite answers: a bright accent on a dark ground takes
+     dark text, while the same hue on white needs to darken before white text
+     clears 4.5:1. Both used to be one hardcoded #05121f. */
+  --accent-solid: #4aa8ff;
+  --accent-solid-hover: #6fbcff;
+  --on-accent: #05121f;
+  --on-success: #04140d;
   --success: #46d19e;
   --success-dim: rgba(70, 209, 158, 0.16);
   --danger: #ff5c7c;
+  /* Tinted danger fill/border, the red counterpart to --accent-dim. The swipe
+     buttons hardcoded these as literal dark-theme rgba, so they didn't shift
+     in light mode. */
+  --danger-dim: rgba(255, 92, 124, 0.12);
+  --danger-border: rgba(255, 92, 124, 0.4);
 
   /* Tokenized dark-baked overlay/scrim/border colors (theme selector,
      docs/superpowers/specs/2026-07-12-theme-light-dark-design.md).
@@ -48,7 +62,43 @@
   --ease: cubic-bezier(0.4, 0, 0.2, 1);
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
 
-  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  /* Motion durations. Named rather than typed inline so a transition can be
+     retimed everywhere at once, and so "fast" always means the same thing on
+     a hover as it does on a chip toggle. */
+  --dur-fast: 120ms;
+  --dur: 180ms;
+  --dur-slow: 320ms;
+
+  /* Type scale. Every size the UI uses, so a component never invents its own
+     (the screen previously carried 13px, 13.5px, 12.5px and 22px, some of
+     them only as inline styles). Tight by web standards on purpose — this is
+     a desktop app, not a document. */
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-base: 13px;
+  --fs-md: 14px;
+  --fs-lg: 16px;
+  --fs-xl: 20px;
+  --fs-2xl: 26px;
+  --fs-3xl: 34px;
+
+  --lh-tight: 1.2;
+  --lh-base: 1.5;
+
+  --fw-normal: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+  --fw-bold: 700;
+
+  /* One focus treatment for the whole app: a solid ring plus a soft halo, so
+     it stays visible against both a flat surface and a filled button. */
+  --focus-ring: 0 0 0 3px var(--accent-dim);
+
+  /* Inter ships bundled (see main.tsx); the system stack behind it is the
+     fallback for the split second before it decodes, and for a build where
+     the font asset is missing. */
+  --font: "Inter Variable", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    Helvetica, Arial, sans-serif;
 }
 
 /* Light theme — overrides color tokens only (spacing/radius/ease/font stay
@@ -67,9 +117,15 @@
   --accent: #1f88e6;
   --accent-hover: #1670c8;
   --accent-dim: rgba(31, 136, 230, 0.12);
+  --accent-solid: #1670c8;
+  --accent-solid-hover: #1257a0;
+  --on-accent: #ffffff;
+  --on-success: #04140d;
   --success: #1f9d6b;
   --success-dim: rgba(31, 157, 107, 0.14);
   --danger: #d83a5a;
+  --danger-dim: rgba(216, 58, 90, 0.1);
+  --danger-border: rgba(216, 58, 90, 0.35);
 
   --overlay-bg: rgba(244, 247, 251, 0.85);
   --overlay-strong: rgba(255, 255, 255, 0.85);
@@ -107,9 +163,21 @@ body {
   background: var(--bg);
   color: var(--text);
   font-family: var(--font);
-  font-size: 14px;
-  line-height: 1.5;
+  font-size: var(--fs-md);
+  line-height: var(--lh-base);
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  /* Inter's alternates: a straight-tailed "l" (cv05) and a single-storey "a"
+     in italics read better at UI sizes than the defaults, and disambiguating
+     l/1/I matters in a list of episode numbers. */
+  font-feature-settings: "cv05" 1, "cv11" 1, "ss01" 1;
+}
+
+/* Anything that is fundamentally a number in a column — episode counts, stat
+   tiles, chart values — gets fixed-width digits so figures line up and don't
+   jitter as they update. */
+.tabular {
+  font-variant-numeric: tabular-nums;
 }
 
 ::-webkit-scrollbar {
@@ -139,129 +207,213 @@ a:hover {
   z-index: 50;
   display: flex;
   align-items: center;
-  gap: 16px;
-  padding: 12px 20px;
+  gap: var(--sp-4);
+  padding: var(--sp-2) var(--sp-5);
   background: var(--overlay-bg);
-  backdrop-filter: blur(10px);
-  border-bottom: 1px solid var(--border);
+  backdrop-filter: blur(14px) saturate(140%);
+  border-bottom: 1px solid var(--border-soft);
 }
 .brand {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-weight: 700;
-  font-size: 16px;
-  letter-spacing: 0.2px;
+  gap: var(--sp-2);
+  font-weight: var(--fw-bold);
+  font-size: var(--fs-lg);
+  /* Slightly negative tracking: Inter's default spacing is tuned for body
+     copy and reads loose in a bold wordmark at this size. */
+  letter-spacing: -0.01em;
 }
 .brand .dot {
-  width: 10px;
-  height: 10px;
+  width: 9px;
+  height: 9px;
   border-radius: 50%;
   background: var(--accent);
-  box-shadow: 0 0 12px var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-dim), 0 0 12px var(--accent);
 }
 .tabs {
   display: flex;
-  gap: 4px;
+  gap: var(--sp-1);
 }
 .tab {
-  padding: 7px 14px;
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 0 var(--sp-3);
   border-radius: var(--radius-sm);
   color: var(--muted);
-  font-weight: 600;
+  font-family: inherit;
+  font-weight: var(--fw-semibold);
   cursor: pointer;
   border: none;
   background: transparent;
-  font-size: 13.5px;
+  font-size: var(--fs-base);
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 .tab:hover {
   color: var(--text);
   background: var(--surface-2);
 }
 .tab.active {
-  color: var(--text);
+  color: var(--accent);
   background: var(--accent-dim);
 }
 .badge {
-  min-width: 20px;
-  height: 20px;
-  padding: 0 6px;
-  border-radius: 10px;
-  background: var(--accent);
-  color: #05121f;
-  font-size: 12px;
-  font-weight: 800;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 var(--sp-1);
+  border-radius: var(--radius-round);
+  background: var(--accent-solid);
+  color: var(--on-accent);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
+  font-variant-numeric: tabular-nums;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  margin-left: 6px;
+  margin-left: var(--sp-2);
 }
 .spacer {
   flex: 1;
 }
 
-/* ---------- Buttons ---------- */
+/* ---------- Buttons ----------
+   Every variant is the same 32px-tall pill with the same type and the same
+   transition; only the fill changes. Controls used to differ by a pixel or
+   two of padding and half a point of font size from one view to the next,
+   which is the kind of thing that reads as sloppy without being nameable. */
 .btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  min-height: 32px;
   border: 1px solid var(--border);
   background: var(--surface-2);
   color: var(--text);
-  padding: 7px 14px;
+  padding: 0 var(--sp-3);
   border-radius: var(--radius-sm);
-  font-weight: 600;
-  font-size: 13px;
+  font-family: inherit;
+  font-weight: var(--fw-semibold);
+  font-size: var(--fs-base);
+  line-height: 1;
+  white-space: nowrap;
   cursor: pointer;
-  transition: background 0.15s var(--ease), border-color 0.15s var(--ease),
-    transform 0.1s var(--ease), box-shadow 0.15s var(--ease);
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease),
+    box-shadow var(--dur-fast) var(--ease);
 }
-.btn:hover {
+.btn:hover:not(:disabled) {
   background: var(--surface-3);
+  border-color: var(--muted-2);
 }
-.btn:active {
-  transform: scale(0.96);
+/* A 1px nudge rather than a scale: scaling a button resamples its text for
+   the duration of the press, which looks blurry at these sizes. */
+.btn:active:not(:disabled) {
+  transform: translateY(1px);
 }
 .btn:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-.btn:focus-visible,
-.tab:focus-visible,
-.input:focus-visible,
-.check:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 .btn-primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #05121f;
+  background: var(--accent-solid);
+  border-color: var(--accent-solid);
+  color: var(--on-accent);
+  box-shadow: var(--shadow-sm);
 }
-.btn-primary:hover {
-  background: var(--accent-hover);
-  border-color: var(--accent-hover);
-  box-shadow: 0 0 0 4px var(--accent-dim);
+.btn-primary:hover:not(:disabled) {
+  background: var(--accent-solid-hover);
+  border-color: var(--accent-solid-hover);
+  box-shadow: var(--shadow-sm), var(--focus-ring);
 }
 .btn-success {
   color: var(--success);
-  border-color: rgba(70, 209, 158, 0.4);
+  border-color: var(--success-dim);
+  background: var(--success-dim);
+}
+.btn-success:hover:not(:disabled) {
+  border-color: var(--success);
+  background: var(--success-dim);
 }
 .btn-ghost {
   background: transparent;
+  border-color: transparent;
+  color: var(--muted);
+}
+.btn-ghost:hover:not(:disabled) {
+  background: var(--surface-2);
+  border-color: transparent;
+  color: var(--text);
+}
+.btn-danger {
+  color: var(--danger);
+  border-color: var(--danger);
+  background: transparent;
+}
+.btn-danger:hover:not(:disabled) {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: var(--surface);
+}
+/* Denser variant for buttons that sit inside a row of data rather than in a
+   toolbar (episode rows, card actions). */
+.btn-sm {
+  min-height: 26px;
+  padding: 0 var(--sp-2);
+  font-size: var(--fs-sm);
+}
+
+/* One focus treatment across every interactive element in the app. Listed
+   together deliberately: a component that grows its own focus style is how a
+   UI ends up with three different rings. */
+.btn:focus-visible,
+.tab:focus-visible,
+.input:focus-visible,
+.check:focus-visible,
+.chip-toggle:focus-visible,
+.lib-card:focus-visible,
+.lib-section-summary:focus-visible,
+select:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  box-shadow: var(--focus-ring);
 }
 
 /* ---------- Inputs ---------- */
-.input {
+.input,
+select.input {
   width: 100%;
-  padding: 10px 12px;
+  min-height: 32px;
+  padding: 0 var(--sp-3);
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   color: var(--text);
-  font-size: 14px;
+  font-family: inherit;
+  font-size: var(--fs-base);
   outline: none;
+  transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+}
+/* A textarea can't be a single line, so it keeps vertical padding and its own
+   line height. */
+textarea.input {
+  padding: var(--sp-2) var(--sp-3);
+  line-height: var(--lh-base);
+}
+.input::placeholder {
+  color: var(--muted-2);
+}
+.input:hover:not(:focus) {
+  border-color: var(--muted-2);
 }
 .input:focus {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-dim);
+  box-shadow: var(--focus-ring);
+}
+.input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 .search {
   position: relative;
@@ -303,10 +455,10 @@ a:hover {
   color: var(--muted);
   padding: 6px 13px;
   border-radius: var(--radius-round);
-  font-size: 12.5px;
-  font-weight: 600;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
   cursor: pointer;
-  transition: background 0.15s var(--ease), border-color 0.15s var(--ease), color 0.15s var(--ease);
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 .chip-toggle:hover {
   color: var(--text);
@@ -316,10 +468,6 @@ a:hover {
   color: var(--accent);
   border-color: var(--accent);
   background: var(--accent-dim);
-}
-.chip-toggle:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
 }
 
 /* ---------- Layout ---------- */
@@ -332,13 +480,23 @@ a:hover {
 .page-head {
   display: flex;
   align-items: center;
-  gap: 16px;
-  margin-bottom: 18px;
+  gap: var(--sp-4);
+  margin-bottom: var(--sp-5);
+  min-height: 32px;
 }
 .page-title {
-  font-size: 20px;
-  font-weight: 700;
+  font-size: var(--fs-xl);
+  font-weight: var(--fw-bold);
+  line-height: var(--lh-tight);
+  letter-spacing: -0.015em;
   margin: 0;
+}
+/* One-line explanation under a page title. Optional, but when a view uses it
+   the treatment is the same everywhere instead of an inline muted span. */
+.page-subtitle {
+  color: var(--muted);
+  font-size: var(--fs-base);
+  margin: var(--sp-1) 0 0;
 }
 .muted {
   color: var(--muted);
@@ -356,7 +514,76 @@ a:hover {
 .empty {
   text-align: center;
   color: var(--muted);
-  padding: 60px 20px;
+  font-size: var(--fs-base);
+  padding: var(--sp-8) var(--sp-5);
+}
+
+/* ---------- Loading skeletons ----------
+   A grey block that pulses where content will land, instead of an empty page
+   that suddenly reflows when data arrives. Sized by the caller; the shimmer
+   is shared. Respects prefers-reduced-motion via the global override above. */
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--surface-2) 25%,
+    var(--surface-3) 50%,
+    var(--surface-2) 75%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.4s var(--ease) infinite;
+  border-radius: var(--radius-sm);
+}
+@keyframes skeleton-shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+.skeleton-text {
+  height: 12px;
+  margin-bottom: var(--sp-2);
+}
+.skeleton-title {
+  height: 18px;
+  width: 40%;
+  margin-bottom: var(--sp-3);
+}
+
+/* ---------- Stat tile ----------
+   The dashboard number card, previously assembled from four inline styles
+   per instance in Stats.tsx and StatsInsights.tsx. */
+.stat-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--sp-4);
+  transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+}
+.stat-card:hover {
+  border-color: var(--surface-3);
+  box-shadow: var(--shadow-sm);
+}
+.stat-label {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.stat-value {
+  font-size: var(--fs-2xl);
+  font-weight: var(--fw-bold);
+  line-height: var(--lh-tight);
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  margin-top: var(--sp-1);
+}
+.stat-help {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  margin-top: var(--sp-1);
 }
 
 /* ---------- Poster grid (airing) ---------- */
@@ -370,7 +597,8 @@ a:hover {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   overflow: hidden;
-  transition: transform 0.12s, border-color 0.12s, box-shadow 0.12s;
+  transition: transform var(--dur) var(--ease-out), border-color var(--dur-fast) var(--ease),
+    box-shadow var(--dur) var(--ease-out);
 }
 .card:hover {
   transform: translateY(-3px);
@@ -396,8 +624,8 @@ a:hover {
   padding: 3px 8px;
   border-radius: 6px;
   background: var(--overlay-strong);
-  font-size: 11px;
-  font-weight: 700;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
   color: var(--accent);
   backdrop-filter: blur(4px);
 }
@@ -408,14 +636,14 @@ a:hover {
   left: auto;
   right: 8px;
   color: var(--text);
-  font-weight: 600;
+  font-weight: var(--fw-semibold);
 }
 .card-body {
   padding: 10px 10px 12px;
 }
 .card-title {
-  font-size: 13px;
-  font-weight: 600;
+  font-size: var(--fs-base);
+  font-weight: var(--fw-semibold);
   line-height: 1.3;
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -442,14 +670,20 @@ a:hover {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  margin-bottom: 16px;
+  margin-bottom: var(--sp-4);
   overflow: hidden;
+}
+/* Last block in a stack owns no trailing margin — the container's own spacing
+   ends the section. Saves the `style={{ marginBottom: 0 }}` overrides that
+   were sprinkled across the stats views. */
+.series-block:last-child {
+  margin-bottom: 0;
 }
 .series-head {
   display: flex;
   align-items: center;
-  gap: 14px;
-  padding: 12px 14px;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
   border-bottom: 1px solid var(--border);
   background: var(--surface-2);
 }
@@ -463,12 +697,23 @@ a:hover {
   flex-shrink: 0;
 }
 .series-head .name {
-  font-weight: 700;
-  font-size: 19px;
+  font-weight: var(--fw-bold);
+  font-size: var(--fs-lg);
+  letter-spacing: -0.01em;
 }
 .series-head .count {
   color: var(--muted);
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+/* Heading for a bordered block or a group of tiles. One weight and size for
+   all of them; several views were reusing `.card-title`, which is the poster
+   card's clamped two-line title and carries a min-height meant for that. */
+.section-title {
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  letter-spacing: -0.01em;
+  margin: 0;
 }
 .ep-row {
   display: flex;
@@ -476,8 +721,8 @@ a:hover {
   gap: 12px;
   padding: 10px 14px;
   border-bottom: 1px solid var(--border-soft);
-  transition: background 0.15s var(--ease), opacity 0.25s var(--ease),
-    transform 0.25s var(--ease);
+  transition: background var(--dur-fast) var(--ease), opacity var(--dur) var(--ease),
+    transform var(--dur) var(--ease);
 }
 .ep-row:last-child {
   border-bottom: none;
@@ -503,8 +748,8 @@ a:hover {
   cursor: pointer;
   list-style: none;
   padding: var(--sp-2) 0;
-  font-size: 15px;
-  font-weight: 700;
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-bold);
   color: var(--text);
   user-select: none;
   border-radius: var(--radius-sm);
@@ -516,8 +761,8 @@ a:hover {
   content: "▸";
   display: inline-block;
   color: var(--muted);
-  font-size: 12px;
-  transition: transform 0.15s var(--ease);
+  font-size: var(--fs-sm);
+  transition: transform var(--dur-fast) var(--ease);
 }
 .lib-section[open] > .lib-section-summary::before {
   transform: rotate(90deg);
@@ -542,8 +787,8 @@ a:hover {
   background: transparent;
   border: none;
   color: var(--muted);
-  font-size: 12px;
-  font-weight: 600;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
   padding: 5px 12px;
   cursor: pointer;
 }
@@ -584,17 +829,18 @@ a:hover {
   border-radius: var(--radius-round);
   border: none;
   background: var(--overlay-strong);
-  color: #fff;
-  font-size: 14px;
+  color: var(--text);
+  font-size: var(--fs-md);
   cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 2;
 }
 .card-info-btn:hover {
-  background: var(--accent);
-  color: #05121f;
+  background: var(--accent-solid);
+  color: var(--on-accent);
 }
 .card-select-check {
   position: absolute;
@@ -603,9 +849,9 @@ a:hover {
   width: 26px;
   height: 26px;
   border-radius: var(--radius-round);
-  background: var(--accent);
-  color: #05121f;
-  font-weight: 700;
+  background: var(--accent-solid);
+  color: var(--on-accent);
+  font-weight: var(--fw-bold);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -613,8 +859,8 @@ a:hover {
 }
 .lib-section-count {
   color: var(--muted);
-  font-weight: 600;
-  font-size: 12.5px;
+  font-weight: var(--fw-semibold);
+  font-size: var(--fs-sm);
   background: var(--surface-2);
   padding: 2px 9px;
   border-radius: var(--radius-round);
@@ -643,13 +889,13 @@ a:hover {
   justify-content: center;
   background: var(--surface-3);
   color: var(--text);
-  font-weight: 800;
-  font-size: 26px;
+  font-weight: var(--fw-bold);
+  font-size: var(--fs-2xl);
   letter-spacing: 0.5px;
 }
 .lib-progress-text {
   margin-top: 5px;
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   font-variant-numeric: tabular-nums;
 }
 .lib-play-btn {
@@ -681,7 +927,7 @@ a:hover {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-weight: 700;
+  font-weight: var(--fw-bold);
   line-height: 1;
   cursor: pointer;
 }
@@ -704,15 +950,25 @@ a:hover {
   display: block;
   width: 100%;
   text-align: left;
-  padding: 8px 12px;
+  padding: var(--sp-2) var(--sp-3);
   background: none;
   border: none;
   color: var(--text);
-  font-size: 12.5px;
+  font-family: inherit;
+  font-size: var(--fs-sm);
   cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 .card-menu-item:hover {
   background: var(--surface-3);
+}
+/* Destructive entry (unfollow / mark-not-watched): red text, red tint on
+   hover, so a reversible-but-consequential action reads as one. */
+.card-menu-item.danger {
+  color: var(--danger);
+}
+.card-menu-item.danger:hover {
+  background: var(--danger-dim);
 }
 
 /* Visually-hidden but screen-reader-visible label (e.g. the library
@@ -741,8 +997,8 @@ a:hover {
   border-radius: 7px;
   background: var(--surface-3);
   color: var(--text);
-  font-weight: 800;
-  font-size: 13px;
+  font-weight: var(--fw-bold);
+  font-size: var(--fs-base);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -752,7 +1008,7 @@ a:hover {
   min-width: 0;
 }
 .ep-title {
-  font-weight: 600;
+  font-weight: var(--fw-semibold);
   cursor: pointer;
   white-space: nowrap;
   overflow: hidden;
@@ -762,7 +1018,7 @@ a:hover {
   color: var(--accent);
 }
 .ep-date {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--muted-2);
 }
 .ep-actions {
@@ -774,7 +1030,7 @@ a:hover {
   opacity: 0.55;
 }
 .ep-row.seen .ep-num {
-  background: rgba(70, 209, 158, 0.18);
+  background: var(--success-dim);
   color: var(--success);
 }
 
@@ -792,10 +1048,10 @@ a:hover {
   justify-content: center;
   color: transparent;
   flex-shrink: 0;
-  font-size: 14px;
-  font-weight: 900;
-  transition: background 0.15s var(--ease), border-color 0.15s var(--ease),
-    color 0.15s var(--ease), transform 0.1s var(--ease), box-shadow 0.15s var(--ease);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-bold);
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
 }
 .check:hover {
   border-color: var(--success);
@@ -807,7 +1063,7 @@ a:hover {
 .check.on {
   background: var(--success);
   border-color: var(--success);
-  color: #05121f;
+  color: var(--on-success);
   box-shadow: 0 0 0 4px var(--success-dim);
   animation: check-pop 0.3s var(--ease-out);
 }
@@ -826,14 +1082,17 @@ a:hover {
 /* progress bar */
 .progress {
   height: 6px;
-  border-radius: 4px;
+  border-radius: var(--radius-round);
   background: var(--surface-3);
   overflow: hidden;
+  margin-top: var(--sp-2);
 }
 .progress > span {
   display: block;
   height: 100%;
+  border-radius: inherit;
   background: var(--success);
+  transition: width var(--dur-slow) var(--ease-out);
 }
 
 /* ---------- Onboarding ---------- */
@@ -841,19 +1100,35 @@ a:hover {
   max-width: 460px;
   margin: 14vh auto 0;
   text-align: center;
-  padding: 20px;
+  padding: var(--sp-5);
+}
+.onboard-brand {
+  justify-content: center;
+  font-size: var(--fs-xl);
+  margin-bottom: var(--sp-4);
 }
 .onboard h1 {
-  font-size: 30px;
-  margin: 0 0 6px;
+  font-size: var(--fs-3xl);
+  font-weight: var(--fw-bold);
+  letter-spacing: -0.02em;
+  line-height: var(--lh-tight);
+  margin: 0 0 var(--sp-2);
 }
 .onboard p {
   color: var(--muted);
-  margin: 0 0 22px;
+  margin: 0 0 var(--sp-6);
 }
-.onboard .row {
+.onboard-form {
   display: flex;
-  gap: 8px;
+  gap: var(--sp-2);
+}
+.onboard-note {
+  margin-top: var(--sp-4);
+}
+.onboard-error {
+  color: var(--danger);
+  margin-top: var(--sp-4);
+  word-break: break-word;
 }
 
 /* ---------- Scan/refresh progress bar ---------- */
@@ -870,7 +1145,7 @@ a:hover {
   justify-content: space-between;
   align-items: baseline;
   margin-bottom: var(--sp-1);
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
 }
 .scanbar-label {
   color: var(--muted);
@@ -901,7 +1176,7 @@ progress.scanbar-track::-webkit-progress-bar {
 progress.scanbar-track::-webkit-progress-value {
   background: var(--accent);
   border-radius: var(--radius-round);
-  transition: width 0.2s var(--ease);
+  transition: width var(--dur) var(--ease);
 }
 
 /* ---------- Descubrir (swipe mode) ---------- */
@@ -914,7 +1189,7 @@ progress.scanbar-track::-webkit-progress-value {
 }
 .swipe-card {
   width: 280px;
-  transition: opacity 0.18s var(--ease-out), transform 0.18s var(--ease-out);
+  transition: opacity var(--dur) var(--ease-out), transform var(--dur) var(--ease-out);
 }
 .swipe-card.swipe-out-discard {
   opacity: 0;
@@ -936,27 +1211,28 @@ progress.scanbar-track::-webkit-progress-value {
   width: 56px;
   height: 56px;
   border-radius: var(--radius-round);
-  font-size: 20px;
+  font-size: var(--fs-xl);
   display: flex;
   align-items: center;
   justify-content: center;
 }
 .swipe-actions .btn-discard {
   color: var(--danger);
-  border-color: rgba(255, 92, 124, 0.4);
+  border-color: var(--danger-border);
 }
-.swipe-actions .btn-discard:hover {
-  background: rgba(255, 92, 124, 0.12);
+.swipe-actions .btn-discard:hover:not(:disabled) {
+  background: var(--danger-dim);
+  border-color: var(--danger);
 }
 .swipe-actions .btn-want {
   color: var(--accent);
-  border-color: rgba(74, 168, 255, 0.4);
+  border-color: var(--accent-dim);
 }
 .swipe-actions .btn-want:hover {
   background: var(--accent-dim);
 }
 .swipe-hint {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--muted-2);
   text-align: center;
 }
@@ -987,7 +1263,7 @@ progress.scanbar-track::-webkit-progress-value {
   min-width: 0;
 }
 .swipe-history-title {
-  font-size: 13px;
+  font-size: var(--fs-base);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1002,7 +1278,7 @@ progress.scanbar-track::-webkit-progress-value {
   height: 30px;
   padding: 0;
   border-radius: var(--radius-round);
-  font-size: 13px;
+  font-size: var(--fs-base);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1038,12 +1314,12 @@ progress.scanbar-track::-webkit-progress-value {
 }
 .deck-panel-title {
   flex: 1;
-  font-weight: 700;
-  font-size: 14px;
+  font-weight: var(--fw-bold);
+  font-size: var(--fs-md);
 }
 .deck-panel-badge {
-  font-size: 11px;
-  font-weight: 600;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
   color: var(--accent);
   background: var(--accent-dim);
   border-radius: var(--radius-round);
@@ -1052,7 +1328,7 @@ progress.scanbar-track::-webkit-progress-value {
 }
 .deck-panel-chevron {
   color: var(--muted);
-  transition: transform 0.15s var(--ease);
+  transition: transform var(--dur-fast) var(--ease);
   flex-shrink: 0;
 }
 .deck-panel-chevron.open {
@@ -1089,13 +1365,13 @@ progress.scanbar-track::-webkit-progress-value {
   border-color: var(--danger);
 }
 .settings-section-title {
-  font-size: 14px;
-  font-weight: 700;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-bold);
   margin: 0 0 4px 0;
 }
 .settings-section-desc {
   color: var(--muted);
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   margin: 0 0 var(--sp-4) 0;
   max-width: 60ch;
 }
@@ -1108,7 +1384,7 @@ progress.scanbar-track::-webkit-progress-value {
 .settings-field-label {
   display: block;
   color: var(--muted);
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   margin-bottom: var(--sp-2);
 }
 .settings-inline-panel {
@@ -1142,12 +1418,12 @@ progress.scanbar-track::-webkit-progress-value {
   min-width: 0;
 }
 .backlog-title {
-  font-weight: 600;
-  font-size: 13.5px;
+  font-weight: var(--fw-semibold);
+  font-size: var(--fs-base);
 }
 .backlog-genres {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   margin-top: 2px;
 }
 .backlog-actions {
@@ -1170,8 +1446,8 @@ progress.scanbar-track::-webkit-progress-value {
 .listas-seg-count {
   margin-left: 6px;
   opacity: 0.7;
-  font-size: 11px;
-  font-weight: 700;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
   font-variant-numeric: tabular-nums;
 }
 .listas-grid {
@@ -1187,7 +1463,7 @@ progress.scanbar-track::-webkit-progress-value {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  transition: border-color 0.15s var(--ease), background 0.15s var(--ease);
+  transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
 }
 .listas-card:hover {
   border-color: var(--surface-3);
@@ -1207,8 +1483,8 @@ progress.scanbar-track::-webkit-progress-value {
   display: block;
 }
 .listas-poster .poster-fallback {
-  font-size: 15px;
-  font-weight: 700;
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-bold);
   color: var(--muted);
   background: var(--surface-2);
 }
@@ -1219,8 +1495,8 @@ progress.scanbar-track::-webkit-progress-value {
   min-width: 0;
 }
 .listas-title {
-  font-weight: 600;
-  font-size: 13.5px;
+  font-weight: var(--fw-semibold);
+  font-size: var(--fs-base);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1232,8 +1508,8 @@ progress.scanbar-track::-webkit-progress-value {
   flex-shrink: 0;
 }
 .listas-chip {
-  font-size: 10px;
-  font-weight: 700;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
   text-transform: uppercase;
   letter-spacing: 0.4px;
   padding: 2px 8px;
@@ -1267,7 +1543,7 @@ progress.scanbar-track::-webkit-progress-value {
   gap: 12px;
 }
 .bar-label {
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   color: var(--text);
   text-align: right;
   overflow: hidden;
@@ -1288,11 +1564,11 @@ progress.scanbar-track::-webkit-progress-value {
   height: 100%;
   min-width: 4px;
   border-radius: var(--radius-round);
-  transition: width 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: width var(--dur-slow) cubic-bezier(0.16, 1, 0.3, 1);
 }
 .bar-val {
-  font-size: 12.5px;
-  font-weight: 700;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-bold);
   font-variant-numeric: tabular-nums;
   color: var(--text);
   text-align: right;
@@ -1310,7 +1586,7 @@ progress.scanbar-track::-webkit-progress-value {
   width: 96px;
 }
 .ringcell-label {
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   color: var(--muted);
   margin-top: 6px;
   text-align: center;
@@ -1329,10 +1605,18 @@ progress.scanbar-track::-webkit-progress-value {
   gap: var(--sp-5);
 }
 .stats-caveat {
-  padding: 10px 16px 14px;
-  font-size: 11.5px;
+  padding: var(--sp-3) var(--sp-4);
+  font-size: var(--fs-xs);
   color: var(--muted);
   border-top: 1px solid var(--border-soft);
+}
+/* Wrapper for the whole insights section, so the block owns its own bottom
+   spacing instead of the component setting it inline. */
+.stats-insights {
+  margin-bottom: var(--sp-6);
+}
+.stats-insights .section-title {
+  margin-bottom: var(--sp-3);
 }
 
 /* ---------- Stats · 3D graph galaxy backdrop ---------- */
@@ -1370,4 +1654,83 @@ progress.scanbar-track::-webkit-progress-value {
   background-size:
     100% 100%, 100% 100%, 100% 100%, 73px 73px, 111px 111px, 149px 149px;
   background-repeat: no-repeat, no-repeat, no-repeat, repeat, repeat, repeat;
+}
+
+/* ---------- Shared page patterns (2026-07-23 UI pass) ---------- */
+
+/* Dashboard tile grid. Wider minimum than the poster `.grid` — a number and
+   its caption need horizontal room that a 150px poster column doesn't. */
+.stat-grid {
+  display: grid;
+  /* auto-fit, not auto-fill: with five tiles on a 1500px window auto-fill
+     lays out seven 190px tracks and leaves two of them empty, so the row
+     reads as a stranded cluster on the left instead of a dashboard. */
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-6);
+}
+
+/* The row that holds a section's view switcher and its actions. Was an inline
+   flex style repeated per view, each with its own gap. */
+.section-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-5);
+}
+
+/* Inline message block: an error, a warning, a hint. Distinct from `.card`,
+   which is a content container — a notice is a message about state. */
+.notice {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+  padding: var(--sp-3) var(--sp-4);
+  margin-bottom: var(--sp-5);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--muted-2);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  font-size: var(--fs-base);
+}
+.notice p {
+  margin: 0;
+  flex: 1;
+  min-width: 200px;
+}
+.notice-danger {
+  border-left-color: var(--danger);
+}
+.notice-danger p {
+  color: var(--danger);
+}
+
+/* ---------- Descubrir · taste chips ---------- */
+.taste-chips {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  margin-bottom: var(--sp-4);
+}
+.taste-chips-label {
+  font-size: var(--fs-sm);
+}
+.taste-chip {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  padding: 3px var(--sp-3);
+  border-radius: var(--radius-round);
+  /* Genre colours are bright fills; the readable foreground on them is the
+     same near-black the success check uses, in both themes. */
+  color: var(--on-success);
+}
+
+/* Undefined until now: Library rendered <span class="lib-section-title"> with
+   no rule, relying on inherited styling. Give it the shared heading. */
+.lib-section-title {
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  letter-spacing: -0.01em;
 }

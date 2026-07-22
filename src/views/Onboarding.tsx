@@ -23,16 +23,13 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
 
   return (
     <div className="onboard">
-      <div
-        className="brand"
-        style={{ justifyContent: "center", fontSize: 22, marginBottom: 10 }}
-      >
+      <div className="brand onboard-brand">
         <span className="dot" />
         AnimeOnTrack
       </div>
       <h1>{t("onboarding.title")}</h1>
       <p>{t("onboarding.subtitle")}</p>
-      <div className="row">
+      <div className="onboard-form">
         <input
           className="input"
           value={url}
@@ -44,16 +41,8 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
           {busy ? t("common.scanning") : t("common.scan")}
         </button>
       </div>
-      {busy && (
-        <p className="muted" style={{ marginTop: 14 }}>
-          {t("onboarding.scanningHint")}
-        </p>
-      )}
-      {error && (
-        <p style={{ color: "var(--danger)", marginTop: 14, wordBreak: "break-word" }}>
-          {error}
-        </p>
-      )}
+      {busy && <p className="muted onboard-note">{t("onboarding.scanningHint")}</p>}
+      {error && <p className="onboard-error">{error}</p>}
     </div>
   );
 }
