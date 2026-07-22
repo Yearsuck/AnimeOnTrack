@@ -435,10 +435,10 @@ textarea.input {
   color: var(--muted);
   padding: 6px 13px;
   border-radius: var(--radius-round);
-  font-size: 12.5px;
-  font-weight: 600;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
   cursor: pointer;
-  transition: background 0.15s var(--ease), border-color 0.15s var(--ease), color 0.15s var(--ease);
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 .chip-toggle:hover {
   color: var(--text);
@@ -604,8 +604,8 @@ textarea.input {
   padding: 3px 8px;
   border-radius: 6px;
   background: var(--overlay-strong);
-  font-size: 11px;
-  font-weight: 700;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
   color: var(--accent);
   backdrop-filter: blur(4px);
 }
@@ -616,14 +616,14 @@ textarea.input {
   left: auto;
   right: 8px;
   color: var(--text);
-  font-weight: 600;
+  font-weight: var(--fw-semibold);
 }
 .card-body {
   padding: 10px 10px 12px;
 }
 .card-title {
-  font-size: 13px;
-  font-weight: 600;
+  font-size: var(--fs-base);
+  font-weight: var(--fw-semibold);
   line-height: 1.3;
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -701,8 +701,8 @@ textarea.input {
   gap: 12px;
   padding: 10px 14px;
   border-bottom: 1px solid var(--border-soft);
-  transition: background 0.15s var(--ease), opacity 0.25s var(--ease),
-    transform 0.25s var(--ease);
+  transition: background var(--dur-fast) var(--ease), opacity var(--dur) var(--ease),
+    transform var(--dur) var(--ease);
 }
 .ep-row:last-child {
   border-bottom: none;
@@ -728,8 +728,8 @@ textarea.input {
   cursor: pointer;
   list-style: none;
   padding: var(--sp-2) 0;
-  font-size: 15px;
-  font-weight: 700;
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-bold);
   color: var(--text);
   user-select: none;
   border-radius: var(--radius-sm);
@@ -741,8 +741,8 @@ textarea.input {
   content: "▸";
   display: inline-block;
   color: var(--muted);
-  font-size: 12px;
-  transition: transform 0.15s var(--ease);
+  font-size: var(--fs-sm);
+  transition: transform var(--dur-fast) var(--ease);
 }
 .lib-section[open] > .lib-section-summary::before {
   transform: rotate(90deg);
@@ -767,8 +767,8 @@ textarea.input {
   background: transparent;
   border: none;
   color: var(--muted);
-  font-size: 12px;
-  font-weight: 600;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
   padding: 5px 12px;
   cursor: pointer;
 }
@@ -810,7 +810,7 @@ textarea.input {
   border: none;
   background: var(--overlay-strong);
   color: #fff;
-  font-size: 14px;
+  font-size: var(--fs-md);
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -830,7 +830,7 @@ textarea.input {
   border-radius: var(--radius-round);
   background: var(--accent);
   color: #05121f;
-  font-weight: 700;
+  font-weight: var(--fw-bold);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -838,8 +838,8 @@ textarea.input {
 }
 .lib-section-count {
   color: var(--muted);
-  font-weight: 600;
-  font-size: 12.5px;
+  font-weight: var(--fw-semibold);
+  font-size: var(--fs-sm);
   background: var(--surface-2);
   padding: 2px 9px;
   border-radius: var(--radius-round);
@@ -868,13 +868,13 @@ textarea.input {
   justify-content: center;
   background: var(--surface-3);
   color: var(--text);
-  font-weight: 800;
-  font-size: 26px;
+  font-weight: var(--fw-bold);
+  font-size: var(--fs-2xl);
   letter-spacing: 0.5px;
 }
 .lib-progress-text {
   margin-top: 5px;
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   font-variant-numeric: tabular-nums;
 }
 .lib-play-btn {
@@ -906,7 +906,7 @@ textarea.input {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-weight: 700;
+  font-weight: var(--fw-bold);
   line-height: 1;
   cursor: pointer;
 }
@@ -933,7 +933,7 @@ textarea.input {
   background: none;
   border: none;
   color: var(--text);
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   cursor: pointer;
 }
 .card-menu-item:hover {
@@ -966,8 +966,8 @@ textarea.input {
   border-radius: 7px;
   background: var(--surface-3);
   color: var(--text);
-  font-weight: 800;
-  font-size: 13px;
+  font-weight: var(--fw-bold);
+  font-size: var(--fs-base);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -977,7 +977,7 @@ textarea.input {
   min-width: 0;
 }
 .ep-title {
-  font-weight: 600;
+  font-weight: var(--fw-semibold);
   cursor: pointer;
   white-space: nowrap;
   overflow: hidden;
@@ -987,7 +987,7 @@ textarea.input {
   color: var(--accent);
 }
 .ep-date {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--muted-2);
 }
 .ep-actions {
@@ -1017,10 +1017,10 @@ textarea.input {
   justify-content: center;
   color: transparent;
   flex-shrink: 0;
-  font-size: 14px;
-  font-weight: 900;
-  transition: background 0.15s var(--ease), border-color 0.15s var(--ease),
-    color 0.15s var(--ease), transform 0.1s var(--ease), box-shadow 0.15s var(--ease);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-bold);
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
 }
 .check:hover {
   border-color: var(--success);
@@ -1072,7 +1072,7 @@ textarea.input {
   padding: 20px;
 }
 .onboard h1 {
-  font-size: 30px;
+  font-size: var(--fs-3xl);
   margin: 0 0 6px;
 }
 .onboard p {
@@ -1098,7 +1098,7 @@ textarea.input {
   justify-content: space-between;
   align-items: baseline;
   margin-bottom: var(--sp-1);
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
 }
 .scanbar-label {
   color: var(--muted);
@@ -1129,7 +1129,7 @@ progress.scanbar-track::-webkit-progress-bar {
 progress.scanbar-track::-webkit-progress-value {
   background: var(--accent);
   border-radius: var(--radius-round);
-  transition: width 0.2s var(--ease);
+  transition: width var(--dur) var(--ease);
 }
 
 /* ---------- Descubrir (swipe mode) ---------- */
@@ -1142,7 +1142,7 @@ progress.scanbar-track::-webkit-progress-value {
 }
 .swipe-card {
   width: 280px;
-  transition: opacity 0.18s var(--ease-out), transform 0.18s var(--ease-out);
+  transition: opacity var(--dur) var(--ease-out), transform var(--dur) var(--ease-out);
 }
 .swipe-card.swipe-out-discard {
   opacity: 0;
@@ -1164,7 +1164,7 @@ progress.scanbar-track::-webkit-progress-value {
   width: 56px;
   height: 56px;
   border-radius: var(--radius-round);
-  font-size: 20px;
+  font-size: var(--fs-xl);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1184,7 +1184,7 @@ progress.scanbar-track::-webkit-progress-value {
   background: var(--accent-dim);
 }
 .swipe-hint {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--muted-2);
   text-align: center;
 }
@@ -1215,7 +1215,7 @@ progress.scanbar-track::-webkit-progress-value {
   min-width: 0;
 }
 .swipe-history-title {
-  font-size: 13px;
+  font-size: var(--fs-base);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1230,7 +1230,7 @@ progress.scanbar-track::-webkit-progress-value {
   height: 30px;
   padding: 0;
   border-radius: var(--radius-round);
-  font-size: 13px;
+  font-size: var(--fs-base);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1266,12 +1266,12 @@ progress.scanbar-track::-webkit-progress-value {
 }
 .deck-panel-title {
   flex: 1;
-  font-weight: 700;
-  font-size: 14px;
+  font-weight: var(--fw-bold);
+  font-size: var(--fs-md);
 }
 .deck-panel-badge {
-  font-size: 11px;
-  font-weight: 600;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
   color: var(--accent);
   background: var(--accent-dim);
   border-radius: var(--radius-round);
@@ -1280,7 +1280,7 @@ progress.scanbar-track::-webkit-progress-value {
 }
 .deck-panel-chevron {
   color: var(--muted);
-  transition: transform 0.15s var(--ease);
+  transition: transform var(--dur-fast) var(--ease);
   flex-shrink: 0;
 }
 .deck-panel-chevron.open {
@@ -1317,13 +1317,13 @@ progress.scanbar-track::-webkit-progress-value {
   border-color: var(--danger);
 }
 .settings-section-title {
-  font-size: 14px;
-  font-weight: 700;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-bold);
   margin: 0 0 4px 0;
 }
 .settings-section-desc {
   color: var(--muted);
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   margin: 0 0 var(--sp-4) 0;
   max-width: 60ch;
 }
@@ -1336,7 +1336,7 @@ progress.scanbar-track::-webkit-progress-value {
 .settings-field-label {
   display: block;
   color: var(--muted);
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   margin-bottom: var(--sp-2);
 }
 .settings-inline-panel {
@@ -1370,12 +1370,12 @@ progress.scanbar-track::-webkit-progress-value {
   min-width: 0;
 }
 .backlog-title {
-  font-weight: 600;
-  font-size: 13.5px;
+  font-weight: var(--fw-semibold);
+  font-size: var(--fs-base);
 }
 .backlog-genres {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   margin-top: 2px;
 }
 .backlog-actions {
@@ -1398,8 +1398,8 @@ progress.scanbar-track::-webkit-progress-value {
 .listas-seg-count {
   margin-left: 6px;
   opacity: 0.7;
-  font-size: 11px;
-  font-weight: 700;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
   font-variant-numeric: tabular-nums;
 }
 .listas-grid {
@@ -1415,7 +1415,7 @@ progress.scanbar-track::-webkit-progress-value {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  transition: border-color 0.15s var(--ease), background 0.15s var(--ease);
+  transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
 }
 .listas-card:hover {
   border-color: var(--surface-3);
@@ -1435,8 +1435,8 @@ progress.scanbar-track::-webkit-progress-value {
   display: block;
 }
 .listas-poster .poster-fallback {
-  font-size: 15px;
-  font-weight: 700;
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-bold);
   color: var(--muted);
   background: var(--surface-2);
 }
@@ -1447,8 +1447,8 @@ progress.scanbar-track::-webkit-progress-value {
   min-width: 0;
 }
 .listas-title {
-  font-weight: 600;
-  font-size: 13.5px;
+  font-weight: var(--fw-semibold);
+  font-size: var(--fs-base);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1460,8 +1460,8 @@ progress.scanbar-track::-webkit-progress-value {
   flex-shrink: 0;
 }
 .listas-chip {
-  font-size: 10px;
-  font-weight: 700;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
   text-transform: uppercase;
   letter-spacing: 0.4px;
   padding: 2px 8px;
@@ -1495,7 +1495,7 @@ progress.scanbar-track::-webkit-progress-value {
   gap: 12px;
 }
 .bar-label {
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   color: var(--text);
   text-align: right;
   overflow: hidden;
@@ -1516,11 +1516,11 @@ progress.scanbar-track::-webkit-progress-value {
   height: 100%;
   min-width: 4px;
   border-radius: var(--radius-round);
-  transition: width 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: width var(--dur-slow) cubic-bezier(0.16, 1, 0.3, 1);
 }
 .bar-val {
-  font-size: 12.5px;
-  font-weight: 700;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-bold);
   font-variant-numeric: tabular-nums;
   color: var(--text);
   text-align: right;
@@ -1538,7 +1538,7 @@ progress.scanbar-track::-webkit-progress-value {
   width: 96px;
 }
 .ringcell-label {
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   color: var(--muted);
   margin-top: 6px;
   text-align: center;
