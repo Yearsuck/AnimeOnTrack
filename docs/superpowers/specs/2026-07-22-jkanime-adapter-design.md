@@ -33,27 +33,32 @@ Add one optional method to `SiteAdapter`:
 
 ```rust
 /// Extra JS run in-page, after the normal readiness poll passes, whose
-/// synchronous result REPLACES the page HTML as what parse_series receives.
-/// Exists because jkanime's episode list is not in the series page's HTML
-/// at all — it's fetched client-side via a paginated JSON AJAX endpoint
-/// requiring a CSRF token. Every site so far except this one leaves this at
-/// the default (`None`): its episode list is already in the plain page
-/// HTML, no extra step needed.
-fn episode_fetch_script(&self, base_url: &str) -> Option<String> {
+/// result lands in `ScrapeResult.extra` alongside (not replacing) the plain
+/// `html` — callers that need the episode list read `extra` when present,
+/// `html` otherwise. Exists because jkanime's episode list is not in the
+/// series page's HTML at all — it's fetched client-side via a paginated
+/// JSON AJAX endpoint requiring a CSRF token. Every site so far except this
+/// one leaves this at the default (`None`): its episode list is already in
+/// the plain page HTML, no extra step needed.
+fn episode_fetch_script(&self) -> Option<&'static str> {
     None
 }
 ```
 
-`scraper_engine::fetch_html` (or a sibling function used only for the series-page fetch call sites — `commands/follow.rs`, `commands/scan.rs`'s per-series refresh) gains an optional script parameter: when `Some`, after the existing readiness poll, `eval()` runs this script instead of the default `document.documentElement.outerHTML` extraction, and its return value becomes `ScrapeResult.html`. The script itself:
+No `base_url` parameter, unlike the original sketch of this idea: the site's own inline `<script>` already hardcodes the full ajax URL including domain, so the in-page script needs no external input at all — it reads everything (numeric id, ajax URL, CSRF token, own slug) off the page it's already sitting on.
 
-1. Regex-extracts the numeric id from inline scripts (same pattern confirmed above).
+`ScrapeResult` gains an `extra: Option<String>` field. `scraper_engine::fetch_html` was renamed `fetch_html_with_script` and gained an `extra_script: Option<&str>` parameter: when `Some`, after the existing readiness poll AND the normal HTML extraction (unchanged — both now happen, not either/or), `eval()` also runs this script on the same already-open window, and its result lands in `.extra`. The script itself:
+
+1. Regex-extracts the numeric id + full ajax URL prefix from an inline script (same pattern confirmed above).
 2. Reads the CSRF token from the page's own `meta[name="csrf-token"]`.
-3. Loop of **synchronous** `XMLHttpRequest` (per the repo's established `ExecuteScript` constraint — no `await`able promises survive the host-side `eval()` bridge) against `/ajax/episodes/{id}/{page}`, starting at page 1, continuing while `page <= last_page` from the first response.
-4. Returns `JSON.stringify(allEpisodes)` — a flat array of `{id, number, title, image, timestamp}`.
+3. Loop of **synchronous** `XMLHttpRequest` (per the repo's established `ExecuteScript` constraint — no `await`able promises survive the host-side `eval()` bridge) against the ajax endpoint, starting at page 1, continuing while `page <= last_page` from the first response.
+4. Builds each episode's detail URL itself (`{origin}/{slug}/{number}/` — the JSON response carries no URL) and returns `JSON.stringify(allEpisodes)`.
 
 `jkanime.rs`'s `parse_series(&self, json: &str)` then does `serde_json::from_str` instead of `scraper::Html::parse_document` — the trait signature (`&str -> Result<Vec<Episode>>`) doesn't care that the string holds JSON instead of HTML, so this needs zero trait changes beyond the new optional method.
 
-Airing listing and search stay on the normal `fetch_html` path (no post-load script) — both are fully present in plain page HTML, confirmed live.
+`commands.rs`'s `scrape_via_mirrors` gained a sibling `scrape_via_mirrors_with_script`, and every `parse` closure across both now takes `&ScrapeResult` instead of `&str` (mechanical: `|html| a.parse_x(html)` → `|scraped| a.parse_x(&scraped.html)`) — only the two episode-list call sites (`fetch_episode_list_for`, `fetch_series_episodes` in scan.rs) and `follow.rs`'s single-fetch link flow pass a real `extra_script`; everything else passes `None`, unchanged behavior.
+
+Airing listing and search stay on the normal no-script path — both are fully present in plain page HTML, confirmed live.
 
 **Always fetch every episode page**, never just the newest. Simpler and correct; the multi-page cost (up to 74 requests for an outlier like One Piece) is a one-time cost paid only when the user follows/opens/marks-seen that specific series — consistent with the rest of the app's on-demand-only scraping discipline ([[project-scraping-scope]]). No incremental-refresh optimization for this site in this pass; call out as a known future cost if it becomes a real complaint, don't build it speculatively.
 

@@ -26,6 +26,12 @@ static SCRAPE_PERMITS: LazyLock<tokio::sync::Semaphore> =
 /// instead fetched one at a time, only for series the user actually follows.
 pub struct ScrapeResult {
     pub html: String,
+    /// Result of the adapter's optional `episode_fetch_script` (see
+    /// `SiteAdapter`), run in-page right after `html` was captured. `None`
+    /// for every site whose episode list is already in `html` — which is
+    /// every site except jkanime so far. When present, callers that need the
+    /// episode list pass THIS to `parse_series` instead of `html`.
+    pub extra: Option<String>,
 }
 
 fn emit_stage(app: &AppHandle, stage: &str) {
@@ -33,13 +39,20 @@ fn emit_stage(app: &AppHandle, stage: &str) {
 }
 
 /// Load `url` in a hidden webview, wait for Cloudflare/JS to settle, then
-/// return the rendered HTML.
+/// return the rendered HTML — plus, when `extra_script` is `Some` (see
+/// `SiteAdapter::episode_fetch_script`), the result of running that script
+/// in-page afterward, in `ScrapeResult.extra`. Every call site except the two
+/// that fetch a series' episode list passes `None`.
 ///
 /// Extraction is driven host-side via WebView2's `ExecuteScript` (see `eval`),
 /// NOT via page-side Tauri IPC. Tauri does not inject its IPC into external
 /// remote pages (and exposing it to an untrusted scraped site would be a
 /// security hole), so the host-driven approach is the only correct one here.
-pub async fn fetch_html(app: &AppHandle, url: &str) -> Result<ScrapeResult> {
+pub async fn fetch_html_with_script(
+    app: &AppHandle,
+    url: &str,
+    extra_script: Option<&str>,
+) -> Result<ScrapeResult> {
     let total_started = std::time::Instant::now();
     let _permit = SCRAPE_PERMITS.acquire().await;
     emit_stage(app, "opening");
@@ -64,7 +77,7 @@ pub async fn fetch_html(app: &AppHandle, url: &str) -> Result<ScrapeResult> {
     .build()?;
     let window_build_ms = build_started.elapsed().as_millis();
 
-    let result = extract_when_ready(app, &window, window_build_ms, total_started).await;
+    let result = extract_when_ready(app, &window, window_build_ms, total_started, extra_script).await;
     window.close().ok();
     result
 }
@@ -78,6 +91,7 @@ async fn extract_when_ready(
     window: &WebviewWindow,
     window_build_ms: u128,
     total_started: std::time::Instant,
+    extra_script: Option<&str>,
 ) -> Result<ScrapeResult> {
     // NOTE: does NOT require readyState==='complete' — pages on this site
     // carry ad/tracker resources that can keep the load event from ever
@@ -150,6 +164,23 @@ len: document.body ? document.body.innerHTML.length : -1})";
     let html: String =
         serde_json::from_str(&json).map_err(|e| anyhow!("failed to decode page HTML: {e}"))?;
     let extract_ms = extract_started.elapsed().as_millis();
+
+    // Run the adapter's optional episode-fetch script (jkanime.net only, so
+    // far) on the SAME already-loaded window/page rather than opening a
+    // second one — the script pulls the numeric anime id and CSRF token out
+    // of the page it's already sitting on. 90s timeout, not the normal 15s:
+    // this loops a *synchronous* XHR per episode-list page (see
+    // adapter/jkanime.rs), and a long-running series can be dozens of pages.
+    let extra = match extra_script {
+        Some(script) => {
+            emit_stage(app, "episodes");
+            let json = eval(window, script, 90).await?;
+            let s: String = serde_json::from_str(&json)
+                .map_err(|e| anyhow!("failed to decode episode script result: {e}"))?;
+            Some(s)
+        }
+        None => None,
+    };
     let total_ms = total_started.elapsed().as_millis();
 
     // Phase-0 measurement instrumentation (see
@@ -163,7 +194,7 @@ len: document.body ? document.body.innerHTML.length : -1})";
         "[scrape] fetch timing: window_build_ms={window_build_ms} time_to_ready_ms={time_to_ready_ms} (polls={poll_num}) extract_ms={extract_ms} total_ms={total_ms}"
     );
 
-    Ok(ScrapeResult { html })
+    Ok(ScrapeResult { html, extra })
 }
 
 /// Fetch a single image as a base64 JPEG: open a small window pointed

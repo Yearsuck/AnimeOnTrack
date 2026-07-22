@@ -3,6 +3,7 @@ use anyhow::Result;
 
 pub mod animeflv;
 pub mod animeytx;
+pub mod jkanime;
 pub mod tioanime;
 
 /// Static metadata for one supported site — never the base URL (that changes
@@ -23,6 +24,7 @@ pub fn all_sites() -> &'static [SiteInfo] {
         SiteInfo { id: "animeytx", name: "AnimeYT", default_base_url: "https://wwv.animeytx.net" },
         SiteInfo { id: "tioanime", name: "TioAnime", default_base_url: "https://tioanime.com" },
         SiteInfo { id: "animeflv", name: "AnimeFLV", default_base_url: "https://www4.animeflv.net" },
+        SiteInfo { id: "jkanime", name: "JKanime", default_base_url: "https://jkanime.net" },
     ]
 }
 
@@ -34,6 +36,7 @@ pub fn adapter_for(site_id: &str) -> Option<Box<dyn SiteAdapter>> {
         "animeytx" => Some(Box::new(animeytx::AnimeytxAdapter)),
         "tioanime" => Some(Box::new(tioanime::TioanimeAdapter)),
         "animeflv" => Some(Box::new(animeflv::AnimeflvAdapter)),
+        "jkanime" => Some(Box::new(jkanime::JkanimeAdapter)),
         _ => None,
     }
 }
@@ -105,6 +108,20 @@ pub trait SiteAdapter: Send + Sync {
     /// every other scrape in this codebase, a search's caller must not treat
     /// "parsed empty" as "this mirror failed".
     fn parse_search_results(&self, html: &str) -> Result<Vec<FinishedCard>>;
+
+    /// Extra JS run in-page, once the normal readiness poll passes and the
+    /// plain page HTML has already been captured, whose result becomes
+    /// `ScrapeResult.extra` — what `parse_series` receives instead of `html`
+    /// when present. Exists for jkanime.net: its episode list isn't in the
+    /// series page's HTML at all, it's fetched client-side via a paginated
+    /// JSON AJAX endpoint requiring a CSRF token (see `jkanime.rs`). The
+    /// script pulls the numeric anime id and token straight out of the page
+    /// it's already sitting on, so it needs no `base_url` of its own — every
+    /// other site's episode list is already in the plain page HTML, so this
+    /// defaults to `None` (no extra step, zero behavior change).
+    fn episode_fetch_script(&self) -> Option<&'static str> {
+        None
+    }
 }
 
 // The five genre-archive methods above (`genre_list_url`, `parse_genre_list`,

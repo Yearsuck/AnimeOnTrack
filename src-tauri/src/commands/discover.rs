@@ -68,7 +68,8 @@ pub async fn discover_swipe_card(
         None => {
             let path = a.genre_page_url("", slug, page);
             let (scraped, raw_cards, _mirror) =
-                scrape_via_mirrors(&app, &mirrors, &path, true, |html| a.parse_finished_page(html)).await?;
+                scrape_via_mirrors(&app, &mirrors, &path, true, |scraped| a.parse_finished_page(&scraped.html))
+                    .await?;
             state
                 .swipe_last_page
                 .lock()
