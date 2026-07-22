@@ -156,6 +156,10 @@ export const syncAnimeCatalog = (forceFull = false) =>
 export const maybeSyncCatalogIncremental = () =>
   invoke<number | null>("maybe_sync_catalog_incremental");
 
+// Resolves engaged-but-unlinked series to their AniList catalog row against
+// the local catalog only — no network. Returns how many were newly linked.
+export const linkSeriesToCatalog = () => invoke<number>("link_series_to_catalog");
+
 // Re-fetches catalog rows synced before duration/romaji/studio/start_date
 // existed. Long-running (paced against AniList's rate limit) but resumable —
 // emits "catalog-backfill-progress" ({ done, total }) per 50-row batch.

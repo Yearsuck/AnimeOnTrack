@@ -76,6 +76,53 @@ impl Db {
         Ok(())
     }
 
+    /// Every catalog row's title variants, for building a
+    /// `matching::CatalogIndex`. All three stored spellings are returned
+    /// because the scraped site lists some shows under their romaji title and
+    /// others under the English one, and the display `title` column is only
+    /// ever one of the two.
+    pub fn catalog_titles_for_index(&self) -> Result<Vec<crate::matching::CatalogTitleRow>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, title, title_romaji, title_english, popularity FROM anilist_catalog")?;
+        let rows = stmt
+            .query_map([], |r| {
+                let id: i64 = r.get(0)?;
+                let title: String = r.get(1)?;
+                let romaji: Option<String> = r.get(2)?;
+                let english: Option<String> = r.get(3)?;
+                let popularity: Option<i64> = r.get(4)?;
+                let mut titles = vec![title];
+                titles.extend(romaji);
+                titles.extend(english);
+                Ok(crate::matching::CatalogTitleRow {
+                    id,
+                    titles,
+                    popularity: popularity.unwrap_or(0),
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Unlinked series that are worth resolving to a catalog row: the ones the
+    /// user has actually engaged with. Scraped-but-untouched rows (the bulk of
+    /// the table) are skipped — linking them buys nothing and multiplies the
+    /// chance of a wrong automatic link.
+    pub fn series_needing_catalog_link(&self, source_id: i64) -> Result<Vec<(i64, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT s.id, s.title FROM series s
+             WHERE s.source_id=?1 AND s.anilist_id IS NULL
+               AND (s.followed=1 OR s.watched_externally=1
+                    OR EXISTS (SELECT 1 FROM episodes e WHERE e.series_id=s.id AND e.seen=1))
+             ORDER BY s.id",
+        )?;
+        let rows = stmt
+            .query_map([source_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
     /// AniList ids of catalog rows that predate the extended metadata fields.
     ///
     /// `title_romaji` is the marker rather than `duration` or `studio`:

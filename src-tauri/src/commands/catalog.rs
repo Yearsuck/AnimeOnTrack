@@ -185,6 +185,43 @@ pub fn should_auto_sync_catalog(last_at: Option<&str>, now: chrono::DateTime<chr
     }
 }
 
+/// Resolve engaged-but-unlinked series to their AniList catalog row using only
+/// the local catalog — no network, no scraping.
+///
+/// Every followed series on this database has `anilist_id IS NULL`, because
+/// nothing ever set it: the existing `link_catalog_series` runs the other
+/// direction (catalog entry -> find it on the site) and only when the user
+/// swipes a catalog card. Without a link, a series has no real per-episode
+/// duration and no real episode total, so the stats screen falls back to
+/// format-based estimates for everything the user actually watches.
+///
+/// Matching is exact-only (see `matching::CatalogIndex`), tried on the site
+/// title first and then on the franchise base name, so a per-arc row like
+/// "One Piece: Arco de Elbaph" resolves to the show's catalog entry while a
+/// title with no exact hit is simply left unlinked. Returns how many series
+/// were newly linked.
+#[tauri::command]
+pub fn link_series_to_catalog(state: State<'_, AppState>) -> Result<i64, String> {
+    let src = get_source_id(&state)?;
+    let db = state.db.lock().unwrap();
+    let index = crate::matching::CatalogIndex::build(
+        &db.catalog_titles_for_index().map_err(|e| e.to_string())?,
+    );
+    let mut linked = 0i64;
+    for (series_id, title) in db.series_needing_catalog_link(src).map_err(|e| e.to_string())? {
+        let base = crate::db::stats::franchise_display_title(&title);
+        // The reduced form is only worth a second lookup when it actually
+        // differs; otherwise this is the same query twice.
+        let candidates: Vec<&str> =
+            if base == title { vec![&title] } else { vec![&title, &base] };
+        if let Some(anilist_id) = index.lookup(&candidates) {
+            db.set_anilist_id(series_id, anilist_id).map_err(|e| e.to_string())?;
+            linked += 1;
+        }
+    }
+    Ok(linked)
+}
+
 #[derive(Serialize, Clone)]
 struct CatalogBackfillProgress {
     done: i64,
