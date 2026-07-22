@@ -185,6 +185,63 @@ pub fn should_auto_sync_catalog(last_at: Option<&str>, now: chrono::DateTime<chr
     }
 }
 
+#[derive(Serialize, Clone)]
+struct CatalogBackfillProgress {
+    done: i64,
+    total: i64,
+}
+
+/// Re-fetch catalog rows stored before `title_romaji`/`duration`/`status`/
+/// `studio`/`start_date` were part of the sync query, filling those columns in
+/// place.
+///
+/// Needed because none of the existing sync paths ever revisit them: a full
+/// sync runs once and then records itself complete, and the incremental sync
+/// only re-crawls the current year ± a couple. On a database whose first full
+/// crawl predates those fields that leaves tens of thousands of rows with
+/// NULLs forever — which the stats screen feels directly, since a "Ya lo vi"
+/// title with no `episodes`/`duration` contributes nothing at all to watch
+/// time or episode totals.
+///
+/// Paced and resumable exactly like `run_catalog_sync`: rows are refetched
+/// worst-first (linked to a series, then most popular), and each batch is
+/// committed before the next request, so an interrupted run keeps everything
+/// it already fixed and the next run simply sees fewer stale ids.
+#[tauri::command]
+pub async fn backfill_catalog_metadata(app: AppHandle, state: State<'_, AppState>) -> Result<i64, String> {
+    // Same ~28.6 req/min pacing as `run_catalog_sync`, and unconditional here:
+    // every request in this loop is one full 50-row batch, so there are never
+    // cheap pages worth spending fresh-window headroom on.
+    const PACED_SLEEP: std::time::Duration = std::time::Duration::from_millis(2100);
+
+    let stale_ids = {
+        let db = state.db.lock().unwrap();
+        db.stale_catalog_ids().map_err(|e| e.to_string())?
+    };
+    let total = stale_ids.len() as i64;
+    let mut done = 0i64;
+    let _ = app.emit("catalog-backfill-progress", CatalogBackfillProgress { done, total });
+
+    for batch in stale_ids.chunks(crate::anilist::MAX_IDS_PER_REQUEST) {
+        let fetched = crate::anilist::fetch_by_ids(batch).await.map_err(|e| e.to_string())?;
+        {
+            let db = state.db.lock().unwrap();
+            for anime in &fetched {
+                let sort_order = db.catalog_sort_order(anime.id).map_err(|e| e.to_string())?;
+                db.upsert_catalog_anime(anime, sort_order).map_err(|e| e.to_string())?;
+            }
+        }
+        // Counted over the batch, not the response: ids AniList no longer
+        // serves (deleted/merged entries) never come back, and counting only
+        // what returned would leave the progress bar permanently short of its
+        // total and re-request those same dead ids on every future run.
+        done += batch.len() as i64;
+        let _ = app.emit("catalog-backfill-progress", CatalogBackfillProgress { done, total });
+        tokio::time::sleep(PACED_SLEEP).await;
+    }
+    Ok(done)
+}
+
 async fn run_catalog_sync(
     app: AppHandle,
     state: State<'_, AppState>,

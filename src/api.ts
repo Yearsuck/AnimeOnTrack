@@ -156,6 +156,12 @@ export const syncAnimeCatalog = (forceFull = false) =>
 export const maybeSyncCatalogIncremental = () =>
   invoke<number | null>("maybe_sync_catalog_incremental");
 
+// Re-fetches catalog rows synced before duration/romaji/studio/start_date
+// existed. Long-running (paced against AniList's rate limit) but resumable —
+// emits "catalog-backfill-progress" ({ done, total }) per 50-row batch.
+export const backfillCatalogMetadata = () =>
+  invoke<number>("backfill_catalog_metadata");
+
 export const getCatalogInfoForSeries = (seriesId: number) =>
   invoke<CatalogAnime | null>("get_catalog_info_for_series", { seriesId });
 
