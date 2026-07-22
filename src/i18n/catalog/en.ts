@@ -291,6 +291,12 @@ export const en: Messages = {
   "stats.finished": "Finished",
   "stats.marksHeading": "Episodes marked per day (last 30 days)",
   "stats.marksCaveat": "Counts when you marked the episode, not when you watched it; marking a whole series marks all of its earlier episodes at once. Data since {date}.",
+  "stats.minutesUnit": "{minutes} min",
   "stats.hoursUnit": "{hours}h",
   "stats.daysUnit": "{days}d {hours}h",
+  "stats.loading": "Loading your stats…",
+  "stats.loadError": "Couldn't load your stats: {msg}",
+  "stats.retry": "Try again",
+  "stats.noGenre": "No genre",
+  "stats.graphAria": "Relationship graph: {series} followed series across {genres} genres",
 };

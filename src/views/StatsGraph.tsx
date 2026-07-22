@@ -3,7 +3,7 @@ import ForceGraph3D, { type ForceGraphMethods, type NodeObject } from "react-for
 import * as THREE from "three";
 import { useT } from "../i18n";
 import { useTheme } from "../theme";
-import { categoryColor, SIN_GENERO_LABEL } from "../lib/categoryColor";
+import { categoryColor, NO_GENRE_KEY } from "../lib/categoryColor";
 import type { SeriesGraphNode } from "../types";
 
 // The root node's near-white dark-theme color (#e9ecef) is invisible on the
@@ -65,9 +65,13 @@ interface GLink {
   target: string;
 }
 
+// `noGenreLabel` is passed in rather than imported as a constant so the
+// "no genre" hub reads in the active language; its node id and colour key off
+// NO_GENRE_KEY instead, which never changes with language.
 function buildGraphData(
   seriesList: SeriesGraphNode[],
-  rootLabel: string
+  rootLabel: string,
+  noGenreLabel: string
 ): { nodes: GNode[]; links: GLink[] } {
   const nodes: GNode[] = [{ id: "root", kind: "root", label: rootLabel, count: seriesList.length }];
   const links: GLink[] = [];
@@ -91,13 +95,13 @@ function buildGraphData(
   }
   if (sinGeneroCount > 0) {
     nodes.push({
-      id: `genre:${SIN_GENERO_LABEL}`,
+      id: `genre:${NO_GENRE_KEY}`,
       kind: "genreHub",
-      label: SIN_GENERO_LABEL,
+      label: noGenreLabel,
       count: sinGeneroCount,
-      color: categoryColor(SIN_GENERO_LABEL),
+      color: categoryColor(NO_GENRE_KEY),
     });
-    links.push({ source: "root", target: `genre:${SIN_GENERO_LABEL}` });
+    links.push({ source: "root", target: `genre:${NO_GENRE_KEY}` });
   }
   for (const [k, count] of kindCounts) {
     nodes.push({ id: `kind:${k}`, kind: "kindHub", label: k, count, color: categoryColor(k) });
@@ -106,10 +110,10 @@ function buildGraphData(
 
   for (const s of seriesList) {
     const id = `series:${s.id}`;
-    const fallbackColor = s.genres[0] ? categoryColor(s.genres[0]) : categoryColor(SIN_GENERO_LABEL);
+    const fallbackColor = s.genres[0] ? categoryColor(s.genres[0]) : categoryColor(NO_GENRE_KEY);
     nodes.push({ id, kind: "series", label: s.title, color: fallbackColor, coverUrl: s.cover_url });
     if (s.genres.length === 0) {
-      links.push({ source: `genre:${SIN_GENERO_LABEL}`, target: id });
+      links.push({ source: `genre:${NO_GENRE_KEY}`, target: id });
     } else {
       for (const g of s.genres) links.push({ source: `genre:${g}`, target: id });
     }
@@ -416,7 +420,7 @@ export function StatsGraph({
   const prevIdsRef = useRef<Set<string> | null>(null);
 
   const { nodes, links } = useMemo(() => {
-    const built = buildGraphData(seriesList, t("stats.graphRootLabel"));
+    const built = buildGraphData(seriesList, t("stats.graphRootLabel"), t("stats.noGenre"));
     const rootSaved = positionsRef.current.get("root");
     for (const n of built.nodes) {
       const saved = positionsRef.current.get(n.id);
@@ -572,12 +576,29 @@ export function StatsGraph({
         if (node.kind === "series") {
           const hasCover = !!node.coverUrl && node.coverUrl.startsWith("data:");
           const strokeColor = theme === "light" ? "rgba(23, 34, 46, 0.55)" : "rgba(255, 255, 255, 0.35)";
-          const texture = hasCover
-            ? new THREE.TextureLoader().load(node.coverUrl as string)
-            : new THREE.CanvasTexture(
-                fallbackCircleCanvas(node.color ?? categoryColor(SIN_GENERO_LABEL), strokeColor)
-              );
-          const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, transparent: true }));
+          const fallbackTexture = () =>
+            new THREE.CanvasTexture(
+              fallbackCircleCanvas(node.color ?? categoryColor(NO_GENRE_KEY), strokeColor)
+            );
+          const material = new THREE.SpriteMaterial({ transparent: true });
+          // The try/catch below only guards the synchronous construction —
+          // TextureLoader decodes asynchronously, so a truncated or malformed
+          // `data:` cover (fetch_cover_image can produce one) failed silently
+          // and left an invisible sprite. Wiring onError swaps in the same
+          // fallback disc an absent cover would have used.
+          material.map = hasCover
+            ? new THREE.TextureLoader().load(
+                node.coverUrl as string,
+                undefined,
+                undefined,
+                () => {
+                  material.map?.dispose();
+                  material.map = fallbackTexture();
+                  material.needsUpdate = true;
+                }
+              )
+            : fallbackTexture();
+          const sprite = new THREE.Sprite(material);
           sprite.scale.set(SERIES_SPRITE_SIZE, SERIES_SPRITE_SIZE, 1);
           obj = sprite;
         } else {
@@ -623,6 +644,14 @@ export function StatsGraph({
       ref={containerRef}
       className="stats-graph-galaxy"
       style={{ borderRadius: "var(--radius-sm)", overflow: "hidden" }}
+      // The graph is a bare WebGL canvas, so without this a screen reader gets
+      // nothing at all from it — unlike the bar/ring views, which already
+      // carry role="img"/aria-label.
+      role="img"
+      aria-label={t("stats.graphAria", {
+        series: seriesList.length,
+        genres: new Set(seriesList.flatMap((s) => s.genres)).size,
+      })}
     >
       {seriesList.length === 0 ? (
         <div className="empty">{t("stats.graphEmpty")}</div>

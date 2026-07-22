@@ -2,6 +2,7 @@ import { useT } from "../i18n";
 import type { WatchInsights, WatchSummary } from "../types";
 import { BarChart, CategoryBlock, ShapeToggle } from "./StatsRings";
 import { useStatsShape } from "../lib/statsShape";
+import { useFormatNumber } from "../lib/formatNumber";
 
 // "Resumen" block for Estadísticas — local-only metrics computed by
 // `get_watch_insights` (pure SQL, see src-tauri/src/db.rs). Sits between the
@@ -12,13 +13,26 @@ import { useStatsShape } from "../lib/statsShape";
 
 const MINUTES_PER_DAY = 24 * 60;
 
+// Rounds to whole hours first and only then splits into days + hours, so the
+// two components can never disagree. Rounding the day remainder on its own
+// could reach 24 (8630 min → 5d, remainder 1430 → round(1430/60) = 24) and
+// render an impossible "5d 24h" instead of "6d 0h".
+//
+// Below an hour it reports minutes rather than a rounded-down "0h": a single
+// externally-marked episode is ~24 minutes of real watch time, and showing
+// zero next to a help line that says data exists reads as a bug.
 function formatMinutes(t: ReturnType<typeof useT>, minutes: number): string {
-  if (minutes >= 2 * MINUTES_PER_DAY) {
-    const days = Math.floor(minutes / MINUTES_PER_DAY);
-    const hours = Math.round((minutes % MINUTES_PER_DAY) / 60);
-    return t("stats.daysUnit", { days, hours });
+  if (minutes < 60) {
+    return t("stats.minutesUnit", { minutes: Math.round(minutes) });
   }
-  return t("stats.hoursUnit", { hours: Math.round(minutes / 60) });
+  const totalHours = Math.round(minutes / 60);
+  if (minutes >= 2 * MINUTES_PER_DAY) {
+    return t("stats.daysUnit", {
+      days: Math.floor(totalHours / 24),
+      hours: totalHours % 24,
+    });
+  }
+  return t("stats.hoursUnit", { hours: totalHours });
 }
 
 // "2026-07-13" -> "07-13", short enough for a bar-chart label without
@@ -35,6 +49,7 @@ export function StatsInsights({
   summary: WatchSummary;
 }) {
   const t = useT();
+  const n = useFormatNumber();
   const [shape, setShape] = useStatsShape();
 
   const totalMinutes = insights.estimated_minutes_tracked + insights.estimated_minutes_external;
@@ -71,8 +86,8 @@ export function StatsInsights({
             <div style={{ fontSize: 22, fontWeight: 700 }}>{formatMinutes(t, totalMinutes)}</div>
             <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
               {t("stats.timeWatchedHelp", {
-                done: insights.external_titles_estimated,
-                total: insights.external_titles_total,
+                done: n(insights.external_titles_estimated),
+                total: n(insights.external_titles_total),
               })}
             </div>
           </div>
@@ -87,7 +102,7 @@ export function StatsInsights({
               <span style={{ width: `${completionPct}%` }} />
             </div>
             <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
-              {summary.episodes_watched}/{summary.episodes_total}
+              {n(summary.episodes_watched)}/{n(summary.episodes_total)}
             </div>
           </div>
         </div>

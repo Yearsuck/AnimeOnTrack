@@ -25,8 +25,14 @@ const PALETTE = [
   "#FFC078", // gold
 ];
 
-export const SIN_GENERO_LABEL = "Sin género";
-const SIN_GENERO_COLOR = "#868e96";
+// Stable identity for the "this series has no genre" bucket, kept separate
+// from the text shown for it. The label used to be a hardcoded Spanish
+// string that doubled as the lookup key, so the English UI still read "Sin
+// género"; the visible text now comes from `t("stats.noGenre")` while this
+// key stays constant so the grey swatch below keeps matching it regardless of
+// the active language.
+export const NO_GENRE_KEY = "__no_genre__";
+const NO_GENRE_COLOR = "#868e96";
 
 function hashString(name: string): number {
   let hash = 0;
@@ -37,6 +43,6 @@ function hashString(name: string): number {
 }
 
 export function categoryColor(name: string): string {
-  if (name === SIN_GENERO_LABEL) return SIN_GENERO_COLOR;
+  if (name === NO_GENRE_KEY) return NO_GENRE_COLOR;
   return PALETTE[hashString(name) % PALETTE.length];
 }
