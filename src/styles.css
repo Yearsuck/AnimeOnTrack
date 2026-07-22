@@ -48,7 +48,43 @@
   --ease: cubic-bezier(0.4, 0, 0.2, 1);
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
 
-  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  /* Motion durations. Named rather than typed inline so a transition can be
+     retimed everywhere at once, and so "fast" always means the same thing on
+     a hover as it does on a chip toggle. */
+  --dur-fast: 120ms;
+  --dur: 180ms;
+  --dur-slow: 320ms;
+
+  /* Type scale. Every size the UI uses, so a component never invents its own
+     (the screen previously carried 13px, 13.5px, 12.5px and 22px, some of
+     them only as inline styles). Tight by web standards on purpose — this is
+     a desktop app, not a document. */
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-base: 13px;
+  --fs-md: 14px;
+  --fs-lg: 16px;
+  --fs-xl: 20px;
+  --fs-2xl: 26px;
+  --fs-3xl: 34px;
+
+  --lh-tight: 1.2;
+  --lh-base: 1.5;
+
+  --fw-normal: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+  --fw-bold: 700;
+
+  /* One focus treatment for the whole app: a solid ring plus a soft halo, so
+     it stays visible against both a flat surface and a filled button. */
+  --focus-ring: 0 0 0 3px var(--accent-dim);
+
+  /* Inter ships bundled (see main.tsx); the system stack behind it is the
+     fallback for the split second before it decodes, and for a build where
+     the font asset is missing. */
+  --font: "Inter Variable", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    Helvetica, Arial, sans-serif;
 }
 
 /* Light theme — overrides color tokens only (spacing/radius/ease/font stay
@@ -107,9 +143,21 @@ body {
   background: var(--bg);
   color: var(--text);
   font-family: var(--font);
-  font-size: 14px;
-  line-height: 1.5;
+  font-size: var(--fs-md);
+  line-height: var(--lh-base);
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  /* Inter's alternates: a straight-tailed "l" (cv05) and a single-storey "a"
+     in italics read better at UI sizes than the defaults, and disambiguating
+     l/1/I matters in a list of episode numbers. */
+  font-feature-settings: "cv05" 1, "cv11" 1, "ss01" 1;
+}
+
+/* Anything that is fundamentally a number in a column — episode counts, stat
+   tiles, chart values — gets fixed-width digits so figures line up and don't
+   jitter as they update. */
+.tabular {
+  font-variant-numeric: tabular-nums;
 }
 
 ::-webkit-scrollbar {
@@ -139,129 +187,213 @@ a:hover {
   z-index: 50;
   display: flex;
   align-items: center;
-  gap: 16px;
-  padding: 12px 20px;
+  gap: var(--sp-4);
+  padding: var(--sp-2) var(--sp-5);
   background: var(--overlay-bg);
-  backdrop-filter: blur(10px);
-  border-bottom: 1px solid var(--border);
+  backdrop-filter: blur(14px) saturate(140%);
+  border-bottom: 1px solid var(--border-soft);
 }
 .brand {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-weight: 700;
-  font-size: 16px;
-  letter-spacing: 0.2px;
+  gap: var(--sp-2);
+  font-weight: var(--fw-bold);
+  font-size: var(--fs-lg);
+  /* Slightly negative tracking: Inter's default spacing is tuned for body
+     copy and reads loose in a bold wordmark at this size. */
+  letter-spacing: -0.01em;
 }
 .brand .dot {
-  width: 10px;
-  height: 10px;
+  width: 9px;
+  height: 9px;
   border-radius: 50%;
   background: var(--accent);
-  box-shadow: 0 0 12px var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-dim), 0 0 12px var(--accent);
 }
 .tabs {
   display: flex;
-  gap: 4px;
+  gap: var(--sp-1);
 }
 .tab {
-  padding: 7px 14px;
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 0 var(--sp-3);
   border-radius: var(--radius-sm);
   color: var(--muted);
-  font-weight: 600;
+  font-family: inherit;
+  font-weight: var(--fw-semibold);
   cursor: pointer;
   border: none;
   background: transparent;
-  font-size: 13.5px;
+  font-size: var(--fs-base);
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 .tab:hover {
   color: var(--text);
   background: var(--surface-2);
 }
 .tab.active {
-  color: var(--text);
+  color: var(--accent);
   background: var(--accent-dim);
 }
 .badge {
-  min-width: 20px;
-  height: 20px;
-  padding: 0 6px;
-  border-radius: 10px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 var(--sp-1);
+  border-radius: var(--radius-round);
   background: var(--accent);
   color: #05121f;
-  font-size: 12px;
-  font-weight: 800;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
+  font-variant-numeric: tabular-nums;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  margin-left: 6px;
+  margin-left: var(--sp-2);
 }
 .spacer {
   flex: 1;
 }
 
-/* ---------- Buttons ---------- */
+/* ---------- Buttons ----------
+   Every variant is the same 32px-tall pill with the same type and the same
+   transition; only the fill changes. Controls used to differ by a pixel or
+   two of padding and half a point of font size from one view to the next,
+   which is the kind of thing that reads as sloppy without being nameable. */
 .btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  min-height: 32px;
   border: 1px solid var(--border);
   background: var(--surface-2);
   color: var(--text);
-  padding: 7px 14px;
+  padding: 0 var(--sp-3);
   border-radius: var(--radius-sm);
-  font-weight: 600;
-  font-size: 13px;
+  font-family: inherit;
+  font-weight: var(--fw-semibold);
+  font-size: var(--fs-base);
+  line-height: 1;
+  white-space: nowrap;
   cursor: pointer;
-  transition: background 0.15s var(--ease), border-color 0.15s var(--ease),
-    transform 0.1s var(--ease), box-shadow 0.15s var(--ease);
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease),
+    box-shadow var(--dur-fast) var(--ease);
 }
-.btn:hover {
+.btn:hover:not(:disabled) {
   background: var(--surface-3);
+  border-color: var(--muted-2);
 }
-.btn:active {
-  transform: scale(0.96);
+/* A 1px nudge rather than a scale: scaling a button resamples its text for
+   the duration of the press, which looks blurry at these sizes. */
+.btn:active:not(:disabled) {
+  transform: translateY(1px);
 }
 .btn:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-.btn:focus-visible,
-.tab:focus-visible,
-.input:focus-visible,
-.check:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 .btn-primary {
   background: var(--accent);
   border-color: var(--accent);
   color: #05121f;
+  box-shadow: var(--shadow-sm);
 }
-.btn-primary:hover {
+.btn-primary:hover:not(:disabled) {
   background: var(--accent-hover);
   border-color: var(--accent-hover);
-  box-shadow: 0 0 0 4px var(--accent-dim);
+  box-shadow: var(--shadow-sm), var(--focus-ring);
 }
 .btn-success {
   color: var(--success);
-  border-color: rgba(70, 209, 158, 0.4);
+  border-color: var(--success-dim);
+  background: var(--success-dim);
+}
+.btn-success:hover:not(:disabled) {
+  border-color: var(--success);
+  background: var(--success-dim);
 }
 .btn-ghost {
   background: transparent;
+  border-color: transparent;
+  color: var(--muted);
+}
+.btn-ghost:hover:not(:disabled) {
+  background: var(--surface-2);
+  border-color: transparent;
+  color: var(--text);
+}
+.btn-danger {
+  color: var(--danger);
+  border-color: var(--danger);
+  background: transparent;
+}
+.btn-danger:hover:not(:disabled) {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: var(--surface);
+}
+/* Denser variant for buttons that sit inside a row of data rather than in a
+   toolbar (episode rows, card actions). */
+.btn-sm {
+  min-height: 26px;
+  padding: 0 var(--sp-2);
+  font-size: var(--fs-sm);
+}
+
+/* One focus treatment across every interactive element in the app. Listed
+   together deliberately: a component that grows its own focus style is how a
+   UI ends up with three different rings. */
+.btn:focus-visible,
+.tab:focus-visible,
+.input:focus-visible,
+.check:focus-visible,
+.chip-toggle:focus-visible,
+.lib-card:focus-visible,
+.lib-section-summary:focus-visible,
+select:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  box-shadow: var(--focus-ring);
 }
 
 /* ---------- Inputs ---------- */
-.input {
+.input,
+select.input {
   width: 100%;
-  padding: 10px 12px;
+  min-height: 32px;
+  padding: 0 var(--sp-3);
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   color: var(--text);
-  font-size: 14px;
+  font-family: inherit;
+  font-size: var(--fs-base);
   outline: none;
+  transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+}
+/* A textarea can't be a single line, so it keeps vertical padding and its own
+   line height. */
+textarea.input {
+  padding: var(--sp-2) var(--sp-3);
+  line-height: var(--lh-base);
+}
+.input::placeholder {
+  color: var(--muted-2);
+}
+.input:hover:not(:focus) {
+  border-color: var(--muted-2);
 }
 .input:focus {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-dim);
+  box-shadow: var(--focus-ring);
+}
+.input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 .search {
   position: relative;
@@ -317,10 +449,6 @@ a:hover {
   border-color: var(--accent);
   background: var(--accent-dim);
 }
-.chip-toggle:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
 
 /* ---------- Layout ---------- */
 .page {
@@ -332,13 +460,23 @@ a:hover {
 .page-head {
   display: flex;
   align-items: center;
-  gap: 16px;
-  margin-bottom: 18px;
+  gap: var(--sp-4);
+  margin-bottom: var(--sp-5);
+  min-height: 32px;
 }
 .page-title {
-  font-size: 20px;
-  font-weight: 700;
+  font-size: var(--fs-xl);
+  font-weight: var(--fw-bold);
+  line-height: var(--lh-tight);
+  letter-spacing: -0.015em;
   margin: 0;
+}
+/* One-line explanation under a page title. Optional, but when a view uses it
+   the treatment is the same everywhere instead of an inline muted span. */
+.page-subtitle {
+  color: var(--muted);
+  font-size: var(--fs-base);
+  margin: var(--sp-1) 0 0;
 }
 .muted {
   color: var(--muted);
@@ -356,7 +494,76 @@ a:hover {
 .empty {
   text-align: center;
   color: var(--muted);
-  padding: 60px 20px;
+  font-size: var(--fs-base);
+  padding: var(--sp-8) var(--sp-5);
+}
+
+/* ---------- Loading skeletons ----------
+   A grey block that pulses where content will land, instead of an empty page
+   that suddenly reflows when data arrives. Sized by the caller; the shimmer
+   is shared. Respects prefers-reduced-motion via the global override above. */
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--surface-2) 25%,
+    var(--surface-3) 50%,
+    var(--surface-2) 75%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.4s var(--ease) infinite;
+  border-radius: var(--radius-sm);
+}
+@keyframes skeleton-shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+.skeleton-text {
+  height: 12px;
+  margin-bottom: var(--sp-2);
+}
+.skeleton-title {
+  height: 18px;
+  width: 40%;
+  margin-bottom: var(--sp-3);
+}
+
+/* ---------- Stat tile ----------
+   The dashboard number card, previously assembled from four inline styles
+   per instance in Stats.tsx and StatsInsights.tsx. */
+.stat-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--sp-4);
+  transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+}
+.stat-card:hover {
+  border-color: var(--surface-3);
+  box-shadow: var(--shadow-sm);
+}
+.stat-label {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.stat-value {
+  font-size: var(--fs-2xl);
+  font-weight: var(--fw-bold);
+  line-height: var(--lh-tight);
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  margin-top: var(--sp-1);
+}
+.stat-help {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  margin-top: var(--sp-1);
 }
 
 /* ---------- Poster grid (airing) ---------- */
@@ -370,7 +577,8 @@ a:hover {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   overflow: hidden;
-  transition: transform 0.12s, border-color 0.12s, box-shadow 0.12s;
+  transition: transform var(--dur) var(--ease-out), border-color var(--dur-fast) var(--ease),
+    box-shadow var(--dur) var(--ease-out);
 }
 .card:hover {
   transform: translateY(-3px);
