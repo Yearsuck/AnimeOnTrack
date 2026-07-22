@@ -9,7 +9,7 @@ import { Stats } from "./views/Stats";
 import { Descubrir } from "./views/Descubrir";
 import { Catalog } from "./views/Catalog";
 import { ProgressBar } from "./views/ProgressBar";
-import { listAiring, refresh, rescanAiring, pendingCount } from "./api";
+import { listAiring, refresh, rescanAiring, pendingCount, maybeSyncCatalogIncremental } from "./api";
 import { useT } from "./i18n";
 import type { Series } from "./types";
 
@@ -63,6 +63,10 @@ export default function App() {
         await refresh().catch(() => 0);
         setRefreshing(false);
         await refreshBadge();
+        // Fire-and-forget: backfills anilist_catalog.start_date so "Esta
+        // temporada" can resolve unfollowed airing shows too. Throttled
+        // server-side, doesn't block the UI.
+        maybeSyncCatalogIncremental().catch(() => {});
       } catch {
         setView("onboarding");
       }

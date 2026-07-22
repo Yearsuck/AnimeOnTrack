@@ -149,6 +149,12 @@ export const getCatalogFacets = () => invoke<CatalogFacets>("get_catalog_facets"
 export const syncAnimeCatalog = (forceFull = false) =>
   invoke<number>("sync_anime_catalog", { forceFull });
 
+// Fire-and-forget throttled incremental catalog sync, called on app
+// startup so `anilist_catalog.start_date` backfills for "Esta temporada"
+// without requiring the user to visit Catálogo and click Sync manually.
+export const maybeSyncCatalogIncremental = () =>
+  invoke<number | null>("maybe_sync_catalog_incremental");
+
 export const discoverCatalogCard = (recommended: boolean) =>
   invoke<SwipeCard | null>("discover_catalog_card", { recommended });
 

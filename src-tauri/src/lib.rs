@@ -104,6 +104,7 @@ pub fn run() {
             commands::get_anime_catalog,
             commands::get_catalog_facets,
             commands::sync_anime_catalog,
+            commands::maybe_sync_catalog_incremental,
             commands::discover_catalog_card,
             commands::decide_catalog_card,
             commands::link_catalog_series,
