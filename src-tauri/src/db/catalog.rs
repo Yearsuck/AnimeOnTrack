@@ -388,7 +388,12 @@ impl Db {
         hide_upcoming: bool,
     ) -> Result<Option<crate::anilist::CatalogAnime>> {
         const MIN_POPULARITY: i64 = 500;
-        const BATCH_SIZE: i64 = 40;
+        // Raised from 40: a random 40-title sample out of a genre that can
+        // hold thousands of catalog rows too often missed the actual
+        // best-scoring candidates before `recommend::pick_recommended` ever
+        // saw them. 150 stays cheap (one local, indexed SQLite query) while
+        // giving the scorer a meaningfully wider pool to rank.
+        const BATCH_SIZE: i64 = 150;
         const DEFAULT_FORMATS: &[&str] = &["TV", "MOVIE", "OVA", "ONA", "SPECIAL"];
         let allowed: Vec<&str> = DEFAULT_FORMATS
             .iter()
@@ -439,7 +444,8 @@ impl Db {
         }
 
         if recommended {
-            Ok(crate::recommend::pick_recommended(survivors, genre_affinity, format_affinity, genre))
+            let now_unix = chrono::Utc::now().timestamp();
+            Ok(crate::recommend::pick_recommended(survivors, genre_affinity, format_affinity, genre, now_unix))
         } else {
             Ok(survivors.into_iter().next())
         }
