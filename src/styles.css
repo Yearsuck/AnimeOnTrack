@@ -343,6 +343,16 @@ a:hover {
 .muted {
   color: var(--muted);
 }
+/* Generic flex row used to lay out a button/input group inline. Was
+   previously only defined in the unimported App.css, so every `.row` usage
+   across the app (Settings, DeckPanel, Onboarding) silently rendered
+   unstyled — fixed here instead of patched per-view. */
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
 .empty {
   text-align: center;
   color: var(--muted);
@@ -1065,6 +1075,48 @@ progress.scanbar-track::-webkit-progress-value {
     margin: 0 auto;
     width: 100%;
   }
+}
+
+/* ---------- Settings ---------- */
+.settings-section {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--sp-5);
+  margin-bottom: var(--sp-5);
+}
+.settings-section.danger-zone {
+  border-color: var(--danger);
+}
+.settings-section-title {
+  font-size: 14px;
+  font-weight: 700;
+  margin: 0 0 4px 0;
+}
+.settings-section-desc {
+  color: var(--muted);
+  font-size: 12.5px;
+  margin: 0 0 var(--sp-4) 0;
+  max-width: 60ch;
+}
+.settings-field {
+  margin-bottom: var(--sp-4);
+}
+.settings-field:last-child {
+  margin-bottom: 0;
+}
+.settings-field-label {
+  display: block;
+  color: var(--muted);
+  font-size: 12.5px;
+  margin-bottom: var(--sp-2);
+}
+.settings-inline-panel {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--sp-4);
+  margin-top: var(--sp-4);
 }
 
 .backlog-row {
