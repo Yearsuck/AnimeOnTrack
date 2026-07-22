@@ -17,80 +17,120 @@ use std::collections::{HashMap, HashSet};
 /// 2" together without a metadata source. Never returns "" (falls back to the
 /// full normalized title if stripping would otherwise empty it).
 pub(crate) fn franchise_key(title: &str) -> String {
-    let base = franchise_base_slice(title);
-    let norm = crate::matching::normalize_title(base);
-    let mut tokens: Vec<&str> = norm.split_whitespace().collect();
-    while let Some(&last) = tokens.last() {
-        if is_season_marker_token(last) {
-            tokens.pop();
-        } else {
-            break;
-        }
-    }
+    let norm = crate::matching::normalize_title(title);
+    let tokens: Vec<&str> = strip_season_markers(norm.split_whitespace().collect(), |t| t.to_string());
     let key = tokens.join(" ");
     if key.is_empty() {
-        crate::matching::normalize_title(title)
+        norm
     } else {
         key
     }
 }
 
-/// The slice of `title` before a colon-introduced arc/subtitle qualifier, or
-/// the whole title when there is no usable colon. Shared by `franchise_key`
-/// (which then normalizes it) and `franchise_display_title` (which keeps the
-/// original casing/accents).
-fn franchise_base_slice(title: &str) -> &str {
-    match title.split_once(':') {
-        // Only strip when there's real title text before the colon, so a
-        // colon-led title (unlikely, but keep it safe) doesn't collapse to "".
-        Some((head, _)) if !head.trim().is_empty() => head,
-        _ => title,
+/// The franchise key of the text before a colon, when a colon-introduced
+/// qualifier is present at all. `None` otherwise, and `None` when stripping it
+/// wouldn't change the key.
+///
+/// This is only ever a *candidate* parent, never applied on its own: the
+/// scraped site does split long-runners as "One Piece: Arco de Elbaph", but a
+/// colon is also ordinary title punctuation ("Re:Zero kara Hajimeru Isekai
+/// Seikatsu", "Code:Breaker", "Re:CREATORS", "Re: Hamatora"), and truncating
+/// at it unconditionally collapsed six unrelated shows into a single franchise
+/// called "Re". `franchise_rollups` therefore only merges a group into its
+/// parent when the parent key is independently present in the user's own data
+/// — i.e. they really do have a "One Piece" row — so a colon that is just
+/// punctuation never merges anything.
+pub(crate) fn franchise_parent_key(title: &str) -> Option<String> {
+    let (head, _) = title.split_once(':')?;
+    if head.trim().is_empty() {
+        return None;
     }
+    let parent = franchise_key(head);
+    (!parent.is_empty() && parent != franchise_key(title)).then_some(parent)
 }
 
-/// True for a *normalized* trailing token that marks a season/part/arc rather
-/// than being part of the show's name: "season"/"temporada"/"part"/"parte"/
-/// "cour"/"final"/"the", a bare integer (also catches a stripped "(2024)"
-/// year), Roman numerals ii..x, and "1st"/"2nd"/"3rd"/"4th"-style ordinals.
-fn is_season_marker_token(token: &str) -> bool {
+/// Drop trailing season/part markers from `tokens`, testing each token's
+/// normalized form via `normalize` (identity for already-normalized input,
+/// real normalization for raw display tokens).
+///
+/// A bare trailing integer is only a season number when a marker word
+/// introduces it ("Temporada 2", "Part 2") — stripping any trailing digit
+/// unconditionally merged genuinely distinct titles whose name ends in one,
+/// e.g. "Steins;Gate 0" (a different work, with its own AniList entry and
+/// episode count) into "Steins;Gate".
+fn strip_season_markers<'a>(
+    mut tokens: Vec<&'a str>,
+    normalize: impl Fn(&str) -> String,
+) -> Vec<&'a str> {
     const ROMANS: &[&str] = &["ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x"];
     const MARKER_WORDS: &[&str] =
         &["season", "temporada", "part", "parte", "cour", "final", "the"];
-    let is_int = !token.is_empty() && token.chars().all(|c| c.is_ascii_digit());
-    let is_ordinal = token.len() > 2
-        && matches!(&token[token.len() - 2..], "st" | "nd" | "rd" | "th")
-        && token[..token.len() - 2].chars().all(|c| c.is_ascii_digit());
-    is_int || is_ordinal || ROMANS.contains(&token) || MARKER_WORDS.contains(&token)
+    let is_marker_word = |t: &str| MARKER_WORDS.contains(&t);
+    let is_int = |t: &str| !t.is_empty() && t.chars().all(|c| c.is_ascii_digit());
+    let is_ordinal = |t: &str| {
+        t.len() > 2
+            && matches!(&t[t.len() - 2..], "st" | "nd" | "rd" | "th")
+            && t[..t.len() - 2].chars().all(|c| c.is_ascii_digit())
+    };
+
+    while let Some(&last) = tokens.last() {
+        let normalized = normalize(last);
+        if is_marker_word(&normalized) || is_ordinal(&normalized) || ROMANS.contains(&normalized.as_str())
+        {
+            tokens.pop();
+            continue;
+        }
+        if is_int(&normalized) {
+            let introduced_by_marker = tokens.len() >= 2
+                && is_marker_word(&normalize(tokens[tokens.len() - 2]));
+            if introduced_by_marker {
+                tokens.pop();
+                tokens.pop();
+                continue;
+            }
+        }
+        break;
+    }
+    tokens
 }
 
 /// A human-facing franchise name derived from one member title, with the
 /// original casing and accents preserved — `franchise_key`'s normalized output
 /// ("one piece") is a grouping key, never something to show a user.
 ///
-/// Applies the same two reductions as `franchise_key` (drop a colon-introduced
-/// qualifier, then strip trailing season/part markers) but operates on the raw
-/// tokens, testing each one's normalized form. "One Piece: Arco de Elbaph" and
-/// "One Piece: Live Action (2023) Temporada 2" both yield "One Piece", so a
-/// franchise row in `top_series` is labelled with the show's name instead of
-/// whichever arc happened to have the shortest title. Falls back to the
-/// trimmed input when stripping would leave nothing.
+/// Applies the same reduction as `franchise_key` — strip trailing season/part
+/// markers — but on the raw tokens, testing each one's normalized form. "One
+/// Piece Temporada 2" yields "One Piece". A colon qualifier is deliberately
+/// *kept*: this labels whichever group a title ended up in, and dropping the
+/// colon tail here would claim a merge that `franchise_rollups` may not have
+/// made (see `franchise_parent_key`). When a merge does happen, the parent
+/// group supplies the label. Falls back to the trimmed input when stripping
+/// would leave nothing.
 pub(crate) fn franchise_display_title(title: &str) -> String {
-    let base = franchise_base_slice(title).trim();
-    let mut tokens: Vec<&str> = base.split_whitespace().collect();
-    while let Some(&last) = tokens.last() {
-        let normalized = crate::matching::normalize_title(last);
-        if is_season_marker_token(&normalized) {
-            tokens.pop();
-        } else {
-            break;
-        }
-    }
+    let tokens = strip_season_markers(
+        title.trim().split_whitespace().collect(),
+        crate::matching::normalize_title,
+    );
     let out = tokens.join(" ").trim().to_string();
     if out.is_empty() {
         title.trim().to_string()
     } else {
         out
     }
+}
+
+/// The show name a colon-qualified title hangs off, with casing intact — "One
+/// Piece: Arco de Elbaph" gives "One Piece". Unlike `franchise_display_title`
+/// this *does* drop the colon tail, so it is a lookup candidate rather than a
+/// label: `commands::link_series_to_catalog` tries it against the AniList
+/// catalog only after the full title misses, and a wrong guess simply fails to
+/// match rather than mislabelling anything.
+pub(crate) fn franchise_base_title(title: &str) -> String {
+    let head = match title.split_once(':') {
+        Some((head, _)) if !head.trim().is_empty() => head,
+        _ => title,
+    };
+    franchise_display_title(head)
 }
 
 /// Minutes estimated per episode by format/kind, case-insensitively. This is
@@ -136,6 +176,59 @@ fn prefer_display_title(candidate: &str, current: &str) -> bool {
     }
 }
 
+/// Fold each group whose colon-stripped parent key is *also* a group in this
+/// same data into that parent, then return the survivors.
+///
+/// The corpus check is the whole point: "One Piece: Arco de Elbaph" only joins
+/// "One Piece" because the user really has a One Piece row, whereas "Re:Zero
+/// kara Hajimeru Isekai Seikatsu" stays put because nobody has a series called
+/// "Re". Parents are resolved transitively (a merged group's own parent still
+/// applies) with a hard depth cap, so a pathological chain — or a cycle that
+/// shouldn't be constructible but must not hang if it were — bottoms out.
+fn merge_into_parent_franchises(
+    groups: HashMap<String, FranchiseRollup>,
+    parent_of: &HashMap<String, String>,
+) -> Vec<FranchiseRollup> {
+    const MAX_DEPTH: usize = 8;
+    let resolve = |start: &str| -> String {
+        let mut current = start.to_string();
+        for _ in 0..MAX_DEPTH {
+            match parent_of.get(&current) {
+                Some(parent) if groups.contains_key(parent) && parent != &current => {
+                    current = parent.clone();
+                }
+                _ => break,
+            }
+        }
+        current
+    };
+
+    // Seed with the survivors first, so a parent group's own label is already
+    // in place before any child folds in — otherwise whichever of the two the
+    // HashMap happened to yield first would decide the name.
+    let mut merged: HashMap<String, FranchiseRollup> = groups
+        .iter()
+        .filter(|(key, _)| resolve(key) == **key)
+        .map(|(key, rollup)| (key.clone(), rollup.clone()))
+        .collect();
+    for (key, rollup) in &groups {
+        let target = resolve(key);
+        if target == *key {
+            continue;
+        }
+        let Some(existing) = merged.get_mut(&target) else { continue };
+        existing.real_seen += rollup.real_seen;
+        existing.real_minutes += rollup.real_minutes;
+        if rollup.external_episodes > existing.external_episodes {
+            existing.external_episodes = rollup.external_episodes;
+            existing.external_minutes = rollup.external_minutes;
+        }
+        // The parent's label already won by being seeded above; a child only
+        // ever contributes counts.
+    }
+    merged.into_values().collect()
+}
+
 /// One `series` row's raw watch evidence, straight out of SQL — the input to
 /// the franchise roll-up, never exposed outside this module.
 struct SeriesWatchRow {
@@ -159,6 +252,7 @@ struct SeriesWatchRow {
 /// the single AniList entry for the whole 1000+ episode show. Summing those
 /// counts the overlapping episodes twice; taking the larger of the two credits
 /// the franchise with the best evidence available. See `episodes`/`minutes`.
+#[derive(Clone)]
 pub(crate) struct FranchiseRollup {
     pub display_title: String,
     /// Episodes actually marked seen, summed across member rows.
@@ -333,9 +427,15 @@ impl Db {
             .collect::<rusqlite::Result<Vec<_>>>()?;
 
         let mut grouped: HashMap<String, FranchiseRollup> = HashMap::new();
+        // Candidate parent per group, recorded while grouping and applied only
+        // afterwards, once every key present in this user's data is known.
+        let mut parent_of: HashMap<String, String> = HashMap::new();
         for row in rows {
             let key = franchise_key(&row.title);
             let display = franchise_display_title(&row.title);
+            if let Some(parent) = franchise_parent_key(&row.title) {
+                parent_of.entry(key.clone()).or_insert(parent);
+            }
             let entry = grouped.entry(key).or_insert_with(|| FranchiseRollup {
                 display_title: display.clone(),
                 real_seen: 0,
@@ -357,10 +457,15 @@ impl Db {
             entry.real_seen += row.seen_count;
             entry.real_minutes += row.seen_count * per_episode;
 
-            // A "Ya lo vi" row only contributes a catalog-based estimate when
-            // it has no real seen episodes of its own — otherwise the real
-            // data already describes it better.
-            if row.watched_externally && row.seen_count == 0 {
+            // A "Ya lo vi" row contributes its catalog total regardless of
+            // whether that same row also has real marks. Gating this on the
+            // row's own seen-count threw the number away exactly when a user
+            // both followed a long-runner and swiped "Ya lo vi" on it (49 rows
+            // on the reference database, e.g. Boruto: 29 real marks hiding a
+            // known 293-episode total). Nothing is double-counted by admitting
+            // it — `episodes()` takes the larger of the two signals and
+            // `extra_external_episodes()` reports only the remainder.
+            if row.watched_externally {
                 if let Some(episodes) = row.catalog_episodes {
                     if episodes > entry.external_episodes {
                         entry.external_episodes = episodes;
@@ -369,7 +474,7 @@ impl Db {
                 }
             }
         }
-        Ok(grouped.into_values().collect())
+        Ok(merge_into_parent_franchises(grouped, &parent_of))
     }
 
     /// Scalar watch totals for the stats dashboard.
@@ -463,8 +568,13 @@ impl Db {
         let estimated_minutes_tracked: i64 = rollups.iter().map(|r| r.real_minutes).sum();
         let estimated_minutes_external: i64 =
             rollups.iter().map(|r| r.extra_external_minutes()).sum();
+        // "Estimated" means a catalog episode count was available for the
+        // franchise, not that it happened to exceed the real marks. Counting
+        // only the ones with a nonzero remainder made the "X of Y" ratio
+        // understate itself: a franchise whose real marks already cover its
+        // catalog total is fully accounted for, not missing data.
         let external_titles_estimated =
-            rollups.iter().filter(|r| r.extra_external_episodes() > 0).count() as i64;
+            rollups.iter().filter(|r| r.external_episodes > 0).count() as i64;
 
         // Counted as franchises, not raw rows, so it is comparable with
         // `external_titles_estimated` — the site lists one row per season/arc,
@@ -539,22 +649,41 @@ impl Db {
         top_series.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.title.cmp(&b.title)));
         top_series.truncate(8);
 
+        // `seen_at` is stamped with SQLite's `datetime('now')`, i.e. UTC, so
+        // every bucket here converts to 'localtime' first. Without it an
+        // episode marked at 00:30 in Spain (UTC+1/+2) lands on the previous
+        // calendar day — and the late evening is exactly when this app is
+        // used, so the misattribution is the common case, not an edge one.
         let mut stmt = self.conn.prepare(
-            "SELECT DATE(e.seen_at) AS d, COUNT(*) AS cnt
+            "SELECT DATE(e.seen_at, 'localtime') AS d, COUNT(*) AS cnt
              FROM episodes e JOIN series s ON s.id = e.series_id
              WHERE e.seen_at IS NOT NULL AND s.source_id=?1
-               AND DATE(e.seen_at) >= DATE('now', '-30 days')
+               AND DATE(e.seen_at, 'localtime') >= DATE('now', 'localtime', '-29 days')
              GROUP BY d
              ORDER BY d",
         )?;
-        let marks_by_day = stmt
-            .query_map([source_id], |r| {
-                Ok(crate::models::DayCount { day: r.get(0)?, count: r.get(1)? })
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let counted_days: HashMap<String, i64> = stmt
+            .query_map([source_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
+            .collect::<rusqlite::Result<HashMap<_, _>>>()?;
+
+        // Zero-filled 30-day spine. SQL only emits days that have marks, and a
+        // consumer plotting that array directly draws inactive days as if they
+        // never existed, silently compressing the timeline. Handing back an
+        // explicit `count: 0` for every quiet day makes the shape honest and
+        // means no caller has to reconstruct the calendar.
+        let today = chrono::Local::now().date_naive();
+        let marks_by_day: Vec<crate::models::DayCount> = (0..30)
+            .rev()
+            .filter_map(|offset| today.checked_sub_days(chrono::Days::new(offset)))
+            .map(|date| {
+                let day = date.format("%Y-%m-%d").to_string();
+                let count = counted_days.get(&day).copied().unwrap_or(0);
+                crate::models::DayCount { day, count }
+            })
+            .collect();
 
         let marks_tracked_since: Option<String> = self.conn.query_row(
-            "SELECT MIN(DATE(e.seen_at)) FROM episodes e JOIN series s ON s.id = e.series_id
+            "SELECT MIN(DATE(e.seen_at, 'localtime')) FROM episodes e JOIN series s ON s.id = e.series_id
              WHERE e.seen_at IS NOT NULL AND s.source_id=?1",
             [source_id],
             |r| r.get(0),
@@ -598,15 +727,24 @@ mod tests {
     use crate::db::test_support::*;
 
     #[test]
-    fn franchise_display_title_strips_arc_and_season_qualifiers_keeping_case() {
-        assert_eq!(franchise_display_title("One Piece: Arco de Elbaph"), "One Piece");
-        assert_eq!(franchise_display_title("One Piece: Live Action (2023) Temporada 2"), "One Piece");
+    fn franchise_display_title_strips_season_markers_keeping_case() {
         assert_eq!(franchise_display_title("Kimetsu no Yaiba Temporada 2"), "Kimetsu no Yaiba");
         assert_eq!(franchise_display_title("Overlord IV"), "Overlord");
+        assert_eq!(franchise_display_title("86 Eighty-Six Part 2"), "86 Eighty-Six");
         // Accents and internal punctuation survive — this is display text.
-        assert_eq!(franchise_display_title("Fate/stay night: Unlimited Blade Works"), "Fate/stay night");
+        assert_eq!(franchise_display_title("Shingeki no Kyojin: The Final Season"), "Shingeki no Kyojin:");
         // Nothing to strip: returned untouched.
         assert_eq!(franchise_display_title("Bleach"), "Bleach");
+    }
+
+    #[test]
+    fn franchise_display_title_keeps_a_colon_qualifier() {
+        // A label must describe the group the title actually landed in, and a
+        // colon title only merges into its base when that base exists in the
+        // user's own data (see franchise_parent_key) — which this pure
+        // function can't know.
+        assert_eq!(franchise_display_title("One Piece: Arco de Elbaph"), "One Piece: Arco de Elbaph");
+        assert_eq!(franchise_display_title("Re:Zero kara Hajimeru Isekai Seikatsu"), "Re:Zero kara Hajimeru Isekai Seikatsu");
     }
 
     #[test]
@@ -616,17 +754,81 @@ mod tests {
     }
 
     #[test]
-    fn franchise_display_title_agrees_with_franchise_key_grouping() {
-        // Any two titles that group together must also display the same name,
-        // otherwise a franchise row's label depends on query order.
-        for (a, b) in [
-            ("One Piece: Arco de Elbaph", "One Piece: Wano"),
-            ("Overlord", "Overlord IV"),
-            ("Kimetsu no Yaiba", "Kimetsu no Yaiba Temporada 2"),
+    fn franchise_base_title_drops_the_colon_qualifier_for_catalog_lookup() {
+        assert_eq!(franchise_base_title("One Piece: Arco de Elbaph"), "One Piece");
+        assert_eq!(franchise_base_title("One Piece: Live Action (2023) Temporada 2"), "One Piece");
+        assert_eq!(franchise_base_title("Fate/stay night: Unlimited Blade Works"), "Fate/stay night");
+        assert_eq!(franchise_base_title("Bleach"), "Bleach");
+    }
+
+    #[test]
+    fn franchise_key_does_not_merge_shows_that_merely_share_a_colon_head() {
+        // Six unrelated shows previously collapsed into a single franchise
+        // called "Re" because every colon was treated as an arc separator.
+        let re_titles = [
+            "Re:Zero kara Hajimeru Isekai Seikatsu",
+            "Re:CREATORS",
+            "Re:Monster",
+            "Re: Hamatora",
+            "Re:Stage! Dream Days",
+        ];
+        let keys: HashSet<String> = re_titles.iter().map(|t| franchise_key(t)).collect();
+        assert_eq!(keys.len(), re_titles.len(), "each Re: show keeps its own key: {keys:?}");
+        assert!(!keys.contains("re"), "nothing collapses to the bare colon head");
+        assert_ne!(franchise_key("Code:Breaker"), franchise_key("Code: Realize ~Guardian of Rebirth~"));
+    }
+
+    #[test]
+    fn franchise_key_keeps_a_title_that_merely_ends_in_a_digit_distinct() {
+        // "Steins;Gate 0" is a different work with its own AniList entry, not
+        // a second season of "Steins;Gate".
+        assert_ne!(franchise_key("Steins;Gate"), franchise_key("Steins;Gate 0"));
+        // A digit introduced by a season marker still strips.
+        assert_eq!(franchise_key("Kimetsu no Yaiba Temporada 2"), franchise_key("Kimetsu no Yaiba"));
+        assert_eq!(franchise_key("Overlord IV"), franchise_key("Overlord"));
+    }
+
+    #[test]
+    fn franchise_parent_key_only_offers_a_parent_for_a_real_qualifier() {
+        assert_eq!(franchise_parent_key("One Piece: Arco de Elbaph").as_deref(), Some("one piece"));
+        // No colon at all.
+        assert_eq!(franchise_parent_key("Bleach"), None);
+        // Colon with an empty head can't yield a parent.
+        assert_eq!(franchise_parent_key(": subtitle only"), None);
+        // A parent identical to the key itself is not a merge candidate.
+        assert_eq!(franchise_parent_key("Overlord: Temporada 2"), None);
+    }
+
+    #[test]
+    fn arc_rows_only_merge_when_the_base_show_is_in_the_users_own_data() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+
+        // Two colon-qualified titles. The user owns a plain "One Piece" row,
+        // so its arc merges; nobody owns a series called "Re", so Re:Zero
+        // stays its own franchise.
+        for (slug, title) in [
+            ("op", "One Piece"),
+            ("op-elbaph", "One Piece: Arco de Elbaph"),
+            ("rezero", "Re:Zero kara Hajimeru Isekai Seikatsu"),
         ] {
-            assert_eq!(franchise_key(a), franchise_key(b), "{a} / {b} must group");
-            assert_eq!(franchise_display_title(a), franchise_display_title(b), "{a} / {b} must display alike");
+            let id = db.upsert_series(src, &mk_airing(slug, title, None)).unwrap();
+            db.set_kind(id, "TV").unwrap();
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: id, number: "1".into(), title: None,
+                url: format!("https://site/anime/{slug}-capitulo-1/"),
+                released_at: None, seen: false,
+            }).unwrap();
+            db.set_seen_cascade(id, "1", true).unwrap();
         }
+
+        let insights = db.get_watch_insights(src).unwrap();
+        let titles: HashSet<&str> = insights.top_series.iter().map(|t| t.title.as_str()).collect();
+        assert_eq!(insights.top_series.len(), 2, "One Piece merged, Re:Zero did not: {titles:?}");
+        assert!(titles.contains("One Piece"));
+        assert!(titles.contains("Re:Zero kara Hajimeru Isekai Seikatsu"));
+        let one_piece = insights.top_series.iter().find(|t| t.title == "One Piece").unwrap();
+        assert_eq!(one_piece.count, 2, "the arc's episode folded into the base show");
     }
 
     #[test]
@@ -934,8 +1136,13 @@ mod tests {
             "ordered by credited episodes descending; a 'Ya lo vi' title is credited \
              with its catalog episode count, which is the only evidence it has"
         );
-        assert_eq!(insights.marks_by_day.len(), 1, "only the cascade-marked episodes have seen_at");
-        assert_eq!(insights.marks_by_day[0].count, 3);
+        // A full 30-day spine, zero-filled: only today has marks.
+        assert_eq!(insights.marks_by_day.len(), 30, "always a contiguous 30-day window");
+        assert_eq!(insights.marks_by_day.last().unwrap().count, 3, "today holds the cascade-marked episodes");
+        assert_eq!(
+            insights.marks_by_day.iter().map(|d| d.count).sum::<i64>(), 3,
+            "every other day is an explicit zero, not a missing entry"
+        );
         assert!(insights.marks_tracked_since.is_some());
     }
 
@@ -1041,7 +1248,10 @@ mod tests {
         assert_eq!(insights.external_titles_total, 0);
         assert_eq!(insights.avg_episodes_per_series, 0.0);
         assert!(insights.top_series.is_empty());
-        assert!(insights.marks_by_day.is_empty());
+        // The day spine is always present and always 30 long, so a chart never
+        // has to distinguish "no data yet" from "a gap in the middle".
+        assert_eq!(insights.marks_by_day.len(), 30);
+        assert!(insights.marks_by_day.iter().all(|d| d.count == 0));
         assert_eq!(insights.marks_tracked_since, None);
     }
 

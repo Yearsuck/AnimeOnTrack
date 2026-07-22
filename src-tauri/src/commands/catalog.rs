@@ -209,7 +209,7 @@ pub fn link_series_to_catalog(state: State<'_, AppState>) -> Result<i64, String>
     );
     let mut linked = 0i64;
     for (series_id, title) in db.series_needing_catalog_link(src).map_err(|e| e.to_string())? {
-        let base = crate::db::stats::franchise_display_title(&title);
+        let base = crate::db::stats::franchise_base_title(&title);
         // The reduced form is only worth a second lookup when it actually
         // differs; otherwise this is the same query twice.
         let candidates: Vec<&str> =
