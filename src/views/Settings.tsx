@@ -47,9 +47,9 @@ function BackupCard() {
   if (!status) return null;
 
   return (
-    <div className="series-block" style={{ padding: 16, marginTop: 16 }}>
-      <h3 className="card-title" style={{ marginTop: 0 }}>{t("settings.backupHeading")}</h3>
-      <p className="muted" style={{ fontSize: 12.5 }}>{t("settings.backupIntro")}</p>
+    <div className="settings-section">
+      <h3 className="settings-section-title">{t("settings.backupHeading")}</h3>
+      <p className="settings-section-desc">{t("settings.backupIntro")}</p>
 
       {!status.configured ? (
         <p className="muted">{t("settings.backupNotConfigured")}</p>
@@ -208,136 +208,129 @@ export function Settings({ onSiteChanged }: { onSiteChanged?: (site: SiteSummary
   }
 
   return (
-    <div className="page" style={{ maxWidth: 560 }}>
+    <div className="page" style={{ maxWidth: 640 }}>
       <div className="page-head">
         <h2 className="page-title">{t("nav.settings")}</h2>
       </div>
 
-      <div className="series-block" style={{ padding: 16, marginBottom: 16 }}>
-        <label className="muted" style={{ display: "block", marginBottom: 6, fontSize: 12.5 }}>
-          {t("settings.theme")}
-        </label>
-        <select
-          className="input"
-          style={{ maxWidth: 280 }}
-          value={theme}
-          onChange={(e) => setTheme(e.target.value as typeof theme)}
-        >
-          {THEMES.map((th) => (
-            <option key={th.code} value={th.code}>
-              {t(th.labelKey)}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      <div className="series-block" style={{ padding: 16, marginBottom: 16 }}>
-        <label className="muted" style={{ display: "block", marginBottom: 6, fontSize: 12.5 }}>
-          {t("settings.language")}
-        </label>
-        <select
-          className="input"
-          style={{ maxWidth: 280 }}
-          value={lang}
-          onChange={(e) => setLang(e.target.value as typeof lang)}
-        >
-          {LANGS.map((l) => (
-            <option key={l.code} value={l.code}>
-              {l.label}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      <div className="series-block" style={{ padding: 16, marginBottom: 16 }}>
-        <label className="muted" style={{ display: "block", marginBottom: 6, fontSize: 12.5 }}>
-          {t("settings.activeSiteHelp")}
-        </label>
-        <select
-          className="input"
-          style={{ maxWidth: 280 }}
-          value={pendingSiteId ?? activeSite?.id ?? ""}
-          disabled={switchingSite || sites.length === 0}
-          onChange={(e) => {
-            const id = e.target.value;
-            setPendingSiteId(id === activeSite?.id ? null : id);
-          }}
-        >
-          {sites.map((s) => (
-            <option key={s.id} value={s.id}>
-              {s.name}
-              {s.id === activeSite?.id ? t("settings.activeSuffix") : ""}
-            </option>
-          ))}
-        </select>
-
-        {pendingSite && (
-          <div
-            className="series-block"
-            style={{ padding: 12, marginTop: 12, background: "var(--surface-2, rgba(255,255,255,0.04))" }}
-          >
-            <p style={{ margin: 0, marginBottom: 10 }}>
-              {t("settings.switchSiteConfirm", {
-                site: pendingSite.name,
-                currentSite: activeSite?.name ?? t("settings.currentSiteFallback"),
-              })}
-            </p>
-            <div className="row">
-              <button className="btn btn-primary" onClick={confirmSiteSwitch} disabled={switchingSite}>
-                {switchingSite ? t("settings.switching") : t("settings.switchTo", { site: pendingSite.name })}
+      <div className="settings-section">
+        <h3 className="settings-section-title">{t("settings.appearanceHeading")}</h3>
+        <div className="settings-field">
+          <label className="settings-field-label">{t("settings.theme")}</label>
+          <div className="row">
+            {THEMES.map((th) => (
+              <button
+                key={th.code}
+                type="button"
+                className={`chip-toggle ${theme === th.code ? "active" : ""}`}
+                onClick={() => setTheme(th.code)}
+              >
+                {t(th.labelKey)}
               </button>
-              <button className="btn" onClick={() => setPendingSiteId(null)} disabled={switchingSite}>
-                {t("common.cancel")}
-              </button>
-            </div>
+            ))}
           </div>
-        )}
-      </div>
-
-      <div className="series-block" style={{ padding: 16, marginBottom: 16 }}>
-        <label className="muted" style={{ display: "block", marginBottom: 6, fontSize: 12.5 }}>
-          {t("settings.addNewSiteLabel")}
-        </label>
-        <div className="row">
-          <input className="input" value={firstUrl} onChange={(e) => setFirstUrl(e.target.value)} />
-          <button className="btn btn-primary" onClick={addFirstUrl} disabled={busy}>
-            {busy ? t("common.scanning") : t("common.scan")}
-          </button>
+        </div>
+        <div className="settings-field">
+          <label className="settings-field-label">{t("settings.language")}</label>
+          <div className="row">
+            {LANGS.map((l) => (
+              <button
+                key={l.code}
+                type="button"
+                className={`chip-toggle ${lang === l.code ? "active" : ""}`}
+                onClick={() => setLang(l.code)}
+              >
+                {l.label}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
-      <div className="series-block" style={{ padding: 16 }}>
-        <label className="muted" style={{ display: "block", marginBottom: 6, fontSize: 12.5 }}>
-          {t("settings.mirrorsLabel", { site: activeSite?.name ?? t("settings.activeSiteFallback") })}
-        </label>
-        <textarea
-          className="input"
-          rows={5}
-          style={{ fontFamily: "monospace", fontSize: 12.5, resize: "vertical" }}
-          value={mirrorsText}
-          onChange={(e) => setMirrorsText(e.target.value)}
-        />
-        <div className="row" style={{ marginTop: 10 }}>
-          <button className="btn" onClick={saveMirrors} disabled={savingMirrors}>
-            {savingMirrors ? t("settings.saving") : t("settings.saveMirrors")}
-          </button>
-          <button className="btn btn-primary" onClick={doRescan} disabled={busy}>
-            {busy ? t("common.scanning") : t("settings.rescan")}
-          </button>
+      <div className="settings-section">
+        <h3 className="settings-section-title">{t("settings.siteHeading")}</h3>
+        <div className="settings-field">
+          <label className="settings-field-label">{t("settings.activeSiteHelp")}</label>
+          <select
+            className="input"
+            style={{ maxWidth: 320 }}
+            value={pendingSiteId ?? activeSite?.id ?? ""}
+            disabled={switchingSite || sites.length === 0}
+            onChange={(e) => {
+              const id = e.target.value;
+              setPendingSiteId(id === activeSite?.id ? null : id);
+            }}
+          >
+            {sites.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name}
+                {s.id === activeSite?.id ? t("settings.activeSuffix") : ""}
+              </option>
+            ))}
+          </select>
+
+          {pendingSite && (
+            <div className="settings-inline-panel">
+              <p style={{ margin: 0, marginBottom: 10 }}>
+                {t("settings.switchSiteConfirm", {
+                  site: pendingSite.name,
+                  currentSite: activeSite?.name ?? t("settings.currentSiteFallback"),
+                })}
+              </p>
+              <div className="row">
+                <button className="btn btn-primary" onClick={confirmSiteSwitch} disabled={switchingSite}>
+                  {switchingSite ? t("settings.switching") : t("settings.switchTo", { site: pendingSite.name })}
+                </button>
+                <button className="btn" onClick={() => setPendingSiteId(null)} disabled={switchingSite}>
+                  {t("common.cancel")}
+                </button>
+              </div>
+            </div>
+          )}
         </div>
-        {msg && <p className="muted" style={{ marginTop: 12 }}>{msg}</p>}
+
+        <div className="settings-field">
+          <label className="settings-field-label">{t("settings.addNewSiteLabel")}</label>
+          <div className="row">
+            <input className="input" style={{ flex: 1, minWidth: 220 }} value={firstUrl} onChange={(e) => setFirstUrl(e.target.value)} />
+            <button className="btn btn-primary" onClick={addFirstUrl} disabled={busy}>
+              {busy ? t("common.scanning") : t("common.scan")}
+            </button>
+          </div>
+        </div>
+
+        <div className="settings-field">
+          <label className="settings-field-label">
+            {t("settings.mirrorsLabel", { site: activeSite?.name ?? t("settings.activeSiteFallback") })}
+          </label>
+          <textarea
+            className="input"
+            rows={5}
+            style={{ fontFamily: "monospace", fontSize: 12.5, resize: "vertical", width: "100%" }}
+            value={mirrorsText}
+            onChange={(e) => setMirrorsText(e.target.value)}
+          />
+          <div className="row" style={{ marginTop: 10 }}>
+            <button className="btn" onClick={saveMirrors} disabled={savingMirrors}>
+              {savingMirrors ? t("settings.saving") : t("settings.saveMirrors")}
+            </button>
+            <button className="btn btn-primary" onClick={doRescan} disabled={busy}>
+              {busy ? t("common.scanning") : t("settings.rescan")}
+            </button>
+          </div>
+          {msg && <p className="muted" style={{ marginTop: 12 }}>{msg}</p>}
+        </div>
       </div>
 
-      <div className="series-block" style={{ padding: 16, marginTop: 16 }}>
-        <label className="muted" style={{ display: "block", marginBottom: 6, fontSize: 12.5 }}>
-          {t("settings.forceRefreshHelp")}
-        </label>
+      <BackupCard />
+
+      <div className="settings-section danger-zone">
+        <h3 className="settings-section-title">{t("settings.maintenanceHeading")}</h3>
+        <p className="settings-section-desc">{t("settings.forceRefreshHelp")}</p>
         <button className="btn" onClick={doForceRefresh} disabled={forcing}>
           {forcing ? t("settings.forcing") : t("settings.forceRefresh")}
         </button>
       </div>
-
-      <BackupCard />
     </div>
   );
 }
