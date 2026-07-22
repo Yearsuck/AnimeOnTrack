@@ -269,8 +269,10 @@ pub(crate) fn backup_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> 
 #[tauri::command]
 pub async fn restore_latest(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     let dir = backup_dir(&app)?;
-    let (refresh, file_id) = {
+    let (client, refresh, file_id) = {
         let db = state.db.lock().unwrap();
+        let client = backup_lib::configured_client(&db)
+            .ok_or("Google credentials not configured")?;
         let refresh = db
             .get_setting("gdrive_refresh_token")
             .ok()
@@ -281,9 +283,9 @@ pub async fn restore_latest(app: AppHandle, state: State<'_, AppState>) -> Resul
             .ok()
             .flatten()
             .ok_or("No backup found in Drive yet")?;
-        (refresh, file_id)
+        (client, refresh, file_id)
     };
-    let token = backup_lib::access_token(&refresh).await?;
+    let token = backup_lib::access_token(&client, &refresh).await?;
     let bytes = backup_lib::drive::download_backup(&token, &file_id).await?;
     backup_lib::stage_restore(&bytes, &dir)?; // validates before staging
     app.restart();
