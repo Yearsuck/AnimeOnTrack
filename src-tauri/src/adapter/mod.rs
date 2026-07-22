@@ -2,6 +2,7 @@ use crate::models::{Episode, FinishedCard, Series, SeriesDetail};
 use anyhow::Result;
 
 pub mod animeflv;
+pub mod animeland;
 pub mod animeytx;
 pub mod gogoanime;
 pub mod jkanime;
@@ -27,6 +28,7 @@ pub fn all_sites() -> &'static [SiteInfo] {
         SiteInfo { id: "animeflv", name: "AnimeFLV", default_base_url: "https://www4.animeflv.net" },
         SiteInfo { id: "jkanime", name: "JKanime", default_base_url: "https://jkanime.net" },
         SiteInfo { id: "gogoanime", name: "GogoAnime", default_base_url: "https://gogoanime.by" },
+        SiteInfo { id: "animeland", name: "AnimeLand", default_base_url: "https://w7.animeland.tv" },
     ]
 }
 
@@ -40,6 +42,7 @@ pub fn adapter_for(site_id: &str) -> Option<Box<dyn SiteAdapter>> {
         "animeflv" => Some(Box::new(animeflv::AnimeflvAdapter)),
         "jkanime" => Some(Box::new(jkanime::JkanimeAdapter)),
         "gogoanime" => Some(Box::new(gogoanime::GogoanimeAdapter)),
+        "animeland" => Some(Box::new(animeland::AnimelandAdapter)),
         _ => None,
     }
 }
