@@ -27,6 +27,16 @@ pub fn get_top_genres(state: State<'_, AppState>, limit: usize) -> Result<Vec<Ge
     Ok(scored.into_iter().map(|(genre, score)| GenreAffinity { genre, score }).collect())
 }
 
+/// Best-effort AniList page URL for a series (linked by `anilist_id`, or
+/// matched by normalized title otherwise) — lets SeriesDetail's "Abrir
+/// página de la serie" also offer the canonical AniList page, not just the
+/// scraped site's. `None` when nothing in the synced catalog matches.
+#[tauri::command]
+pub fn get_anilist_url_for_series(state: State<'_, AppState>, series_id: i64) -> Result<Option<String>, String> {
+    let db = state.db.lock().unwrap();
+    db.anilist_url_for_series(series_id).map_err(|e| e.to_string())
+}
+
 #[derive(Serialize)]
 pub struct CatalogPage {
     pub items: Vec<crate::anilist::CatalogAnime>,
