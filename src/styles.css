@@ -650,14 +650,20 @@ textarea.input {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  margin-bottom: 16px;
+  margin-bottom: var(--sp-4);
   overflow: hidden;
+}
+/* Last block in a stack owns no trailing margin — the container's own spacing
+   ends the section. Saves the `style={{ marginBottom: 0 }}` overrides that
+   were sprinkled across the stats views. */
+.series-block:last-child {
+  margin-bottom: 0;
 }
 .series-head {
   display: flex;
   align-items: center;
-  gap: 14px;
-  padding: 12px 14px;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
   border-bottom: 1px solid var(--border);
   background: var(--surface-2);
 }
@@ -671,12 +677,23 @@ textarea.input {
   flex-shrink: 0;
 }
 .series-head .name {
-  font-weight: 700;
-  font-size: 19px;
+  font-weight: var(--fw-bold);
+  font-size: var(--fs-lg);
+  letter-spacing: -0.01em;
 }
 .series-head .count {
   color: var(--muted);
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+/* Heading for a bordered block or a group of tiles. One weight and size for
+   all of them; several views were reusing `.card-title`, which is the poster
+   card's clamped two-line title and carries a min-height meant for that. */
+.section-title {
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  letter-spacing: -0.01em;
+  margin: 0;
 }
 .ep-row {
   display: flex;
@@ -1034,14 +1051,17 @@ textarea.input {
 /* progress bar */
 .progress {
   height: 6px;
-  border-radius: 4px;
+  border-radius: var(--radius-round);
   background: var(--surface-3);
   overflow: hidden;
+  margin-top: var(--sp-2);
 }
 .progress > span {
   display: block;
   height: 100%;
+  border-radius: inherit;
   background: var(--success);
+  transition: width var(--dur-slow) var(--ease-out);
 }
 
 /* ---------- Onboarding ---------- */
@@ -1537,10 +1557,18 @@ progress.scanbar-track::-webkit-progress-value {
   gap: var(--sp-5);
 }
 .stats-caveat {
-  padding: 10px 16px 14px;
-  font-size: 11.5px;
+  padding: var(--sp-3) var(--sp-4);
+  font-size: var(--fs-xs);
   color: var(--muted);
   border-top: 1px solid var(--border-soft);
+}
+/* Wrapper for the whole insights section, so the block owns its own bottom
+   spacing instead of the component setting it inline. */
+.stats-insights {
+  margin-bottom: var(--sp-6);
+}
+.stats-insights .section-title {
+  margin-bottom: var(--sp-3);
 }
 
 /* ---------- Stats · 3D graph galaxy backdrop ---------- */
@@ -1578,4 +1606,51 @@ progress.scanbar-track::-webkit-progress-value {
   background-size:
     100% 100%, 100% 100%, 100% 100%, 73px 73px, 111px 111px, 149px 149px;
   background-repeat: no-repeat, no-repeat, no-repeat, repeat, repeat, repeat;
+}
+
+/* ---------- Shared page patterns (2026-07-23 UI pass) ---------- */
+
+/* Dashboard tile grid. Wider minimum than the poster `.grid` — a number and
+   its caption need horizontal room that a 150px poster column doesn't. */
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-6);
+}
+
+/* The row that holds a section's view switcher and its actions. Was an inline
+   flex style repeated per view, each with its own gap. */
+.section-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-5);
+}
+
+/* Inline message block: an error, a warning, a hint. Distinct from `.card`,
+   which is a content container — a notice is a message about state. */
+.notice {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+  padding: var(--sp-3) var(--sp-4);
+  margin-bottom: var(--sp-5);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--muted-2);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  font-size: var(--fs-base);
+}
+.notice p {
+  margin: 0;
+  flex: 1;
+  min-width: 200px;
+}
+.notice-danger {
+  border-left-color: var(--danger);
+}
+.notice-danger p {
+  color: var(--danger);
 }

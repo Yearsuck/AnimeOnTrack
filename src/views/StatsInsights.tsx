@@ -72,76 +72,66 @@ export function StatsInsights({
   const marksData = insights.marks_by_day.map((d) => ({ name: shortDay(d.day), count: d.count }));
 
   return (
-    <div style={{ marginBottom: 28 }}>
-      <h3 className="card-title" style={{ marginBottom: 12 }}>
-        {t("stats.insightsHeading")}
-      </h3>
+    <div className="stats-insights">
+      <h3 className="section-title">{t("stats.insightsHeading")}</h3>
 
-      <div className="grid" style={{ marginBottom: 20 }}>
-        <div className="card">
-          <div className="card-body">
-            <div className="muted" style={{ fontSize: 12 }}>
-              {t("stats.timeWatched")}
-            </div>
-            <div style={{ fontSize: 22, fontWeight: 700 }}>{formatMinutes(t, totalMinutes)}</div>
-            <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
-              {t("stats.timeWatchedHelp", {
-                done: n(insights.external_titles_estimated),
-                total: n(insights.external_titles_total),
-              })}
-            </div>
+      <div className="stat-grid">
+        <div className="stat-card">
+          <div className="stat-label">{t("stats.timeWatched")}</div>
+          <div className="stat-value">{formatMinutes(t, totalMinutes)}</div>
+          <div className="stat-help">
+            {t("stats.timeWatchedHelp", {
+              done: n(insights.external_titles_estimated),
+              total: n(insights.external_titles_total),
+            })}
           </div>
         </div>
-        <div className="card">
-          <div className="card-body">
-            <div className="muted" style={{ fontSize: 12 }}>
-              {t("stats.completion")}
-            </div>
-            <div style={{ fontSize: 22, fontWeight: 700 }}>{completionPct}%</div>
-            <div className="progress" style={{ marginTop: 8 }}>
-              <span style={{ width: `${completionPct}%` }} />
-            </div>
-            <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
-              {n(summary.episodes_watched)}/{n(summary.episodes_total)}
-            </div>
+        <div className="stat-card">
+          <div className="stat-label">{t("stats.completion")}</div>
+          <div className="stat-value">{completionPct}%</div>
+          <div
+            className="progress"
+            role="progressbar"
+            aria-valuenow={completionPct}
+            aria-valuemin={0}
+            aria-valuemax={100}
+          >
+            <span style={{ width: `${completionPct}%` }} />
+          </div>
+          <div className="stat-help">
+            {n(summary.episodes_watched)}/{n(summary.episodes_total)}
           </div>
         </div>
-        <div className="card">
-          <div className="card-body">
-            <div className="muted" style={{ fontSize: 12 }}>
-              {t("stats.avgEpisodes")}
-            </div>
-            <div style={{ fontSize: 22, fontWeight: 700 }}>
-              {insights.avg_episodes_per_series.toFixed(1)}
-            </div>
-          </div>
+        <div className="stat-card">
+          <div className="stat-label">{t("stats.avgEpisodes")}</div>
+          <div className="stat-value">{insights.avg_episodes_per_series.toFixed(1)}</div>
         </div>
       </div>
 
       {topSeriesData.length > 0 && (
-        <div className="series-block" style={{ marginBottom: 20 }}>
+        <div className="series-block">
           <div className="series-head">
-            <h3 className="card-title">{t("stats.topSeries")}</h3>
+            <h3 className="section-title">{t("stats.topSeries")}</h3>
           </div>
           <BarChart data={topSeriesData} />
         </div>
       )}
 
-      <div style={{ marginBottom: 12 }}>
+      <div className="section-toolbar">
         <ShapeToggle shape={shape} onChange={setShape} />
       </div>
 
-      <div className="stats-cols" style={{ marginBottom: 20 }}>
-        <div className="series-block" style={{ marginBottom: 0 }}>
+      <div className="stats-cols">
+        <div className="series-block">
           <div className="series-head">
-            <h3 className="card-title">{t("stats.funnelHeading")}</h3>
+            <h3 className="section-title">{t("stats.funnelHeading")}</h3>
           </div>
           <CategoryBlock data={funnelData} shape={shape} emptyMessage={t("stats.ringsEmpty")} />
         </div>
 
-        <div className="series-block" style={{ marginBottom: 0 }}>
+        <div className="series-block">
           <div className="series-head">
-            <h3 className="card-title">{t("stats.airingVsFinished")}</h3>
+            <h3 className="section-title">{t("stats.airingVsFinished")}</h3>
           </div>
           <CategoryBlock
             data={airingVsFinishedData}
@@ -154,7 +144,7 @@ export function StatsInsights({
       {marksData.length > 0 && insights.marks_tracked_since && (
         <div className="series-block">
           <div className="series-head">
-            <h3 className="card-title">{t("stats.marksHeading")}</h3>
+            <h3 className="section-title">{t("stats.marksHeading")}</h3>
           </div>
           <BarChart data={marksData} />
           <div className="stats-caveat">

@@ -124,70 +124,58 @@ export function Stats({ active }: { active: boolean }) {
       </div>
 
       {error && (
-        <div className="card" style={{ marginBottom: 20 }} role="alert">
-          <div className="card-body">
-            <p style={{ margin: 0 }}>{t("stats.loadError", { msg: error })}</p>
-            <button className="btn btn-ghost" style={{ marginTop: 10 }} onClick={load}>
-              {t("stats.retry")}
-            </button>
-          </div>
+        <div className="notice notice-danger" role="alert">
+          <p>{t("stats.loadError", { msg: error })}</p>
+          <button className="btn" onClick={load}>
+            {t("stats.retry")}
+          </button>
         </div>
       )}
 
       {!loaded && !error && (
-        <p className="muted" role="status">
-          {t("stats.loading")}
-        </p>
+        <div className="stat-grid" role="status" aria-label={t("stats.loading")}>
+          {[0, 1, 2, 3, 4].map((i) => (
+            <div className="stat-card" key={i}>
+              <div className="skeleton skeleton-text" style={{ width: "55%" }} />
+              <div className="skeleton skeleton-title" style={{ width: "35%", height: 26 }} />
+              <div className="skeleton skeleton-text" style={{ width: "80%" }} />
+            </div>
+          ))}
+        </div>
       )}
 
       {summary && (
-        <div className="grid" style={{ marginBottom: 28 }}>
-          <div className="card">
-            <div className="card-body">
-              <div className="muted" style={{ fontSize: 12 }}>{t("stats.episodesWatched")}</div>
-              <div style={{ fontSize: 22, fontWeight: 700 }}>
-                {n(summary.episodes_watched + summary.episodes_watched_external)}
-              </div>
-              <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
-                {t("stats.episodesWatchedHelp", {
-                  real: n(summary.episodes_watched),
-                  external: n(summary.episodes_watched_external),
-                })}
-              </div>
+        <div className="stat-grid">
+          <div className="stat-card">
+            <div className="stat-label">{t("stats.episodesWatched")}</div>
+            <div className="stat-value">
+              {n(summary.episodes_watched + summary.episodes_watched_external)}
+            </div>
+            <div className="stat-help">
+              {t("stats.episodesWatchedHelp", {
+                real: n(summary.episodes_watched),
+                external: n(summary.episodes_watched_external),
+              })}
             </div>
           </div>
-          <div className="card">
-            <div className="card-body">
-              <div className="muted" style={{ fontSize: 12 }}>{t("stats.distinctAnime")}</div>
-              <div style={{ fontSize: 22, fontWeight: 700 }}>{n(summary.distinct_anime)}</div>
-              <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
-                {t("stats.distinctAnimeHelp")}
-              </div>
-            </div>
+          <div className="stat-card">
+            <div className="stat-label">{t("stats.distinctAnime")}</div>
+            <div className="stat-value">{n(summary.distinct_anime)}</div>
+            <div className="stat-help">{t("stats.distinctAnimeHelp")}</div>
           </div>
-          <div className="card">
-            <div className="card-body">
-              <div className="muted" style={{ fontSize: 12 }}>{t("stats.followedSeries")}</div>
-              <div style={{ fontSize: 22, fontWeight: 700 }}>{n(summary.airing_followed)}</div>
-            </div>
+          <div className="stat-card">
+            <div className="stat-label">{t("stats.followedSeries")}</div>
+            <div className="stat-value">{n(summary.airing_followed)}</div>
           </div>
-          <div className="card">
-            <div className="card-body">
-              <div className="muted" style={{ fontSize: 12 }}>{t("stats.backlogPending")}</div>
-              <div style={{ fontSize: 22, fontWeight: 700 }}>{n(summary.pending_to_watch)}</div>
-              <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
-                {t("stats.backlogPendingHelp")}
-              </div>
-            </div>
+          <div className="stat-card">
+            <div className="stat-label">{t("stats.backlogPending")}</div>
+            <div className="stat-value">{n(summary.pending_to_watch)}</div>
+            <div className="stat-help">{t("stats.backlogPendingHelp")}</div>
           </div>
-          <div className="card">
-            <div className="card-body">
-              <div className="muted" style={{ fontSize: 12 }}>{t("stats.wishlist")}</div>
-              <div style={{ fontSize: 22, fontWeight: 700 }}>{n(summary.backlog_want)}</div>
-              <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
-                {t("stats.wishlistHelp")}
-              </div>
-            </div>
+          <div className="stat-card">
+            <div className="stat-label">{t("stats.wishlist")}</div>
+            <div className="stat-value">{n(summary.backlog_want)}</div>
+            <div className="stat-help">{t("stats.wishlistHelp")}</div>
           </div>
         </div>
       )}
@@ -199,7 +187,7 @@ export function Stats({ active }: { active: boolean }) {
           emphatic "no followed series yet" at users who have dozens. */}
       {loaded && (
       <>
-      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20 }}>
+      <div className="section-toolbar">
         <div className="tabs">
           <button
             className={`tab ${view === "grafo" ? "active" : ""}`}
