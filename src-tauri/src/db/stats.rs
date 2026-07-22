@@ -2,20 +2,31 @@ use super::*;
 use std::collections::{HashMap, HashSet};
 
 /// Collapse a series title to a season/part-agnostic "franchise key" so
-/// multiple seasons of the same show count as one anime in the stats
-/// (`get_watch_summary`'s distinct-anime count). Normalizes via
-/// `matching::normalize_title` (accents/case/punctuation/noise stripped), then
+/// multiple seasons (or arcs) of the same show count as one anime in the
+/// stats (`get_watch_summary`'s distinct-anime count, `get_watch_insights`'
+/// `top_series`). First drops a colon-introduced arc/subtitle qualifier —
+/// the scraped site splits long-runners into one `series` row per arc this
+/// way (e.g. "One Piece: Arco de Elbaph", "One Piece: Wano"), which without
+/// this step never collapses with the base "One Piece" row and silently
+/// undercounts the franchise's real seen-episode total. Then normalizes via
+/// `matching::normalize_title` (accents/case/punctuation/noise stripped) and
 /// strips trailing season/part markers: "temporada N", "season N", "part N",
 /// "parte N", "cour N", "Nth season", "final season", a trailing standalone
 /// integer, and trailing Roman numerals (ii..x). It's a heuristic, not a
-/// canonical grouping — good enough to keep "X" and "X Temporada 2" together
-/// without a metadata source. Never returns "" (an all-marker title keeps its
-/// normalized form).
+/// canonical grouping — good enough to keep "X", "X: Arco Y" and "X Temporada
+/// 2" together without a metadata source. Never returns "" (falls back to the
+/// full normalized title if stripping would otherwise empty it).
 pub(crate) fn franchise_key(title: &str) -> String {
     const ROMANS: &[&str] = &["ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x"];
     const MARKER_WORDS: &[&str] =
         &["season", "temporada", "part", "parte", "cour", "final", "the"];
-    let norm = crate::matching::normalize_title(title);
+    let base = match title.split_once(':') {
+        // Only strip when there's real title text before the colon, so a
+        // colon-led title (unlikely, but keep it safe) doesn't collapse to "".
+        Some((head, _)) if !head.trim().is_empty() => head,
+        _ => title,
+    };
+    let norm = crate::matching::normalize_title(base);
     let mut tokens: Vec<&str> = norm.split_whitespace().collect();
     while let Some(&last) = tokens.last() {
         let is_int = !last.is_empty() && last.chars().all(|c| c.is_ascii_digit());
@@ -33,7 +44,7 @@ pub(crate) fn franchise_key(title: &str) -> String {
     }
     let key = tokens.join(" ");
     if key.is_empty() {
-        norm
+        crate::matching::normalize_title(title)
     } else {
         key
     }
@@ -361,19 +372,40 @@ impl Db {
             |r| r.get(0),
         )?;
 
+        // Grouped by `franchise_key`, not raw `s.id`: the scraped site models
+        // long-runners like One Piece as several distinct `series` rows (one
+        // per arc/saga), so a plain `GROUP BY s.id` reported one arc's own
+        // seen-count (e.g. 114) as if it were the whole show's total. Same
+        // franchise-collapsing approach as `distinct_anime` above, but
+        // summing counts across the group instead of just counting franchises.
         let mut stmt = self.conn.prepare(
             "SELECT s.title, COUNT(*) AS cnt
              FROM episodes e JOIN series s ON s.id = e.series_id
              WHERE e.seen=1 AND s.source_id=?1
-             GROUP BY s.id
-             ORDER BY cnt DESC, s.title
-             LIMIT 8",
+             GROUP BY s.id",
         )?;
-        let top_series = stmt
-            .query_map([source_id], |r| {
-                Ok(crate::models::TitleCount { title: r.get(0)?, count: r.get(1)? })
-            })?
+        let per_series_counts: Vec<(String, i64)> = stmt
+            .query_map([source_id], |r| Ok((r.get(0)?, r.get(1)?)))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut grouped: HashMap<String, (String, i64)> = HashMap::new();
+        for (title, cnt) in per_series_counts {
+            let entry = grouped.entry(franchise_key(&title)).or_insert_with(|| (title.clone(), 0));
+            entry.1 += cnt;
+            // Representative display title = the shortest member of the
+            // group (ties broken alphabetically) — season/arc-qualified
+            // titles ("X: Arco de Elbaph") are almost always longer than the
+            // show's base name ("X"), so this favors the base name without
+            // needing a canonical metadata source.
+            let shorter = title.chars().count() < entry.0.chars().count();
+            let tied_and_earlier = title.chars().count() == entry.0.chars().count() && title < entry.0;
+            if shorter || tied_and_earlier {
+                entry.0 = title;
+            }
+        }
+        let mut top_series: Vec<crate::models::TitleCount> =
+            grouped.into_values().map(|(title, count)| crate::models::TitleCount { title, count }).collect();
+        top_series.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.title.cmp(&b.title)));
+        top_series.truncate(8);
 
         let mut stmt = self.conn.prepare(
             "SELECT DATE(e.seen_at) AS d, COUNT(*) AS cnt
@@ -748,6 +780,41 @@ mod tests {
         assert!(insights.top_series.is_empty());
         assert!(insights.marks_by_day.is_empty());
         assert_eq!(insights.marks_tracked_since, None);
+    }
+
+    #[test]
+    fn top_series_sums_watched_episodes_across_a_franchises_split_arc_rows() {
+        // Reproduces the reported bug: the site models a long-runner as
+        // several `series` rows by arc, so a naive per-row GROUP BY reported
+        // one arc's own count (114) instead of the show's real total.
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+
+        let arcs = [
+            ("op1", "One Piece", 500),
+            ("op2", "One Piece: Wano", 400),
+            ("op3", "One Piece: Arco de Elbaph", 114),
+        ];
+        for (slug, title, seen_count) in arcs {
+            let id = db.upsert_series(src, &mk_airing(slug, title, None)).unwrap();
+            db.set_followed(id, true).unwrap();
+            insert_eps_seen_up_to(&db, id, seen_count, seen_count);
+        }
+        // An unrelated series must stay in its own bucket, not get folded in.
+        let n = db.upsert_series(src, &mk_airing("naruto", "Naruto", None)).unwrap();
+        db.set_followed(n, true).unwrap();
+        insert_eps_seen_up_to(&db, n, 50, 50);
+
+        let insights = db.get_watch_insights(src).unwrap();
+        let one_piece = insights.top_series.iter().find(|t| t.title == "One Piece").expect("collapsed One Piece entry");
+        assert_eq!(one_piece.count, 1014, "500 + 400 + 114 summed across all arc rows");
+        assert!(
+            !insights.top_series.iter().any(|t| t.title.contains("Wano") || t.title.contains("Elbaph")),
+            "arc-specific rows must not surface as separate top-series entries: {:?}",
+            insights.top_series
+        );
+        let naruto = insights.top_series.iter().find(|t| t.title == "Naruto").expect("Naruto entry");
+        assert_eq!(naruto.count, 50);
     }
 
     #[test]
