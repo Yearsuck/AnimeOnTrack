@@ -310,6 +310,12 @@ export const es = {
   "stats.finished": "Finalizadas",
   "stats.marksHeading": "Episodios marcados por día (últimos 30 días)",
   "stats.marksCaveat": "Cuenta cuándo marcaste el episodio, no cuándo lo viste; marcar una serie entera marca de golpe todos sus episodios anteriores. Datos desde {date}.",
+  "stats.minutesUnit": "{minutes} min",
   "stats.hoursUnit": "{hours}h",
   "stats.daysUnit": "{days}d {hours}h",
+  "stats.loading": "Cargando tus estadísticas…",
+  "stats.loadError": "No se han podido cargar tus estadísticas: {msg}",
+  "stats.retry": "Reintentar",
+  "stats.noGenre": "Sin género",
+  "stats.graphAria": "Grafo de relaciones: {series} series seguidas repartidas en {genres} géneros",
 } as const;

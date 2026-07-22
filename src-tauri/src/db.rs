@@ -226,7 +226,7 @@ mod sources;
 mod settings;
 mod episodes;
 mod catalog;
-mod stats;
+pub(crate) mod stats;
 mod airing;
 mod series;
 

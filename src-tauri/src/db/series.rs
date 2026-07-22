@@ -578,11 +578,12 @@ mod tests {
     }
 
     #[test]
-    fn unfollowed_watched_externally_series_with_real_seen_episodes_counts_as_real_not_catalog() {
-        // followed=0, watched_externally=1, 3 real seen episodes, but ALSO
-        // linked to a catalog row with 12 episodes. The real data must win:
-        // the 3 seen episodes count in episodes_watched, and the catalog's
-        // 12 episodes must NOT also count in episodes_watched_external.
+    fn unfollowed_watched_externally_series_with_real_seen_episodes_credits_the_remainder() {
+        // followed=0, watched_externally=1, 3 real seen episodes, ALSO linked
+        // to a catalog row with 12 episodes. "Ya lo vi" means the whole show
+        // was watched, so all 12 are credited — but the 3 real marks are not
+        // counted twice: they stay in episodes_watched and only the 9-episode
+        // remainder lands in episodes_watched_external.
         let db = Db::open(":memory:").unwrap();
         let src = db.upsert_source("A", "a", "animeytx").unwrap();
 
@@ -610,11 +611,15 @@ mod tests {
 
         let summary = db.get_watch_summary(src).unwrap();
         assert_eq!(summary.episodes_watched, 3, "the 3 real seen episodes count, even though the series isn't followed");
-        assert_eq!(summary.episodes_watched_external, 0, "catalog estimate suppressed — real data exists for this series");
+        assert_eq!(summary.episodes_watched_external, 9, "12 catalog episodes minus the 3 already marked");
+        assert_eq!(
+            summary.episodes_watched + summary.episodes_watched_external, 12,
+            "the two figures add up to the catalog total, never past it"
+        );
 
         let insights = db.get_watch_insights(src).unwrap();
         assert_eq!(insights.estimated_minutes_tracked, 72, "3 seen eps * 24 min (TV), tracked minutes aren't followed-only anymore");
-        assert_eq!(insights.estimated_minutes_external, 0, "no catalog minutes — real seen episodes take precedence");
+        assert_eq!(insights.estimated_minutes_external, 9 * 24, "remainder minutes only");
     }
 
     #[test]
@@ -673,10 +678,11 @@ mod tests {
     }
 
     #[test]
-    fn followed_and_watched_externally_series_with_seen_episodes_counts_once_in_hours() {
+    fn followed_and_watched_externally_series_with_seen_episodes_counts_each_episode_once() {
         // followed=1 AND watched_externally=1, linked to a catalog row, with
-        // real seen episodes: must contribute minutes exactly once (from the
-        // real data), not twice (real + catalog estimate).
+        // real seen episodes: every episode contributes exactly once. The 3
+        // real ones go to the tracked side and only the remaining 9 of the
+        // catalog's 12 to the external side — never 12 on top of 3.
         let db = Db::open(":memory:").unwrap();
         let src = db.upsert_source("A", "a", "animeytx").unwrap();
 
@@ -705,14 +711,18 @@ mod tests {
 
         let insights = db.get_watch_insights(src).unwrap();
         assert_eq!(insights.estimated_minutes_tracked, 72, "3 seen eps * 24 min (TV)");
-        assert_eq!(insights.estimated_minutes_external, 0, "no double count — the catalog estimate is suppressed for this series");
+        assert_eq!(insights.estimated_minutes_external, 9 * 24, "the other 9 catalog eps, counted once");
 
         // Criterion 4: episodes and hours cover the exact same universe —
-        // episodes_watched + episodes_watched_external episode total matches
-        // what the minutes were computed from (3 real eps, 0 catalog eps).
+        // episodes_watched + episodes_watched_external matches what the
+        // minutes were computed from (3 real eps + 9 remainder eps).
         let summary = db.get_watch_summary(src).unwrap();
         assert_eq!(summary.episodes_watched, 3);
-        assert_eq!(summary.episodes_watched_external, 0);
+        assert_eq!(summary.episodes_watched_external, 9);
+        assert_eq!(
+            (summary.episodes_watched + summary.episodes_watched_external) * 24,
+            insights.estimated_minutes_tracked + insights.estimated_minutes_external
+        );
     }
 
     #[test]

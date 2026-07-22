@@ -76,6 +76,91 @@ impl Db {
         Ok(())
     }
 
+    /// Every catalog row's title variants, for building a
+    /// `matching::CatalogIndex`. All three stored spellings are returned
+    /// because the scraped site lists some shows under their romaji title and
+    /// others under the English one, and the display `title` column is only
+    /// ever one of the two.
+    pub fn catalog_titles_for_index(&self) -> Result<Vec<crate::matching::CatalogTitleRow>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, title, title_romaji, title_english, popularity FROM anilist_catalog")?;
+        let rows = stmt
+            .query_map([], |r| {
+                let id: i64 = r.get(0)?;
+                let title: String = r.get(1)?;
+                let romaji: Option<String> = r.get(2)?;
+                let english: Option<String> = r.get(3)?;
+                let popularity: Option<i64> = r.get(4)?;
+                let mut titles = vec![title];
+                titles.extend(romaji);
+                titles.extend(english);
+                Ok(crate::matching::CatalogTitleRow {
+                    id,
+                    titles,
+                    popularity: popularity.unwrap_or(0),
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Unlinked series that are worth resolving to a catalog row: the ones the
+    /// user has actually engaged with. Scraped-but-untouched rows (the bulk of
+    /// the table) are skipped — linking them buys nothing and multiplies the
+    /// chance of a wrong automatic link.
+    pub fn series_needing_catalog_link(&self, source_id: i64) -> Result<Vec<(i64, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT s.id, s.title FROM series s
+             WHERE s.source_id=?1 AND s.anilist_id IS NULL
+               AND (s.followed=1 OR s.watched_externally=1
+                    OR EXISTS (SELECT 1 FROM episodes e WHERE e.series_id=s.id AND e.seen=1))
+             ORDER BY s.id",
+        )?;
+        let rows = stmt
+            .query_map([source_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// AniList ids of catalog rows that predate the extended metadata fields.
+    ///
+    /// `title_romaji` is the marker rather than `duration` or `studio`:
+    /// AniList returns a romaji title for essentially every anime, so a
+    /// NULL/empty one means the row was stored before the field was requested,
+    /// whereas a NULL `duration` is perfectly normal for a title AniList has
+    /// no runtime for. Rows are ordered so the ones a user can actually feel
+    /// come back first — those linked to one of their own series, then the
+    /// most popular — because this backfill is long enough to be interrupted
+    /// and resumed, and an interrupted run should already have fixed the rows
+    /// that matter.
+    pub fn stale_catalog_ids(&self) -> Result<Vec<i64>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT c.id FROM anilist_catalog c
+             WHERE c.title_romaji IS NULL OR c.title_romaji = ''
+             ORDER BY EXISTS (SELECT 1 FROM series s WHERE s.anilist_id = c.id) DESC,
+                      COALESCE(c.popularity, 0) DESC,
+                      c.id",
+        )?;
+        let ids = stmt
+            .query_map([], |r| r.get::<_, i64>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(ids)
+    }
+
+    /// Existing `sort_order` for a catalog row, so a metadata backfill can
+    /// hand it straight back to `upsert_catalog_anime` instead of overwriting
+    /// the row's place in the synced ordering with a fresh counter. Falls back
+    /// to 0 for an id that isn't stored (which a backfill shouldn't hit, but
+    /// this must not be the thing that fails the run).
+    pub fn catalog_sort_order(&self, id: i64) -> Result<i64> {
+        Ok(self
+            .conn
+            .query_row("SELECT sort_order FROM anilist_catalog WHERE id=?1", [id], |r| r.get(0))
+            .optional()?
+            .unwrap_or(0))
+    }
+
     /// How many entries are synced locally — lets the frontend show sync
     /// progress and decide whether a first-time sync is needed. Always the
     /// *unfiltered* total (header text); see `catalog_count_filtered` for a

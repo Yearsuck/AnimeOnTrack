@@ -60,6 +60,41 @@ query ($page: Int, $perPage: Int, $startDateGreater: FuzzyDateInt, $startDateLes
 }
 "#;
 
+/// Same media selection as `CATALOG_QUERY`, addressed by explicit ids instead
+/// of a date partition. Used to re-fetch rows that were synced before some of
+/// the fields above existed: `title_romaji`, `duration`, `status`, `studio`
+/// and `start_date` were all added after the first full catalog crawl, so tens
+/// of thousands of stored rows carry `NULL` for them and the incremental sync
+/// (recent years only) will never revisit them. See
+/// `commands::backfill_catalog_metadata`.
+const BY_IDS_QUERY: &str = r#"
+query ($ids: [Int], $perPage: Int) {
+  Page(page: 1, perPage: $perPage) {
+    pageInfo { hasNextPage }
+    media(type: ANIME, id_in: $ids, sort: ID) {
+      id
+      title { romaji english }
+      coverImage { large }
+      format
+      genres
+      episodes
+      duration
+      averageScore
+      popularity
+      siteUrl
+      status
+      studios(isMain: true) { nodes { name } }
+      startDate { year month day }
+    }
+  }
+}
+"#;
+
+/// AniList's own per-request page cap. `fetch_by_ids` must never be handed
+/// more ids than this — anything past the cap is silently dropped by the API,
+/// which would look like "these ids don't exist" rather than an error.
+pub const MAX_IDS_PER_REQUEST: usize = 50;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CatalogAnime {
     pub id: i64,
@@ -410,12 +445,41 @@ fn build_variables(partition: &Partition, page: i64, per_page: i64) -> serde_jso
 /// `Retry-After` header (seconds), capped at 5 attempts — failing loudly
 /// after the cap beats retrying forever indistinguishably from a real hang.
 pub async fn fetch_partition_page(partition: &Partition, page: i64, per_page: i64) -> Result<PartitionPage> {
+    let variables = build_variables(partition, page, per_page);
+    let body = serde_json::json!({ "query": CATALOG_QUERY, "variables": variables });
+    execute_query(body, &format!("{} page {page}", partition.label)).await
+}
+
+/// Re-fetch specific catalog entries by AniList id, for backfilling rows
+/// stored before some fields existed. At most `MAX_IDS_PER_REQUEST` ids per
+/// call — more than that silently truncates server-side.
+///
+/// Ids AniList no longer serves (deleted/merged entries) simply don't come
+/// back in the response; the caller sees a shorter list, not an error, and
+/// must not assume `result.len() == ids.len()`.
+pub async fn fetch_by_ids(ids: &[i64]) -> Result<Vec<CatalogAnime>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    if ids.len() > MAX_IDS_PER_REQUEST {
+        return Err(anyhow!(
+            "fetch_by_ids got {} ids, over AniList's per-request cap of {MAX_IDS_PER_REQUEST}",
+            ids.len()
+        ));
+    }
+    let body = serde_json::json!({
+        "query": BY_IDS_QUERY,
+        "variables": { "ids": ids, "perPage": MAX_IDS_PER_REQUEST },
+    });
+    Ok(execute_query(body, "by-ids").await?.items)
+}
+
+/// Shared POST + 429-retry + error-unwrapping path for every AniList query in
+/// this module, so the rate-limit handling can't drift between call sites.
+async fn execute_query(body: serde_json::Value, context: &str) -> Result<PartitionPage> {
     const MAX_RETRIES: u32 = 5;
 
     let client = reqwest::Client::new();
-    let variables = build_variables(partition, page, per_page);
-    let body = serde_json::json!({ "query": CATALOG_QUERY, "variables": variables });
-
     let mut attempt = 0u32;
     loop {
         let resp = client
@@ -423,14 +487,13 @@ pub async fn fetch_partition_page(partition: &Partition, page: i64, per_page: i6
             .json(&body)
             .send()
             .await
-            .map_err(|e| anyhow!("AniList request failed ({} page {page}): {e}", partition.label))?;
+            .map_err(|e| anyhow!("AniList request failed ({context}): {e}"))?;
 
         if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
             attempt += 1;
             if attempt > MAX_RETRIES {
                 return Err(anyhow!(
-                    "AniList rate-limited partition '{}' page {page} after {MAX_RETRIES} retries",
-                    partition.label
+                    "AniList rate-limited ({context}) after {MAX_RETRIES} retries"
                 ));
             }
             let retry_after_secs = resp
@@ -449,16 +512,15 @@ pub async fn fetch_partition_page(partition: &Partition, page: i64, per_page: i6
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.parse::<i64>().ok());
 
-        let parsed: GraphQlResponse = resp.json().await.map_err(|e| {
-            anyhow!("AniList response was not valid JSON ({} page {page}): {e}", partition.label)
-        })?;
+        let parsed: GraphQlResponse = resp
+            .json()
+            .await
+            .map_err(|e| anyhow!("AniList response was not valid JSON ({context}): {e}"))?;
         if let Some(errors) = parsed.errors {
             let msg = errors.into_iter().map(|e| e.message).collect::<Vec<_>>().join("; ");
-            return Err(anyhow!("AniList returned an error ({} page {page}): {msg}", partition.label));
+            return Err(anyhow!("AniList returned an error ({context}): {msg}"));
         }
-        let data = parsed
-            .data
-            .ok_or_else(|| anyhow!("AniList response had no data ({} page {page})", partition.label))?;
+        let data = parsed.data.ok_or_else(|| anyhow!("AniList response had no data ({context})"))?;
         let items: Vec<CatalogAnime> = data.page.media.into_iter().map(CatalogAnime::from).collect();
         return Ok(PartitionPage {
             items,

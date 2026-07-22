@@ -84,7 +84,13 @@ export function RingGrid({ data }: { data: Datum[] }) {
                 fill="none"
                 stroke={categoryColor(d.name)}
                 strokeWidth={RING_STROKE}
-                strokeLinecap="round"
+                // A zero-length dash still paints under a round linecap, so a
+                // count of 0 (routinely the case for "Descartadas" or
+                // "Finalizadas") drew a solid dot at 12 o'clock that reads as
+                // a sliver of data next to a label saying 0. Square caps have
+                // no such artifact, and at zero the arc is invisible either
+                // way, so nothing else changes visually.
+                strokeLinecap={d.count === 0 ? "butt" : "round"}
                 strokeDasharray={`${dash} ${RING_C - dash}`}
                 transform={`rotate(-90 ${RING / 2} ${RING / 2})`}
                 style={{ transition: "stroke-dasharray 0.6s cubic-bezier(0.16,1,0.3,1)" }}
