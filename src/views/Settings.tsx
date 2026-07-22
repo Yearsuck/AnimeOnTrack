@@ -13,10 +13,80 @@ import {
   disconnectDrive,
   backupNow,
   restoreLatest,
+  setGoogleCredentials,
 } from "../api";
 import { LANGS, useLang, useT } from "../i18n";
 import { THEMES, useTheme } from "../theme";
 import type { SiteSummary, BackupStatus } from "../types";
+
+/// Setup form shown until a Google OAuth client is configured.
+///
+/// The credentials used to be compile-time only, which meant the backup was
+/// unreachable for anyone who hadn't edited `.cargo/config.toml` and rebuilt —
+/// i.e. everyone. A Desktop-type OAuth client's id and secret are documented
+/// by Google as non-confidential for installed apps (the reason this flow uses
+/// PKCE), so accepting them at runtime and storing them next to the refresh
+/// token adds no exposure the app didn't already have.
+function GoogleCredentialsForm({ onConfigured }: { onConfigured: (s: BackupStatus) => void }) {
+  const t = useT();
+  const [clientId, setClientId] = useState("");
+  const [clientSecret, setClientSecret] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const save = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      onConfigured(await setGoogleCredentials(clientId, clientSecret));
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div>
+      <p className="muted" style={{ fontSize: 12 }}>
+        {t("settings.backupSetupSteps")}
+      </p>
+      <div className="row" style={{ gap: 8, flexWrap: "wrap", marginTop: 10 }}>
+        <input
+          className="input"
+          value={clientId}
+          onChange={(e) => setClientId(e.target.value)}
+          placeholder={t("settings.backupClientId")}
+          aria-label={t("settings.backupClientId")}
+          spellCheck={false}
+          autoComplete="off"
+        />
+        <input
+          className="input"
+          type="password"
+          value={clientSecret}
+          onChange={(e) => setClientSecret(e.target.value)}
+          placeholder={t("settings.backupClientSecret")}
+          aria-label={t("settings.backupClientSecret")}
+          spellCheck={false}
+          autoComplete="off"
+        />
+        <button
+          className="btn btn-primary"
+          disabled={saving || !clientId.trim() || !clientSecret.trim()}
+          onClick={save}
+        >
+          {saving ? t("common.saving") : t("settings.backupSaveCredentials")}
+        </button>
+      </div>
+      {error && (
+        <p className="muted" style={{ color: "var(--danger)", fontSize: 12 }}>
+          {t("settings.backupError", { msg: error })}
+        </p>
+      )}
+    </div>
+  );
+}
 
 /// "Copia de seguridad" card: connect/disconnect Google Drive, back up now,
 /// restore the latest backup. Self-contained (fetches its own status) so it
@@ -52,7 +122,7 @@ function BackupCard() {
       <p className="settings-section-desc">{t("settings.backupIntro")}</p>
 
       {!status.configured ? (
-        <p className="muted">{t("settings.backupNotConfigured")}</p>
+        <GoogleCredentialsForm onConfigured={setStatus} />
       ) : !status.connected ? (
         <button
           className="btn btn-primary"

@@ -269,21 +269,29 @@ pub(crate) fn backup_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> 
 #[tauri::command]
 pub async fn restore_latest(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     let dir = backup_dir(&app)?;
-    let (refresh, file_id) = {
+    let (client, refresh, file_id) = {
         let db = state.db.lock().unwrap();
+        let client = backup_lib::configured_client(&db)
+            .ok_or("Google credentials not configured")?;
         let refresh = db
             .get_setting("gdrive_refresh_token")
             .ok()
             .flatten()
             .ok_or("Not connected to Google Drive")?;
-        let file_id = db
-            .get_setting("gdrive_file_id")
-            .ok()
-            .flatten()
-            .ok_or("No backup found in Drive yet")?;
-        (refresh, file_id)
+        let file_id = db.get_setting("gdrive_file_id").ok().flatten();
+        (client, refresh, file_id)
     };
-    let token = backup_lib::access_token(&refresh).await?;
+    let token = backup_lib::access_token(&client, &refresh).await?;
+    // Falling back to a lookup by name is what makes "restore onto a new
+    // machine" — the whole point of the feature — actually work: a fresh
+    // install has an empty settings table, so `gdrive_file_id` is only ever
+    // present on the machine that uploaded the backup in the first place.
+    let file_id = match file_id {
+        Some(id) => id,
+        None => backup_lib::drive::find_backup_file(&token)
+            .await?
+            .ok_or("No backup found in Drive yet")?,
+    };
     let bytes = backup_lib::drive::download_backup(&token, &file_id).await?;
     backup_lib::stage_restore(&bytes, &dir)?; // validates before staging
     app.restart();

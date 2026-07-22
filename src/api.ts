@@ -190,3 +190,9 @@ export const connectDrive = () => invoke<BackupStatus>("connect_drive");
 export const disconnectDrive = () => invoke<BackupStatus>("disconnect_drive");
 export const backupNow = () => invoke<BackupStatus>("backup_now");
 export const restoreLatest = () => invoke<void>("restore_latest");
+
+// Stores the Google OAuth client the backup authenticates with, so Drive can
+// be set up without rebuilding. Passing empty strings clears it back to
+// whatever the build was compiled with.
+export const setGoogleCredentials = (clientId: string, clientSecret: string) =>
+  invoke<BackupStatus>("set_google_credentials", { clientId, clientSecret });

@@ -116,6 +116,7 @@ pub fn run() {
             commands::get_deck_bans,
             commands::set_deck_bans,
             commands::backup_status,
+            commands::set_google_credentials,
             commands::connect_drive,
             commands::disconnect_drive,
             commands::backup_now,
