@@ -125,6 +125,58 @@ pub async fn sync_anime_catalog(
     state: State<'_, AppState>,
     force_full: bool,
 ) -> Result<i64, String> {
+    run_catalog_sync(app, state, force_full).await
+}
+
+/// Auto-triggered counterpart to the manual "Sync" button in the Catálogo
+/// tab. `list_airing_season` (see `db::catalog::catalog_start_dates_by_normalized_title`)
+/// depends on `anilist_catalog.start_date` to resolve "Esta temporada" for
+/// series the user doesn't follow (no scraped episode dates for those) — but
+/// a full sync only happens once, on first launch, and incremental syncs are
+/// otherwise only reachable by the user manually opening Catálogo and
+/// clicking Sync. Without this, `start_date` silently never backfills for
+/// anyone who ran their first full sync before the column existed, and
+/// "Esta temporada" quietly drops every unfollowed airing show. Called
+/// fire-and-forget from the frontend on startup; throttled via
+/// `catalog_auto_sync_last_at` so it doesn't re-run (and re-hit AniList's
+/// rate limit) on every launch — see `should_auto_sync_catalog`.
+#[tauri::command]
+pub async fn maybe_sync_catalog_incremental(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Option<i64>, String> {
+    let last_at = {
+        let db = state.db.lock().unwrap();
+        db.get_setting("catalog_auto_sync_last_at").map_err(|e| e.to_string())?
+    };
+    if !should_auto_sync_catalog(last_at.as_deref(), chrono::Utc::now()) {
+        return Ok(None);
+    }
+    {
+        let db = state.db.lock().unwrap();
+        db.set_setting("catalog_auto_sync_last_at", &chrono::Utc::now().to_rfc3339())
+            .map_err(|e| e.to_string())?;
+    }
+    run_catalog_sync(app, state, false).await.map(Some)
+}
+
+/// Pure throttle check for `maybe_sync_catalog_incremental`: run once per
+/// `AUTO_SYNC_COOLDOWN_SECS`, or immediately if never run / the persisted
+/// timestamp is unparseable (treat corrupt state as "never run" rather than
+/// getting stuck skipping forever).
+pub fn should_auto_sync_catalog(last_at: Option<&str>, now: chrono::DateTime<chrono::Utc>) -> bool {
+    const AUTO_SYNC_COOLDOWN_SECS: i64 = 12 * 60 * 60;
+    match last_at.and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok()) {
+        Some(last) => (now - last.with_timezone(&chrono::Utc)).num_seconds() >= AUTO_SYNC_COOLDOWN_SECS,
+        None => true,
+    }
+}
+
+async fn run_catalog_sync(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    force_full: bool,
+) -> Result<i64, String> {
     use crate::anilist::{build_partitions, incremental_partitions, pending_partitions, CatalogSyncState};
     use chrono::Datelike;
 
@@ -223,4 +275,41 @@ pub async fn sync_anime_catalog(
 
     let _ = app.emit("catalog-sync-progress", CatalogSyncProgress { synced, total: synced });
     Ok(synced)
+}
+
+#[cfg(test)]
+mod auto_sync_tests {
+    use super::should_auto_sync_catalog;
+    use chrono::{Duration, Utc};
+
+    #[test]
+    fn never_run_before_should_sync() {
+        assert!(should_auto_sync_catalog(None, Utc::now()));
+    }
+
+    #[test]
+    fn corrupt_timestamp_should_sync() {
+        assert!(should_auto_sync_catalog(Some("not a date"), Utc::now()));
+    }
+
+    #[test]
+    fn recent_run_should_not_sync() {
+        let now = Utc::now();
+        let last = (now - Duration::hours(1)).to_rfc3339();
+        assert!(!should_auto_sync_catalog(Some(&last), now));
+    }
+
+    #[test]
+    fn run_past_cooldown_should_sync_again() {
+        let now = Utc::now();
+        let last = (now - Duration::hours(13)).to_rfc3339();
+        assert!(should_auto_sync_catalog(Some(&last), now));
+    }
+
+    #[test]
+    fn exactly_at_cooldown_boundary_should_sync() {
+        let now = Utc::now();
+        let last = (now - Duration::hours(12)).to_rfc3339();
+        assert!(should_auto_sync_catalog(Some(&last), now));
+    }
 }
