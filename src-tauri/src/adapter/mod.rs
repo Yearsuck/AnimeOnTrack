@@ -3,6 +3,7 @@ use anyhow::Result;
 
 pub mod animeflv;
 pub mod animeytx;
+pub mod gogoanime;
 pub mod jkanime;
 pub mod tioanime;
 
@@ -25,6 +26,7 @@ pub fn all_sites() -> &'static [SiteInfo] {
         SiteInfo { id: "tioanime", name: "TioAnime", default_base_url: "https://tioanime.com" },
         SiteInfo { id: "animeflv", name: "AnimeFLV", default_base_url: "https://www4.animeflv.net" },
         SiteInfo { id: "jkanime", name: "JKanime", default_base_url: "https://jkanime.net" },
+        SiteInfo { id: "gogoanime", name: "GogoAnime", default_base_url: "https://gogoanime.by" },
     ]
 }
 
@@ -37,6 +39,7 @@ pub fn adapter_for(site_id: &str) -> Option<Box<dyn SiteAdapter>> {
         "tioanime" => Some(Box::new(tioanime::TioanimeAdapter)),
         "animeflv" => Some(Box::new(animeflv::AnimeflvAdapter)),
         "jkanime" => Some(Box::new(jkanime::JkanimeAdapter)),
+        "gogoanime" => Some(Box::new(gogoanime::GogoanimeAdapter)),
         _ => None,
     }
 }
