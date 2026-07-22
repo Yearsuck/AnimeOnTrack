@@ -257,6 +257,48 @@ impl Db {
         Ok(map)
     }
 
+    /// Normalized-title -> AniList page URL, mirroring
+    /// `catalog_start_dates_by_normalized_title` (same "try every synced
+    /// title variant" approach) but for `url` instead of `start_date`,
+    /// serving `anilist_url_for_series`'s title-match fallback below.
+    fn catalog_urls_by_normalized_title(&self) -> Result<std::collections::HashMap<String, String>> {
+        let mut stmt = self.conn.prepare("SELECT title, title_romaji, title_english, url FROM anilist_catalog")?;
+        let rows: Vec<(String, Option<String>, Option<String>, String)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut map = std::collections::HashMap::new();
+        for (title, romaji, english, url) in rows {
+            for variant in [Some(title), romaji, english].into_iter().flatten() {
+                map.entry(crate::matching::normalize_title(&variant)).or_insert(url.clone());
+            }
+        }
+        Ok(map)
+    }
+
+    /// Best-effort AniList page URL for a `series` row, so "Abrir página de
+    /// la serie" in the detail view can also offer the canonical AniList
+    /// page alongside the scraped site's. Direct `anilist_id` join when
+    /// present (rare for followed/scraped series — usually only set via the
+    /// Descubrir catalog-swipe/link path, see `series::anilist_id`'s doc);
+    /// otherwise falls back to the same normalized-title matching
+    /// `list_airing_season` already relies on for unlinked series.
+    pub fn anilist_url_for_series(&self, series_id: i64) -> Result<Option<String>> {
+        let (title, anilist_id): (String, Option<i64>) = self.conn.query_row(
+            "SELECT title, anilist_id FROM series WHERE id=?1",
+            [series_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        if let Some(id) = anilist_id {
+            let url: Option<String> =
+                self.conn.query_row("SELECT url FROM anilist_catalog WHERE id=?1", [id], |r| r.get(0)).ok();
+            if url.is_some() {
+                return Ok(url);
+            }
+        }
+        let map = self.catalog_urls_by_normalized_title()?;
+        Ok(map.get(&crate::matching::normalize_title(&title)).cloned())
+    }
+
     fn row_to_catalog_anime(r: &rusqlite::Row) -> rusqlite::Result<crate::anilist::CatalogAnime> {
         let id: i64 = r.get("id")?;
         Ok(crate::anilist::CatalogAnime {
@@ -1327,5 +1369,47 @@ mod tests {
         assert_eq!(map.get(&crate::matching::normalize_title("Shingeki no Kyojin")), Some(&1_776_211_200));
         assert_eq!(map.get(&crate::matching::normalize_title("Unsynced Show")), None);
         assert_eq!(map.len(), 2, "one entry per distinct title/romaji/english variant with a real start_date");
+    }
+
+    fn mk_catalog_anime(id: i64, title: &str, url: &str) -> crate::anilist::CatalogAnime {
+        crate::anilist::CatalogAnime {
+            id, title: title.into(), title_romaji: None, title_english: None, cover_url: None,
+            format: Some("TV".into()), genres: vec![], episodes: Some(12), average_score: None,
+            popularity: None, url: url.into(), status: None, duration: None, studio: None, start_date: None,
+        }
+    }
+
+    #[test]
+    fn anilist_url_for_series_uses_direct_anilist_id_when_linked() {
+        let db = Db::open(":memory:").unwrap();
+        db.upsert_catalog_anime(&mk_catalog_anime(70, "Frieren", "https://anilist.co/anime/70"), 0).unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let sid = db.upsert_series(src, &mk_airing("frieren-site", "Some Other Scraped Title", None)).unwrap();
+        db.set_anilist_id(sid, 70).unwrap();
+
+        // Direct id join wins even though the scraped title wouldn't
+        // title-match — proves it doesn't fall through to the title lookup.
+        assert_eq!(db.anilist_url_for_series(sid).unwrap(), Some("https://anilist.co/anime/70".to_string()));
+    }
+
+    #[test]
+    fn anilist_url_for_series_falls_back_to_normalized_title_match_when_unlinked() {
+        let db = Db::open(":memory:").unwrap();
+        db.upsert_catalog_anime(&mk_catalog_anime(71, "Bocchi the Rock!", "https://anilist.co/anime/71"), 0).unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        // Followed/scraped series never get anilist_id set in practice — no
+        // set_anilist_id call here, matching real-world coverage.
+        let sid = db.upsert_series(src, &mk_airing("bocchi", "Bocchi The Rock! Sub Español", None)).unwrap();
+
+        assert_eq!(db.anilist_url_for_series(sid).unwrap(), Some("https://anilist.co/anime/71".to_string()));
+    }
+
+    #[test]
+    fn anilist_url_for_series_none_when_no_id_and_no_title_match() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let sid = db.upsert_series(src, &mk_airing("obscure", "Totally Unmatched Title", None)).unwrap();
+
+        assert_eq!(db.anilist_url_for_series(sid).unwrap(), None);
     }
 }

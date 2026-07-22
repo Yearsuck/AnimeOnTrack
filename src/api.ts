@@ -155,6 +155,9 @@ export const syncAnimeCatalog = (forceFull = false) =>
 export const maybeSyncCatalogIncremental = () =>
   invoke<number | null>("maybe_sync_catalog_incremental");
 
+export const getAnilistUrlForSeries = (seriesId: number) =>
+  invoke<string | null>("get_anilist_url_for_series", { seriesId });
+
 export const discoverCatalogCard = (recommended: boolean) =>
   invoke<SwipeCard | null>("discover_catalog_card", { recommended });
 

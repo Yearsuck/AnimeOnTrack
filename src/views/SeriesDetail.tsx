@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import {
+  getAnilistUrlForSeries,
   linkCatalogSeries,
   listEpisodes,
   openEpisode,
@@ -34,6 +35,7 @@ export function SeriesDetail({
   const [episodes, setEpisodes] = useState<Episode[]>([]);
   const [loading, setLoading] = useState(true);
   const [linking, setLinking] = useState(false);
+  const [anilistUrl, setAnilistUrl] = useState<string | null>(null);
   const rowRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   // Guards the link-on-open trigger against React StrictMode's dev-only
   // double-invoke (same pattern as App.tsx's startup effect) — otherwise
@@ -50,6 +52,13 @@ export function SeriesDetail({
       setLoading(false);
     }
   }
+  useEffect(() => {
+    setAnilistUrl(null);
+    getAnilistUrlForSeries(series.id)
+      .then(setAnilistUrl)
+      .catch(() => setAnilistUrl(null));
+  }, [series.id]);
+
   useEffect(() => {
     linkTriedRef.current = null;
     (async () => {
@@ -137,7 +146,16 @@ export function SeriesDetail({
           <h2 className="page-title" style={{ marginBottom: 6 }}>
             {series.title}
           </h2>
-          <a href={series.url} target="_blank" rel="noreferrer">
+          <a
+            href={series.url}
+            target="_blank"
+            rel="noreferrer"
+            onClick={() => {
+              // Middle-click/ctrl-click already opens series.url itself via
+              // the href; this only adds the AniList tab alongside it.
+              if (anilistUrl) window.open(anilistUrl, "_blank", "noreferrer");
+            }}
+          >
             {t("seriesDetail.openPage")}
           </a>
           <div style={{ marginTop: 10 }}>
