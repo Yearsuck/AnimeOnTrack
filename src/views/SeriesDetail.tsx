@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import {
-  getAnilistUrlForSeries,
+  getCatalogInfoForSeries,
   linkCatalogSeries,
   listEpisodes,
   openEpisode,
@@ -9,7 +9,7 @@ import {
 } from "../api";
 import { useT } from "../i18n";
 import { isUnlinkedCatalogRow } from "../lib/catalogLink";
-import type { Episode, Series } from "../types";
+import type { CatalogAnime, Episode, Series } from "../types";
 
 // Mirrors the backend's parse_ep_number (src-tauri/src/db.rs): leading
 // digits (+ optional decimal) only, e.g. "12" -> 12, "12.5" -> 12.5,
@@ -35,7 +35,10 @@ export function SeriesDetail({
   const [episodes, setEpisodes] = useState<Episode[]>([]);
   const [loading, setLoading] = useState(true);
   const [linking, setLinking] = useState(false);
-  const [anilistUrl, setAnilistUrl] = useState<string | null>(null);
+  // Anime metadata (genres/studio/format/episodes/score/cover/AniList url)
+  // comes from AniList, not the scraped site — the site only still supplies
+  // episode links and the "is it airing" signal (see `listEpisodes` below).
+  const [catalogInfo, setCatalogInfo] = useState<CatalogAnime | null>(null);
   const rowRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   // Guards the link-on-open trigger against React StrictMode's dev-only
   // double-invoke (same pattern as App.tsx's startup effect) — otherwise
@@ -53,10 +56,10 @@ export function SeriesDetail({
     }
   }
   useEffect(() => {
-    setAnilistUrl(null);
-    getAnilistUrlForSeries(series.id)
-      .then(setAnilistUrl)
-      .catch(() => setAnilistUrl(null));
+    setCatalogInfo(null);
+    getCatalogInfoForSeries(series.id)
+      .then(setCatalogInfo)
+      .catch(() => setCatalogInfo(null));
   }, [series.id]);
 
   useEffect(() => {
@@ -135,9 +138,9 @@ export function SeriesDetail({
       </button>
 
       <div className="page-head" style={{ alignItems: "flex-start" }}>
-        {series.cover_url && (
+        {(catalogInfo?.cover_url ?? series.cover_url) && (
           <img
-            src={series.cover_url}
+            src={catalogInfo?.cover_url ?? series.cover_url ?? undefined}
             alt=""
             style={{ width: 90, height: 128, objectFit: "cover", borderRadius: 10 }}
           />
@@ -153,11 +156,40 @@ export function SeriesDetail({
             onClick={() => {
               // Middle-click/ctrl-click already opens series.url itself via
               // the href; this only adds the AniList tab alongside it.
-              if (anilistUrl) window.open(anilistUrl, "_blank", "noreferrer");
+              if (catalogInfo?.url) window.open(catalogInfo.url, "_blank", "noreferrer");
             }}
           >
             {t("seriesDetail.openPage")}
           </a>
+          {catalogInfo ? (
+            <div className="muted" style={{ marginTop: 8, fontSize: 12.5, display: "flex", flexWrap: "wrap", gap: "4px 14px" }}>
+              {catalogInfo.studio && (
+                <span>{t("seriesDetail.info.studio")}: {catalogInfo.studio}</span>
+              )}
+              {catalogInfo.format && (
+                <span>{t("seriesDetail.info.format")}: {catalogInfo.format}</span>
+              )}
+              {catalogInfo.episodes != null && (
+                <span>{t("seriesDetail.info.episodes")}: {catalogInfo.episodes}</span>
+              )}
+              {catalogInfo.average_score != null && (
+                <span>{t("seriesDetail.info.score")}: {catalogInfo.average_score}/100</span>
+              )}
+            </div>
+          ) : (
+            <div className="muted" style={{ marginTop: 8, fontSize: 12.5 }}>
+              {t("seriesDetail.info.notSynced")}
+            </div>
+          )}
+          {catalogInfo != null && catalogInfo.genres.length > 0 && (
+            <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {catalogInfo.genres.map((g) => (
+                <span key={g} className="chip-toggle" style={{ cursor: "default" }}>
+                  {g}
+                </span>
+              ))}
+            </div>
+          )}
           <div style={{ marginTop: 10 }}>
             <div className="muted" style={{ marginBottom: 4, fontSize: 12.5 }}>
               {t("seriesDetail.seenCount", { seen: seenCount, total: episodes.length })}

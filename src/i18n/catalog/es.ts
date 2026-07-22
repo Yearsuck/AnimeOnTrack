@@ -143,6 +143,11 @@ export const es = {
   "seriesDetail.linking": "Buscando en la web…",
   "seriesDetail.loadingEpisodes": "Cargando episodios…",
   "seriesDetail.noEpisodes": "Sin episodios registrados todavía. Pulsa Actualizar.",
+  "seriesDetail.info.studio": "Estudio",
+  "seriesDetail.info.format": "Formato",
+  "seriesDetail.info.episodes": "Episodios",
+  "seriesDetail.info.score": "Puntuación",
+  "seriesDetail.info.notSynced": "Sin datos de AniList todavía (sincroniza el Catálogo).",
 
   // Descubrir.tsx
   "discover.modeRecommended": "Recomendado",

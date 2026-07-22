@@ -257,46 +257,66 @@ impl Db {
         Ok(map)
     }
 
-    /// Normalized-title -> AniList page URL, mirroring
-    /// `catalog_start_dates_by_normalized_title` (same "try every synced
-    /// title variant" approach) but for `url` instead of `start_date`,
-    /// serving `anilist_url_for_series`'s title-match fallback below.
-    fn catalog_urls_by_normalized_title(&self) -> Result<std::collections::HashMap<String, String>> {
-        let mut stmt = self.conn.prepare("SELECT title, title_romaji, title_english, url FROM anilist_catalog")?;
-        let rows: Vec<(String, Option<String>, Option<String>, String)> = stmt
+    /// Normalized-title -> `anilist_catalog.id`, mirroring
+    /// `catalog_start_dates_by_normalized_title`'s "try every synced title
+    /// variant" approach — shared lookup behind `catalog_id_for_series`'s
+    /// title-match fallback.
+    fn catalog_ids_by_normalized_title(&self) -> Result<std::collections::HashMap<String, i64>> {
+        let mut stmt = self.conn.prepare("SELECT id, title, title_romaji, title_english FROM anilist_catalog")?;
+        let rows: Vec<(i64, String, Option<String>, Option<String>)> = stmt
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let mut map = std::collections::HashMap::new();
-        for (title, romaji, english, url) in rows {
+        for (id, title, romaji, english) in rows {
             for variant in [Some(title), romaji, english].into_iter().flatten() {
-                map.entry(crate::matching::normalize_title(&variant)).or_insert(url.clone());
+                map.entry(crate::matching::normalize_title(&variant)).or_insert(id);
             }
         }
         Ok(map)
     }
 
-    /// Best-effort AniList page URL for a `series` row, so "Abrir página de
-    /// la serie" in the detail view can also offer the canonical AniList
-    /// page alongside the scraped site's. Direct `anilist_id` join when
-    /// present (rare for followed/scraped series — usually only set via the
-    /// Descubrir catalog-swipe/link path, see `series::anilist_id`'s doc);
-    /// otherwise falls back to the same normalized-title matching
-    /// `list_airing_season` already relies on for unlinked series.
-    pub fn anilist_url_for_series(&self, series_id: i64) -> Result<Option<String>> {
+    /// Resolve a `series` row to a matched `anilist_catalog.id`: direct
+    /// `anilist_id` FK when it's set AND still points at a synced row (rare
+    /// for followed/scraped series — usually only set via the Descubrir
+    /// catalog-swipe/link path, see `series::anilist_id`'s doc), otherwise
+    /// falling back to the same normalized-title matching
+    /// `list_airing_season` already relies on for unlinked series. Used by
+    /// `catalog_info_for_series`.
+    fn catalog_id_for_series(&self, series_id: i64) -> Result<Option<i64>> {
         let (title, anilist_id): (String, Option<i64>) = self.conn.query_row(
             "SELECT title, anilist_id FROM series WHERE id=?1",
             [series_id],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
         if let Some(id) = anilist_id {
-            let url: Option<String> =
-                self.conn.query_row("SELECT url FROM anilist_catalog WHERE id=?1", [id], |r| r.get(0)).ok();
-            if url.is_some() {
-                return Ok(url);
+            let linked_row_exists: bool = self
+                .conn
+                .query_row("SELECT 1 FROM anilist_catalog WHERE id=?1", [id], |_| Ok(()))
+                .optional()?
+                .is_some();
+            if linked_row_exists {
+                return Ok(Some(id));
             }
         }
-        let map = self.catalog_urls_by_normalized_title()?;
-        Ok(map.get(&crate::matching::normalize_title(&title)).cloned())
+        Ok(self.catalog_ids_by_normalized_title()?.get(&crate::matching::normalize_title(&title)).copied())
+    }
+
+    /// Full synced AniList catalog entry (title/cover/genres/format/
+    /// episodes/score/studio/etc) matched to a `series` row — the source for
+    /// SeriesDetail's info panel now that anime metadata is meant to come
+    /// from AniList, not the scraped site (which only still supplies episode
+    /// links and the "is it airing" signal). `None` when nothing in the
+    /// synced catalog matches this series (not yet synced, or no title/id
+    /// match at all).
+    pub fn catalog_info_for_series(&self, series_id: i64) -> Result<Option<crate::anilist::CatalogAnime>> {
+        let Some(id) = self.catalog_id_for_series(series_id)? else { return Ok(None) };
+        let mut stmt = self.conn.prepare(
+            "SELECT id, title, title_romaji, title_english, cover_url, format, episodes, average_score, popularity, url, status, duration, studio, start_date
+             FROM anilist_catalog WHERE id=?1",
+        )?;
+        let mut anime = stmt.query_row([id], Self::row_to_catalog_anime)?;
+        anime.genres = self.list_catalog_genres(id)?;
+        Ok(Some(anime))
     }
 
     fn row_to_catalog_anime(r: &rusqlite::Row) -> rusqlite::Result<crate::anilist::CatalogAnime> {
@@ -1380,7 +1400,7 @@ mod tests {
     }
 
     #[test]
-    fn anilist_url_for_series_uses_direct_anilist_id_when_linked() {
+    fn catalog_info_for_series_uses_direct_anilist_id_when_linked() {
         let db = Db::open(":memory:").unwrap();
         db.upsert_catalog_anime(&mk_catalog_anime(70, "Frieren", "https://anilist.co/anime/70"), 0).unwrap();
         let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
@@ -1389,11 +1409,12 @@ mod tests {
 
         // Direct id join wins even though the scraped title wouldn't
         // title-match — proves it doesn't fall through to the title lookup.
-        assert_eq!(db.anilist_url_for_series(sid).unwrap(), Some("https://anilist.co/anime/70".to_string()));
+        let info = db.catalog_info_for_series(sid).unwrap().expect("linked match");
+        assert_eq!(info.url, "https://anilist.co/anime/70");
     }
 
     #[test]
-    fn anilist_url_for_series_falls_back_to_normalized_title_match_when_unlinked() {
+    fn catalog_info_for_series_falls_back_to_normalized_title_match_when_unlinked() {
         let db = Db::open(":memory:").unwrap();
         db.upsert_catalog_anime(&mk_catalog_anime(71, "Bocchi the Rock!", "https://anilist.co/anime/71"), 0).unwrap();
         let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
@@ -1401,15 +1422,56 @@ mod tests {
         // set_anilist_id call here, matching real-world coverage.
         let sid = db.upsert_series(src, &mk_airing("bocchi", "Bocchi The Rock! Sub Español", None)).unwrap();
 
-        assert_eq!(db.anilist_url_for_series(sid).unwrap(), Some("https://anilist.co/anime/71".to_string()));
+        let info = db.catalog_info_for_series(sid).unwrap().expect("title match");
+        assert_eq!(info.url, "https://anilist.co/anime/71");
     }
 
     #[test]
-    fn anilist_url_for_series_none_when_no_id_and_no_title_match() {
+    fn catalog_info_for_series_ignores_a_dangling_anilist_id() {
+        // anilist_id points at a row that was never synced (or since removed)
+        // — must fall through to the title-match path instead of erroring.
+        let db = Db::open(":memory:").unwrap();
+        db.upsert_catalog_anime(&mk_catalog_anime(72, "Real Match", "https://anilist.co/anime/72"), 0).unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let sid = db.upsert_series(src, &mk_airing("real-match", "Real Match", None)).unwrap();
+        db.set_anilist_id(sid, 9999).unwrap(); // never synced
+
+        let info = db.catalog_info_for_series(sid).unwrap().expect("falls through to title match");
+        assert_eq!(info.url, "https://anilist.co/anime/72");
+    }
+
+    fn mk_full_catalog_anime(id: i64, title: &str, genres: &[&str]) -> crate::anilist::CatalogAnime {
+        crate::anilist::CatalogAnime {
+            id, title: title.into(), title_romaji: None, title_english: None,
+            cover_url: Some(format!("https://img/{id}")), format: Some("TV".into()),
+            genres: genres.iter().map(|g| g.to_string()).collect(), episodes: Some(24),
+            average_score: Some(88), popularity: Some(5000), url: format!("https://anilist.co/anime/{id}"),
+            status: Some("FINISHED".into()), duration: Some(24), studio: Some("Studio X".into()),
+            start_date: None,
+        }
+    }
+
+    #[test]
+    fn catalog_info_for_series_returns_full_matched_row_with_genres() {
+        let db = Db::open(":memory:").unwrap();
+        let anime = mk_full_catalog_anime(80, "Frieren", &["Adventure", "Drama"]);
+        db.upsert_catalog_anime(&anime, 0).unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let sid = db.upsert_series(src, &mk_airing("frieren", "Frieren Sub Español", None)).unwrap();
+
+        let info = db.catalog_info_for_series(sid).unwrap().expect("should title-match");
+        assert_eq!(info.id, 80);
+        assert_eq!(info.studio.as_deref(), Some("Studio X"));
+        assert_eq!(info.average_score, Some(88));
+        assert_eq!(info.genres, vec!["Adventure".to_string(), "Drama".to_string()]);
+    }
+
+    #[test]
+    fn catalog_info_for_series_none_when_unmatched() {
         let db = Db::open(":memory:").unwrap();
         let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
         let sid = db.upsert_series(src, &mk_airing("obscure", "Totally Unmatched Title", None)).unwrap();
 
-        assert_eq!(db.anilist_url_for_series(sid).unwrap(), None);
+        assert_eq!(db.catalog_info_for_series(sid).unwrap(), None);
     }
 }

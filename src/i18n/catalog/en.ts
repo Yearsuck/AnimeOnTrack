@@ -130,6 +130,11 @@ export const en: Messages = {
   "seriesDetail.linking": "Searching the site…",
   "seriesDetail.loadingEpisodes": "Loading episodes…",
   "seriesDetail.noEpisodes": "No episodes recorded yet. Hit Refresh.",
+  "seriesDetail.info.studio": "Studio",
+  "seriesDetail.info.format": "Format",
+  "seriesDetail.info.episodes": "Episodes",
+  "seriesDetail.info.score": "Score",
+  "seriesDetail.info.notSynced": "No AniList data yet (sync the Catalog).",
 
   "discover.modeRecommended": "Recommended",
   "discover.modeRandom": "Random",
