@@ -1734,3 +1734,55 @@ progress.scanbar-track::-webkit-progress-value {
   font-weight: var(--fw-semibold);
   letter-spacing: -0.01em;
 }
+
+/* ---------- Stats · compact 30-day activity chart ---------- */
+/* Replaces a 30-row horizontal BarChart that dominated the page. One thin
+   column per day in a single ~96px-tall row. */
+.dayact-wrap {
+  padding: var(--sp-4);
+}
+.dayact-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 96px;
+}
+.dayact-col {
+  position: relative;
+  flex: 1 1 0;
+  height: 100%;
+  display: flex;
+  align-items: flex-end;
+  /* Faint track so quiet days still read as "a day", not a gap. */
+  background: linear-gradient(var(--surface-2), var(--surface-2)) bottom / 100% 2px no-repeat;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  cursor: default;
+}
+.dayact-fill {
+  width: 100%;
+  min-height: 0;
+  background: var(--surface-3);
+  border-radius: var(--radius-sm) var(--radius-sm) 2px 2px;
+  transition: height var(--dur-slow) var(--ease-out), background var(--dur-fast) var(--ease);
+}
+/* A day with real activity gets the accent; hover lifts any column. */
+.dayact-col.has .dayact-fill {
+  background: var(--accent);
+}
+.dayact-col:hover .dayact-fill {
+  background: var(--accent-hover);
+}
+.dayact-tick {
+  position: absolute;
+  bottom: -18px;
+  left: 50%;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  font-size: var(--fs-xs);
+  color: var(--muted-2);
+  font-variant-numeric: tabular-nums;
+}
+/* Room for the tick labels that hang below the bars. */
+.dayact {
+  padding-bottom: 20px;
+}
