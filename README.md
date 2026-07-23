@@ -157,8 +157,10 @@ that apply to you. Please support creators through official, licensed channels.
 
 ## License
 
-No license has been chosen yet — this is a personal project, so all rights are reserved by
-the author until one is added.
+Licensed under the **GNU General Public License v3.0 or later** — see [`LICENSE`](LICENSE).
+
+You may use, study, share, and modify this software, but any distributed derivative must
+also be released under the GPL. It comes with **no warranty** of any kind.
 
 <div align="center">
 <img src="https://capsule-render.vercel.app/api?type=waving&color=0:4aa8ff,100:0b1521&height=120&section=footer&animation=fadeIn" width="100%" alt="" />
