@@ -1786,3 +1786,101 @@ progress.scanbar-track::-webkit-progress-value {
 .dayact {
   padding-bottom: 20px;
 }
+
+/* ---------- Static tag / badge ----------
+   A non-interactive category label (genre chips on a detail page), distinct
+   from .chip-toggle, which is a real toggle and carries cursor:pointer. */
+.tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px var(--sp-3);
+  border-radius: var(--radius-round);
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+}
+
+/* ---------- Series detail header ---------- */
+.detail-back {
+  margin-bottom: var(--sp-3);
+}
+.detail-head {
+  align-items: flex-start;
+}
+.detail-cover {
+  width: 90px;
+  height: 128px;
+  object-fit: cover;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  box-shadow: var(--shadow-sm);
+  flex-shrink: 0;
+}
+.detail-main {
+  flex: 1;
+  min-width: 0;
+}
+.detail-title {
+  margin-bottom: var(--sp-2);
+}
+.detail-meta {
+  margin-top: var(--sp-2);
+  font-size: var(--fs-sm);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1) var(--sp-4);
+}
+.detail-genres {
+  margin-top: var(--sp-2);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+.detail-progress {
+  margin-top: var(--sp-3);
+}
+.detail-progress-label {
+  margin-bottom: var(--sp-1);
+  font-size: var(--fs-sm);
+}
+
+/* ---------- Catálogo ---------- */
+.catalog-sync {
+  margin-bottom: var(--sp-5);
+  padding: var(--sp-3) var(--sp-4);
+}
+.catalog-sync-label {
+  font-size: var(--fs-sm);
+  margin-bottom: var(--sp-1);
+}
+.catalog-sync-note {
+  font-size: var(--fs-sm);
+  margin-top: var(--sp-1);
+}
+/* Uniform width for the filter-bar selects, replacing four ad hoc widths
+   (150 / 170 / 170 / 190) — they read as one control group now. */
+.filter-select {
+  width: auto;
+  min-width: 150px;
+}
+.catalog-count {
+  margin-bottom: var(--sp-3);
+}
+/* The whole card toggles selection; make that affordance explicit. */
+.card-selectable {
+  cursor: pointer;
+}
+.card-sub {
+  font-size: var(--fs-xs);
+  margin-top: 2px;
+}
+.card-sub:first-of-type {
+  margin-top: 0;
+}
+.catalog-more {
+  display: flex;
+  justify-content: center;
+  margin-top: var(--sp-6);
+}

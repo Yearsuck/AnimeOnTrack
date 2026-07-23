@@ -133,22 +133,20 @@ export function SeriesDetail({
 
   return (
     <div className="page">
-      <button className="btn btn-ghost" onClick={onBack} style={{ marginBottom: 14 }}>
+      <button className="btn btn-ghost detail-back" onClick={onBack}>
         {t("common.back")}
       </button>
 
-      <div className="page-head" style={{ alignItems: "flex-start" }}>
+      <div className="page-head detail-head">
         {(catalogInfo?.cover_url ?? series.cover_url) && (
           <img
+            className="detail-cover"
             src={catalogInfo?.cover_url ?? series.cover_url ?? undefined}
             alt=""
-            style={{ width: 90, height: 128, objectFit: "cover", borderRadius: 10 }}
           />
         )}
-        <div style={{ flex: 1 }}>
-          <h2 className="page-title" style={{ marginBottom: 6 }}>
-            {series.title}
-          </h2>
+        <div className="detail-main">
+          <h2 className="page-title detail-title">{series.title}</h2>
           <a
             href={series.url}
             target="_blank"
@@ -162,7 +160,7 @@ export function SeriesDetail({
             {t("seriesDetail.openPage")}
           </a>
           {catalogInfo ? (
-            <div className="muted" style={{ marginTop: 8, fontSize: 12.5, display: "flex", flexWrap: "wrap", gap: "4px 14px" }}>
+            <div className="muted detail-meta">
               {catalogInfo.studio && (
                 <span>{t("seriesDetail.info.studio")}: {catalogInfo.studio}</span>
               )}
@@ -177,21 +175,19 @@ export function SeriesDetail({
               )}
             </div>
           ) : (
-            <div className="muted" style={{ marginTop: 8, fontSize: 12.5 }}>
-              {t("seriesDetail.info.notSynced")}
-            </div>
+            <div className="muted detail-meta">{t("seriesDetail.info.notSynced")}</div>
           )}
           {catalogInfo != null && catalogInfo.genres.length > 0 && (
-            <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 6 }}>
+            <div className="detail-genres">
               {catalogInfo.genres.map((g) => (
-                <span key={g} className="chip-toggle" style={{ cursor: "default" }}>
+                <span key={g} className="tag">
                   {g}
                 </span>
               ))}
             </div>
           )}
-          <div style={{ marginTop: 10 }}>
-            <div className="muted" style={{ marginBottom: 4, fontSize: 12.5 }}>
+          <div className="detail-progress">
+            <div className="muted detail-progress-label">
               {t("seriesDetail.seenCount", { seen: seenCount, total: episodes.length })}
             </div>
             <div className="progress">
