@@ -9,6 +9,11 @@ use std::collections::{HashMap, HashSet};
 /// One candidate title scraped off a search-results page.
 pub struct TitleCandidate<'a> {
     pub title: &'a str,
+    /// The candidate's source URL. `best_match` returns the winning index, so
+    /// callers read the URL from their own parallel list rather than from
+    /// here; the field is carried for callers that want a self-contained
+    /// candidate. `#[allow]` since nothing reads it through this struct today.
+    #[allow(dead_code)]
     pub url: &'a str,
 }
 
@@ -156,10 +161,11 @@ impl CatalogIndex {
         })
     }
 
-    pub fn len(&self) -> usize {
-        self.by_normalized_title.len()
-    }
-
+    /// Whether the index holds no titles at all — every catalog title
+    /// normalized to nothing, or the catalog was empty. Part of the type's
+    /// public surface (asserted by tests); `#[allow]` because the production
+    /// caller happens to check emptiness a different way.
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.by_normalized_title.is_empty()
     }

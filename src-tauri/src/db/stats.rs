@@ -58,10 +58,10 @@ pub(crate) fn franchise_parent_key(title: &str) -> Option<String> {
 /// unconditionally merged genuinely distinct titles whose name ends in one,
 /// e.g. "Steins;Gate 0" (a different work, with its own AniList entry and
 /// episode count) into "Steins;Gate".
-fn strip_season_markers<'a>(
-    mut tokens: Vec<&'a str>,
+fn strip_season_markers(
+    mut tokens: Vec<&str>,
     normalize: impl Fn(&str) -> String,
-) -> Vec<&'a str> {
+) -> Vec<&str> {
     const ROMANS: &[&str] = &["ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x"];
     const MARKER_WORDS: &[&str] =
         &["season", "temporada", "part", "parte", "cour", "final", "the"];
@@ -108,7 +108,7 @@ fn strip_season_markers<'a>(
 /// would leave nothing.
 pub(crate) fn franchise_display_title(title: &str) -> String {
     let tokens = strip_season_markers(
-        title.trim().split_whitespace().collect(),
+        title.split_whitespace().collect(),
         crate::matching::normalize_title,
     );
     let out = tokens.join(" ").trim().to_string();

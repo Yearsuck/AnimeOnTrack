@@ -110,8 +110,9 @@ pub struct Episode {
 
 /// A completed-anime card scraped off a genre-listing page (a `.bsx` card
 /// carrying a `.status.Completed` div). Also doubles as the swipe-mode UI's
-/// card payload as-is (see `SwipeCard`) — the swipe deck shows exactly what
-/// the adapter parses off the listing page, no separate shape needed.
+/// card payload as-is — the swipe deck shows exactly what the adapter parses
+/// off the listing page, no separate shape needed (the frontend calls this
+/// same payload a `SwipeCard`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FinishedCard {
     pub title: String,
@@ -124,8 +125,6 @@ pub struct FinishedCard {
     #[serde(default)]
     pub matched_genre: Option<String>,
 }
-
-pub type SwipeCard = FinishedCard;
 
 /// Parsed from a series detail page (`/tv/{slug}/`) — the only place a
 /// series' *complete* genre set and authoritative type ("Tipo:") are

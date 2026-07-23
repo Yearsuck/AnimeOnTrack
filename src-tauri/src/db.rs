@@ -230,7 +230,7 @@ pub(crate) mod stats;
 mod airing;
 mod series;
 
-pub use series::{SeriesForLink, SwipeHistoryRow};
+pub use series::SwipeHistoryRow;
 pub use catalog::CatalogFilter;
 pub use airing::PendingSort;
 

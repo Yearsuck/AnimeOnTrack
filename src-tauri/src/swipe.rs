@@ -48,7 +48,7 @@ pub fn weighted_pick_index(weights: &[f64]) -> Option<usize> {
 }
 
 /// Fisher-Yates shuffle driven by `pick_index`.
-pub fn shuffle<T>(items: &mut Vec<T>) {
+pub fn shuffle<T>(items: &mut [T]) {
     for i in (1..items.len()).rev() {
         if let Some(j) = pick_index(i + 1) {
             items.swap(i, j);

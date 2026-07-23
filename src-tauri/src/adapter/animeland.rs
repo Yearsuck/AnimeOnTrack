@@ -59,13 +59,6 @@ fn slug_from_url(url: &str) -> String {
     url.trim_end_matches('/').rsplit('/').next().unwrap_or("").to_string()
 }
 
-fn text_of(el: scraper::ElementRef, sel: &Selector) -> Option<String> {
-    el.select(sel)
-        .next()
-        .map(|n| n.text().collect::<String>().trim().to_string())
-        .filter(|s| !s.is_empty())
-}
-
 /// Trailing run of ASCII digits in `s`, e.g. "Episode 12" -> "12". Falls
 /// back to the whole trimmed string if there are no digits at all, mirroring
 /// the never-panic discipline the other adapters' own digit helpers use.

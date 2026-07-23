@@ -29,6 +29,8 @@ impl Db {
     /// `(title, title_romaji, title_english)` for a synced catalog entry —
     /// `link_catalog_series` tries `title_romaji.unwrap_or(title)` first,
     /// then `title_english` if that fails to match anything on the site.
+    /// Returns `(display_title, romaji, english)`.
+    #[allow(clippy::type_complexity)]
     pub fn get_catalog_titles(&self, anilist_id: i64) -> Result<Option<(String, Option<String>, Option<String>)>> {
         Ok(self
             .conn
@@ -433,6 +435,11 @@ impl Db {
     /// by id for stable pagination. Genres aren't joined in bulk here (kept
     /// to the simple per-row `list_catalog_genres` pattern already used for
     /// `series_genres` elsewhere) — fine at page-sized (30ish) result sets.
+    ///
+    /// Test-only: production always goes through `list_catalog_filtered`
+    /// (the Catálogo tab always passes a filter, even an empty one); this
+    /// unfiltered convenience wrapper is kept for the pagination tests.
+    #[cfg(test)]
     pub fn list_catalog(&self, page: i64, per_page: i64) -> Result<Vec<crate::anilist::CatalogAnime>> {
         self.list_catalog_filtered(page, per_page, &CatalogFilter::default())
     }
@@ -524,6 +531,9 @@ impl Db {
     /// empty map still leaves `score_candidate`'s quality term active, which
     /// biases toward higher `average_score` rather than being genuinely
     /// uniform — see docs/superpowers/specs/2026-07-13-discover-recommendation-toggle-design.md.
+    // The knobs are all independent recommendation inputs; bundling them into
+    // a struct would just move the same eight fields elsewhere.
+    #[allow(clippy::too_many_arguments)]
     pub fn random_catalog_anime_in_genre(
         &self,
         genre: &str,
@@ -711,15 +721,15 @@ mod tests {
     #[test]
     fn has_synced_catalog_status_false_when_empty_or_all_null_true_once_one_row_has_status() {
         let db = Db::open(":memory:").unwrap();
-        assert_eq!(db.has_synced_catalog_status().unwrap(), false);
+        assert!(!db.has_synced_catalog_status().unwrap());
 
         db.upsert_catalog_anime(&catalog_anime_with_popularity(1, "Unsynced", &["Drama"], Some(1000)), 0).unwrap();
-        assert_eq!(db.has_synced_catalog_status().unwrap(), false, "a NULL-status row alone must not count as synced");
+        assert!(!db.has_synced_catalog_status().unwrap(), "a NULL-status row alone must not count as synced");
 
         let mut synced = catalog_anime_with_popularity(2, "Synced", &["Drama"], Some(1000));
         synced.status = Some("RELEASING".into());
         db.upsert_catalog_anime(&synced, 1).unwrap();
-        assert_eq!(db.has_synced_catalog_status().unwrap(), true);
+        assert!(db.has_synced_catalog_status().unwrap());
     }
 
     #[test]
