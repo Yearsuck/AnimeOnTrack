@@ -140,7 +140,7 @@ src/
   views/*.tsx         one file per screen
   i18n/               en/es catalog + provider
   styles.css          the design system (tokens, components, light/dark)
-docs/superpowers/specs/   design docs for every feature
+docs/                     setup docs (Google Drive backup)
 ```
 
 ---
