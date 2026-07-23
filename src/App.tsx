@@ -167,7 +167,7 @@ export default function App() {
     <>
       <div className="topbar">
         <div className="brand">
-          <span className="dot" />
+          <img className="brand-logo" src="/app-icon.png" alt="" width={26} height={26} />
           AnimeOnTrack
         </div>
         <div className="tabs">

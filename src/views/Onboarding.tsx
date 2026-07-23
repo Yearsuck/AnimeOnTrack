@@ -24,7 +24,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
   return (
     <div className="onboard">
       <div className="brand onboard-brand">
-        <span className="dot" />
+        <img className="brand-logo" src="/app-icon.png" alt="" width={32} height={32} />
         AnimeOnTrack
       </div>
       <h1>{t("onboarding.title")}</h1>

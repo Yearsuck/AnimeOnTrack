@@ -9,17 +9,19 @@
   --text: #e9eff5;
   --muted: #90a4b7;
   --muted-2: #6b7f92;
-  --accent: #4aa8ff;
-  --accent-hover: #6fbcff;
-  --accent-dim: rgba(74, 168, 255, 0.14);
-  /* The accent as a *fill*, plus the only foreground guaranteed readable on
-     it. Kept apart from --accent (which is a text/border colour) because the
-     two themes need opposite answers: a bright accent on a dark ground takes
-     dark text, while the same hue on white needs to darken before white text
-     clears 4.5:1. Both used to be one hardcoded #05121f. */
-  --accent-solid: #4aa8ff;
-  --accent-solid-hover: #6fbcff;
-  --on-accent: #05121f;
+  /* Brand red, matching the AOT logo. Dark theme uses a brighter red so it
+     reads as text/border/icon against the navy ground; the fill (--accent-
+     solid) is the logo's own red with white text on top. */
+  --accent: #ff6b6b;
+  --accent-hover: #ff8a8a;
+  --accent-dim: rgba(255, 107, 107, 0.15);
+  /* The accent as a *fill*, plus the foreground guaranteed readable on it.
+     A red fill is dark enough for white text in both themes, so --on-accent
+     is white throughout (unlike the old bright-blue accent, which needed
+     dark text). */
+  --accent-solid: #e23b3b;
+  --accent-solid-hover: #f04848;
+  --on-accent: #ffffff;
   --on-success: #04140d;
   --success: #46d19e;
   --success-dim: rgba(70, 209, 158, 0.16);
@@ -114,11 +116,14 @@
   --text: #17222e;
   --muted: #5a6b7d;
   --muted-2: #8394a5;
-  --accent: #1f88e6;
-  --accent-hover: #1670c8;
-  --accent-dim: rgba(31, 136, 230, 0.12);
-  --accent-solid: #1670c8;
-  --accent-solid-hover: #1257a0;
+  /* Brand red on a light ground: darkened from the logo's #e23b3b so red
+     text/borders clear 4.5:1 on white, and so white text clears it on the
+     filled variant. */
+  --accent: #d12c2c;
+  --accent-hover: #b31f1f;
+  --accent-dim: rgba(209, 44, 44, 0.1);
+  --accent-solid: #d12c2c;
+  --accent-solid-hover: #b31f1f;
   --on-accent: #ffffff;
   --on-success: #04140d;
   --success: #1f9d6b;
@@ -223,12 +228,13 @@ a:hover {
      copy and reads loose in a bold wordmark at this size. */
   letter-spacing: -0.01em;
 }
-.brand .dot {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  background: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-dim), 0 0 12px var(--accent);
+/* The AOT logo mark in the topbar / onboarding wordmark. The source is a
+   white rounded card, so on the dark topbar it gets a faint ring to seat it
+   against the surface rather than floating as a bare white square. */
+.brand-logo {
+  border-radius: 6px;
+  flex-shrink: 0;
+  box-shadow: 0 0 0 1px var(--border);
 }
 .tabs {
   display: flex;
