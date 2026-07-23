@@ -1,9 +1,14 @@
 name: CI
 
-# Validate every push and PR to the long-lived branches. Runs on Windows
-# because the app is Windows-only (it drives WebView2) and `rusqlite`'s
-# bundled feature compiles SQLite from C with the MSVC toolchain — the same
-# environment the release build uses, so CI green means the release can build.
+# Validate every push and PR to the long-lived branches.
+#
+# The Rust job runs on all three desktop OSes so we know the codebase still
+# *compiles* everywhere — the app is Windows-first (the scraper's WebView2
+# interop is `#[cfg(windows)]`, with a stub elsewhere), but keeping macOS and
+# Linux building is Phase 0 of the cross-platform port (see
+# docs/cross-platform-porting.md). Clippy's -D-warnings gate stays Windows-only
+# (the primary platform); mac/linux run build+test to prove compilation and
+# that the OS-agnostic unit tests pass.
 on:
   push:
     branches: [main, develop]
@@ -17,8 +22,13 @@ concurrency:
 
 jobs:
   backend:
-    name: Rust (test + clippy)
-    runs-on: windows-latest
+    name: Rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # Don't let one OS failing cancel the others — we want to see all three.
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
     steps:
       - uses: actions/checkout@v4
 
@@ -27,22 +37,45 @@ jobs:
         with:
           components: clippy
 
-      # Caches ~/.cargo and target/ keyed on Cargo.lock so a green run is a
+      # Tauri v2 links WebKitGTK + GTK on Linux, needed even to *compile* the
+      # crate. macOS (WKWebView) and Windows (WebView2) need no extra packages.
+      - name: Install Linux system dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            librsvg2-dev \
+            libayatana-appindicator3-dev \
+            patchelf \
+            build-essential \
+            file
+
+      # Caches ~/.cargo and target/ keyed on Cargo.lock + OS so a green run is a
       # couple of minutes rather than a full cold compile every time.
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
 
-      - name: Clippy (deny warnings)
+      # -D warnings is the strict gate on the primary platform only. Enforcing
+      # it on every OS would let platform-specific pedantry (that we can't
+      # reproduce locally on Windows) block the pipeline; build+test below still
+      # proves mac/linux compile cleanly.
+      - name: Clippy (deny warnings, Windows)
+        if: matrix.os == 'windows-latest'
         run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 
-      - name: Test
+      # `cargo test` builds every target (lib, bins, tests), so a pass here is
+      # proof the whole app compiles on this OS, plus the OS-agnostic unit
+      # tests (models/db/stats/matching/…) all pass.
+      - name: Build & test
         run: cargo test --manifest-path src-tauri/Cargo.toml
 
   frontend:
     name: Frontend (types + build)
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
