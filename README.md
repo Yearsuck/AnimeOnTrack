@@ -23,6 +23,26 @@ It also keeps a full local mirror of the **AniList catalog (~22,000 titles)**, s
 
 ---
 
+## A note on piracy
+
+I'll say this plainly: I always advocate paying for the content you watch. Creators,
+studios, and the people who make anime don't live on air — if you can support them
+officially, you should, and I do.
+
+But I also won't pretend the history is simple. Spanish- and English-language anime
+piracy has, for decades, been the **first door into anime** for most fans outside Japan.
+Without fansubs and pirate streaming, the medium simply would not be as big, as global,
+or as loved as it is today — a lot of us are here *because* of that door. And there's a
+harder truth on top of it: plenty of titles are only ever available fansubbed, never
+licensed or translated officially in a given region — so for those, "just pay for it"
+isn't an option that exists, pirate or not. You can't support what nobody is selling you.
+
+So: support creators wherever you actually can, and understand this tool for what it is —
+a tracker built by someone who loves the medium, not an excuse to skip the box set when
+the box set exists.
+
+---
+
 ## Supported sites
 
 Six sites ship today, each behind the same pluggable `SiteAdapter`. Switch between them in **Settings**; each keeps its **own library**, so your followed shows and progress on one site never touch another. Every site has a per-site mirror list, so when a domain goes down the app falls through to a working clone automatically.
@@ -138,30 +158,12 @@ src-tauri/src/
 src/
   api.ts              typed wrapper over every invoke() call
   views/*.tsx         one file per screen
-  i18n/               en/es catalog + provider
+  i18n/               en/es/ca catalog + provider
   styles.css          the design system (tokens, components, light/dark)
 docs/                     setup docs (Google Drive backup)
 ```
 
 ---
-
-## A note on piracy
-
-I'll say this plainly: I always advocate paying for the content you watch. Creators,
-studios, and the people who make anime don't live on air — if you can support them
-officially, you should, and I do.
-
-But I also won't pretend the history is simple. Spanish- and English-language anime
-piracy has, for decades, been the **first door into anime** for most fans outside Japan.
-Without fansubs and pirate streaming, the medium simply would not be as big, as global,
-or as loved as it is today — a lot of us are here *because* of that door. And there's a
-harder truth on top of it: plenty of titles are only ever available fansubbed, never
-licensed or translated officially in a given region — so for those, "just pay for it"
-isn't an option that exists, pirate or not. You can't support what nobody is selling you.
-
-So: support creators wherever you actually can, and understand this tool for what it is —
-a tracker built by someone who loves the medium, not an excuse to skip the box set when
-the box set exists.
 
 ## Disclaimer
 
