@@ -37,6 +37,17 @@ pub const GENRE_WEIGHT_EXPONENT: f64 = 0.6;
 pub const W_GENRE: f64 = 1.0;
 pub const W_FORMAT: f64 = 0.6;
 pub const W_QUALITY: f64 = 0.25;
+/// Weight for `recency_term`. Below format (the shape of show still matters
+/// more than how new it is) but above quality (a mild tiebreak isn't enough —
+/// the user explicitly asked recency to actually move the needle) so a
+/// recent release with decent taste-overlap can outrank an old one that only
+/// wins on `average_score`.
+pub const W_RECENCY: f64 = 0.35;
+/// Half-life-ish decay constant (years) for `recency_term`: a title released
+/// this many years ago scores 0.5. 3 years keeps "still airing / just
+/// finished" shows clearly ahead of a decade-old catalog entry while never
+/// hard-cutting older titles to zero (they can still win via genre/format).
+const RECENCY_DECAY_YEARS: f64 = 3.0;
 
 /// How many top-scored survivors `pick_recommended` samples from. Kept small
 /// so the deck stays taste-biased, kept >1 so the same top candidate isn't
@@ -79,16 +90,33 @@ pub fn format_affinity_from_type_stats(stats: &[crate::models::TypeStat]) -> Has
     stats.iter().map(|s| (s.kind.clone(), s.count as f64 / max_count as f64)).collect()
 }
 
+/// How "new" `start_date` (AniList `startDate`, Unix seconds) is relative to
+/// `now_unix`, in `[0, 1]` — 1.0 for airing-today/upcoming, decaying toward 0
+/// as the release recedes into the past (see `RECENCY_DECAY_YEARS`). Missing
+/// `start_date` (never synced, or a pre-1940 entry outside the tracked
+/// range) contributes exactly 0, same as `score_candidate`'s existing
+/// "unknown = no signal" convention for `average_score`/`format` — it does
+/// NOT get treated as neutral/old, so a title just missing this field isn't
+/// penalized relative to a title that's *actually* old.
+pub fn recency_term(start_date: Option<i64>, now_unix: i64) -> f64 {
+    let Some(start) = start_date else { return 0.0 };
+    let age_years = (now_unix - start).max(0) as f64 / (365.25 * 86_400.0);
+    (1.0 / (1.0 + age_years / RECENCY_DECAY_YEARS)).clamp(0.0, 1.0)
+}
+
 /// Per-candidate taste score. Pure — no DB/State, so it's directly
 /// unit-testable. `chosen_genre` (the outer weighted pick that produced this
 /// `survivors` batch) is excluded from the genre-overlap sum so the score
 /// rewards *secondary* overlap with the user's other tastes rather than just
-/// re-crediting the genre already used to find this candidate.
+/// re-crediting the genre already used to find this candidate. `now_unix`
+/// (caller-supplied so this stays pure/deterministic — see tests) drives
+/// `recency_term`.
 pub fn score_candidate(
     cand: &CatalogAnime,
     genre_affinity: &HashMap<String, f64>,
     format_affinity: &HashMap<String, f64>,
     chosen_genre: &str,
+    now_unix: i64,
 ) -> f64 {
     let genre_term: f64 = cand
         .genres
@@ -103,7 +131,8 @@ pub fn score_candidate(
         .copied()
         .unwrap_or(0.0);
     let quality_term = cand.average_score.unwrap_or(0) as f64 / 100.0;
-    W_GENRE * genre_term + W_FORMAT * format_term + W_QUALITY * quality_term
+    let recency = recency_term(cand.start_date, now_unix);
+    W_GENRE * genre_term + W_FORMAT * format_term + W_QUALITY * quality_term + W_RECENCY * recency
 }
 
 /// Rank `survivors` (already exclusion/ban/quality-filtered by the caller —
@@ -123,13 +152,14 @@ pub fn pick_recommended(
     genre_affinity: &HashMap<String, f64>,
     format_affinity: &HashMap<String, f64>,
     chosen_genre: &str,
+    now_unix: i64,
 ) -> Option<CatalogAnime> {
     if survivors.is_empty() {
         return None;
     }
     let mut scored: Vec<(f64, CatalogAnime)> = survivors
         .into_iter()
-        .map(|c| (score_candidate(&c, genre_affinity, format_affinity, chosen_genre), c))
+        .map(|c| (score_candidate(&c, genre_affinity, format_affinity, chosen_genre, now_unix), c))
         .collect();
     scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
     scored.truncate(RECOMMEND_TOP_K);
@@ -159,6 +189,7 @@ mod tests {
             status: None,
             duration: None,
             studio: None,
+            start_date: None,
         }
     }
 
@@ -238,8 +269,8 @@ mod tests {
         let loved = anime(1, "Loved", &["Action", "Fantasy"], "TV", Some(50));
         let cold = anime(2, "Cold", &["Action", "Slice of Life"], "TV", Some(50));
 
-        let loved_score = score_candidate(&loved, &genre_affinity, &format_affinity, "Action");
-        let cold_score = score_candidate(&cold, &genre_affinity, &format_affinity, "Action");
+        let loved_score = score_candidate(&loved, &genre_affinity, &format_affinity, "Action", 0);
+        let cold_score = score_candidate(&cold, &genre_affinity, &format_affinity, "Action", 0);
         assert!(loved_score > cold_score, "loved={loved_score} cold={cold_score}");
     }
 
@@ -252,7 +283,7 @@ mod tests {
         genre_affinity.insert("Action".to_string(), 100.0);
         let format_affinity = HashMap::new();
         let cand = anime(1, "OnlyAction", &["Action"], "TV", Some(0));
-        assert_eq!(score_candidate(&cand, &genre_affinity, &format_affinity, "Action"), 0.0);
+        assert_eq!(score_candidate(&cand, &genre_affinity, &format_affinity, "Action", 0), 0.0);
     }
 
     #[test]
@@ -265,8 +296,8 @@ mod tests {
         let tv = anime(1, "TVShow", &["Action"], "TV", Some(50));
         let movie = anime(2, "MovieShow", &["Action"], "MOVIE", Some(50));
 
-        let tv_score = score_candidate(&tv, &genre_affinity, &format_affinity, "Action");
-        let movie_score = score_candidate(&movie, &genre_affinity, &format_affinity, "Action");
+        let tv_score = score_candidate(&tv, &genre_affinity, &format_affinity, "Action", 0);
+        let movie_score = score_candidate(&movie, &genre_affinity, &format_affinity, "Action", 0);
         assert!(tv_score > movie_score, "tv={tv_score} movie={movie_score}");
     }
 
@@ -282,8 +313,8 @@ mod tests {
         let tasteful_low_quality = anime(1, "TastefulButMediocre", &["Action", "Fantasy"], "TV", Some(1));
         let tasteless_perfect = anime(2, "PerfectButUnrelated", &["Action", "Horror"], "TV", Some(100));
 
-        let a = score_candidate(&tasteful_low_quality, &genre_affinity, &format_affinity, "Action");
-        let b = score_candidate(&tasteless_perfect, &genre_affinity, &format_affinity, "Action");
+        let a = score_candidate(&tasteful_low_quality, &genre_affinity, &format_affinity, "Action", 0);
+        let b = score_candidate(&tasteless_perfect, &genre_affinity, &format_affinity, "Action", 0);
         assert!(a > b, "tasteful={a} tasteless={b}");
     }
 
@@ -293,7 +324,7 @@ mod tests {
     fn pick_recommended_none_for_empty_survivors() {
         let genre_affinity = HashMap::new();
         let format_affinity = HashMap::new();
-        assert!(pick_recommended(vec![], &genre_affinity, &format_affinity, "Action").is_none());
+        assert!(pick_recommended(vec![], &genre_affinity, &format_affinity, "Action", 0).is_none());
     }
 
     #[test]
@@ -313,7 +344,7 @@ mod tests {
             anime(3, "C", &["Action"], "TV", Some(50)),
         ];
         for _ in 0..30 {
-            let picked = pick_recommended(survivors.clone(), &genre_affinity, &format_affinity, "Action").unwrap();
+            let picked = pick_recommended(survivors.clone(), &genre_affinity, &format_affinity, "Action", 0).unwrap();
             assert!(allowed_titles.contains(picked.title.as_str()));
         }
     }
@@ -331,7 +362,7 @@ mod tests {
         ];
         for _ in 0..30 {
             let picked =
-                pick_recommended(survivors.clone(), &genre_affinity, &format_affinity, "Action").unwrap();
+                pick_recommended(survivors.clone(), &genre_affinity, &format_affinity, "Action", 0).unwrap();
             assert!(picked.title == "A" || picked.title == "B");
         }
     }
@@ -350,8 +381,58 @@ mod tests {
         let excluded_tail: std::collections::HashSet<String> =
             (RECOMMEND_TOP_K..n).map(|i| format!("T{i}")).collect();
         for _ in 0..50 {
-            let picked = pick_recommended(survivors.clone(), &genre_affinity, &format_affinity, "Action").unwrap();
+            let picked = pick_recommended(survivors.clone(), &genre_affinity, &format_affinity, "Action", 0).unwrap();
             assert!(!excluded_tail.contains(&picked.title), "picked out-of-top-k title {}", picked.title);
         }
+    }
+
+    // --- recency_term -------------------------------------------------------
+
+    const YEAR_SECS: i64 = (365.25 * 86_400.0) as i64;
+
+    #[test]
+    fn recency_term_zero_for_unknown_start_date() {
+        assert_eq!(recency_term(None, 1_700_000_000), 0.0);
+    }
+
+    #[test]
+    fn recency_term_is_max_for_release_today_or_upcoming() {
+        let now = 1_700_000_000;
+        assert_eq!(recency_term(Some(now), now), 1.0);
+        // A future (not-yet-released) start_date must clamp to 1.0, not grow
+        // past it from a negative age.
+        assert_eq!(recency_term(Some(now + YEAR_SECS), now), 1.0);
+    }
+
+    #[test]
+    fn recency_term_decays_toward_zero_with_age_but_never_negative() {
+        let now = 1_700_000_000;
+        let one_year_old = recency_term(Some(now - YEAR_SECS), now);
+        let ten_years_old = recency_term(Some(now - 10 * YEAR_SECS), now);
+        assert!(one_year_old > ten_years_old, "1y={one_year_old} 10y={ten_years_old}");
+        assert!(ten_years_old > 0.0);
+        assert!(one_year_old < 1.0);
+    }
+
+    #[test]
+    fn recency_term_half_life_matches_decay_constant() {
+        let now = 1_700_000_000;
+        let at_decay_years = recency_term(Some(now - (RECENCY_DECAY_YEARS * YEAR_SECS as f64) as i64), now);
+        assert!((at_decay_years - 0.5).abs() < 0.01, "expected ~0.5, got {at_decay_years}");
+    }
+
+    #[test]
+    fn score_candidate_prefers_recent_release_when_otherwise_tied() {
+        let genre_affinity = HashMap::new();
+        let format_affinity = HashMap::new();
+        let now = 1_700_000_000;
+        let mut fresh = anime(1, "Fresh", &["Action"], "TV", Some(50));
+        fresh.start_date = Some(now);
+        let mut old = anime(2, "Old", &["Action"], "TV", Some(50));
+        old.start_date = Some(now - 10 * YEAR_SECS);
+
+        let fresh_score = score_candidate(&fresh, &genre_affinity, &format_affinity, "Action", now);
+        let old_score = score_candidate(&old, &genre_affinity, &format_affinity, "Action", now);
+        assert!(fresh_score > old_score, "fresh={fresh_score} old={old_score}");
     }
 }

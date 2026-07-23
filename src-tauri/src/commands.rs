@@ -8,7 +8,7 @@ use crate::models::{
     SeriesGraphNode, TypeStat, WatchInsights, WatchSummary,
 };
 use crate::player::{AppWindowPlayer, EpisodePlayer};
-use crate::scraper_engine::{fetch_cover_image, fetch_html, ScrapeResult};
+use crate::scraper_engine::{fetch_cover_image, fetch_html_with_script, ScrapeResult};
 use crate::swipe::{pick_index, shuffle, undecided_cards, weighted_pick_index};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -155,19 +155,43 @@ fn with_mirror(mirrors: Vec<String>, url: &str) -> Vec<String> {
 /// list can break every scan, even when a perfectly good mirror is right below
 /// it.
 ///
+/// Thin wrapper over `scrape_via_mirrors_with_script` for the common case
+/// (no adapter episode script needed) — see that function for the full doc.
+async fn scrape_via_mirrors<T>(
+    app: &AppHandle,
+    mirrors: &[String],
+    path: &str,
+    use_cache: bool,
+    parse: impl Fn(&ScrapeResult) -> Result<Vec<T>, anyhow::Error>,
+) -> Result<(ScrapeResult, Vec<T>, String), String> {
+    scrape_via_mirrors_with_script(app, mirrors, path, use_cache, None, parse).await
+}
+
+/// Same as `scrape_via_mirrors`, plus an adapter's optional
+/// `episode_fetch_script` (see `SiteAdapter`) threaded through to
+/// `fetch_html_with_script` — the only two call sites that need episode
+/// data (`fetch_episode_list_for`, `fetch_series_episodes`) pass one; every
+/// other call site passes `None`, which is byte-identical to the pre-jkanime
+/// fetch path.
+///
 /// `use_cache: true` consults the app-wide short-TTL HTML cache before
 /// opening a scraper window (and every successful fetch populates it either
 /// way). Callers whose purpose is *detecting change* — refresh()'s listing
 /// scan and per-series fetches, the user-triggered airing rescan — must pass
 /// `false`: serving them minutes-old HTML would silently defeat the check
 /// they exist to perform. A cached page that no longer parses non-empty
-/// falls through to a real fetch rather than failing the mirror.
-async fn scrape_via_mirrors<T>(
+/// falls through to a real fetch rather than failing the mirror. A cache hit
+/// never carries `extra` (it was never re-run through the page) — for a site
+/// with an episode script, that means `parse` sees `extra: None` and falls
+/// back to parsing plain `html`, which never has the episode data, so the
+/// parse comes back empty and this naturally falls through to a real fetch.
+async fn scrape_via_mirrors_with_script<T>(
     app: &AppHandle,
     mirrors: &[String],
     path: &str,
     use_cache: bool,
-    parse: impl Fn(&str) -> Result<Vec<T>, anyhow::Error>,
+    extra_script: Option<&str>,
+    parse: impl Fn(&ScrapeResult) -> Result<Vec<T>, anyhow::Error>,
 ) -> Result<(ScrapeResult, Vec<T>, String), String> {
     if mirrors.is_empty() {
         return Err("no hay ninguna web configurada".into());
@@ -182,17 +206,18 @@ async fn scrape_via_mirrors<T>(
                 cache.get(&url, std::time::Instant::now())
             };
             if let Some(html) = cached {
-                if let Ok(items) = parse(&html) {
+                let scraped = ScrapeResult { html, extra: None };
+                if let Ok(items) = parse(&scraped) {
                     if !items.is_empty() {
-                        return Ok((ScrapeResult { html }, items, mirror.clone()));
+                        return Ok((scraped, items, mirror.clone()));
                     }
                 }
                 // Cached HTML didn't satisfy this parse — fall through to a
                 // real fetch below instead of treating the mirror as broken.
             }
         }
-        match fetch_html(app, &url).await {
-            Ok(scraped) => match parse(&scraped.html) {
+        match fetch_html_with_script(app, &url, extra_script).await {
+            Ok(scraped) => match parse(&scraped) {
                 Ok(items) if !items.is_empty() => {
                     let state = app.state::<AppState>();
                     let mut cache = state.html_cache.lock().unwrap();
@@ -244,21 +269,29 @@ pub(crate) fn backup_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> 
 #[tauri::command]
 pub async fn restore_latest(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     let dir = backup_dir(&app)?;
-    let (refresh, file_id) = {
+    let (client, refresh, file_id) = {
         let db = state.db.lock().unwrap();
+        let client = backup_lib::configured_client(&db)
+            .ok_or("Google credentials not configured")?;
         let refresh = db
             .get_setting("gdrive_refresh_token")
             .ok()
             .flatten()
             .ok_or("Not connected to Google Drive")?;
-        let file_id = db
-            .get_setting("gdrive_file_id")
-            .ok()
-            .flatten()
-            .ok_or("No backup found in Drive yet")?;
-        (refresh, file_id)
+        let file_id = db.get_setting("gdrive_file_id").ok().flatten();
+        (client, refresh, file_id)
     };
-    let token = backup_lib::access_token(&refresh).await?;
+    let token = backup_lib::access_token(&client, &refresh).await?;
+    // Falling back to a lookup by name is what makes "restore onto a new
+    // machine" — the whole point of the feature — actually work: a fresh
+    // install has an empty settings table, so `gdrive_file_id` is only ever
+    // present on the machine that uploaded the backup in the first place.
+    let file_id = match file_id {
+        Some(id) => id,
+        None => backup_lib::drive::find_backup_file(&token)
+            .await?
+            .ok_or("No backup found in Drive yet")?,
+    };
     let bytes = backup_lib::drive::download_backup(&token, &file_id).await?;
     backup_lib::stage_restore(&bytes, &dir)?; // validates before staging
     app.restart();

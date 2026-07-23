@@ -257,8 +257,8 @@ async fn search_site(
     a: &dyn SiteAdapter,
 ) -> Result<Vec<FinishedCard>, String> {
     let path = a.search_url("", query);
-    let (_scraped, mut outcomes, _mirror) = scrape_via_mirrors(app, mirrors, &path, true, |html| {
-        a.parse_search_results(html).map(|cards| vec![SearchOutcome { cards }])
+    let (_scraped, mut outcomes, _mirror) = scrape_via_mirrors(app, mirrors, &path, true, |scraped| {
+        a.parse_search_results(&scraped.html).map(|cards| vec![SearchOutcome { cards }])
     })
     .await?;
     Ok(outcomes.pop().map(|o| o.cards).unwrap_or_default())
@@ -371,9 +371,15 @@ async fn link_series_core(
     }
 
     // No collision: fetch the matched series page once, reused for both the
-    // episode list and the detail (genres/kind) parse.
-    let scraped = fetch_html(app, &matched.url).await.map_err(|e| e.to_string())?;
-    let episodes = a.parse_series(&scraped.html).map_err(|e| e.to_string())?;
+    // episode list and the detail (genres/kind) parse. For a site with an
+    // episode_fetch_script (jkanime.net), `scraped.extra` carries the episode
+    // JSON from that same page load; every other site leaves `extra: None`
+    // and `parse_series` reads `scraped.html` exactly as before.
+    let scraped =
+        fetch_html_with_script(app, &matched.url, a.episode_fetch_script()).await.map_err(|e| e.to_string())?;
+    let episodes = a
+        .parse_series(scraped.extra.as_deref().unwrap_or(&scraped.html))
+        .map_err(|e| e.to_string())?;
     let detail = a.parse_series_detail(&scraped.html).map_err(|e| e.to_string())?;
     let kind = detail.kind.unwrap_or(matched.kind.clone());
 

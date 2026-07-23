@@ -197,6 +197,13 @@ impl Db {
         // multiple mains only keep the first — see
         // `anilist::CatalogAnime::studio`'s doc comment.
         ensure_column(&self.conn, "anilist_catalog", "studio", "TEXT")?;
+        // Real premiere date (Unix ts, midnight UTC), when AniList has a
+        // fully-specified one. NULL for rows synced before this column
+        // existed or a fuzzy/partial AniList date — see
+        // `anilist::FuzzyDate::to_timestamp`'s doc comment. Used by
+        // `db::episodes::airing_season_dates` to answer "aired this season"
+        // for airing-site rows with no scraped episode data.
+        ensure_column(&self.conn, "anilist_catalog", "start_date", "INTEGER")?;
         self.conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_catalog_popularity ON anilist_catalog(popularity DESC);
              CREATE INDEX IF NOT EXISTS idx_catalog_genre ON anilist_catalog_genres(genre);",
@@ -219,11 +226,11 @@ mod sources;
 mod settings;
 mod episodes;
 mod catalog;
-mod stats;
+pub(crate) mod stats;
 mod airing;
 mod series;
 
-pub use series::{SeriesForLink, SwipeHistoryRow};
+pub use series::SwipeHistoryRow;
 pub use catalog::CatalogFilter;
 pub use airing::PendingSort;
 

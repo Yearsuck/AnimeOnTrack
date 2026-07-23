@@ -53,6 +53,7 @@ pub(crate) fn catalog_anime_with_popularity(
         status: None,
         duration: None,
         studio: None,
+        start_date: None,
     }
 }
 
@@ -79,6 +80,7 @@ pub(crate) fn catalog_anime_full(
         status: None,
         duration: None,
         studio: None,
+        start_date: None,
     }
 }
 

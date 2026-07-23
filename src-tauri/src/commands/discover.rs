@@ -68,7 +68,8 @@ pub async fn discover_swipe_card(
         None => {
             let path = a.genre_page_url("", slug, page);
             let (scraped, raw_cards, _mirror) =
-                scrape_via_mirrors(&app, &mirrors, &path, true, |html| a.parse_finished_page(html)).await?;
+                scrape_via_mirrors(&app, &mirrors, &path, true, |scraped| a.parse_finished_page(&scraped.html))
+                    .await?;
             state
                 .swipe_last_page
                 .lock()
@@ -448,6 +449,10 @@ pub fn discover_catalog_card(
 /// and marks every episode watched) this just sets `watched_externally=1`
 /// and clears `followed`/`backlog_status`, so the title is excluded from
 /// future decks without pretending we have real watch progress for it.
+// Tauri command: the arguments are the invoke payload's named fields, which
+// the frontend passes individually — a struct here would just be deserialized
+// from the same shape.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub fn decide_catalog_card(
     state: State<'_, AppState>,

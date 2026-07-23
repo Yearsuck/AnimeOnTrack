@@ -90,3 +90,18 @@ the only honest answer the local data supports; documented in the UI hint.
 
 Relaunch: En emisión → Esta temporada shows this-season follows; verify a show you started >3 months
 ago is excluded and a brand-new one is included. Chrome harness previews the control markup.
+
+## 2026-07 addendum: no longer effectively followed-only
+
+The original heuristic above ("only shows have a scraped first episode, which in practice means
+followed/opened ones") turned out to under-cover the feature — most airing series never got a
+verdict at all, regardless of the user's intent. Fixed without touching the forbidden "no bulk
+site scraping" constraint: the full AniList catalog (~22k titles) is *already* synced locally,
+independent of site scraping or follow status (`anilist_catalog`, synced from the Catálogo tab).
+`anilist_catalog` gained a nullable `start_date` column (same NULL-safe pattern as `status`/
+`duration`/`studio`), synced from AniList's `Media.startDate`. `list_airing_season` now prefers
+the scraped first-episode date when present (day-accurate, from a real episode), falling back to
+`Db::catalog_start_dates_by_normalized_title` — a title match against the synced catalog — for
+every other airing series, followed or not. Still `None` (no verdict) when the title isn't found
+in the synced catalog or the Catálogo hasn't been synced since `start_date` was added — requires
+a Catálogo resync to fully populate, same rollout story as every other additive AniList column.

@@ -192,12 +192,12 @@ function LibraryCard({
             {menuOpen && (
               <div className="card-menu-list" onClick={(e) => e.stopPropagation()}>
                 {item.watched_externally ? (
-                  <button type="button" className="card-menu-item" onClick={unfollow}>
+                  <button type="button" className="card-menu-item danger" onClick={unfollow}>
                     {t("library.markNotWatched")}
                   </button>
                 ) : (
                   <>
-                    <button type="button" className="card-menu-item" onClick={unfollow}>
+                    <button type="button" className="card-menu-item danger" onClick={unfollow}>
                       {t("library.unfollow")}
                     </button>
                     <button type="button" className="card-menu-item" onClick={moveToWant}>
@@ -433,7 +433,7 @@ export function Library({ onOpenSeries }: { onOpenSeries: (s: Series) => void })
       ) : (
         <>
           <div className="lib-filter-bar">
-            <span className="muted" style={{ fontSize: 12 }}>
+            <span className="muted text-sm">
               {t("library.filterStatus")}
             </span>
             <div className="seg">
@@ -458,13 +458,12 @@ export function Library({ onOpenSeries }: { onOpenSeries: (s: Series) => void })
             <label className="sr-only" htmlFor="lib-type-select">
               {t("library.filterType")}
             </label>
-            <span className="muted" style={{ fontSize: 12 }}>
+            <span className="muted text-sm">
               {t("library.filterType")}
             </span>
             <select
               id="lib-type-select"
-              className="input"
-              style={{ maxWidth: 150 }}
+              className="input lib-filter-select"
               value={typeFilter}
               onChange={(e) => setTypeFilter(e.target.value)}
             >
@@ -481,13 +480,12 @@ export function Library({ onOpenSeries }: { onOpenSeries: (s: Series) => void })
                 <label className="sr-only" htmlFor="lib-genre-select">
                   {t("library.filterGenre")}
                 </label>
-                <span className="muted" style={{ fontSize: 12 }}>
+                <span className="muted text-sm">
                   {t("library.filterGenre")}
                 </span>
                 <select
                   id="lib-genre-select"
-                  className="input"
-                  style={{ maxWidth: 150 }}
+                  className="input lib-filter-select"
                   value={genreFilter}
                   onChange={(e) => setGenreFilter(e.target.value)}
                 >
@@ -506,13 +504,12 @@ export function Library({ onOpenSeries }: { onOpenSeries: (s: Series) => void })
                 <label className="sr-only" htmlFor="lib-studio-select">
                   {t("library.filterStudio")}
                 </label>
-                <span className="muted" style={{ fontSize: 12 }}>
+                <span className="muted text-sm">
                   {t("library.filterStudio")}
                 </span>
                 <select
                   id="lib-studio-select"
-                  className="input"
-                  style={{ maxWidth: 150 }}
+                  className="input lib-filter-select"
                   value={studioFilter}
                   onChange={(e) => setStudioFilter(e.target.value)}
                 >
@@ -533,7 +530,7 @@ export function Library({ onOpenSeries }: { onOpenSeries: (s: Series) => void })
             <>
               {showWatching && watchingAll.length > 0 && (
                 <div className="lib-filter-bar">
-                  <span className="muted" style={{ fontSize: 12 }}>
+                  <span className="muted text-sm">
                     {t("library.filterLabel")}
                   </span>
                   <div className="seg">
@@ -556,7 +553,7 @@ export function Library({ onOpenSeries }: { onOpenSeries: (s: Series) => void })
               )}
               {showWatching &&
                 (watchingAll.length > 0 && watching.length === 0 ? (
-                  <div className="empty" style={{ padding: "12px 0" }}>
+                  <div className="empty lib-empty-compact">
                     {t("library.filterNoResults")}
                   </div>
                 ) : (

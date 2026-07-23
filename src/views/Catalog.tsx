@@ -246,8 +246,8 @@ export function Catalog() {
       </div>
 
       {syncing && (
-        <div className="series-block" style={{ marginBottom: 20, padding: "12px 16px" }}>
-          <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>
+        <div className="series-block catalog-sync">
+          <div className="muted catalog-sync-label">
             {t("catalog.syncInfo")}
           </div>
           {syncProgress && (
@@ -259,7 +259,7 @@ export function Catalog() {
             />
           )}
           {syncProgress && (
-            <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+            <div className="muted catalog-sync-note">
               {t("catalog.syncedCount", { count: syncProgress.synced })}
             </div>
           )}
@@ -284,8 +284,7 @@ export function Catalog() {
             />
           </div>
           <select
-            className="input"
-            style={{ width: 150 }}
+            className="input filter-select"
             value={format}
             onChange={(e) => setFormat(e.target.value)}
           >
@@ -297,8 +296,7 @@ export function Catalog() {
             ))}
           </select>
           <select
-            className="input"
-            style={{ width: 170 }}
+            className="input filter-select"
             value={studio}
             onChange={(e) => setStudio(e.target.value)}
           >
@@ -310,8 +308,7 @@ export function Catalog() {
             ))}
           </select>
           <select
-            className="input"
-            style={{ width: 170 }}
+            className="input filter-select"
             value={minScore}
             onChange={(e) => setMinScore(e.target.value)}
           >
@@ -322,8 +319,7 @@ export function Catalog() {
             ))}
           </select>
           <select
-            className="input"
-            style={{ width: 190 }}
+            className="input filter-select"
             value={episodes}
             onChange={(e) => setEpisodes(e.target.value)}
           >
@@ -383,7 +379,7 @@ export function Catalog() {
             </div>
           )}
           {batchMsg && (
-            <p className="muted" style={{ marginBottom: 12 }}>
+            <p className="muted catalog-count">
               {batchMsg}
             </p>
           )}
@@ -391,8 +387,7 @@ export function Catalog() {
             {items.map((a) => (
               <div
                 key={a.id}
-                className={`card${selected.has(a.id) ? " selected" : ""}`}
-                style={{ cursor: "pointer" }}
+                className={`card card-selectable${selected.has(a.id) ? " selected" : ""}`}
                 onClick={() => toggleSelect(a)}
               >
                 <div className="poster">
@@ -418,10 +413,10 @@ export function Catalog() {
                 </div>
                 <div className="card-body">
                   <div className="card-title">{a.title}</div>
-                  <div className="muted" style={{ fontSize: 11 }}>
+                  <div className="muted card-sub">
                     {a.genres.slice(0, 3).join(", ") || "—"}
                   </div>
-                  <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
+                  <div className="muted card-sub">
                     {a.episodes
                       ? t("catalog.episodesCount", { count: a.episodes })
                       : t("catalog.episodesUnknown")}
@@ -433,7 +428,7 @@ export function Catalog() {
           </div>
 
           {hasNextPage && (
-            <div style={{ display: "flex", justifyContent: "center", marginTop: 24 }}>
+            <div className="catalog-more">
               <button className="btn btn-primary" onClick={() => loadPage(page + 1)} disabled={loading}>
                 {loading ? t("common.loading") : t("catalog.loadMore")}
               </button>

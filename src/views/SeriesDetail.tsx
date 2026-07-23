@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import {
+  getCatalogInfoForSeries,
   linkCatalogSeries,
   listEpisodes,
   openEpisode,
@@ -8,7 +9,7 @@ import {
 } from "../api";
 import { useT } from "../i18n";
 import { isUnlinkedCatalogRow } from "../lib/catalogLink";
-import type { Episode, Series } from "../types";
+import type { CatalogAnime, Episode, Series } from "../types";
 
 // Mirrors the backend's parse_ep_number (src-tauri/src/db.rs): leading
 // digits (+ optional decimal) only, e.g. "12" -> 12, "12.5" -> 12.5,
@@ -34,6 +35,10 @@ export function SeriesDetail({
   const [episodes, setEpisodes] = useState<Episode[]>([]);
   const [loading, setLoading] = useState(true);
   const [linking, setLinking] = useState(false);
+  // Anime metadata (genres/studio/format/episodes/score/cover/AniList url)
+  // comes from AniList, not the scraped site — the site only still supplies
+  // episode links and the "is it airing" signal (see `listEpisodes` below).
+  const [catalogInfo, setCatalogInfo] = useState<CatalogAnime | null>(null);
   const rowRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   // Guards the link-on-open trigger against React StrictMode's dev-only
   // double-invoke (same pattern as App.tsx's startup effect) — otherwise
@@ -50,6 +55,13 @@ export function SeriesDetail({
       setLoading(false);
     }
   }
+  useEffect(() => {
+    setCatalogInfo(null);
+    getCatalogInfoForSeries(series.id)
+      .then(setCatalogInfo)
+      .catch(() => setCatalogInfo(null));
+  }, [series.id]);
+
   useEffect(() => {
     linkTriedRef.current = null;
     (async () => {
@@ -121,27 +133,61 @@ export function SeriesDetail({
 
   return (
     <div className="page">
-      <button className="btn btn-ghost" onClick={onBack} style={{ marginBottom: 14 }}>
+      <button className="btn btn-ghost detail-back" onClick={onBack}>
         {t("common.back")}
       </button>
 
-      <div className="page-head" style={{ alignItems: "flex-start" }}>
-        {series.cover_url && (
+      <div className="page-head detail-head">
+        {(catalogInfo?.cover_url ?? series.cover_url) && (
           <img
-            src={series.cover_url}
+            className="detail-cover"
+            src={catalogInfo?.cover_url ?? series.cover_url ?? undefined}
             alt=""
-            style={{ width: 90, height: 128, objectFit: "cover", borderRadius: 10 }}
           />
         )}
-        <div style={{ flex: 1 }}>
-          <h2 className="page-title" style={{ marginBottom: 6 }}>
-            {series.title}
-          </h2>
-          <a href={series.url} target="_blank" rel="noreferrer">
+        <div className="detail-main">
+          <h2 className="page-title detail-title">{series.title}</h2>
+          <a
+            href={series.url}
+            target="_blank"
+            rel="noreferrer"
+            onClick={() => {
+              // Middle-click/ctrl-click already opens series.url itself via
+              // the href; this only adds the AniList tab alongside it.
+              if (catalogInfo?.url) window.open(catalogInfo.url, "_blank", "noreferrer");
+            }}
+          >
             {t("seriesDetail.openPage")}
           </a>
-          <div style={{ marginTop: 10 }}>
-            <div className="muted" style={{ marginBottom: 4, fontSize: 12.5 }}>
+          {catalogInfo ? (
+            <div className="muted detail-meta">
+              {catalogInfo.studio && (
+                <span>{t("seriesDetail.info.studio")}: {catalogInfo.studio}</span>
+              )}
+              {catalogInfo.format && (
+                <span>{t("seriesDetail.info.format")}: {catalogInfo.format}</span>
+              )}
+              {catalogInfo.episodes != null && (
+                <span>{t("seriesDetail.info.episodes")}: {catalogInfo.episodes}</span>
+              )}
+              {catalogInfo.average_score != null && (
+                <span>{t("seriesDetail.info.score")}: {catalogInfo.average_score}/100</span>
+              )}
+            </div>
+          ) : (
+            <div className="muted detail-meta">{t("seriesDetail.info.notSynced")}</div>
+          )}
+          {catalogInfo != null && catalogInfo.genres.length > 0 && (
+            <div className="detail-genres">
+              {catalogInfo.genres.map((g) => (
+                <span key={g} className="tag">
+                  {g}
+                </span>
+              ))}
+            </div>
+          )}
+          <div className="detail-progress">
+            <div className="muted detail-progress-label">
               {t("seriesDetail.seenCount", { seen: seenCount, total: episodes.length })}
             </div>
             <div className="progress">

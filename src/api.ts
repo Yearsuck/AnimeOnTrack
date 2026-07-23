@@ -13,6 +13,7 @@ import type {
   SwipeCard,
   SwipeDecision,
   GenreAffinity,
+  CatalogAnime,
   CatalogPage,
   CatalogFilter,
   CatalogFacets,
@@ -149,6 +150,25 @@ export const getCatalogFacets = () => invoke<CatalogFacets>("get_catalog_facets"
 export const syncAnimeCatalog = (forceFull = false) =>
   invoke<number>("sync_anime_catalog", { forceFull });
 
+// Fire-and-forget throttled incremental catalog sync, called on app
+// startup so `anilist_catalog.start_date` backfills for "Esta temporada"
+// without requiring the user to visit Catálogo and click Sync manually.
+export const maybeSyncCatalogIncremental = () =>
+  invoke<number | null>("maybe_sync_catalog_incremental");
+
+// Resolves engaged-but-unlinked series to their AniList catalog row against
+// the local catalog only — no network. Returns how many were newly linked.
+export const linkSeriesToCatalog = () => invoke<number>("link_series_to_catalog");
+
+// Re-fetches catalog rows synced before duration/romaji/studio/start_date
+// existed. Long-running (paced against AniList's rate limit) but resumable —
+// emits "catalog-backfill-progress" ({ done, total }) per 50-row batch.
+export const backfillCatalogMetadata = () =>
+  invoke<number>("backfill_catalog_metadata");
+
+export const getCatalogInfoForSeries = (seriesId: number) =>
+  invoke<CatalogAnime | null>("get_catalog_info_for_series", { seriesId });
+
 export const discoverCatalogCard = (recommended: boolean) =>
   invoke<SwipeCard | null>("discover_catalog_card", { recommended });
 
@@ -170,3 +190,9 @@ export const connectDrive = () => invoke<BackupStatus>("connect_drive");
 export const disconnectDrive = () => invoke<BackupStatus>("disconnect_drive");
 export const backupNow = () => invoke<BackupStatus>("backup_now");
 export const restoreLatest = () => invoke<void>("restore_latest");
+
+// Stores the Google OAuth client the backup authenticates with, so Drive can
+// be set up without rebuilding. Passing empty strings clears it back to
+// whatever the build was compiled with.
+export const setGoogleCredentials = (clientId: string, clientSecret: string) =>
+  invoke<BackupStatus>("set_google_credentials", { clientId, clientSecret });

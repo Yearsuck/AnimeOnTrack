@@ -92,18 +92,18 @@ export function DeckPanel({ onBansSaved }: { onBansSaved: () => void }) {
 
       {open && (
         <div id="deck-panel-body" className="deck-panel-body">
-          <div style={{ display: "flex", justifyContent: "center", marginBottom: 12 }}>
+          <div className="deck-panel-mode">
             <DiscoverModeToggle />
           </div>
 
-          <p className="muted" style={{ marginTop: 0, fontSize: 12.5 }}>
+          <p className="muted deck-panel-intro">
             {t("discover.filtersIntro")}
           </p>
 
-          <h3 className="card-title" style={{ marginBottom: 8 }}>
+          <h3 className="section-title deck-panel-heading">
             {t("discover.filtersFormatsHeading")}
           </h3>
-          <div className="chip-row" style={{ marginBottom: 16 }}>
+          <div className="chip-row deck-panel-chips">
             {DECK_FORMATS.map((f) => (
               <button
                 key={f}
@@ -116,11 +116,11 @@ export function DeckPanel({ onBansSaved }: { onBansSaved: () => void }) {
             ))}
           </div>
 
-          <h3 className="card-title" style={{ marginBottom: 8 }}>
+          <h3 className="section-title deck-panel-heading">
             {t("discover.filtersGenresHeading")}
           </h3>
           {allGenres.length > 0 && (
-            <div className="chip-row deck-panel-genres" style={{ marginBottom: 16 }}>
+            <div className="chip-row deck-panel-genres deck-panel-chips">
               {allGenres.map((g) => (
                 <button
                   key={g}
@@ -134,10 +134,10 @@ export function DeckPanel({ onBansSaved }: { onBansSaved: () => void }) {
             </div>
           )}
 
-          <h3 className="card-title" style={{ marginBottom: 8 }}>
+          <h3 className="section-title deck-panel-heading">
             {t("discover.filtersOtherHeading")}
           </h3>
-          <div className="chip-row" style={{ marginBottom: hideUpcoming && !statusDataSynced ? 8 : 16 }}>
+          <div className={`chip-row ${hideUpcoming && !statusDataSynced ? "deck-panel-chips-tight" : "deck-panel-chips"}`}>
             <button
               type="button"
               className={`chip-toggle${hideUpcoming ? " active" : ""}`}
@@ -150,12 +150,12 @@ export function DeckPanel({ onBansSaved }: { onBansSaved: () => void }) {
             </button>
           </div>
           {hideUpcoming && !statusDataSynced && (
-            <p className="muted" style={{ marginTop: -8, marginBottom: 16, fontSize: 12.5, color: "var(--danger)" }}>
+            <p className="muted text-sm text-danger deck-panel-warn">
               {t("discover.filtersHideUpcomingNeedsSync")}
             </p>
           )}
 
-          <div className="row" style={{ alignItems: "center", gap: 12 }}>
+          <div className="row deck-panel-save">
             <button className="btn btn-primary" onClick={save} disabled={saving}>
               {saving ? t("discover.filtersSaving") : t("discover.filtersSave")}
             </button>

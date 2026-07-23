@@ -2,6 +2,7 @@ pub mod credentials;
 pub mod drive;
 pub mod oauth;
 
+use crate::db::Db;
 use rusqlite::Connection;
 
 pub const BACKUP_FILE_NAME: &str = "animeontrack.sqlite";
@@ -63,8 +64,6 @@ pub fn is_auto_backup_due(last_at: Option<i64>, now: i64, last_sig: &str, cur_si
     }
 }
 
-use crate::db::Db;
-
 const RESTORE_STAGED: &str = "animeontrack.sqlite.restored";
 const RESTORE_MARKER: &str = ".restore_pending";
 
@@ -80,10 +79,21 @@ pub fn snapshot_bytes(db: &Db, dir: &std::path::Path) -> Result<Vec<u8>, String>
 
 /// Get a fresh access token from the stored refresh token, or an error the
 /// caller surfaces to the UI.
-pub async fn access_token(db_refresh: &str) -> Result<String, String> {
-    let cid = credentials::client_id().ok_or("Google credentials not configured")?;
-    let secret = credentials::client_secret().ok_or("Google credentials not configured")?;
-    oauth::refresh_access_token(cid, secret, db_refresh).await
+pub async fn access_token(
+    client: &(String, String),
+    db_refresh: &str,
+) -> Result<String, String> {
+    oauth::refresh_access_token(&client.0, &client.1, db_refresh).await
+}
+
+/// The configured OAuth client pair, read from settings with the compile-time
+/// pair as fallback. Kept here so every caller resolves it the same way rather
+/// than each reaching into `settings` with its own key spelling.
+pub fn configured_client(db: &Db) -> Option<(String, String)> {
+    credentials::resolve(
+        db.get_setting("google_client_id").ok().flatten(),
+        db.get_setting("google_client_secret").ok().flatten(),
+    )
 }
 
 /// Stage validated restore bytes and write the marker; the swap happens on the

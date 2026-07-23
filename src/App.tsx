@@ -9,7 +9,15 @@ import { Stats } from "./views/Stats";
 import { Descubrir } from "./views/Descubrir";
 import { Catalog } from "./views/Catalog";
 import { ProgressBar } from "./views/ProgressBar";
-import { listAiring, refresh, rescanAiring, pendingCount } from "./api";
+import {
+  listAiring,
+  refresh,
+  rescanAiring,
+  pendingCount,
+  maybeSyncCatalogIncremental,
+  linkSeriesToCatalog,
+  backfillCatalogMetadata,
+} from "./api";
 import { useT } from "./i18n";
 import type { Series } from "./types";
 
@@ -63,6 +71,23 @@ export default function App() {
         await refresh().catch(() => 0);
         setRefreshing(false);
         await refreshBadge();
+        // Fire-and-forget catalog maintenance, none of which blocks the UI.
+        // Deliberately sequential, not Promise.all: the two AniList-facing
+        // steps are each paced at ~28.6 req/min against a 30/min cap, so
+        // overlapping them would just earn 429s.
+        (async () => {
+          // Backfills anilist_catalog.start_date so "Esta temporada" can
+          // resolve unfollowed airing shows too. Throttled server-side.
+          await maybeSyncCatalogIncremental().catch(() => {});
+          // Refills the columns that predate the first full catalog crawl
+          // (duration, romaji, studio...). Self-throttling: once no rows are
+          // stale it returns immediately, and an interrupted run simply picks
+          // up where it left off on the next launch.
+          await backfillCatalogMetadata().catch(() => {});
+          // Local and instant, but it needs the backfilled romaji titles to
+          // match well, so it runs last.
+          await linkSeriesToCatalog().catch(() => {});
+        })();
       } catch {
         setView("onboarding");
       }
@@ -142,7 +167,7 @@ export default function App() {
     <>
       <div className="topbar">
         <div className="brand">
-          <span className="dot" />
+          <img className="brand-logo" src="/app-icon.png" alt="" width={26} height={26} />
           AnimeOnTrack
         </div>
         <div className="tabs">

@@ -21,7 +21,7 @@ export function HistoryRow({
         <div className="swipe-history-title" title={item.title}>
           {item.title}
         </div>
-        <div className="muted" style={{ fontSize: 11 }}>
+        <div className="muted text-xs">
           {t(DECISION_BADGE[item.decision])}
         </div>
       </div>

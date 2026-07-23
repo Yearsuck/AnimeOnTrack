@@ -129,12 +129,12 @@ mod tests {
     #[test]
     fn hide_upcoming_releases_defaults_false_and_round_trips_through_settings() {
         let db = Db::open(":memory:").unwrap();
-        assert_eq!(db.get_hide_upcoming_releases().unwrap(), false);
+        assert!(!db.get_hide_upcoming_releases().unwrap());
 
         db.set_hide_upcoming_releases(true).unwrap();
-        assert_eq!(db.get_hide_upcoming_releases().unwrap(), true);
+        assert!(db.get_hide_upcoming_releases().unwrap());
 
         db.set_hide_upcoming_releases(false).unwrap();
-        assert_eq!(db.get_hide_upcoming_releases().unwrap(), false);
+        assert!(!db.get_hide_upcoming_releases().unwrap());
     }
 }

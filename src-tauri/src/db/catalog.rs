@@ -29,6 +29,8 @@ impl Db {
     /// `(title, title_romaji, title_english)` for a synced catalog entry —
     /// `link_catalog_series` tries `title_romaji.unwrap_or(title)` first,
     /// then `title_english` if that fails to match anything on the site.
+    /// Returns `(display_title, romaji, english)`.
+    #[allow(clippy::type_complexity)]
     pub fn get_catalog_titles(&self, anilist_id: i64) -> Result<Option<(String, Option<String>, Option<String>)>> {
         Ok(self
             .conn
@@ -51,18 +53,19 @@ impl Db {
         sort_order: i64,
     ) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO anilist_catalog(id, title, title_romaji, title_english, cover_url, format, episodes, average_score, popularity, url, sort_order, status, duration, studio)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+            "INSERT INTO anilist_catalog(id, title, title_romaji, title_english, cover_url, format, episodes, average_score, popularity, url, sort_order, status, duration, studio, start_date)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
              ON CONFLICT(id) DO UPDATE SET
                 title=excluded.title, title_romaji=excluded.title_romaji, title_english=excluded.title_english,
                 cover_url=excluded.cover_url, format=excluded.format,
                 episodes=excluded.episodes, average_score=excluded.average_score,
                 popularity=excluded.popularity, url=excluded.url, sort_order=excluded.sort_order,
-                status=excluded.status, duration=excluded.duration, studio=excluded.studio",
+                status=excluded.status, duration=excluded.duration, studio=excluded.studio,
+                start_date=excluded.start_date",
             (
                 anime.id, &anime.title, &anime.title_romaji, &anime.title_english, &anime.cover_url, &anime.format,
                 anime.episodes, anime.average_score, anime.popularity, &anime.url, sort_order, &anime.status,
-                anime.duration, &anime.studio,
+                anime.duration, &anime.studio, anime.start_date,
             ),
         )?;
         self.conn.execute("DELETE FROM anilist_catalog_genres WHERE anilist_id=?1", [anime.id])?;
@@ -73,6 +76,91 @@ impl Db {
             )?;
         }
         Ok(())
+    }
+
+    /// Every catalog row's title variants, for building a
+    /// `matching::CatalogIndex`. All three stored spellings are returned
+    /// because the scraped site lists some shows under their romaji title and
+    /// others under the English one, and the display `title` column is only
+    /// ever one of the two.
+    pub fn catalog_titles_for_index(&self) -> Result<Vec<crate::matching::CatalogTitleRow>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, title, title_romaji, title_english, popularity FROM anilist_catalog")?;
+        let rows = stmt
+            .query_map([], |r| {
+                let id: i64 = r.get(0)?;
+                let title: String = r.get(1)?;
+                let romaji: Option<String> = r.get(2)?;
+                let english: Option<String> = r.get(3)?;
+                let popularity: Option<i64> = r.get(4)?;
+                let mut titles = vec![title];
+                titles.extend(romaji);
+                titles.extend(english);
+                Ok(crate::matching::CatalogTitleRow {
+                    id,
+                    titles,
+                    popularity: popularity.unwrap_or(0),
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Unlinked series that are worth resolving to a catalog row: the ones the
+    /// user has actually engaged with. Scraped-but-untouched rows (the bulk of
+    /// the table) are skipped — linking them buys nothing and multiplies the
+    /// chance of a wrong automatic link.
+    pub fn series_needing_catalog_link(&self, source_id: i64) -> Result<Vec<(i64, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT s.id, s.title FROM series s
+             WHERE s.source_id=?1 AND s.anilist_id IS NULL
+               AND (s.followed=1 OR s.watched_externally=1
+                    OR EXISTS (SELECT 1 FROM episodes e WHERE e.series_id=s.id AND e.seen=1))
+             ORDER BY s.id",
+        )?;
+        let rows = stmt
+            .query_map([source_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// AniList ids of catalog rows that predate the extended metadata fields.
+    ///
+    /// `title_romaji` is the marker rather than `duration` or `studio`:
+    /// AniList returns a romaji title for essentially every anime, so a
+    /// NULL/empty one means the row was stored before the field was requested,
+    /// whereas a NULL `duration` is perfectly normal for a title AniList has
+    /// no runtime for. Rows are ordered so the ones a user can actually feel
+    /// come back first — those linked to one of their own series, then the
+    /// most popular — because this backfill is long enough to be interrupted
+    /// and resumed, and an interrupted run should already have fixed the rows
+    /// that matter.
+    pub fn stale_catalog_ids(&self) -> Result<Vec<i64>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT c.id FROM anilist_catalog c
+             WHERE c.title_romaji IS NULL OR c.title_romaji = ''
+             ORDER BY EXISTS (SELECT 1 FROM series s WHERE s.anilist_id = c.id) DESC,
+                      COALESCE(c.popularity, 0) DESC,
+                      c.id",
+        )?;
+        let ids = stmt
+            .query_map([], |r| r.get::<_, i64>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(ids)
+    }
+
+    /// Existing `sort_order` for a catalog row, so a metadata backfill can
+    /// hand it straight back to `upsert_catalog_anime` instead of overwriting
+    /// the row's place in the synced ordering with a fresh counter. Falls back
+    /// to 0 for an id that isn't stored (which a backfill shouldn't hit, but
+    /// this must not be the thing that fails the run).
+    pub fn catalog_sort_order(&self, id: i64) -> Result<i64> {
+        Ok(self
+            .conn
+            .query_row("SELECT sort_order FROM anilist_catalog WHERE id=?1", [id], |r| r.get(0))
+            .optional()?
+            .unwrap_or(0))
     }
 
     /// How many entries are synced locally — lets the frontend show sync
@@ -163,7 +251,7 @@ impl Db {
         let offset = (page.max(1) - 1) * per_page;
         let (where_sql, mut params) = Self::build_catalog_where(filter);
         let sql = format!(
-            "SELECT id, title, title_romaji, title_english, cover_url, format, episodes, average_score, popularity, url, status, duration, studio
+            "SELECT id, title, title_romaji, title_english, cover_url, format, episodes, average_score, popularity, url, status, duration, studio, start_date
              FROM anilist_catalog WHERE {where_sql}
              ORDER BY popularity DESC NULLS LAST, id LIMIT ? OFFSET ?"
         );
@@ -227,6 +315,97 @@ impl Db {
         Ok(studios)
     }
 
+    /// Normalized-title -> real premiere date (Unix ts) map built from every
+    /// synced catalog row that has one, keyed under each of its
+    /// title/title_romaji/title_english variants (`matching::normalize_title`,
+    /// the same normalizer `engaged_series_titles`'s callers already rely on
+    /// for matching site titles against synced catalog titles). Lets an
+    /// airing-site row with no scraped episode data — most unfollowed ones,
+    /// see `db::episodes::first_episode_dates`'s doc comment — still resolve
+    /// a real "aired this season" verdict, entirely from the already-synced
+    /// local AniList catalog. No site scraping involved. When a title has
+    /// multiple variants mapping to different rows (unlikely, but the DB
+    /// doesn't forbid it), the first one encountered wins — the same
+    /// "good enough" trade-off `engaged_series_titles`-style matching
+    /// already makes elsewhere.
+    pub fn catalog_start_dates_by_normalized_title(&self) -> Result<std::collections::HashMap<String, i64>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT title, title_romaji, title_english, start_date FROM anilist_catalog WHERE start_date IS NOT NULL",
+        )?;
+        let rows: Vec<(String, Option<String>, Option<String>, i64)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut map = std::collections::HashMap::new();
+        for (title, romaji, english, start_date) in rows {
+            for variant in [Some(title), romaji, english].into_iter().flatten() {
+                map.entry(crate::matching::normalize_title(&variant)).or_insert(start_date);
+            }
+        }
+        Ok(map)
+    }
+
+    /// Normalized-title -> `anilist_catalog.id`, mirroring
+    /// `catalog_start_dates_by_normalized_title`'s "try every synced title
+    /// variant" approach — shared lookup behind `catalog_id_for_series`'s
+    /// title-match fallback.
+    fn catalog_ids_by_normalized_title(&self) -> Result<std::collections::HashMap<String, i64>> {
+        let mut stmt = self.conn.prepare("SELECT id, title, title_romaji, title_english FROM anilist_catalog")?;
+        let rows: Vec<(i64, String, Option<String>, Option<String>)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut map = std::collections::HashMap::new();
+        for (id, title, romaji, english) in rows {
+            for variant in [Some(title), romaji, english].into_iter().flatten() {
+                map.entry(crate::matching::normalize_title(&variant)).or_insert(id);
+            }
+        }
+        Ok(map)
+    }
+
+    /// Resolve a `series` row to a matched `anilist_catalog.id`: direct
+    /// `anilist_id` FK when it's set AND still points at a synced row (rare
+    /// for followed/scraped series — usually only set via the Descubrir
+    /// catalog-swipe/link path, see `series::anilist_id`'s doc), otherwise
+    /// falling back to the same normalized-title matching
+    /// `list_airing_season` already relies on for unlinked series. Used by
+    /// `catalog_info_for_series`.
+    fn catalog_id_for_series(&self, series_id: i64) -> Result<Option<i64>> {
+        let (title, anilist_id): (String, Option<i64>) = self.conn.query_row(
+            "SELECT title, anilist_id FROM series WHERE id=?1",
+            [series_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        if let Some(id) = anilist_id {
+            let linked_row_exists: bool = self
+                .conn
+                .query_row("SELECT 1 FROM anilist_catalog WHERE id=?1", [id], |_| Ok(()))
+                .optional()?
+                .is_some();
+            if linked_row_exists {
+                return Ok(Some(id));
+            }
+        }
+        Ok(self.catalog_ids_by_normalized_title()?.get(&crate::matching::normalize_title(&title)).copied())
+    }
+
+    /// Full synced AniList catalog entry (title/cover/genres/format/
+    /// episodes/score/studio/etc) matched to a `series` row — the source for
+    /// SeriesDetail's info panel now that anime metadata is meant to come
+    /// from AniList, not the scraped site (which only still supplies episode
+    /// links and the "is it airing" signal). `None` when nothing in the
+    /// synced catalog matches this series (not yet synced, or no title/id
+    /// match at all).
+    pub fn catalog_info_for_series(&self, series_id: i64) -> Result<Option<crate::anilist::CatalogAnime>> {
+        let Some(id) = self.catalog_id_for_series(series_id)? else { return Ok(None) };
+        let mut stmt = self.conn.prepare(
+            "SELECT id, title, title_romaji, title_english, cover_url, format, episodes, average_score, popularity, url, status, duration, studio, start_date
+             FROM anilist_catalog WHERE id=?1",
+        )?;
+        let mut anime = stmt.query_row([id], Self::row_to_catalog_anime)?;
+        anime.genres = self.list_catalog_genres(id)?;
+        Ok(Some(anime))
+    }
+
     fn row_to_catalog_anime(r: &rusqlite::Row) -> rusqlite::Result<crate::anilist::CatalogAnime> {
         let id: i64 = r.get("id")?;
         Ok(crate::anilist::CatalogAnime {
@@ -243,6 +422,7 @@ impl Db {
             status: r.get("status")?,
             duration: r.get("duration")?,
             studio: r.get("studio")?,
+            start_date: r.get("start_date")?,
             genres: Vec::new(), // filled in by callers that need it — see list_catalog
         })
     }
@@ -255,6 +435,11 @@ impl Db {
     /// by id for stable pagination. Genres aren't joined in bulk here (kept
     /// to the simple per-row `list_catalog_genres` pattern already used for
     /// `series_genres` elsewhere) — fine at page-sized (30ish) result sets.
+    ///
+    /// Test-only: production always goes through `list_catalog_filtered`
+    /// (the Catálogo tab always passes a filter, even an empty one); this
+    /// unfiltered convenience wrapper is kept for the pagination tests.
+    #[cfg(test)]
     pub fn list_catalog(&self, page: i64, per_page: i64) -> Result<Vec<crate::anilist::CatalogAnime>> {
         self.list_catalog_filtered(page, per_page, &CatalogFilter::default())
     }
@@ -346,6 +531,9 @@ impl Db {
     /// empty map still leaves `score_candidate`'s quality term active, which
     /// biases toward higher `average_score` rather than being genuinely
     /// uniform — see docs/superpowers/specs/2026-07-13-discover-recommendation-toggle-design.md.
+    // The knobs are all independent recommendation inputs; bundling them into
+    // a struct would just move the same eight fields elsewhere.
+    #[allow(clippy::too_many_arguments)]
     pub fn random_catalog_anime_in_genre(
         &self,
         genre: &str,
@@ -357,7 +545,12 @@ impl Db {
         hide_upcoming: bool,
     ) -> Result<Option<crate::anilist::CatalogAnime>> {
         const MIN_POPULARITY: i64 = 500;
-        const BATCH_SIZE: i64 = 40;
+        // Raised from 40: a random 40-title sample out of a genre that can
+        // hold thousands of catalog rows too often missed the actual
+        // best-scoring candidates before `recommend::pick_recommended` ever
+        // saw them. 150 stays cheap (one local, indexed SQLite query) while
+        // giving the scorer a meaningfully wider pool to rank.
+        const BATCH_SIZE: i64 = 150;
         const DEFAULT_FORMATS: &[&str] = &["TV", "MOVIE", "OVA", "ONA", "SPECIAL"];
         let allowed: Vec<&str> = DEFAULT_FORMATS
             .iter()
@@ -375,7 +568,7 @@ impl Db {
         let upcoming_clause =
             if hide_upcoming { "AND (c.status IS NULL OR c.status != 'NOT_YET_RELEASED')" } else { "" };
         let sql = format!(
-            "SELECT c.id, c.title, c.title_romaji, c.title_english, c.cover_url, c.format, c.episodes, c.average_score, c.popularity, c.url, c.status, c.duration, c.studio
+            "SELECT c.id, c.title, c.title_romaji, c.title_english, c.cover_url, c.format, c.episodes, c.average_score, c.popularity, c.url, c.status, c.duration, c.studio, c.start_date
              FROM anilist_catalog c
              JOIN anilist_catalog_genres g ON g.anilist_id = c.id
              WHERE g.genre = ?
@@ -408,7 +601,8 @@ impl Db {
         }
 
         if recommended {
-            Ok(crate::recommend::pick_recommended(survivors, genre_affinity, format_affinity, genre))
+            let now_unix = chrono::Utc::now().timestamp();
+            Ok(crate::recommend::pick_recommended(survivors, genre_affinity, format_affinity, genre, now_unix))
         } else {
             Ok(survivors.into_iter().next())
         }
@@ -527,15 +721,15 @@ mod tests {
     #[test]
     fn has_synced_catalog_status_false_when_empty_or_all_null_true_once_one_row_has_status() {
         let db = Db::open(":memory:").unwrap();
-        assert_eq!(db.has_synced_catalog_status().unwrap(), false);
+        assert!(!db.has_synced_catalog_status().unwrap());
 
         db.upsert_catalog_anime(&catalog_anime_with_popularity(1, "Unsynced", &["Drama"], Some(1000)), 0).unwrap();
-        assert_eq!(db.has_synced_catalog_status().unwrap(), false, "a NULL-status row alone must not count as synced");
+        assert!(!db.has_synced_catalog_status().unwrap(), "a NULL-status row alone must not count as synced");
 
         let mut synced = catalog_anime_with_popularity(2, "Synced", &["Drama"], Some(1000));
         synced.status = Some("RELEASING".into());
         db.upsert_catalog_anime(&synced, 1).unwrap();
-        assert_eq!(db.has_synced_catalog_status().unwrap(), true);
+        assert!(db.has_synced_catalog_status().unwrap());
     }
 
     #[test]
@@ -1092,6 +1286,7 @@ mod tests {
             status: None,
             duration: None,
             studio: None,
+            start_date: None,
         };
         db.upsert_catalog_anime(&anime, 0).unwrap();
 
@@ -1121,6 +1316,7 @@ mod tests {
             status: None,
             duration: Some(23),
             studio: None,
+            start_date: None,
         };
         db.upsert_catalog_anime(&with_duration, 0).unwrap();
 
@@ -1141,6 +1337,7 @@ mod tests {
             status: None,
             duration: None,
             studio: None,
+            start_date: None,
         };
         db.upsert_catalog_anime(&without_duration, 1).unwrap();
 
@@ -1171,6 +1368,7 @@ mod tests {
             status: None,
             duration: None,
             studio: Some("Studio Ghibli".into()),
+            start_date: None,
         };
         db.upsert_catalog_anime(&with_studio, 0).unwrap();
 
@@ -1192,6 +1390,7 @@ mod tests {
             status: None,
             duration: None,
             studio: None,
+            start_date: None,
         };
         db.upsert_catalog_anime(&without_studio, 1).unwrap();
 
@@ -1200,5 +1399,174 @@ mod tests {
         assert_eq!(read_with.studio.as_deref(), Some("Studio Ghibli"), "real synced studio must round-trip");
         let read_without = page.iter().find(|a| a.id == 46).unwrap();
         assert_eq!(read_without.studio, None, "unset studio must read back as None, not empty string");
+    }
+
+    #[test]
+    fn upsert_catalog_anime_round_trips_start_date() {
+        let db = Db::open(":memory:").unwrap();
+
+        let with_date = crate::anilist::CatalogAnime {
+            id: 47,
+            title: "Dated Show".into(),
+            title_romaji: None,
+            title_english: None,
+            cover_url: None,
+            format: Some("TV".into()),
+            genres: vec![],
+            episodes: Some(12),
+            average_score: None,
+            popularity: None,
+            url: "https://anilist.co/anime/47".into(),
+            status: None,
+            duration: None,
+            studio: None,
+            start_date: Some(1_776_211_200), // 2026-04-15T00:00:00Z
+        };
+        db.upsert_catalog_anime(&with_date, 0).unwrap();
+
+        let without_date = crate::anilist::CatalogAnime {
+            id: 48,
+            title: "Undated Show".into(),
+            title_romaji: None,
+            title_english: None,
+            cover_url: None,
+            format: Some("TV".into()),
+            genres: vec![],
+            episodes: Some(12),
+            average_score: None,
+            popularity: None,
+            url: "https://anilist.co/anime/48".into(),
+            status: None,
+            duration: None,
+            studio: None,
+            start_date: None,
+        };
+        db.upsert_catalog_anime(&without_date, 1).unwrap();
+
+        let page = db.list_catalog(1, 10).unwrap();
+        let read_with = page.iter().find(|a| a.id == 47).unwrap();
+        assert_eq!(read_with.start_date, Some(1_776_211_200), "real synced start_date must round-trip");
+        let read_without = page.iter().find(|a| a.id == 48).unwrap();
+        assert_eq!(read_without.start_date, None, "unset start_date must read back as None, not 0");
+    }
+
+    #[test]
+    fn catalog_start_dates_by_normalized_title_covers_all_title_variants_and_skips_null() {
+        let db = Db::open(":memory:").unwrap();
+
+        // Matched under its romaji title on the (hypothetical) scraped site,
+        // even though `title` itself collapsed to English.
+        db.upsert_catalog_anime(
+            &crate::anilist::CatalogAnime {
+                id: 50, title: "Attack on Titan".into(), title_romaji: Some("Shingeki no Kyojin".into()),
+                title_english: Some("Attack on Titan".into()), cover_url: None, format: Some("TV".into()),
+                genres: vec![], episodes: Some(25), average_score: None, popularity: None,
+                url: "https://anilist.co/anime/50".into(), status: None, duration: None, studio: None,
+                start_date: Some(1_776_211_200),
+            },
+            0,
+        ).unwrap();
+
+        // No start_date synced yet — must be entirely absent from the map,
+        // not present with a None/0 value.
+        db.upsert_catalog_anime(
+            &crate::anilist::CatalogAnime {
+                id: 51, title: "Unsynced Show".into(), title_romaji: None, title_english: None,
+                cover_url: None, format: Some("TV".into()), genres: vec![], episodes: None,
+                average_score: None, popularity: None, url: "https://anilist.co/anime/51".into(),
+                status: None, duration: None, studio: None, start_date: None,
+            },
+            1,
+        ).unwrap();
+
+        let map = db.catalog_start_dates_by_normalized_title().unwrap();
+        assert_eq!(map.get(&crate::matching::normalize_title("Attack on Titan")), Some(&1_776_211_200));
+        assert_eq!(map.get(&crate::matching::normalize_title("Shingeki no Kyojin")), Some(&1_776_211_200));
+        assert_eq!(map.get(&crate::matching::normalize_title("Unsynced Show")), None);
+        assert_eq!(map.len(), 2, "one entry per distinct title/romaji/english variant with a real start_date");
+    }
+
+    fn mk_catalog_anime(id: i64, title: &str, url: &str) -> crate::anilist::CatalogAnime {
+        crate::anilist::CatalogAnime {
+            id, title: title.into(), title_romaji: None, title_english: None, cover_url: None,
+            format: Some("TV".into()), genres: vec![], episodes: Some(12), average_score: None,
+            popularity: None, url: url.into(), status: None, duration: None, studio: None, start_date: None,
+        }
+    }
+
+    #[test]
+    fn catalog_info_for_series_uses_direct_anilist_id_when_linked() {
+        let db = Db::open(":memory:").unwrap();
+        db.upsert_catalog_anime(&mk_catalog_anime(70, "Frieren", "https://anilist.co/anime/70"), 0).unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let sid = db.upsert_series(src, &mk_airing("frieren-site", "Some Other Scraped Title", None)).unwrap();
+        db.set_anilist_id(sid, 70).unwrap();
+
+        // Direct id join wins even though the scraped title wouldn't
+        // title-match — proves it doesn't fall through to the title lookup.
+        let info = db.catalog_info_for_series(sid).unwrap().expect("linked match");
+        assert_eq!(info.url, "https://anilist.co/anime/70");
+    }
+
+    #[test]
+    fn catalog_info_for_series_falls_back_to_normalized_title_match_when_unlinked() {
+        let db = Db::open(":memory:").unwrap();
+        db.upsert_catalog_anime(&mk_catalog_anime(71, "Bocchi the Rock!", "https://anilist.co/anime/71"), 0).unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        // Followed/scraped series never get anilist_id set in practice — no
+        // set_anilist_id call here, matching real-world coverage.
+        let sid = db.upsert_series(src, &mk_airing("bocchi", "Bocchi The Rock! Sub Español", None)).unwrap();
+
+        let info = db.catalog_info_for_series(sid).unwrap().expect("title match");
+        assert_eq!(info.url, "https://anilist.co/anime/71");
+    }
+
+    #[test]
+    fn catalog_info_for_series_ignores_a_dangling_anilist_id() {
+        // anilist_id points at a row that was never synced (or since removed)
+        // — must fall through to the title-match path instead of erroring.
+        let db = Db::open(":memory:").unwrap();
+        db.upsert_catalog_anime(&mk_catalog_anime(72, "Real Match", "https://anilist.co/anime/72"), 0).unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let sid = db.upsert_series(src, &mk_airing("real-match", "Real Match", None)).unwrap();
+        db.set_anilist_id(sid, 9999).unwrap(); // never synced
+
+        let info = db.catalog_info_for_series(sid).unwrap().expect("falls through to title match");
+        assert_eq!(info.url, "https://anilist.co/anime/72");
+    }
+
+    fn mk_full_catalog_anime(id: i64, title: &str, genres: &[&str]) -> crate::anilist::CatalogAnime {
+        crate::anilist::CatalogAnime {
+            id, title: title.into(), title_romaji: None, title_english: None,
+            cover_url: Some(format!("https://img/{id}")), format: Some("TV".into()),
+            genres: genres.iter().map(|g| g.to_string()).collect(), episodes: Some(24),
+            average_score: Some(88), popularity: Some(5000), url: format!("https://anilist.co/anime/{id}"),
+            status: Some("FINISHED".into()), duration: Some(24), studio: Some("Studio X".into()),
+            start_date: None,
+        }
+    }
+
+    #[test]
+    fn catalog_info_for_series_returns_full_matched_row_with_genres() {
+        let db = Db::open(":memory:").unwrap();
+        let anime = mk_full_catalog_anime(80, "Frieren", &["Adventure", "Drama"]);
+        db.upsert_catalog_anime(&anime, 0).unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let sid = db.upsert_series(src, &mk_airing("frieren", "Frieren Sub Español", None)).unwrap();
+
+        let info = db.catalog_info_for_series(sid).unwrap().expect("should title-match");
+        assert_eq!(info.id, 80);
+        assert_eq!(info.studio.as_deref(), Some("Studio X"));
+        assert_eq!(info.average_score, Some(88));
+        assert_eq!(info.genres, vec!["Adventure".to_string(), "Drama".to_string()]);
+    }
+
+    #[test]
+    fn catalog_info_for_series_none_when_unmatched() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let sid = db.upsert_series(src, &mk_airing("obscure", "Totally Unmatched Title", None)).unwrap();
+
+        assert_eq!(db.catalog_info_for_series(sid).unwrap(), None);
     }
 }

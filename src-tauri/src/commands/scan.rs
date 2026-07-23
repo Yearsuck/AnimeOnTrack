@@ -39,8 +39,10 @@ pub async fn ensure_genre_list(
     if !cached.is_empty() {
         return Ok(cached);
     }
-    let (_scraped, pairs, _mirror) =
-        scrape_via_mirrors(app, db_mirrors, &a.genre_list_url(""), true, |html| a.parse_genre_list(html)).await?;
+    let (_scraped, pairs, _mirror) = scrape_via_mirrors(app, db_mirrors, &a.genre_list_url(""), true, |scraped| {
+        a.parse_genre_list(&scraped.html)
+    })
+    .await?;
     let db = state.db.lock().unwrap();
     save_genre_list(&db, site_id, &pairs)?;
     Ok(pairs)
@@ -63,8 +65,8 @@ pub async fn fetch_series_detail(
     a: &dyn SiteAdapter,
 ) -> Result<SeriesDetail, String> {
     let path = path_of(series_url)?;
-    let (_scraped, details, _mirror) = scrape_via_mirrors(app, mirrors, &path, true, |html| {
-        let d = a.parse_series_detail(html)?;
+    let (_scraped, details, _mirror) = scrape_via_mirrors(app, mirrors, &path, true, |scraped| {
+        let d = a.parse_series_detail(&scraped.html)?;
         if d.genres.is_empty() {
             Err(anyhow::anyhow!("no genres parsed (likely wrong/incompatible mirror)"))
         } else {
@@ -111,8 +113,15 @@ pub async fn fetch_episode_list_for(
     a: &dyn SiteAdapter,
 ) -> Result<Vec<Episode>, String> {
     let path = path_of(series_url)?;
-    let (_scraped, eps, _mirror) =
-        scrape_via_mirrors(app, mirrors, &path, true, |html| a.parse_series(html)).await?;
+    let (_scraped, eps, _mirror) = scrape_via_mirrors_with_script(
+        app,
+        mirrors,
+        &path,
+        true,
+        a.episode_fetch_script(),
+        |scraped| a.parse_series(scraped.extra.as_deref().unwrap_or(&scraped.html)),
+    )
+    .await?;
     Ok(eps)
 }
 
@@ -131,7 +140,7 @@ async fn scan_airing_via_mirrors(
     // airing_url() just appends a fixed path; reuse it against an empty base to get that path alone.
     let path = a.airing_url("").to_string();
     let (_scraped, series, working_mirror) =
-        scrape_via_mirrors(app, &mirrors, &path, false, |html| a.parse_airing(html)).await?;
+        scrape_via_mirrors(app, &mirrors, &path, false, |scraped| a.parse_airing(&scraped.html)).await?;
     emit_refresh_progress(app, 1, 1, "Listado completo");
     // Cover images are intentionally NOT fetched here: doing it for every
     // series on the airing list (~150 at once) reads as scraping abuse to
@@ -212,25 +221,35 @@ pub fn list_airing(state: State<'_, AppState>) -> Result<Vec<Series>, String> {
     db.list_airing(src).map_err(|e| e.to_string())
 }
 
-/// Same series/order as `list_airing`, each paired with its parsed
-/// first-episode date (when known) for the frontend's "Esta temporada"
-/// filter. See docs/superpowers/specs/2026-07-13-airing-this-season-design.md
-/// — most airing series won't have one, since episodes are only scraped
-/// on-demand (see [[project-scraping-scope]]), not for the whole catalog.
+/// Same series/order as `list_airing`, each paired with a real premiere date
+/// (when known) for the frontend's "Esta temporada" filter. See
+/// docs/superpowers/specs/2026-07-13-airing-this-season-design.md and its
+/// 2026-07 addendum: a scraped first episode (`db::first_episode_dates`) is
+/// preferred when present — day-accurate, from the actual episode — with a
+/// fallback to the locally-synced AniList catalog's `start_date`
+/// (`db::catalog_start_dates_by_normalized_title`) so unfollowed/unopened
+/// airing series (which have no scraped episode data at all) still resolve a
+/// verdict instead of being silently excluded. The catalog fallback requires
+/// a Catálogo sync to have populated `start_date`; still `None` when neither
+/// source has a date (title not found in the synced catalog, or synced
+/// before this field existed).
 #[tauri::command]
 pub fn list_airing_season(state: State<'_, AppState>) -> Result<Vec<AiringItem>, String> {
     let src = get_source_id(&state)?;
     let db = state.db.lock().unwrap();
     let series = db.list_airing(src).map_err(|e| e.to_string())?;
     let first_dates = db.first_episode_dates(src).map_err(|e| e.to_string())?;
+    let catalog_dates = db.catalog_start_dates_by_normalized_title().map_err(|e| e.to_string())?;
     Ok(series
         .into_iter()
         .map(|s| {
-            let first_episode_at = first_dates
+            let scraped = first_dates
                 .get(&s.id)
                 .and_then(|raw| parse_spanish_date(raw))
                 .and_then(|d| d.and_hms_opt(0, 0, 0))
                 .map(|dt| dt.and_utc().timestamp());
+            let first_episode_at = scraped
+                .or_else(|| catalog_dates.get(&crate::matching::normalize_title(&s.title)).copied());
             AiringItem { series: s, first_episode_at }
         })
         .collect())
@@ -386,7 +405,11 @@ async fn fetch_series_episodes(
         Ok(u) => format!("{}{}", u.path(), u.query().map(|q| format!("?{q}")).unwrap_or_default()),
         Err(_) => return None,
     };
-    match scrape_via_mirrors(app, mirrors, &path, false, |html| a.parse_series(html)).await {
+    match scrape_via_mirrors_with_script(app, mirrors, &path, false, a.episode_fetch_script(), |scraped| {
+        a.parse_series(scraped.extra.as_deref().unwrap_or(&scraped.html))
+    })
+    .await
+    {
         Ok((_scraped, eps, working_mirror)) => Some((eps, working_mirror, path)),
         Err(_) => None,
     }
@@ -424,7 +447,7 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
     emit_refresh_progress(&app, 0, 1, "Escaneando listado de estrenos");
     let listing_path = a.airing_url("").to_string();
     let listing_slugs: Option<std::collections::HashSet<String>> =
-        match scrape_via_mirrors(&app, &mirrors, &listing_path, false, |html| a.parse_airing(html)).await {
+        match scrape_via_mirrors(&app, &mirrors, &listing_path, false, |scraped| a.parse_airing(&scraped.html)).await {
             Ok((_scraped, series, _mirror)) => {
                 let db = state.db.lock().unwrap();
                 for s in &series {

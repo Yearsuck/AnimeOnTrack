@@ -20,7 +20,7 @@ export function Descubrir({ onOpenSeries }: { onOpenSeries: (s: Series) => void 
       <div className="page-head">
         <h2 className="page-title">{t("nav.discover")}</h2>
       </div>
-      <div className="tabs" style={{ marginBottom: 20 }}>
+      <div className="tabs discover-tabs">
         <button
           className={`tab ${subView === "swipe" ? "active" : ""}`}
           onClick={() => setSubView("swipe")}

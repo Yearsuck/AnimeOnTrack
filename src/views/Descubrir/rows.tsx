@@ -68,9 +68,8 @@ export function WantRow({
       <div className="backlog-main">
         <div className="listas-card-head">
           <span
-            className="listas-title"
+            className="listas-title clickable"
             onClick={() => onOpenSeries(series)}
-            style={{ cursor: "pointer" }}
             title={t("discover.viewDetailsTitle")}
           >
             {series.title}
@@ -79,12 +78,12 @@ export function WantRow({
         </div>
         {genres.length > 0 && <div className="backlog-genres">{genres.join(", ")}</div>}
         {unlinked && (
-          <div className="muted" style={{ fontSize: 11 }} title={t("discover.notFoundYetTitle")}>
+          <div className="muted text-xs" title={t("discover.notFoundYetTitle")}>
             {t("discover.unlinked")}
           </div>
         )}
         {noMatch && (
-          <div className="muted" style={{ fontSize: 11, color: "var(--danger)" }}>
+          <div className="muted text-xs text-danger">
             {t("discover.notFoundInSite")}
           </div>
         )}

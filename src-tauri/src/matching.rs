@@ -4,11 +4,16 @@
 //! `commands::link_catalog_series` for the caller that feeds it real search
 //! results.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// One candidate title scraped off a search-results page.
 pub struct TitleCandidate<'a> {
     pub title: &'a str,
+    /// The candidate's source URL. `best_match` returns the winning index, so
+    /// callers read the URL from their own parallel list rather than from
+    /// here; the field is carried for callers that want a self-contained
+    /// candidate. `#[allow]` since nothing reads it through this struct today.
+    #[allow(dead_code)]
     pub url: &'a str,
 }
 
@@ -89,6 +94,81 @@ fn strip_noise_suffixes(s: &str) -> String {
         }
     }
     current
+}
+
+/// One `anilist_catalog` row reduced to what local (no-network) linking needs.
+pub struct CatalogTitleRow {
+    pub id: i64,
+    /// AniList's display title plus its romaji/english variants when stored.
+    /// All are indexed, so a site row matches whichever spelling it uses.
+    pub titles: Vec<String>,
+    /// Tiebreaker when several catalog rows normalize to the same title —
+    /// remakes, shorts and specials routinely share a show's exact name, and
+    /// the popular one is the entry a user means. Missing popularity reads
+    /// as 0.
+    pub popularity: i64,
+}
+
+/// Normalized-title -> AniList id lookup table, built once per linking run.
+///
+/// Deliberately exact-match only, no fuzzy scoring: this runs unattended over
+/// every unlinked series at once, and `MATCH_THRESHOLD`'s "a wrong automatic
+/// link is worse than no link" reasoning applies far harder here than it does
+/// to `best_match`, which scores a handful of candidates the user just
+/// searched for. Coverage comes instead from trying several reduced forms of
+/// the site title (see `lookup`), each of which is still an exact match.
+pub struct CatalogIndex {
+    by_normalized_title: HashMap<String, (i64, i64)>,
+}
+
+impl CatalogIndex {
+    pub fn build(rows: &[CatalogTitleRow]) -> Self {
+        let mut by_normalized_title: HashMap<String, (i64, i64)> = HashMap::new();
+        for row in rows {
+            for title in &row.titles {
+                let key = normalize_title(title);
+                if key.is_empty() {
+                    continue;
+                }
+                by_normalized_title
+                    .entry(key)
+                    .and_modify(|existing| {
+                        // Higher popularity wins; equal popularity resolves to
+                        // the lower id so a run is reproducible regardless of
+                        // the order rows came out of SQLite.
+                        if row.popularity > existing.1
+                            || (row.popularity == existing.1 && row.id < existing.0)
+                        {
+                            *existing = (row.id, row.popularity);
+                        }
+                    })
+                    .or_insert((row.id, row.popularity));
+            }
+        }
+        Self { by_normalized_title }
+    }
+
+    /// First `candidates` entry with an exact normalized hit, so callers pass
+    /// their forms most-specific first (the raw site title, then progressively
+    /// reduced ones like the franchise base name).
+    pub fn lookup(&self, candidates: &[&str]) -> Option<i64> {
+        candidates.iter().find_map(|candidate| {
+            let key = normalize_title(candidate);
+            if key.is_empty() {
+                return None;
+            }
+            self.by_normalized_title.get(&key).map(|(id, _)| *id)
+        })
+    }
+
+    /// Whether the index holds no titles at all — every catalog title
+    /// normalized to nothing, or the catalog was empty. Part of the type's
+    /// public surface (asserted by tests); `#[allow]` because the production
+    /// caller happens to check emptiness a different way.
+    #[allow(dead_code)]
+    pub fn is_empty(&self) -> bool {
+        self.by_normalized_title.is_empty()
+    }
 }
 
 fn levenshtein(a: &str, b: &str) -> usize {
@@ -265,5 +345,75 @@ mod tests {
     #[test]
     fn best_match_empty_candidates_is_none() {
         assert_eq!(best_match(&["Anything"], &[]), None);
+    }
+
+    fn catalog_row(id: i64, popularity: i64, titles: &[&str]) -> CatalogTitleRow {
+        CatalogTitleRow {
+            id,
+            titles: titles.iter().map(|t| t.to_string()).collect(),
+            popularity,
+        }
+    }
+
+    #[test]
+    fn catalog_index_matches_any_stored_title_variant() {
+        let rows = vec![catalog_row(16498, 700, &["Attack on Titan", "Shingeki no Kyojin"])];
+        let index = CatalogIndex::build(&rows);
+        assert_eq!(index.lookup(&["Shingeki no Kyojin"]), Some(16498));
+        assert_eq!(index.lookup(&["ATTACK ON TITAN"]), Some(16498), "normalization is case-insensitive");
+        assert_eq!(index.lookup(&["Attack on Titan Sub Español"]), Some(16498), "site noise suffix stripped");
+    }
+
+    #[test]
+    fn catalog_index_prefers_the_popular_row_when_titles_collide() {
+        // Remakes/shorts routinely reuse a show's exact name; the popular
+        // entry is the one a user means.
+        let rows = vec![
+            catalog_row(999, 12, &["Hunter x Hunter"]),
+            catalog_row(11061, 500_000, &["Hunter x Hunter"]),
+        ];
+        assert_eq!(CatalogIndex::build(&rows).lookup(&["Hunter x Hunter"]), Some(11061));
+    }
+
+    #[test]
+    fn catalog_index_collision_is_order_independent() {
+        let a = catalog_row(999, 12, &["Hunter x Hunter"]);
+        let b = catalog_row(11061, 500_000, &["Hunter x Hunter"]);
+        let forward = CatalogIndex::build(&[
+            catalog_row(a.id, a.popularity, &["Hunter x Hunter"]),
+            catalog_row(b.id, b.popularity, &["Hunter x Hunter"]),
+        ]);
+        let reversed = CatalogIndex::build(&[b, a]);
+        assert_eq!(forward.lookup(&["Hunter x Hunter"]), reversed.lookup(&["Hunter x Hunter"]));
+    }
+
+    #[test]
+    fn catalog_index_tries_candidates_most_specific_first() {
+        let rows = vec![
+            catalog_row(21, 600_000, &["ONE PIECE"]),
+            catalog_row(459, 1000, &["One Piece Film: Red"]),
+        ];
+        let index = CatalogIndex::build(&rows);
+        // The exact title wins over the more general fallback form.
+        assert_eq!(index.lookup(&["One Piece Film: Red", "One Piece"]), Some(459));
+        // A site arc row has no exact entry and falls through to the base name.
+        assert_eq!(index.lookup(&["One Piece: Arco de Elbaph", "One Piece"]), Some(21));
+    }
+
+    #[test]
+    fn catalog_index_reports_no_match_rather_than_a_guess() {
+        let rows = vec![catalog_row(21, 600_000, &["ONE PIECE"])];
+        let index = CatalogIndex::build(&rows);
+        assert_eq!(index.lookup(&["Totally Different Show"]), None);
+        // A near-miss is still a miss — this index never fuzzy-matches.
+        assert_eq!(index.lookup(&["One Piece Film"]), None);
+    }
+
+    #[test]
+    fn catalog_index_ignores_titles_that_normalize_to_nothing() {
+        let rows = vec![catalog_row(1, 0, &["", "   ", "!!!"])];
+        let index = CatalogIndex::build(&rows);
+        assert!(index.is_empty());
+        assert_eq!(index.lookup(&[""]), None);
     }
 }
