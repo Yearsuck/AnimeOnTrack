@@ -1,0 +1,52 @@
+name: Release
+
+# Fires when a version tag is pushed, e.g. `git tag v0.1.0 && git push --tags`.
+# Builds the Windows installer and .exe and publishes them to a GitHub Release
+# named after the tag. No signing secrets are required: the app's Google Drive
+# credentials are entered at runtime, so the build needs no injected secrets.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build & publish Windows release
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      # tauri-action runs `npm run build` (via beforeBuildCommand) then
+      # `tauri build`, producing the NSIS installer and the MSI, and uploads
+      # them to a release for this tag. `__VERSION__` is replaced with the
+      # version from tauri.conf.json.
+      - name: Build and release
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "AnimeOnTrack ${{ github.ref_name }}"
+          releaseBody: "Windows installer and portable executable are attached below."
+          releaseDraft: false
+          prerelease: false

@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "aot-scaffold",
+  "productName": "AnimeOnTrack",
   "version": "0.1.0",
   "identifier": "com.ernes.aot-scaffold",
   "build": {
@@ -13,9 +13,11 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "aot-scaffold",
-        "width": 800,
-        "height": 600
+        "title": "AnimeOnTrack",
+        "width": 1280,
+        "height": 832,
+        "minWidth": 940,
+        "minHeight": 600
       }
     ],
     "security": {
@@ -25,6 +27,12 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "publisher": "Ernest Rull",
+    "copyright": "© 2026 Ernest Rull",
+    "category": "Entertainment",
+    "homepage": "https://github.com/Yearsuck/AnimeOnTrack",
+    "shortDescription": "Track currently-airing anime and get notified when new episodes drop.",
+    "longDescription": "AnimeOnTrack tracks currently-airing anime across multiple streaming sites, detects new episodes for the series you follow, and keeps a gap-free record of what you've watched — with a full local AniList catalog for offline browsing and discovery.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

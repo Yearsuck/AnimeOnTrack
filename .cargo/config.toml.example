@@ -1,0 +1,6 @@
+# Copy this file to .cargo/config.toml (gitignored) and fill in the OAuth
+# client you create in Google Cloud Console (see docs/google-drive-setup.md).
+# These are read at COMPILE time via option_env! — rebuild after changing them.
+[env]
+AOT_GOOGLE_CLIENT_ID = "REPLACE_WITH_YOUR_CLIENT_ID.apps.googleusercontent.com"
+AOT_GOOGLE_CLIENT_SECRET = "REPLACE_WITH_YOUR_CLIENT_SECRET"

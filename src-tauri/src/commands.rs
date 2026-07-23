@@ -1,12 +1,46 @@
-use crate::adapter::{animeytx::AnimeytxAdapter, SiteAdapter};
+use crate::adapter::{self, SiteAdapter};
+use crate::backup as backup_lib;
+use crate::dates::parse_spanish_date;
 use crate::db::Db;
 use crate::diff::new_episodes;
-use crate::models::{Episode, Series};
-use crate::player::{BrowserPlayer, EpisodePlayer};
-use crate::scraper_engine::{fetch_cover_image, fetch_html, ScrapeResult};
+use crate::models::{
+    AiringItem, BackupStatus, Episode, FinishedCard, GenreAffinity, GenreStat, Series, SeriesDetail,
+    SeriesGraphNode, TypeStat, WatchInsights, WatchSummary,
+};
+use crate::player::{AppWindowPlayer, EpisodePlayer};
+use crate::scraper_engine::{fetch_cover_image, fetch_html_with_script, ScrapeResult};
+use crate::swipe::{pick_index, shuffle, undecided_cards, weighted_pick_index};
 use serde::Serialize;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Mutex;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
+
+mod backup;
+pub use backup::*;
+
+mod stats;
+pub use stats::*;
+
+mod library;
+pub use library::*;
+
+mod seen;
+pub use seen::*;
+
+mod catalog;
+pub use catalog::*;
+
+mod discover;
+pub use discover::*;
+
+mod follow;
+pub use follow::*;
+
+mod mirrors;
+pub use mirrors::*;
+
+mod scan;
+pub use scan::*;
 
 #[derive(Serialize, Clone)]
 struct RefreshProgress {
@@ -25,13 +59,63 @@ fn emit_refresh_progress(app: &AppHandle, current: usize, total: usize, title: &
 pub struct AppState {
     pub db: Mutex<Db>,
     pub source_id: Mutex<Option<i64>>,
+    /// Stable slug (`adapter::SiteInfo::id`) of the currently-active site —
+    /// the single source of truth `adapter_for`/per-site mirror keys read
+    /// from. Decoupled from `source_id` (the DB row, which may still be
+    /// `None` the very first time a newly-selected site is scanned).
+    /// Restored at startup from the `active_site_id` setting, defaulting to
+    /// `"animeytx"` for installs that predate multi-site support.
+    pub active_site_id: Mutex<String>,
+    /// Short-TTL rendered-HTML cache (optimization C, see `html_cache.rs`)
+    /// consulted by `scrape_via_mirrors` — makes re-scraping a page just
+    /// fetched by another flow (refresh → discover/link/backfill) free
+    /// within the TTL. Never used for refresh()'s own fetches, whose whole
+    /// point is checking for *changes*.
+    pub html_cache: Mutex<crate::html_cache::HtmlCache>,
+    /// Cards from a (genre, page) fetch not yet shown this session — lets
+    /// discover_swipe_card serve ~10 swipes off one HTTP fetch instead of one
+    /// fetch per swipe.
+    pub swipe_buffer: Mutex<HashMap<(String, u32), Vec<FinishedCard>>>,
+    /// Highest page number seen so far for each genre slug this session.
+    pub swipe_last_page: Mutex<HashMap<String, u32>>,
+    /// Cards handed out by discover_swipe_card, keyed by url, so decide_swipe
+    /// (which only receives a url) can look up the card data to persist.
+    pub swipe_served: Mutex<HashMap<String, FinishedCard>>,
+    /// series.ids written by `decide_swipe`/`decide_catalog_card`, most
+    /// recent at the front, capped at `SWIPE_HISTORY_CAP`. `undo_last_swipe`
+    /// (Ctrl+Z) pops the front; `list_swipe_history`/`undo_swipe_entry` let
+    /// the UI reach further back than just the most recent. Session-only
+    /// "fix my last few misclicks" safety net (see the design spec) — not
+    /// persisted across app restarts, not an audit log.
+    pub swipe_history: Mutex<VecDeque<i64>>,
 }
 
-const SOURCE_NAME: &str = "AnimeYT";
-const MIRRORS_KEY: &str = "mirror_urls";
+/// How many recent swipe decisions `swipe_history` remembers.
+const SWIPE_HISTORY_CAP: usize = 5;
 
-fn adapter() -> AnimeytxAdapter {
-    AnimeytxAdapter
+/// Move `sid` to the front of `history` (removing any earlier copy first, so
+/// a re-decided id is never held twice — see
+/// `push_history_dedups_a_repeated_id_instead_of_holding_it_twice`), evicting
+/// the oldest entry past `SWIPE_HISTORY_CAP`. Factored out as a plain
+/// function over `VecDeque` (no `State<AppState>`) so it's unit-testable
+/// directly.
+fn push_history(history: &mut VecDeque<i64>, sid: i64) {
+    history.retain(|&id| id != sid);
+    history.push_front(sid);
+    history.truncate(SWIPE_HISTORY_CAP);
+}
+
+/// The active site's adapter, looked up from `state.active_site_id`. `Err`
+/// only if `active_site_id` somehow holds a slug `adapter::adapter_for`
+/// doesn't recognize (can't happen through normal use — `set_active_site`
+/// only ever writes a slug from `all_sites()`).
+fn get_active_adapter(state: &State<AppState>) -> Result<Box<dyn SiteAdapter>, String> {
+    let site_id = state.active_site_id.lock().unwrap().clone();
+    adapter::adapter_for(&site_id).ok_or_else(|| format!("sitio desconocido: {site_id}"))
+}
+
+fn get_active_site_id(state: &State<AppState>) -> String {
+    state.active_site_id.lock().unwrap().clone()
 }
 
 fn get_source_id(state: &State<AppState>) -> Result<i64, String> {
@@ -44,18 +128,6 @@ fn get_source_id(state: &State<AppState>) -> Result<i64, String> {
 
 fn normalize(url: &str) -> String {
     url.trim().trim_end_matches('/').to_string()
-}
-
-fn load_mirrors(db: &Db) -> Result<Vec<String>, String> {
-    let raw = db.get_setting(MIRRORS_KEY).map_err(|e| e.to_string())?;
-    Ok(raw
-        .map(|s| s.lines().map(normalize).filter(|l| !l.is_empty()).collect())
-        .unwrap_or_default())
-}
-
-fn save_mirrors(db: &Db, mirrors: &[String]) -> Result<(), String> {
-    db.set_setting(MIRRORS_KEY, &mirrors.join("\n"))
-        .map_err(|e| e.to_string())
 }
 
 /// Add `url` to the front of `mirrors` if not already present (case-insensitive),
@@ -82,11 +154,44 @@ fn with_mirror(mirrors: Vec<String>, url: &str) -> Vec<String> {
 /// Both must fall through to the next mirror, or one bad entry anywhere in the
 /// list can break every scan, even when a perfectly good mirror is right below
 /// it.
+///
+/// Thin wrapper over `scrape_via_mirrors_with_script` for the common case
+/// (no adapter episode script needed) — see that function for the full doc.
 async fn scrape_via_mirrors<T>(
     app: &AppHandle,
     mirrors: &[String],
     path: &str,
-    parse: impl Fn(&str) -> Result<Vec<T>, anyhow::Error>,
+    use_cache: bool,
+    parse: impl Fn(&ScrapeResult) -> Result<Vec<T>, anyhow::Error>,
+) -> Result<(ScrapeResult, Vec<T>, String), String> {
+    scrape_via_mirrors_with_script(app, mirrors, path, use_cache, None, parse).await
+}
+
+/// Same as `scrape_via_mirrors`, plus an adapter's optional
+/// `episode_fetch_script` (see `SiteAdapter`) threaded through to
+/// `fetch_html_with_script` — the only two call sites that need episode
+/// data (`fetch_episode_list_for`, `fetch_series_episodes`) pass one; every
+/// other call site passes `None`, which is byte-identical to the pre-jkanime
+/// fetch path.
+///
+/// `use_cache: true` consults the app-wide short-TTL HTML cache before
+/// opening a scraper window (and every successful fetch populates it either
+/// way). Callers whose purpose is *detecting change* — refresh()'s listing
+/// scan and per-series fetches, the user-triggered airing rescan — must pass
+/// `false`: serving them minutes-old HTML would silently defeat the check
+/// they exist to perform. A cached page that no longer parses non-empty
+/// falls through to a real fetch rather than failing the mirror. A cache hit
+/// never carries `extra` (it was never re-run through the page) — for a site
+/// with an episode script, that means `parse` sees `extra: None` and falls
+/// back to parsing plain `html`, which never has the episode data, so the
+/// parse comes back empty and this naturally falls through to a real fetch.
+async fn scrape_via_mirrors_with_script<T>(
+    app: &AppHandle,
+    mirrors: &[String],
+    path: &str,
+    use_cache: bool,
+    extra_script: Option<&str>,
+    parse: impl Fn(&ScrapeResult) -> Result<Vec<T>, anyhow::Error>,
 ) -> Result<(ScrapeResult, Vec<T>, String), String> {
     if mirrors.is_empty() {
         return Err("no hay ninguna web configurada".into());
@@ -94,9 +199,29 @@ async fn scrape_via_mirrors<T>(
     let mut last_err = String::new();
     for mirror in mirrors {
         let url = format!("{mirror}{path}");
-        match fetch_html(app, &url).await {
-            Ok(scraped) => match parse(&scraped.html) {
+        if use_cache {
+            let cached = {
+                let state = app.state::<AppState>();
+                let mut cache = state.html_cache.lock().unwrap();
+                cache.get(&url, std::time::Instant::now())
+            };
+            if let Some(html) = cached {
+                let scraped = ScrapeResult { html, extra: None };
+                if let Ok(items) = parse(&scraped) {
+                    if !items.is_empty() {
+                        return Ok((scraped, items, mirror.clone()));
+                    }
+                }
+                // Cached HTML didn't satisfy this parse — fall through to a
+                // real fetch below instead of treating the mirror as broken.
+            }
+        }
+        match fetch_html_with_script(app, &url, extra_script).await {
+            Ok(scraped) => match parse(&scraped) {
                 Ok(items) if !items.is_empty() => {
+                    let state = app.state::<AppState>();
+                    let mut cache = state.html_cache.lock().unwrap();
+                    cache.put(&url, scraped.html.clone(), std::time::Instant::now());
                     return Ok((scraped, items, mirror.clone()));
                 }
                 Ok(_) => {
@@ -112,234 +237,95 @@ async fn scrape_via_mirrors<T>(
     Err(format!("ninguna web funcionó; último error: {last_err}"))
 }
 
-async fn scan_airing_via_mirrors(
-    app: &AppHandle,
-    state: &State<'_, AppState>,
-    mirrors: Vec<String>,
-) -> Result<Vec<Series>, String> {
-    let a = adapter();
-    emit_refresh_progress(app, 0, 1, "Escaneando listado de estrenos");
-    // airing_url() just appends a fixed path; reuse it against an empty base to get that path alone.
-    let path = a.airing_url("").to_string();
-    let (_scraped, series, working_mirror) =
-        scrape_via_mirrors(app, &mirrors, &path, |html| a.parse_airing(html)).await?;
-    emit_refresh_progress(app, 1, 1, "Listado completo");
-    // Cover images are intentionally NOT fetched here: doing it for every
-    // series on the airing list (~150 at once) reads as scraping abuse to
-    // Cloudflare and gets rate-limited regardless of session validity. Covers
-    // are fetched one at a time in `refresh`, only for followed series.
 
-    let db = state.db.lock().unwrap();
-    save_mirrors(&db, &mirrors)?;
-    let src = db
-        .upsert_source(SOURCE_NAME, &working_mirror)
-        .map_err(|e| e.to_string())?;
-    for s in &series {
-        db.upsert_series(src, s).map_err(|e| e.to_string())?;
-    }
-    *state.source_id.lock().unwrap() = Some(src);
-    db.list_airing(src).map_err(|e| e.to_string())
+/// The currently-active site (`state.active_site_id`), for the Settings
+/// selector's initial value.
+#[tauri::command]
+pub fn get_active_site(state: State<'_, AppState>) -> Result<SiteSummary, String> {
+    let site_id = get_active_site_id(&state);
+    adapter::all_sites()
+        .iter()
+        .find(|s| s.id == site_id)
+        .map(SiteSummary::from)
+        .ok_or_else(|| format!("sitio activo desconocido: {site_id}"))
 }
 
-/// First-run scan: seed the mirror list with `base_url` (kept first if new),
-/// then scan the airing list trying every configured mirror in order.
+
+
+
+
+
+// ---------------------------------------------------------------------------
+// Cloud backup (Google Drive appDataFolder) — see src/backup/. reqwest here
+// only ever talks to accounts.google.com/oauth2.googleapis.com/googleapis.com
+// (a normal API), never the scraped site; backup/ never imports
+// scraper_engine.
+// ---------------------------------------------------------------------------
+
+pub(crate) fn backup_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    app.path().app_data_dir().map_err(|e| format!("app_data_dir: {e}"))
+}
+
 #[tauri::command]
-pub async fn scan_airing(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    base_url: String,
-) -> Result<Vec<Series>, String> {
-    let existing = {
+pub async fn restore_latest(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    let dir = backup_dir(&app)?;
+    let (client, refresh, file_id) = {
         let db = state.db.lock().unwrap();
-        load_mirrors(&db)?
+        let client = backup_lib::configured_client(&db)
+            .ok_or("Google credentials not configured")?;
+        let refresh = db
+            .get_setting("gdrive_refresh_token")
+            .ok()
+            .flatten()
+            .ok_or("Not connected to Google Drive")?;
+        let file_id = db.get_setting("gdrive_file_id").ok().flatten();
+        (client, refresh, file_id)
     };
-    let mirrors = with_mirror(existing, &base_url);
-    scan_airing_via_mirrors(&app, &state, mirrors).await
-}
-
-/// Re-scan the airing list using only the mirrors already configured in
-/// Settings (no new URL supplied).
-#[tauri::command]
-pub async fn rescan_airing(app: AppHandle, state: State<'_, AppState>) -> Result<Vec<Series>, String> {
-    let mirrors = {
-        let db = state.db.lock().unwrap();
-        load_mirrors(&db)?
+    let token = backup_lib::access_token(&client, &refresh).await?;
+    // Falling back to a lookup by name is what makes "restore onto a new
+    // machine" — the whole point of the feature — actually work: a fresh
+    // install has an empty settings table, so `gdrive_file_id` is only ever
+    // present on the machine that uploaded the backup in the first place.
+    let file_id = match file_id {
+        Some(id) => id,
+        None => backup_lib::drive::find_backup_file(&token)
+            .await?
+            .ok_or("No backup found in Drive yet")?,
     };
-    scan_airing_via_mirrors(&app, &state, mirrors).await
+    let bytes = backup_lib::drive::download_backup(&token, &file_id).await?;
+    backup_lib::stage_restore(&bytes, &dir)?; // validates before staging
+    app.restart();
 }
 
-#[tauri::command]
-pub fn get_mirrors(state: State<'_, AppState>) -> Result<Vec<String>, String> {
-    let db = state.db.lock().unwrap();
-    load_mirrors(&db)
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-/// Save the mirror list. If it would end up without the site the app is
-/// currently actually using (`sources.base_url`), that site is kept at the
-/// front regardless — otherwise a Settings edit can silently strand every
-/// future scan with no working entry at all.
-#[tauri::command]
-pub fn set_mirrors(state: State<'_, AppState>, urls: Vec<String>) -> Result<(), String> {
-    let db = state.db.lock().unwrap();
-    let mut cleaned: Vec<String> = urls.iter().map(|u| normalize(u)).filter(|u| !u.is_empty()).collect();
-    if let Ok(Some(src_id)) = state.source_id.lock().map(|g| *g) {
-        if let Ok(Some(base_url)) = db.get_source_base_url(src_id) {
-            let base_url = normalize(&base_url);
-            if !cleaned.iter().any(|m| m.eq_ignore_ascii_case(&base_url)) {
-                cleaned.insert(0, base_url);
-            }
+    #[test]
+    fn push_history_keeps_most_recent_at_front_and_caps_at_five() {
+        let mut h = VecDeque::new();
+        for sid in 1..=7 {
+            push_history(&mut h, sid);
         }
+        // Newest first, oldest two (1 and 2) evicted past the cap of 5.
+        let got: Vec<i64> = h.iter().copied().collect();
+        assert_eq!(got, vec![7, 6, 5, 4, 3]);
+        assert_eq!(h.len(), SWIPE_HISTORY_CAP);
     }
-    save_mirrors(&db, &cleaned)
-}
 
-#[tauri::command]
-pub fn list_airing(state: State<'_, AppState>) -> Result<Vec<Series>, String> {
-    let src = get_source_id(&state)?;
-    let db = state.db.lock().unwrap();
-    db.list_airing(src).map_err(|e| e.to_string())
-}
-
-/// Followed series with episode counts, for the library view.
-#[tauri::command]
-pub fn list_library(state: State<'_, AppState>) -> Result<Vec<crate::models::LibraryItem>, String> {
-    let src = get_source_id(&state)?;
-    let db = state.db.lock().unwrap();
-    db.list_library(src).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn set_followed(
-    state: State<'_, AppState>,
-    series_id: i64,
-    followed: bool,
-) -> Result<(), String> {
-    let db = state.db.lock().unwrap();
-    db.set_followed(series_id, followed).map_err(|e| e.to_string())
-}
-
-/// For each followed series: scrape its page (falling back across mirrors),
-/// insert new episodes. Returns count of new episodes.
-#[tauri::command]
-pub async fn refresh(app: AppHandle, state: State<'_, AppState>) -> Result<i64, String> {
-    let src = get_source_id(&state)?;
-    let (followed, mirrors) = {
-        let db = state.db.lock().unwrap();
-        (
-            db.list_followed(src).map_err(|e| e.to_string())?,
-            load_mirrors(&db)?,
-        )
-    };
-    let a = adapter();
-    let mut total_new = 0i64;
-    let total_series = followed.len();
-    for (idx, s) in followed.into_iter().enumerate() {
-        emit_refresh_progress(&app, idx, total_series, &s.title);
-        let path = match url::Url::parse(&s.url) {
-            Ok(u) => format!("{}{}", u.path(), u.query().map(|q| format!("?{q}")).unwrap_or_default()),
-            Err(_) => continue, // malformed stored url: skip, keep cached data
-        };
-        let (_scraped, eps, working_mirror) =
-            match scrape_via_mirrors(&app, &mirrors, &path, |html| a.parse_series(html)).await {
-                Ok(r) => r,
-                Err(_) => continue, // unreachable/incompatible on every mirror: skip, keep cached data
-            };
-        {
-            let db = state.db.lock().unwrap();
-            let new_url = format!("{working_mirror}{path}");
-            if new_url != s.url {
-                db.update_series_url(s.id, &new_url).map_err(|e| e.to_string())?;
-            }
-            let known = db.existing_episode_urls(s.id).map_err(|e| e.to_string())?;
-            for mut e in new_episodes(&eps, &known) {
-                e.series_id = s.id;
-                db.insert_episode(&e).map_err(|e| e.to_string())?;
-                total_new += 1;
-            }
-        }
-
-        // One cover fetch per followed series per refresh — never in bulk.
-        // Skip once it's already a fetched data: URI so we don't re-fetch on
-        // every refresh; a failure here just leaves the remote (broken) url
-        // in place to retry next time, it never blocks episode updates above.
-        if let Some(remote) = &s.cover_url {
-            if !remote.starts_with("data:") {
-                if let Ok(data_uri) = fetch_cover_image(&app, remote).await {
-                    let db = state.db.lock().unwrap();
-                    let _ = db.update_series_cover(s.id, &data_uri);
-                }
-            }
-        }
-
-        // polite delay between series
-        tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+    #[test]
+    fn push_history_dedups_a_repeated_id_instead_of_holding_it_twice() {
+        // Re-deciding the same series id (a card the reappearance race let a
+        // concurrent picker re-serve, then the user swiped again) must move
+        // it to the front WITHOUT leaving a second copy behind — a duplicate
+        // sid is what made the "Últimas clasificadas" strip render the same
+        // title twice (list_swipe_history has no dedup of its own).
+        let mut h = VecDeque::new();
+        push_history(&mut h, 10);
+        push_history(&mut h, 20);
+        push_history(&mut h, 10);
+        assert_eq!(h.iter().copied().collect::<Vec<i64>>(), vec![10, 20]);
+        assert_eq!(h.len(), 2, "10 must appear exactly once, not twice");
     }
-    emit_refresh_progress(&app, total_series, total_series, "Completado");
-    Ok(total_new)
-}
 
-#[tauri::command]
-pub fn list_pending(state: State<'_, AppState>) -> Result<Vec<PendingItem>, String> {
-    let db = state.db.lock().unwrap();
-    let rows = db.list_pending().map_err(|e| e.to_string())?;
-    Ok(rows
-        .into_iter()
-        .map(|(s, e)| PendingItem { series: s, episode: e })
-        .collect())
-}
-
-#[derive(serde::Serialize)]
-pub struct PendingItem {
-    pub series: Series,
-    pub episode: Episode,
-}
-
-#[tauri::command]
-pub fn pending_count(state: State<'_, AppState>) -> Result<i64, String> {
-    let db = state.db.lock().unwrap();
-    db.pending_count().map_err(|e| e.to_string())
-}
-
-/// Open an episode in the browser. Does NOT mark it seen — the user marks
-/// seen/unseen explicitly via `set_seen`.
-#[tauri::command]
-pub fn open_episode(app: AppHandle, url: String) -> Result<(), String> {
-    let ep = Episode {
-        id: 0,
-        series_id: 0,
-        number: String::new(),
-        title: None,
-        url,
-        released_at: None,
-        seen: false,
-    };
-    BrowserPlayer.open(&app, &ep).map_err(|e| e.to_string())
-}
-
-/// Mark an episode seen or unseen (persisted).
-#[tauri::command]
-pub fn set_seen(state: State<'_, AppState>, episode_id: i64, seen: bool) -> Result<(), String> {
-    let db = state.db.lock().unwrap();
-    db.set_seen(episode_id, seen).map_err(|e| e.to_string())
-}
-
-/// Mark an episode seen/unseen, cascading to keep watching gap-free: marking
-/// seen also marks every earlier episode of the series seen; marking unseen
-/// also marks every later one unseen.
-#[tauri::command]
-pub fn set_seen_cascade(
-    state: State<'_, AppState>,
-    series_id: i64,
-    number: String,
-    seen: bool,
-) -> Result<(), String> {
-    let db = state.db.lock().unwrap();
-    db.set_seen_cascade(series_id, &number, seen).map_err(|e| e.to_string())
-}
-
-/// All episodes of a series (progress view), oldest first.
-#[tauri::command]
-pub fn list_episodes(state: State<'_, AppState>, series_id: i64) -> Result<Vec<Episode>, String> {
-    let db = state.db.lock().unwrap();
-    db.list_series_episodes(series_id).map_err(|e| e.to_string())
 }

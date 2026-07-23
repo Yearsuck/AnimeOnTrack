@@ -1,6 +1,36 @@
 import { useEffect, useMemo, useState } from "react";
-import { listAiring, setFollowed } from "../api";
-import type { Series } from "../types";
+import { listAiringSeason, setFollowed } from "../api";
+import { useT } from "../i18n";
+import type { AiringItem, Series } from "../types";
+
+// Human label for the next-episode countdown the backend sorting is based
+// on — makes the newest-first ordering legible instead of mysterious.
+// Computed once per render (no ticking timer): "en 2 h" / "en 3 d" for a
+// future release, "hace 5 h" for one that already aired but whose card
+// hasn't rolled over yet. Null when the series carries no countdown.
+function countdownLabel(nextEpisodeAt: number | null): string | null {
+  if (nextEpisodeAt == null) return null;
+  const diffMs = nextEpisodeAt * 1000 - Date.now();
+  const absHours = Math.abs(diffMs) / 3_600_000;
+  const span =
+    absHours >= 48
+      ? `${Math.round(absHours / 24)} d`
+      : absHours >= 1
+        ? `${Math.round(absHours)} h`
+        : `${Math.max(1, Math.round(Math.abs(diffMs) / 60_000))} min`;
+  return diffMs >= 0 ? `en ${span}` : `hace ${span}`;
+}
+
+// "Esta temporada" cutoff: the series' first scraped episode aired within
+// the last 3 calendar months. Computed frontend-side (see the design spec)
+// so "now" is the user's own clock and a day-rollover never needs a re-query.
+function isWithinLastThreeMonths(firstEpisodeAt: number): boolean {
+  const cutoff = new Date();
+  cutoff.setMonth(cutoff.getMonth() - 3);
+  return firstEpisodeAt * 1000 >= cutoff.getTime();
+}
+
+type SeasonFilter = "all" | "season";
 
 export function AiringGrid({
   onOpenSeries,
@@ -9,12 +39,14 @@ export function AiringGrid({
   onOpenSeries: (s: Series) => void;
   refreshSignal?: number;
 }) {
-  const [series, setSeries] = useState<Series[]>([]);
+  const t = useT();
+  const [items, setItems] = useState<AiringItem[]>([]);
   const [query, setQuery] = useState("");
   const [onlyFollowed, setOnlyFollowed] = useState(false);
+  const [seasonFilter, setSeasonFilter] = useState<SeasonFilter>("all");
 
   async function load() {
-    setSeries(await listAiring());
+    setItems(await listAiringSeason());
   }
   useEffect(() => {
     load();
@@ -29,44 +61,81 @@ export function AiringGrid({
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return series.filter(
-      (s) => (!onlyFollowed || s.followed) && (!q || s.title.toLowerCase().includes(q))
-    );
-  }, [series, query, onlyFollowed]);
+    return items
+      .filter(
+        (it) =>
+          (!onlyFollowed || it.series.followed) &&
+          (!q || it.series.title.toLowerCase().includes(q))
+      )
+      .filter(
+        (it) =>
+          seasonFilter === "all" ||
+          (it.first_episode_at != null && isWithinLastThreeMonths(it.first_episode_at))
+      );
+  }, [items, query, onlyFollowed, seasonFilter]);
 
-  const followedCount = series.filter((s) => s.followed).length;
+  const followedCount = items.filter((it) => it.series.followed).length;
 
   return (
     <div className="page">
       <div className="page-head">
-        <h2 className="page-title">En emisión</h2>
+        <h2 className="page-title">{t("nav.airing")}</h2>
         <div className="search">
           <span className="icon">⌕</span>
           <input
             className="input"
-            placeholder="Buscar por nombre…"
+            placeholder={t("common.searchPlaceholder")}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
+        </div>
+        <div className="seg" role="tablist" aria-label={t("nav.airing")}>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={seasonFilter === "all"}
+            className={`seg-btn${seasonFilter === "all" ? " active" : ""}`}
+            onClick={() => setSeasonFilter("all")}
+          >
+            {t("airing.filterAll")}
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={seasonFilter === "season"}
+            className={`seg-btn${seasonFilter === "season" ? " active" : ""}`}
+            onClick={() => setSeasonFilter("season")}
+          >
+            {t("airing.filterSeason")}
+          </button>
         </div>
         <button
           className={`btn ${onlyFollowed ? "btn-success" : "btn-ghost"}`}
           onClick={() => setOnlyFollowed((v) => !v)}
         >
-          ★ Siguiendo ({followedCount})
+          {t("airing.followingFilter", { count: followedCount })}
         </button>
         <div className="spacer" />
-        <span className="muted">{filtered.length} series</span>
+        <span className="muted">{t("common.seriesCount", { count: filtered.length })}</span>
       </div>
 
+      {seasonFilter === "season" && (
+        <p className="muted airing-note">
+          {t("airing.seasonHint")}
+        </p>
+      )}
+
       {filtered.length === 0 ? (
-        <div className="empty">No hay resultados.</div>
+        <div className="empty">{t("common.noResults")}</div>
       ) : (
         <div className="grid">
-          {filtered.map((s) => (
+          {filtered.map(({ series: s }) => (
             <div key={s.id} className="card" onClick={() => onOpenSeries(s)}>
               <div className="poster">
-                {s.followed && <span className="chip">SIGUIENDO</span>}
+                {s.followed && <span className="chip">{t("airing.followingChip")}</span>}
+                {countdownLabel(s.next_episode_at) && (
+                  <span className="chip chip-countdown">{countdownLabel(s.next_episode_at)}</span>
+                )}
                 {s.cover_url ? (
                   <img src={s.cover_url} alt={s.title} loading="lazy" />
                 ) : null}
@@ -77,7 +146,7 @@ export function AiringGrid({
                   className={`btn follow-btn ${s.followed ? "on" : ""}`}
                   onClick={(e) => toggle(e, s)}
                 >
-                  {s.followed ? "✓ Siguiendo" : "+ Seguir"}
+                  {s.followed ? t("airing.followingBtn") : t("airing.followBtn")}
                 </button>
               </div>
             </div>

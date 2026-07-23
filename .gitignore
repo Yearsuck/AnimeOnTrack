@@ -25,3 +25,10 @@ dist-ssr
 
 # Git worktrees used for isolated feature work
 .worktrees
+.superpowers/
+.scratch_harness/
+
+# Google OAuth client credentials for cloud backup (compiled in via
+# option_env! from [env] — see .cargo/config.toml.example)
+/.cargo/config.toml
+/src-tauri/**/animeontrack.snapshot.*.sqlite

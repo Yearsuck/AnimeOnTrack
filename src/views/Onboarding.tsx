@@ -1,7 +1,9 @@
 import { useState } from "react";
 import { scanAiring } from "../api";
+import { useT } from "../i18n";
 
 export function Onboarding({ onDone }: { onDone: () => void }) {
+  const t = useT();
   const [url, setUrl] = useState("https://wwv.animeytx.net");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -13,7 +15,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
       await scanAiring(url.trim());
       onDone();
     } catch (e) {
-      setError(String(e));
+      setError(t("errors.generic", { detail: String(e) }));
     } finally {
       setBusy(false);
     }
@@ -21,37 +23,26 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
 
   return (
     <div className="onboard">
-      <div
-        className="brand"
-        style={{ justifyContent: "center", fontSize: 22, marginBottom: 10 }}
-      >
-        <span className="dot" />
+      <div className="brand onboard-brand">
+        <img className="brand-logo" src="/app-icon.png" alt="" width={32} height={32} />
         AnimeOnTrack
       </div>
-      <h1>Sigue tus animes en emisión</h1>
-      <p>Introduce la URL de la web para escanear los animes en estreno.</p>
-      <div className="row">
+      <h1>{t("onboarding.title")}</h1>
+      <p>{t("onboarding.subtitle")}</p>
+      <div className="onboard-form">
         <input
           className="input"
           value={url}
           onChange={(e) => setUrl(e.target.value)}
-          placeholder="https://…"
+          placeholder={t("onboarding.urlPlaceholder")}
           onKeyDown={(e) => e.key === "Enter" && submit()}
         />
         <button className="btn btn-primary" disabled={busy} onClick={submit}>
-          {busy ? "Escaneando…" : "Escanear"}
+          {busy ? t("common.scanning") : t("common.scan")}
         </button>
       </div>
-      {busy && (
-        <p className="muted" style={{ marginTop: 14 }}>
-          Abriendo la web y pasando la verificación… puede tardar unos segundos.
-        </p>
-      )}
-      {error && (
-        <p style={{ color: "var(--danger)", marginTop: 14, wordBreak: "break-word" }}>
-          {error}
-        </p>
-      )}
+      {busy && <p className="muted onboard-note">{t("onboarding.scanningHint")}</p>}
+      {error && <p className="onboard-error">{error}</p>}
     </div>
   );
 }
