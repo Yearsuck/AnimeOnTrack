@@ -120,7 +120,7 @@ export function AiringGrid({
       </div>
 
       {seasonFilter === "season" && (
-        <p className="muted" style={{ marginTop: 0, fontSize: 12.5, padding: "0 4px 12px" }}>
+        <p className="muted airing-note">
           {t("airing.seasonHint")}
         </p>
       )}

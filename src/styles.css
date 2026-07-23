@@ -1884,3 +1884,120 @@ progress.scanbar-track::-webkit-progress-value {
   justify-content: center;
   margin-top: var(--sp-6);
 }
+
+/* ---------- Utilities ----------
+   A small set of single-purpose classes for the one-off cases that were
+   reaching for an inline style: a size step, the danger colour, a pointer
+   affordance on a clickable non-button. Deliberately few — utilities earn
+   their place only where a named component class would be overkill. */
+.text-sm {
+  font-size: var(--fs-sm);
+}
+.text-xs {
+  font-size: var(--fs-xs);
+}
+.text-danger {
+  color: var(--danger);
+}
+.clickable {
+  cursor: pointer;
+}
+
+/* ---------- Settings (view-specific) ---------- */
+.settings-page {
+  max-width: 640px;
+}
+.settings-cred-row {
+  margin-top: var(--sp-2);
+}
+.settings-confirm-text {
+  margin: 0 0 var(--sp-2);
+}
+.settings-actions {
+  margin-top: var(--sp-2);
+}
+.settings-msg {
+  margin-top: var(--sp-3);
+}
+.settings-select {
+  max-width: 320px;
+}
+.settings-url-input {
+  flex: 1;
+  min-width: 220px;
+}
+/* Monospace, resizable textarea for the mirror URL list. */
+.textarea-mono {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: var(--fs-sm);
+  resize: vertical;
+  width: 100%;
+}
+
+/* ---------- Library (view-specific) ---------- */
+.lib-filter-select {
+  max-width: 150px;
+}
+.lib-empty-compact {
+  padding: var(--sp-3) 0;
+}
+
+/* ---------- Airing ---------- */
+.airing-note {
+  margin-top: 0;
+  font-size: var(--fs-sm);
+  padding: 0 var(--sp-1) var(--sp-3);
+}
+
+/* ---------- Descubrir (view-specific) ---------- */
+.discover-tabs {
+  margin-bottom: var(--sp-5);
+}
+.deck-panel-mode {
+  display: flex;
+  justify-content: center;
+  margin-bottom: var(--sp-3);
+}
+.deck-panel-intro {
+  margin-top: 0;
+  font-size: var(--fs-sm);
+}
+.deck-panel-heading {
+  margin-bottom: var(--sp-2);
+}
+.deck-panel-chips {
+  margin-bottom: var(--sp-4);
+}
+.deck-panel-chips-tight {
+  margin-bottom: var(--sp-2);
+}
+.deck-panel-warn {
+  margin-top: calc(-1 * var(--sp-2));
+  margin-bottom: var(--sp-4);
+}
+.deck-panel-save {
+  align-items: center;
+  gap: var(--sp-3);
+}
+.swipe-card-title {
+  min-height: auto;
+}
+.swipe-history-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  margin-top: var(--sp-2);
+}
+.swipe-history-heading {
+  margin-bottom: var(--sp-2);
+}
+
+/* Ring arc grow-in transition, previously an inline literal duration. */
+.ring-arc {
+  transition: stroke-dasharray var(--dur-slow) var(--ease-out);
+}
+/* Rounded clip for the 3D graph container. */
+.graph-clip {
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}

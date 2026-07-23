@@ -642,8 +642,7 @@ export function StatsGraph({
   return (
     <div
       ref={containerRef}
-      className="stats-graph-galaxy"
-      style={{ borderRadius: "var(--radius-sm)", overflow: "hidden" }}
+      className="stats-graph-galaxy graph-clip"
       // The graph is a bare WebGL canvas, so without this a screen reader gets
       // nothing at all from it — unlike the bar/ring views, which already
       // carry role="img"/aria-label.

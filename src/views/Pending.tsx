@@ -52,7 +52,7 @@ export function Pending({
         <div className="spacer" />
         {items.length > 0 && (
           <div className="lib-filter-bar">
-            <span className="muted" style={{ fontSize: 12 }}>
+            <span className="muted text-sm">
               {t("pending.sortLabel")}
             </span>
             <div className="seg">
@@ -86,7 +86,7 @@ export function Pending({
           const series = eps[0].series;
           return (
             <div key={title} className="series-block">
-              <div className="series-head" onClick={() => onOpenSeries(series)} style={{ cursor: "pointer" }}>
+              <div className="series-head clickable" onClick={() => onOpenSeries(series)}>
                 {series.cover_url && <img src={series.cover_url} alt="" />}
                 <div>
                   <div className="name">{title}</div>

@@ -48,10 +48,10 @@ function GoogleCredentialsForm({ onConfigured }: { onConfigured: (s: BackupStatu
 
   return (
     <div>
-      <p className="muted" style={{ fontSize: 12 }}>
+      <p className="muted text-sm">
         {t("settings.backupSetupSteps")}
       </p>
-      <div className="row" style={{ gap: 8, flexWrap: "wrap", marginTop: 10 }}>
+      <div className="row settings-cred-row">
         <input
           className="input"
           value={clientId}
@@ -80,7 +80,7 @@ function GoogleCredentialsForm({ onConfigured }: { onConfigured: (s: BackupStatu
         </button>
       </div>
       {error && (
-        <p className="muted" style={{ color: "var(--danger)", fontSize: 12 }}>
+        <p className="muted text-sm text-danger">
           {t("settings.backupError", { msg: error })}
         </p>
       )}
@@ -134,13 +134,13 @@ function BackupCard() {
       ) : (
         <>
           <p className="muted">{t("settings.backupConnected")}</p>
-          <p className="muted" style={{ fontSize: 12 }}>
+          <p className="muted text-sm">
             {status.last_at ? t("settings.backupLast", { when: status.last_at }) : t("settings.backupNever")}
             {status.size_bytes
               ? ` · ${t("settings.backupSize", { size: `${Math.round(status.size_bytes / 1024)} KB` })}`
               : ""}
           </p>
-          <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+          <div className="row">
             <button className="btn btn-primary" disabled={busy !== null} onClick={() => run("backup", backupNow)}>
               {busy === "backup" ? t("settings.backupWorking") : t("settings.backupNow")}
             </button>
@@ -160,7 +160,7 @@ function BackupCard() {
         </>
       )}
       {error && (
-        <p className="muted" style={{ color: "var(--danger)", fontSize: 12 }}>
+        <p className="muted text-sm text-danger">
           {t("settings.backupError", { msg: error })}
         </p>
       )}
@@ -278,7 +278,7 @@ export function Settings({ onSiteChanged }: { onSiteChanged?: (site: SiteSummary
   }
 
   return (
-    <div className="page" style={{ maxWidth: 640 }}>
+    <div className="page settings-page">
       <div className="page-head">
         <h2 className="page-title">{t("nav.settings")}</h2>
       </div>
@@ -322,8 +322,7 @@ export function Settings({ onSiteChanged }: { onSiteChanged?: (site: SiteSummary
         <div className="settings-field">
           <label className="settings-field-label">{t("settings.activeSiteHelp")}</label>
           <select
-            className="input"
-            style={{ maxWidth: 320 }}
+            className="input settings-select"
             value={pendingSiteId ?? activeSite?.id ?? ""}
             disabled={switchingSite || sites.length === 0}
             onChange={(e) => {
@@ -341,7 +340,7 @@ export function Settings({ onSiteChanged }: { onSiteChanged?: (site: SiteSummary
 
           {pendingSite && (
             <div className="settings-inline-panel">
-              <p style={{ margin: 0, marginBottom: 10 }}>
+              <p className="settings-confirm-text">
                 {t("settings.switchSiteConfirm", {
                   site: pendingSite.name,
                   currentSite: activeSite?.name ?? t("settings.currentSiteFallback"),
@@ -362,7 +361,7 @@ export function Settings({ onSiteChanged }: { onSiteChanged?: (site: SiteSummary
         <div className="settings-field">
           <label className="settings-field-label">{t("settings.addNewSiteLabel")}</label>
           <div className="row">
-            <input className="input" style={{ flex: 1, minWidth: 220 }} value={firstUrl} onChange={(e) => setFirstUrl(e.target.value)} />
+            <input className="input settings-url-input" value={firstUrl} onChange={(e) => setFirstUrl(e.target.value)} />
             <button className="btn btn-primary" onClick={addFirstUrl} disabled={busy}>
               {busy ? t("common.scanning") : t("common.scan")}
             </button>
@@ -374,13 +373,12 @@ export function Settings({ onSiteChanged }: { onSiteChanged?: (site: SiteSummary
             {t("settings.mirrorsLabel", { site: activeSite?.name ?? t("settings.activeSiteFallback") })}
           </label>
           <textarea
-            className="input"
+            className="input textarea-mono"
             rows={5}
-            style={{ fontFamily: "monospace", fontSize: 12.5, resize: "vertical", width: "100%" }}
             value={mirrorsText}
             onChange={(e) => setMirrorsText(e.target.value)}
           />
-          <div className="row" style={{ marginTop: 10 }}>
+          <div className="row settings-actions">
             <button className="btn" onClick={saveMirrors} disabled={savingMirrors}>
               {savingMirrors ? t("settings.saving") : t("settings.saveMirrors")}
             </button>
@@ -388,7 +386,7 @@ export function Settings({ onSiteChanged }: { onSiteChanged?: (site: SiteSummary
               {busy ? t("common.scanning") : t("settings.rescan")}
             </button>
           </div>
-          {msg && <p className="muted" style={{ marginTop: 12 }}>{msg}</p>}
+          {msg && <p className="muted settings-msg">{msg}</p>}
         </div>
       </div>
 

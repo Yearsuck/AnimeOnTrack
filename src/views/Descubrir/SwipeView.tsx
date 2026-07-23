@@ -304,8 +304,7 @@ export function SwipeView() {
         ) : card ? (
           <div className={`card swipe-card ${outDirection ? `swipe-out-${outDirection}` : ""}`}>
             <div
-              className="poster"
-              style={{ cursor: "pointer" }}
+              className="poster clickable"
               title={t("discover.openPageTitle")}
               onClick={(e) => {
                 e.stopPropagation();
@@ -318,11 +317,11 @@ export function SwipeView() {
               {card.poster_url ? <img src={card.poster_url} alt={card.title} /> : null}
             </div>
             <div className="card-body">
-              <div className="card-title" style={{ minHeight: "auto" }}>
+              <div className="card-title swipe-card-title">
                 {card.title}
               </div>
               {card.matched_genre && (
-                <div className="muted" style={{ fontSize: 12 }}>
+                <div className="muted text-sm">
                   {t("discover.genreLabel", { genre: card.matched_genre })}
                 </div>
               )}
@@ -373,14 +372,14 @@ export function SwipeView() {
         </div>
         <div className="swipe-hint">{t("discover.hint")}</div>
         {undoneMessage && (
-          <div className="muted" style={{ fontSize: 12, color: "var(--danger)" }}>
+          <div className="muted text-sm text-danger">
             {undoneMessage}
           </div>
         )}
         {linkStatuses.length > 0 && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 8 }}>
+          <div className="swipe-history-list">
             {linkStatuses.map((s) => (
-              <div key={s.id} className="muted" style={{ fontSize: 12 }}>
+              <div key={s.id} className="muted text-sm">
                 {s.state === "searching" && t("discover.searching", { title: s.title })}
                 {s.state === "linked" && t("discover.linked", { count: s.episodes ?? 0 })}
                 {s.state === "nomatch" && t("discover.noMatch", { title: s.title })}
@@ -391,7 +390,7 @@ export function SwipeView() {
 
         {history.length > 0 && (
           <div className="swipe-history">
-            <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>
+            <div className="muted text-sm swipe-history-heading">
               {t("discover.historyHeading")}
             </div>
             {history.map((h) => (

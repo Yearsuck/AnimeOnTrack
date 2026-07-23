@@ -93,7 +93,7 @@ export function RingGrid({ data }: { data: Datum[] }) {
                 strokeLinecap={d.count === 0 ? "butt" : "round"}
                 strokeDasharray={`${dash} ${RING_C - dash}`}
                 transform={`rotate(-90 ${RING / 2} ${RING / 2})`}
-                style={{ transition: "stroke-dasharray 0.6s cubic-bezier(0.16,1,0.3,1)" }}
+                className="ring-arc"
               />
               <text x="50%" y="50%" textAnchor="middle" dominantBaseline="central" fontSize={20} fontWeight={700} fill="var(--text)">
                 {d.count}
@@ -175,20 +175,20 @@ export function StatsRings({
 
   return (
     <>
-      <div style={{ marginBottom: 20 }}>
+      <div className="section-toolbar">
         <ShapeToggle shape={shape} onChange={setShape} />
       </div>
 
-      <div className="series-block" style={{ marginBottom: 20 }}>
+      <div className="series-block">
         <div className="series-head">
-          <h3 className="card-title">{t("stats.byGenre")}</h3>
+          <h3 className="section-title">{t("stats.byGenre")}</h3>
         </div>
         <CategoryBlock data={genreData} shape={shape} emptyMessage={t("stats.ringsEmpty")} />
       </div>
 
       <div className="series-block">
         <div className="series-head">
-          <h3 className="card-title">{t("stats.byType")}</h3>
+          <h3 className="section-title">{t("stats.byType")}</h3>
         </div>
         <CategoryBlock data={typeData} shape={shape} emptyMessage={t("stats.ringsEmpty")} />
       </div>
