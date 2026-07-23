@@ -1861,7 +1861,7 @@ progress.scanbar-track::-webkit-progress-value {
 }
 /* Uniform width for the filter-bar selects, replacing four ad hoc widths
    (150 / 170 / 170 / 190) — they read as one control group now. */
-.filter-select {
+select.filter-select {
   width: auto;
   min-width: 150px;
 }
@@ -1919,7 +1919,7 @@ progress.scanbar-track::-webkit-progress-value {
 .settings-msg {
   margin-top: var(--sp-3);
 }
-.settings-select {
+select.settings-select {
   max-width: 320px;
 }
 .settings-url-input {
@@ -1935,7 +1935,7 @@ progress.scanbar-track::-webkit-progress-value {
 }
 
 /* ---------- Library (view-specific) ---------- */
-.lib-filter-select {
+select.lib-filter-select {
   max-width: 150px;
 }
 .lib-empty-compact {
