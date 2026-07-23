@@ -19,6 +19,7 @@ import {
 } from "react";
 import { es } from "./catalog/es";
 import { en } from "./catalog/en";
+import { ca } from "./catalog/ca";
 
 // Derived from es's key set. `es` is `as const`, so `typeof es` values are
 // string *literals*; mapping through `Record<..., string>` keeps the exact
@@ -28,19 +29,20 @@ import { en } from "./catalog/en";
 export type MessageKey = keyof typeof es;
 export type Messages = Record<MessageKey, string>;
 
-export type Lang = "es" | "en";
+export type Lang = "es" | "en" | "ca";
 
 export const LANGS: { code: Lang; label: string }[] = [
   { code: "es", label: "Español" },
   { code: "en", label: "English" },
+  { code: "ca", label: "Català" },
 ];
 
-const CATALOGS: Record<Lang, Messages> = { es, en };
+const CATALOGS: Record<Lang, Messages> = { es, en, ca };
 
 const STORAGE_KEY = "aot.lang";
 
 function isLang(value: unknown): value is Lang {
-  return value === "es" || value === "en";
+  return value === "es" || value === "en" || value === "ca";
 }
 
 // Read synchronously at provider init so there is no async flash of the

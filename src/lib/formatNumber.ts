@@ -9,7 +9,7 @@ import { useLang } from "../i18n";
 // language; the only thing missing was applying it to numbers as well as to
 // strings. Spanish groups with a dot ("1.234"), English with a comma
 // ("1,234"), which is exactly what Intl gives us for free.
-const LOCALE_BY_LANG = { es: "es-ES", en: "en-GB" } as const;
+const LOCALE_BY_LANG = { es: "es-ES", en: "en-GB", ca: "ca-ES" } as const;
 
 export function useFormatNumber(): (value: number) => string {
   const { lang } = useLang();
