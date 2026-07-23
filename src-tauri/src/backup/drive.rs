@@ -13,7 +13,10 @@ struct FileRef { id: String }
 pub struct FileMeta {
     #[serde(default)]
     pub size: Option<String>,
+    // Part of Drive's file metadata response; deserialized for completeness
+    // but not surfaced in the UI yet.
     #[serde(rename = "modifiedTime", default)]
+    #[allow(dead_code)]
     pub modified_time: Option<String>,
 }
 

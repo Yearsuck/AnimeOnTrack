@@ -449,6 +449,10 @@ pub fn discover_catalog_card(
 /// and marks every episode watched) this just sets `watched_externally=1`
 /// and clears `followed`/`backlog_status`, so the title is excluded from
 /// future decks without pretending we have real watch progress for it.
+// Tauri command: the arguments are the invoke payload's named fields, which
+// the frontend passes individually — a struct here would just be deserialized
+// from the same shape.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub fn decide_catalog_card(
     state: State<'_, AppState>,

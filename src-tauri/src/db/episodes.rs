@@ -36,8 +36,10 @@ pub(crate) fn parse_ep_number(s: &str) -> Option<f64> {
 }
 
 impl Db {
-    /// Episode-row count for one series — the DB side of refresh()'s skip
-    /// decision (compared against the airing card's `.sb` badge).
+    /// Episode-row count for one series. Test-only: the production skip
+    /// decision moved to `max_episode_number` (a row COUNT gets inflated by
+    /// re-scraped duplicates), but the tests still assert against a raw count.
+    #[cfg(test)]
     pub fn episode_count(&self, series_id: i64) -> Result<i64> {
         Ok(self.conn.query_row(
             "SELECT COUNT(*) FROM episodes WHERE series_id=?1",
@@ -371,7 +373,7 @@ mod tests {
         }).unwrap();
 
         let dates = db.first_episode_dates(src).unwrap();
-        assert!(dates.get(&sid).is_none());
+        assert!(!dates.contains_key(&sid));
     }
 
     #[test]
@@ -395,8 +397,8 @@ mod tests {
         }).unwrap();
 
         let dates = db.first_episode_dates(src).unwrap();
-        assert!(dates.get(&sid_not_airing).is_none());
-        assert!(dates.get(&sid_other).is_none());
+        assert!(!dates.contains_key(&sid_not_airing));
+        assert!(!dates.contains_key(&sid_other));
     }
 
     #[test]
@@ -670,11 +672,11 @@ mod tests {
 
     #[test]
     fn mark_all_episodes_seen_marks_every_episode_via_cascade() {
-        /// Pins the idempotence fix: a row marked "Ya lo vi" (catalog "Seen")
-        /// after episodes are scraped in for a title the user decided
-        /// `Seen` on the catalog deck, every episode must end up seen, via the
-        /// same gap-free `set_seen_cascade` the rest of the app's watch-tracking
-        /// uses (not a separate blanket UPDATE).
+        // Pins the idempotence fix: a row marked "Ya lo vi" (catalog "Seen")
+        // after episodes are scraped in for a title the user decided
+        // `Seen` on the catalog deck, every episode must end up seen, via the
+        // same gap-free `set_seen_cascade` the rest of the app's watch-tracking
+        // uses (not a separate blanket UPDATE).
         let db = Db::open(":memory:").unwrap();
         let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
         let s = crate::models::Series {

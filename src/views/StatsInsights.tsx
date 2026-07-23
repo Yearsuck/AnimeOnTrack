@@ -1,4 +1,5 @@
-import { useT } from "../i18n";
+import { useEffect, useState } from "react";
+import { useLang, useT } from "../i18n";
 import type { WatchInsights, WatchSummary } from "../types";
 import { BarChart, CategoryBlock, ShapeToggle } from "./StatsRings";
 import { useStatsShape } from "../lib/statsShape";
@@ -35,10 +36,58 @@ function formatMinutes(t: ReturnType<typeof useT>, minutes: number): string {
   return t("stats.hoursUnit", { hours: totalHours });
 }
 
-// "2026-07-13" -> "07-13", short enough for a bar-chart label without
-// widening the shared 130px label column.
-function shortDay(iso: string): string {
-  return iso.length >= 10 ? iso.slice(5) : iso;
+// "2026-07-13" -> "13 jul" style short label for the activity axis, localized.
+function axisDay(iso: string, locale: string): string {
+  const d = new Date(`${iso}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString(locale, { day: "numeric", month: "short" });
+}
+
+// Compact 30-day activity chart: one thin vertical column per day in a single
+// fixed-height row, instead of BarChart's 30 stacked full-width rows (which
+// dominated the whole Stats page). Bars share one max, so height is
+// comparable; a native title gives the exact date + count on hover, and the
+// first/middle/last day are labelled so the axis reads without 30 tick labels.
+function DayActivityChart({
+  data,
+  locale,
+  emptyLabel,
+}: {
+  data: { day: string; count: number }[];
+  locale: string;
+  emptyLabel: string;
+}) {
+  const [grown, setGrown] = useState(false);
+  useEffect(() => {
+    const id = requestAnimationFrame(() => setGrown(true));
+    return () => cancelAnimationFrame(id);
+  }, []);
+  const max = Math.max(1, ...data.map((d) => d.count));
+  const total = data.reduce((s, d) => s + d.count, 0);
+  const labelAt = new Set([0, Math.floor(data.length / 2), data.length - 1]);
+  return (
+    <div className="dayact">
+      <div
+        className="dayact-bars"
+        role="img"
+        aria-label={`${total} — ${emptyLabel}`}
+      >
+        {data.map((d, i) => {
+          const pct = grown ? (d.count / max) * 100 : 0;
+          return (
+            <div
+              className={`dayact-col${d.count > 0 ? " has" : ""}`}
+              key={d.day}
+              title={`${axisDay(d.day, locale)}: ${d.count}`}
+            >
+              <div className="dayact-fill" style={{ height: `${pct}%` }} />
+              {labelAt.has(i) && <span className="dayact-tick">{axisDay(d.day, locale)}</span>}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
 export function StatsInsights({
@@ -50,6 +99,7 @@ export function StatsInsights({
 }) {
   const t = useT();
   const n = useFormatNumber();
+  const { lang } = useLang();
   const [shape, setShape] = useStatsShape();
 
   const totalMinutes = insights.estimated_minutes_tracked + insights.estimated_minutes_external;
@@ -69,7 +119,7 @@ export function StatsInsights({
     { name: t("stats.airing"), count: insights.followed_airing },
     { name: t("stats.finished"), count: insights.followed_finished },
   ];
-  const marksData = insights.marks_by_day.map((d) => ({ name: shortDay(d.day), count: d.count }));
+  const hasMarks = insights.marks_by_day.some((d) => d.count > 0);
 
   return (
     <div className="stats-insights">
@@ -141,12 +191,18 @@ export function StatsInsights({
         </div>
       </div>
 
-      {marksData.length > 0 && insights.marks_tracked_since && (
+      {hasMarks && insights.marks_tracked_since && (
         <div className="series-block">
           <div className="series-head">
             <h3 className="section-title">{t("stats.marksHeading")}</h3>
           </div>
-          <BarChart data={marksData} />
+          <div className="dayact-wrap">
+            <DayActivityChart
+              data={insights.marks_by_day}
+              locale={lang}
+              emptyLabel={t("stats.marksHeading")}
+            />
+          </div>
           <div className="stats-caveat">
             {t("stats.marksCaveat", { date: insights.marks_tracked_since })}
           </div>

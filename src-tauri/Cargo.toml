@@ -1,7 +1,7 @@
 [package]
 name = "aot-scaffold"
 version = "0.1.0"
-description = "A Tauri App"
+description = "Tracks currently-airing anime across multiple streaming sites and tells you when new episodes drop."
 authors = ["you"]
 edition = "2021"
 

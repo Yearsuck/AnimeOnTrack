@@ -286,7 +286,7 @@ impl SiteAdapter for JkanimeAdapter {
                 .select(&text_sel)
                 .next()
                 .map(|el| el.text().collect::<String>())
-                .and_then(|full| full.lines().map(str::trim).filter(|s| !s.is_empty()).last().map(String::from))
+                .and_then(|full| full.lines().map(str::trim).rfind(|s| !s.is_empty()).map(String::from))
                 .unwrap_or_else(|| slug_from_url(&url));
 
             let poster_url = item
