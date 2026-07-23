@@ -145,13 +145,31 @@ docs/                     setup docs (Google Drive backup)
 
 ---
 
+## A note on piracy
+
+I'll say this plainly: I always advocate paying for the content you watch. Creators,
+studios, and the people who make anime don't live on air — if you can support them
+officially, you should, and I do.
+
+But I also won't pretend the history is simple. Spanish- and English-language anime
+piracy has, for decades, been the **first door into anime** for most fans outside Japan.
+Without fansubs and pirate streaming, the medium simply would not be as big, as global,
+or as loved as it is today — a lot of us are here *because* of that door. And there's a
+harder truth on top of it: plenty of titles are only ever available fansubbed, never
+licensed or translated officially in a given region — so for those, "just pay for it"
+isn't an option that exists, pirate or not. You can't support what nobody is selling you.
+
+So: support creators wherever you actually can, and understand this tool for what it is —
+a tracker built by someone who loves the medium, not an excuse to skip the box set when
+the box set exists.
+
 ## Disclaimer
 
 AnimeOnTrack is a personal, educational project. It scrapes third-party streaming sites
 that the author does not operate, host, or endorse; it stores no media and streams nothing
 itself — it only reads publicly-rendered pages to detect new episodes and opens links in a
 window. You are responsible for how you use it and for complying with the laws and terms
-that apply to you. Please support creators through official, licensed channels.
+that apply to you.
 
 ---
 
