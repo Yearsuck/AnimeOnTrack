@@ -1,0 +1,37 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1024" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0f2033"/>
+      <stop offset="1" stop-color="#0a1420"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="360" y1="330" x2="700" y2="710" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#6fbcff"/>
+      <stop offset="1" stop-color="#3d97f0"/>
+    </linearGradient>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="26" result="b"/>
+      <feMerge>
+        <feMergeNode in="b"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- App-surface rounded square -->
+  <rect x="64" y="64" width="896" height="896" rx="220" fill="url(#bg)"/>
+  <rect x="64.5" y="64.5" width="895" height="895" rx="219.5" fill="none" stroke="#2b4763" stroke-width="3"/>
+
+  <!-- Progress ring: ~72% arc, the "on track" motif. Track + accent overlay. -->
+  <circle cx="512" cy="512" r="330" fill="none" stroke="#24384a" stroke-width="46"/>
+  <circle cx="512" cy="512" r="330" fill="none" stroke="url(#accent)" stroke-width="46"
+          stroke-linecap="round" stroke-dasharray="1493 2073" transform="rotate(-90 512 512)"/>
+
+  <!-- Progress head dot, echoing the app's brand dot -->
+  <circle cx="512" cy="182" r="34" fill="#6fbcff" filter="url(#glow)"/>
+
+  <!-- Play triangle, rounded, centered -->
+  <g filter="url(#glow)">
+    <path d="M430 380 L662 512 L430 644 Q404 659 404 629 L404 395 Q404 365 430 380 Z"
+          fill="url(#accent)"/>
+  </g>
+</svg>
