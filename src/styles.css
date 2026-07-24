@@ -2007,3 +2007,59 @@ select.lib-filter-select {
   border-radius: var(--radius-sm);
   overflow: hidden;
 }
+
+/* ---------- Custom window controls (frameless window) ----------
+   The native title bar is disabled (`decorations: false`); the topbar doubles
+   as the title bar and carries these minimize / maximize / close buttons at
+   the top-right corner, plus a slim `.titlebar-min` strip for the loading and
+   onboarding screens that don't render the full topbar. */
+.win-controls {
+  display: flex;
+  align-self: stretch;
+}
+/* Inside the padded topbar, run the buttons edge-to-edge into the corner by
+   cancelling the bar's top/bottom/right padding — like native controls. */
+.topbar .win-controls {
+  margin: calc(-1 * var(--sp-2)) calc(-1 * var(--sp-5)) calc(-1 * var(--sp-2)) var(--sp-2);
+}
+.win-btn {
+  width: 46px;
+  height: 100%;
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.win-btn:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+.win-btn:active {
+  background: var(--surface-3);
+}
+.win-btn svg {
+  display: block;
+}
+/* Close goes red on hover, the universal signal. */
+.win-btn-close:hover {
+  background: var(--danger);
+  color: #fff;
+}
+
+/* Slim drag strip for screens without the main topbar. */
+.titlebar-min {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  display: flex;
+  justify-content: flex-end;
+  height: 38px;
+  background: var(--overlay-bg);
+  backdrop-filter: blur(14px) saturate(140%);
+  border-bottom: 1px solid var(--border-soft);
+}

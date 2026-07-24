@@ -9,6 +9,7 @@ import { Stats } from "./views/Stats";
 import { Descubrir } from "./views/Descubrir";
 import { Catalog } from "./views/Catalog";
 import { ProgressBar } from "./views/ProgressBar";
+import { WindowControls } from "./views/WindowControls";
 import {
   listAiring,
   refresh,
@@ -138,11 +139,27 @@ export default function App() {
     setView("detail");
   }
 
-  if (view === "loading") return <div className="empty">{t("common.loading")}</div>;
+  // Frameless window: every screen needs *some* draggable strip with the
+  // window controls, or the loading/onboarding views (which don't render the
+  // main topbar) would leave the user unable to move or close the window.
+  const MiniTitleBar = () => (
+    <div className="titlebar-min" data-tauri-drag-region>
+      <WindowControls />
+    </div>
+  );
+
+  if (view === "loading")
+    return (
+      <>
+        <MiniTitleBar />
+        <div className="empty">{t("common.loading")}</div>
+      </>
+    );
 
   if (view === "onboarding")
     return (
       <>
+        <MiniTitleBar />
         <Onboarding
           onDone={async () => {
             await refreshBadge();
@@ -165,8 +182,13 @@ export default function App() {
 
   return (
     <>
-      <div className="topbar">
-        <div className="brand">
+      {/* Frameless window: the topbar IS the title bar. `data-tauri-drag-region`
+          on the bar and the non-interactive areas (brand, spacer) lets the user
+          drag the window; double-clicking them maximizes, same as a native bar.
+          Interactive children (tabs, buttons) don't carry the attribute, so
+          clicks on them never start a drag. */}
+      <div className="topbar" data-tauri-drag-region>
+        <div className="brand" data-tauri-drag-region>
           <img className="brand-logo" src="/app-icon.png" alt="" width={26} height={26} />
           AnimeOnTrack
         </div>
@@ -179,10 +201,11 @@ export default function App() {
           <Tab id="stats" label={t("nav.stats")} />
           <Tab id="settings" label={t("nav.settings")} />
         </div>
-        <div className="spacer" />
+        <div className="spacer" data-tauri-drag-region />
         <button className="btn btn-primary" onClick={doRefresh} disabled={refreshing}>
           {refreshing ? t("common.refreshing") : t("common.refresh")}
         </button>
+        <WindowControls />
       </div>
       <ProgressBar />
 
