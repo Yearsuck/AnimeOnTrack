@@ -151,7 +151,16 @@ pub async fn start_watching(
     let eps = fetch_episode_list_for(&app, &mirrors, &series_url, a.as_ref()).await?;
     let db = state.db.lock().unwrap();
     let episode_count = eps.len() as i64;
-    for mut e in eps {
+    // De-duplicate by number, not URL (a domain change makes every URL look
+    // new). Episodes already present — e.g. scraped by an earlier airing scan,
+    // possibly already marked seen — are refreshed in place, never re-inserted
+    // as unseen duplicates. See db.rs's episode-dedup migration.
+    let known = db.existing_episode_numbers(series_id).map_err(|e| e.to_string())?;
+    for e in eps.iter().filter(|e| known.contains(&e.number)) {
+        db.refresh_episode_meta(series_id, &e.number, &e.url, e.title.as_deref(), e.released_at.as_deref())
+            .map_err(|e| e.to_string())?;
+    }
+    for mut e in new_episodes(&eps, &known) {
         e.series_id = series_id;
         e.seen = false;
         db.insert_episode(&e).map_err(|e| e.to_string())?;
@@ -388,7 +397,14 @@ async fn link_series_core(
         .map_err(|e| e.to_string())?;
     db.replace_series_genres(series_id, &detail.genres).map_err(|e| e.to_string())?;
     let episode_count = episodes.len() as i64;
-    for mut e in episodes {
+    // De-duplicate by number (see the follow path above / db.rs migration): a
+    // re-link after a domain change must refresh links, not duplicate episodes.
+    let known = db.existing_episode_numbers(series_id).map_err(|e| e.to_string())?;
+    for e in episodes.iter().filter(|e| known.contains(&e.number)) {
+        db.refresh_episode_meta(series_id, &e.number, &e.url, e.title.as_deref(), e.released_at.as_deref())
+            .map_err(|e| e.to_string())?;
+    }
+    for mut e in new_episodes(&episodes, &known) {
         e.series_id = series_id;
         db.insert_episode(&e).map_err(|e| e.to_string())?;
     }
