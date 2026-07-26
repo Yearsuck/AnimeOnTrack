@@ -360,3 +360,22 @@ mod tests {
         assert_eq!(d, back);
     }
 }
+
+/// Result of importing the canonical library onto the active site: how many
+/// stranded entries were searched, how many actually linked, and how many
+/// couldn't be resolved (no anilist id, or no confident match on this site).
+#[derive(Debug, Clone, Serialize)]
+pub struct LibraryImportResult {
+    pub total: usize,
+    pub linked: usize,
+    pub skipped: usize,
+}
+
+/// Per-entry progress for the library import (Tauri event
+/// `library-import-progress`), so the UI can show "Trayendo X (i/total)".
+#[derive(Debug, Clone, Serialize)]
+pub struct LibraryImportProgress {
+    pub done: usize,
+    pub total: usize,
+    pub title: String,
+}

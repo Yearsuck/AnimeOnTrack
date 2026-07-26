@@ -107,6 +107,7 @@ pub fn run() {
             commands::maybe_sync_catalog_incremental,
             commands::backfill_catalog_metadata,
             commands::link_series_to_catalog,
+            commands::import_library_to_active_site,
             commands::get_catalog_info_for_series,
             commands::discover_catalog_card,
             commands::decide_catalog_card,

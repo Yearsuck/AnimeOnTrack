@@ -12,7 +12,7 @@ use std::collections::HashMap;
 /// a watermark captures it losslessly and — unlike per-episode rows, whose URLs
 /// and even numbering differ between sites — projects cleanly onto whatever
 /// site you're currently on.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct LibraryEntry {
     pub id: i64,
     pub canon_key: String,
@@ -145,10 +145,34 @@ impl Db {
         Ok(())
     }
 
+    /// Canonical **followed** entries that are NOT yet present on `source_id`
+    /// — i.e. the part of your library that switching to this site would
+    /// strand. "Present" means the site has a `series` row that either shares
+    /// the entry's `anilist_id` or matches its `canon_key` (title). These are
+    /// exactly the entries a cross-site import must resolve+link on the target
+    /// site. Ordered most-progressed first so a paced import brings back the
+    /// shows you're deepest into soonest.
+    pub fn library_entries_missing_on_site(&self, source_id: i64) -> Result<Vec<LibraryEntry>> {
+        // What the target site already has, as canonical keys.
+        let mut stmt = self
+            .conn
+            .prepare("SELECT anilist_id, title FROM series WHERE source_id=?1")?;
+        let present: std::collections::HashSet<String> = stmt
+            .query_map([source_id], |r| {
+                let anilist_id: Option<i64> = r.get(0)?;
+                let title: String = r.get(1)?;
+                Ok(canon_key(anilist_id, &title))
+            })?
+            .collect::<rusqlite::Result<std::collections::HashSet<_>>>()?;
+
+        Ok(self
+            .list_library_entries()?
+            .into_iter()
+            .filter(|e| e.followed && !present.contains(&e.canon_key))
+            .collect())
+    }
+
     /// The whole canonical library, most-progressed first — site-independent.
-    /// `#[allow(dead_code)]` for now: the read path is wired into a command and
-    /// the Library view in phase 2; phase 1 only builds and syncs the table.
-    #[allow(dead_code)]
     pub fn list_library_entries(&self) -> Result<Vec<LibraryEntry>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, canon_key, anilist_id, display_title, followed, backlog_status, watched_externally, seen_watermark
@@ -247,6 +271,29 @@ mod tests {
         db.sync_library_from_series().unwrap();
         db.sync_library_from_series().unwrap();
         assert_eq!(db.list_library_entries().unwrap().len(), 1, "no duplication on re-sync");
+    }
+
+    #[test]
+    fn missing_on_site_lists_followed_entries_absent_from_that_site() {
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        let b = db.upsert_source("TioAnime", "b", "tioanime").unwrap();
+        // Followed on AnimeYT: one also present on TioAnime (by anilist id),
+        // one only on AnimeYT (would be stranded when switching to TioAnime).
+        seed_followed(&db, a, "op", "One Piece", Some(21), 5, 10);
+        seed_followed(&db, a, "frieren", "Frieren", Some(154587), 3, 12);
+        // TioAnime has One Piece (same anilist id) but not Frieren.
+        db.upsert_series(b, &mk_airing("one-piece", "One Piece", None)).unwrap();
+        let bop = db.get_source_id_for_site("tioanime").unwrap().unwrap();
+        let _ = bop;
+        let op_b = db.conn.query_row("SELECT id FROM series WHERE source_id=?1 AND slug='one-piece'", [b], |r| r.get::<_,i64>(0)).unwrap();
+        db.set_anilist_id(op_b, 21).unwrap();
+        db.sync_library_from_series().unwrap();
+
+        let missing = db.library_entries_missing_on_site(b).unwrap();
+        assert_eq!(missing.len(), 1, "only Frieren is missing on TioAnime");
+        assert_eq!(missing[0].display_title, "Frieren");
+        assert_eq!(missing[0].seen_watermark, 3);
     }
 
     #[test]
