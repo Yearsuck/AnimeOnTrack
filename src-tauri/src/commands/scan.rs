@@ -543,7 +543,16 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
                 if new_url != s.url {
                     db.update_series_url(s.id, &new_url).map_err(|e| e.to_string())?;
                 }
-                let known = db.existing_episode_urls(s.id).map_err(|e| e.to_string())?;
+                // De-duplicate by episode number, not URL: the site may have
+                // moved to a new domain (the URLs all changed), so a URL-keyed
+                // diff would re-insert every episode as a new unseen duplicate.
+                let known = db.existing_episode_numbers(s.id).map_err(|e| e.to_string())?;
+                // Episodes we already have get their link refreshed in place
+                // (the domain/path may have changed) without touching seen.
+                for e in eps.iter().filter(|e| known.contains(&e.number)) {
+                    db.refresh_episode_meta(s.id, &e.number, &e.url, e.title.as_deref(), e.released_at.as_deref())
+                        .map_err(|e| e.to_string())?;
+                }
                 for mut e in new_episodes(&eps, &known) {
                     e.series_id = s.id;
                     db.insert_episode(&e).map_err(|e| e.to_string())?;

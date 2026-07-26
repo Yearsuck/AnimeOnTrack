@@ -208,6 +208,34 @@ impl Db {
             "CREATE INDEX IF NOT EXISTS idx_catalog_popularity ON anilist_catalog(popularity DESC);
              CREATE INDEX IF NOT EXISTS idx_catalog_genre ON anilist_catalog_genres(genre);",
         )?;
+
+        // One-time repair for the episode-duplication bug. The target sites
+        // occasionally move to a new domain (e.g. wwv.animeytx.net began
+        // 301-ing to animeyt.cc, with a different URL path shape). Episodes
+        // were de-duplicated on their *full URL*, so a domain change made every
+        // episode look new: the scan re-inserted a second, unseen copy of every
+        // episode — doubling watched series into half-seen/half-unseen and
+        // flooding the pending queue with hundreds of bogus episodes.
+        //
+        // This collapses each (series_id, number) group back to a single row,
+        // keeping "seen" if *any* copy in the group was seen (so watched
+        // progress is never lost), and keeping the lowest-id row as the
+        // survivor. The scan path now de-duplicates by number (not URL), so it
+        // can't recur; and the next scan refreshes the survivor's URL to the
+        // current domain. Guarded by a settings flag so it runs exactly once.
+        if self.get_setting("episode_dedup_by_number_v1")?.is_none() {
+            self.conn.execute_batch(
+                "UPDATE episodes SET seen = 1, seen_at = COALESCE(seen_at, datetime('now'))
+                   WHERE id IN (
+                     SELECT MIN(id) FROM episodes GROUP BY series_id, number HAVING MAX(seen) = 1
+                   );
+                 DELETE FROM episodes WHERE id NOT IN (
+                   SELECT MIN(id) FROM episodes GROUP BY series_id, number
+                 );",
+            )?;
+            self.set_setting("episode_dedup_by_number_v1", "1")?;
+        }
+
         Ok(())
     }
 
@@ -317,6 +345,47 @@ mod tests {
             .query_row("SELECT anilist_id FROM series WHERE slug='anilist-777'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(anilist_id, Some(777));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn duplicate_episodes_from_a_domain_change_are_collapsed_keeping_seen() {
+        let path = std::env::temp_dir()
+            .join(format!("aot_ep_dedup_migration_test_{}.sqlite", std::process::id()));
+        let path_str = path.to_str().unwrap();
+        let _ = std::fs::remove_file(&path);
+        let sid;
+        {
+            let db = Db::open(path_str).unwrap();
+            let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+            sid = db.upsert_series(src, &mk_airing("x", "X", None)).unwrap();
+            let ep = |number: &str, url: &str, seen: bool| crate::models::Episode {
+                id: 0, series_id: sid, number: number.into(), title: None,
+                url: url.into(), released_at: None, seen,
+            };
+            // The bug's exact shape: episode 1 seen on the old domain, then a
+            // second unseen copy on the new domain; episode 2 unseen on both.
+            db.insert_episode(&ep("1", "https://wwv.animeytx.net/anime/x-capitulo-1/", true)).unwrap();
+            db.insert_episode(&ep("1", "https://animeyt.cc/999/anime/x-capitulo-1/", false)).unwrap();
+            db.insert_episode(&ep("2", "https://wwv.animeytx.net/anime/x-capitulo-2/", false)).unwrap();
+            db.insert_episode(&ep("2", "https://animeyt.cc/998/anime/x-capitulo-2/", false)).unwrap();
+            // Clear the one-time flag so re-opening re-runs the dedup migration.
+            db.conn
+                .execute("DELETE FROM settings WHERE key='episode_dedup_by_number_v1'", [])
+                .unwrap();
+        }
+        let db = Db::open(path_str).unwrap();
+        let mut stmt = db
+            .conn
+            .prepare("SELECT number, seen FROM episodes WHERE series_id=?1 ORDER BY number")
+            .unwrap();
+        let rows: Vec<(String, i64)> = stmt
+            .query_map([sid], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        // One row per episode; episode 1 stays seen, episode 2 stays unseen.
+        assert_eq!(rows, vec![("1".to_string(), 1), ("2".to_string(), 0)]);
         let _ = std::fs::remove_file(&path);
     }
 

@@ -97,14 +97,40 @@ impl Db {
         Ok(rows.into_iter().collect())
     }
 
-    pub fn existing_episode_urls(&self, series_id: i64) -> Result<std::collections::HashSet<String>> {
+    /// The episode *numbers* already stored for a series. This — not the URL —
+    /// is an episode's stable identity: the sites move between domains
+    /// (animeytx.net -> animeyt.cc) and even change the URL path shape, so
+    /// de-duplicating scraped episodes by URL re-inserts the whole list as
+    /// "new" on a domain change (the episode-duplication bug). The scan
+    /// de-duplicates against this set instead.
+    pub fn existing_episode_numbers(&self, series_id: i64) -> Result<std::collections::HashSet<String>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT url FROM episodes WHERE series_id=?1")?;
-        let urls = stmt
+            .prepare("SELECT number FROM episodes WHERE series_id=?1")?;
+        let nums = stmt
             .query_map([series_id], |r| r.get::<_, String>(0))?
             .collect::<rusqlite::Result<std::collections::HashSet<_>>>()?;
-        Ok(urls)
+        Ok(nums)
+    }
+
+    /// Refresh the mutable metadata (url/title/released_at) of an episode
+    /// identified by (series_id, number), leaving `seen`/`seen_at` untouched.
+    /// Called during a re-scan for episodes whose number is already known, so a
+    /// domain change updates the link in place instead of inserting a duplicate.
+    pub fn refresh_episode_meta(
+        &self,
+        series_id: i64,
+        number: &str,
+        url: &str,
+        title: Option<&str>,
+        released_at: Option<&str>,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE episodes SET url=?3, title=?4, released_at=?5
+             WHERE series_id=?1 AND number=?2",
+            (series_id, number, url, title, released_at),
+        )?;
+        Ok(())
     }
 
     /// Insert episode if its (series_id, url) is new. Returns the row id either way.
@@ -653,7 +679,7 @@ mod tests {
     }
 
     #[test]
-    fn existing_episode_urls_returns_known_urls() {
+    fn existing_episode_numbers_and_refresh_meta() {
         let db = Db::open(":memory:").unwrap();
         let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
         let s = crate::models::Series {
@@ -663,11 +689,26 @@ mod tests {
         let sid = db.upsert_series(src, &s).unwrap();
         db.insert_episode(&crate::models::Episode {
             id: 0, series_id: sid, number: "1".into(), title: None,
-            url: "https://site/ep1".into(), released_at: None, seen: false,
+            url: "https://wwv.animeytx.net/anime/x-capitulo-1/".into(), released_at: None, seen: true,
         }).unwrap();
-        let urls = db.existing_episode_urls(sid).unwrap();
-        assert!(urls.contains("https://site/ep1"));
-        assert_eq!(urls.len(), 1);
+
+        let nums = db.existing_episode_numbers(sid).unwrap();
+        assert!(nums.contains("1"));
+        assert_eq!(nums.len(), 1);
+
+        // A re-scan on a new domain refreshes the URL in place, leaving seen.
+        db.refresh_episode_meta(sid, "1", "https://animeyt.cc/999/anime/x-capitulo-1/", None, None).unwrap();
+        let (url, seen): (String, i64) = db.conn.query_row(
+            "SELECT url, seen FROM episodes WHERE series_id=?1 AND number='1'",
+            [sid], |r| Ok((r.get(0)?, r.get(1)?)),
+        ).unwrap();
+        assert_eq!(url, "https://animeyt.cc/999/anime/x-capitulo-1/");
+        assert_eq!(seen, 1, "refreshing the link must not clear seen");
+        // Still exactly one row for episode 1 — no duplicate.
+        let n: i64 = db.conn.query_row(
+            "SELECT COUNT(*) FROM episodes WHERE series_id=?1 AND number='1'", [sid], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(n, 1);
     }
 
     #[test]
