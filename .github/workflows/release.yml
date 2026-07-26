@@ -1,9 +1,15 @@
 name: Release
 
-# Fires when a version tag is pushed, e.g. `git tag v0.1.0 && git push --tags`.
-# Builds the Windows installer and .exe and publishes them to a GitHub Release
-# named after the tag. No signing secrets are required: the app's Google Drive
-# credentials are entered at runtime, so the build needs no injected secrets.
+# Fires when a version tag is pushed, e.g. `git tag v0.2.0 && git push --tags`.
+# Builds installers for all three desktop OSes and publishes them to a single
+# GitHub Release named after the tag.
+#
+# IMPORTANT: only the **Windows** build is functional. The scraper that detects
+# new episodes uses Windows-only WebView2 interop; on macOS and Linux it is a
+# stub (see docs/cross-platform-porting.md), so those builds compile and launch
+# but cannot get past setup. They ship as clearly-labelled experimental
+# artifacts until `eval()` is ported to WKWebView / WebKitGTK. No signing
+# secrets are required (Google Drive creds are entered at runtime).
 on:
   push:
     tags:
@@ -14,8 +20,21 @@ permissions:
 
 jobs:
   release:
-    name: Build & publish Windows release
-    runs-on: windows-latest
+    name: Build & publish (${{ matrix.os }})
+    strategy:
+      # One OS failing must not cancel the others — we still want the Windows
+      # installer published even if an experimental build breaks.
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            args: ""
+          - os: macos-latest
+            # Universal binary so both Apple Silicon and Intel Macs are covered.
+            args: "--target universal-apple-darwin"
+          - os: ubuntu-latest
+            args: ""
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
@@ -27,6 +46,23 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          # macOS needs both arches for the universal build; other OSes just
+          # use the host target.
+          targets: ${{ matrix.os == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Install Linux system dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            librsvg2-dev \
+            libayatana-appindicator3-dev \
+            patchelf \
+            build-essential \
+            file
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -36,10 +72,9 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      # tauri-action runs `npm run build` (via beforeBuildCommand) then
-      # `tauri build`, producing the NSIS installer and the MSI, and uploads
-      # them to a release for this tag. `__VERSION__` is replaced with the
-      # version from tauri.conf.json.
+      # Each matrix job builds this OS's installers and uploads them to the same
+      # release (keyed by the tag). tauri-action find-or-creates the release, so
+      # the three jobs converge on one set of assets.
       - name: Build and release
         uses: tauri-apps/tauri-action@v1
         env:
@@ -47,6 +82,19 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "AnimeOnTrack ${{ github.ref_name }}"
-          releaseBody: "Windows installer and portable executable are attached below."
+          releaseBody: |
+            ## Downloads
+
+            - **Windows** (stable): `*_x64-setup.exe` (installer) or `*_x64_en-US.msi`.
+            - **macOS** (⚠️ experimental): `*.dmg` — universal (Apple Silicon + Intel).
+            - **Linux** (⚠️ experimental): `*.AppImage` or `*.deb`.
+
+            > ⚠️ **macOS and Linux are experimental and not yet functional.** The
+            > episode-detection scraper is Windows-only for now, so on macOS/Linux
+            > the app builds and opens but cannot get past setup. They are published
+            > for testing and build availability while the cross-platform port is in
+            > progress (see `docs/cross-platform-porting.md`). Use **Windows** for a
+            > working app.
           releaseDraft: false
           prerelease: false
+          args: ${{ matrix.args }}
