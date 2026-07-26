@@ -209,6 +209,24 @@ impl Db {
              CREATE INDEX IF NOT EXISTS idx_catalog_genre ON anilist_catalog_genres(genre);",
         )?;
 
+        // Site-agnostic library (docs/cross-site-library-investigation.md,
+        // option C). Identity is canonical (AniList id, else normalized title),
+        // so the same show followed on two sites is one entry and a site outage
+        // never strands your library. Progress is a single seen-watermark,
+        // which is lossless because watching is gap-free.
+        self.conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS library (
+                id INTEGER PRIMARY KEY,
+                canon_key TEXT NOT NULL UNIQUE,
+                anilist_id INTEGER,
+                display_title TEXT NOT NULL,
+                followed INTEGER NOT NULL DEFAULT 0,
+                backlog_status TEXT,
+                watched_externally INTEGER NOT NULL DEFAULT 0,
+                seen_watermark INTEGER NOT NULL DEFAULT 0
+            );",
+        )?;
+
         // One-time repair for the episode-duplication bug. The target sites
         // occasionally move to a new domain (e.g. wwv.animeytx.net began
         // 301-ing to animeyt.cc, with a different URL path shape). Episodes
@@ -236,6 +254,13 @@ impl Db {
             self.set_setting("episode_dedup_by_number_v1", "1")?;
         }
 
+        // Rebuild the canonical library projection from the current per-site
+        // follows. Cheap (hundreds of rows) and idempotent, so running it on
+        // every open keeps it in sync while `series` is still the source of
+        // truth (phase 1); a later phase makes `library` authoritative and
+        // gates this.
+        self.sync_library_from_series()?;
+
         Ok(())
     }
 
@@ -257,6 +282,7 @@ mod catalog;
 pub(crate) mod stats;
 mod airing;
 mod series;
+pub(crate) mod library;
 
 pub use series::SwipeHistoryRow;
 pub use catalog::CatalogFilter;
