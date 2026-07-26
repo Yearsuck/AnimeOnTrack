@@ -28,8 +28,8 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "publisher": "Ernest Rull Turigas",
-    "copyright": "© 2026 Ernest Rull Turigas",
+    "publisher": "Yearsuck",
+    "copyright": "© 2026 Yearsuck",
     "category": "Entertainment",
     "homepage": "https://github.com/Yearsuck/AnimeOnTrack",
     "shortDescription": "Track currently-airing anime and get notified when new episodes drop.",
