@@ -304,6 +304,96 @@ pub async fn link_catalog_series(
     Ok(outcome)
 }
 
+/// Bring the canonical library onto the **active** site — the site-agnostic
+/// library's resolution step (docs/cross-site-library-investigation.md). For
+/// every followed library entry not already present on the active site, this
+/// searches the site for it, links it (real slug/url + scraped episodes), marks
+/// it followed, and replays the entry's `seen_watermark` so your watched
+/// progress carries over. So after switching sites you press this once and your
+/// whole library — not just the airing overlap the scan already carries — shows
+/// up on the new site.
+///
+/// Only entries with an `anilist_id` are resolvable (that's the search query
+/// source); a few without one, and any the site simply doesn't host, are
+/// reported as skipped rather than guessed. **Paced** at ~1 series / 2 s and
+/// **user-initiated** — this is real per-series scraping, so it must never run
+/// as a silent bulk crawl (Cloudflare). Emits `library-import-progress`.
+#[tauri::command]
+pub async fn import_library_to_active_site(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<crate::models::LibraryImportResult, String> {
+    use tauri::Emitter;
+    const PACED: std::time::Duration = std::time::Duration::from_millis(2100);
+
+    let (src, missing) = {
+        let db = state.db.lock().unwrap();
+        let src = get_source_id(&state)?;
+        // Rebuild the projection first so follows made this session are included.
+        db.sync_library_from_series().map_err(|e| e.to_string())?;
+        (src, db.library_entries_missing_on_site(src).map_err(|e| e.to_string())?)
+    };
+    let total = missing.len();
+    let mut linked = 0usize;
+    let mut skipped = 0usize;
+
+    for (i, entry) in missing.into_iter().enumerate() {
+        let _ = app.emit(
+            "library-import-progress",
+            crate::models::LibraryImportProgress { done: i, total, title: entry.display_title.clone() },
+        );
+        let Some(anilist_id) = entry.anilist_id else {
+            skipped += 1;
+            continue;
+        };
+        // A synthetic anilist-keyed row for `link_series_core` to resolve — the
+        // same shape a catalog swipe creates. Its URL is a placeholder; linking
+        // rewrites it to the real site URL.
+        let sid = {
+            let db = state.db.lock().unwrap();
+            let series = Series {
+                id: 0,
+                slug: format!("anilist-{anilist_id}"),
+                title: entry.display_title.clone(),
+                url: format!("https://anilist.co/anime/{anilist_id}"),
+                cover_url: None,
+                is_airing: false,
+                followed: false,
+                next_episode_at: None,
+                site_episode_count: None,
+            };
+            let sid = db.upsert_series(src, &series).map_err(|e| e.to_string())?;
+            db.set_anilist_id(sid, anilist_id).map_err(|e| e.to_string())?;
+            sid
+        };
+        match link_series_core(&app, &state, sid).await {
+            Ok((_, Some(target_id))) => {
+                let db = state.db.lock().unwrap();
+                db.set_followed(target_id, true).map_err(|e| e.to_string())?;
+                db.set_backlog_status(target_id, None).map_err(|e| e.to_string())?;
+                if entry.seen_watermark > 0 {
+                    db.set_seen_cascade(target_id, &entry.seen_watermark.to_string(), true)
+                        .map_err(|e| e.to_string())?;
+                }
+                linked += 1;
+            }
+            // NoMatch on this site, or a scrape error — leave it, report it.
+            Ok((_, None)) | Err(_) => skipped += 1,
+        }
+        tokio::time::sleep(PACED).await;
+    }
+
+    {
+        let db = state.db.lock().unwrap();
+        db.sync_library_from_series().map_err(|e| e.to_string())?;
+    }
+    let _ = app.emit(
+        "library-import-progress",
+        crate::models::LibraryImportProgress { done: total, total, title: String::new() },
+    );
+    Ok(crate::models::LibraryImportResult { total, linked, skipped })
+}
+
 /// The shared body behind both `link_catalog_series` (fire-and-forget from a
 /// `Seen` swipe / manual retry) and `start_watching` (which must link an
 /// unlinked catalog row *before* following it). Returns the outcome plus the

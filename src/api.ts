@@ -160,6 +160,12 @@ export const maybeSyncCatalogIncremental = () =>
 // the local catalog only — no network. Returns how many were newly linked.
 export const linkSeriesToCatalog = () => invoke<number>("link_series_to_catalog");
 
+// Cross-site library import: for every followed series not yet on the active
+// site, search+link it there and replay its watched watermark. Paced/live
+// scraping — emits "library-import-progress" ({done,total,title}) per series.
+export const importLibraryToActiveSite = () =>
+  invoke<{ total: number; linked: number; skipped: number }>("import_library_to_active_site");
+
 // Re-fetches catalog rows synced before duration/romaji/studio/start_date
 // existed. Long-running (paced against AniList's rate limit) but resumable —
 // emits "catalog-backfill-progress" ({ done, total }) per 50-row batch.
