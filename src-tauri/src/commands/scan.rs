@@ -178,7 +178,17 @@ async fn scan_airing_via_mirrors(
         }
     }
     *state.source_id.lock().unwrap() = Some(src);
-    db.list_airing(src).map_err(|e| e.to_string())
+    let airing = db.list_airing(src).map_err(|e| e.to_string())?;
+    drop(db);
+
+    // Auto-import the whole library onto this site on every airing (re)scan —
+    // the airing-page carry-over above only reaches the ~airing overlap, so
+    // finished follows from other sites still need the paced per-series search
+    // that `spawn_library_import` runs in the background. Fire-and-forget: the
+    // airing list returns now; the import (a no-op once the library is fully
+    // resolved) runs behind it, guarded against overlapping scans.
+    spawn_library_import(app.clone());
+    Ok(airing)
 }
 
 /// First-run scan: seed the mirror list with `base_url` (kept first if new),

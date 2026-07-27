@@ -318,13 +318,61 @@ pub async fn link_catalog_series(
 /// reported as skipped rather than guessed. **Paced** at ~1 series / 2 s and
 /// **user-initiated** — this is real per-series scraping, so it must never run
 /// as a silent bulk crawl (Cloudflare). Emits `library-import-progress`.
+/// Clears `library_import_running` on drop, so the flag is released on every
+/// exit path of `run_library_import` (early `?` errors included).
+struct ImportGuard<'a>(&'a std::sync::atomic::AtomicBool);
+impl Drop for ImportGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 #[tauri::command]
 pub async fn import_library_to_active_site(
     app: AppHandle,
-    state: State<'_, AppState>,
 ) -> Result<crate::models::LibraryImportResult, String> {
+    run_library_import(app).await
+}
+
+/// Fire the library import in the background after an airing scan, so bringing
+/// the whole library onto the active site happens automatically on every
+/// (re)scan of the emission — not only when the user presses the Settings
+/// button. Fire-and-forget: the airing list returns to the UI immediately
+/// while the paced per-series scraping runs behind it, emitting the same
+/// `library-import-progress` events the manual path does. The
+/// `library_import_running` guard inside `run_library_import` makes a second
+/// overlapping scan a no-op instead of a doubled scrape sweep, and once the
+/// library is fully resolved the missing set is empty so this costs nothing.
+pub fn spawn_library_import(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = run_library_import(app).await {
+            eprintln!("[library] auto-import after scan failed: {e}");
+        }
+    });
+}
+
+/// Shared body of the manual command and the post-scan auto-import. Takes an
+/// owned `AppHandle` (not a `State`) so it can run detached in a spawned task;
+/// resolves the managed `AppState` internally, exactly like
+/// `auto_backup_if_due`.
+async fn run_library_import(app: AppHandle) -> Result<crate::models::LibraryImportResult, String> {
+    use std::sync::atomic::Ordering;
     use tauri::Emitter;
+    use tauri::Manager;
     const PACED: std::time::Duration = std::time::Duration::from_millis(2100);
+
+    let state = app.state::<AppState>();
+
+    // Only one import at a time — an overlapping scan must not launch a second
+    // concurrent per-series scrape of the same site (Cloudflare). `swap` claims
+    // the flag atomically; if it was already set, bail as a no-op result.
+    if state.library_import_running.swap(true, Ordering::SeqCst) {
+        return Ok(crate::models::LibraryImportResult { total: 0, linked: 0, skipped: 0 });
+    }
+    // Clear the flag no matter how we leave this function (any `?` early
+    // return, or normal completion) — otherwise one error would wedge the
+    // guard on and block every future import for the whole session.
+    let _clear = ImportGuard(&state.library_import_running);
 
     let (src, missing) = {
         let db = state.db.lock().unwrap();

@@ -88,6 +88,13 @@ pub struct AppState {
     /// "fix my last few misclicks" safety net (see the design spec) — not
     /// persisted across app restarts, not an audit log.
     pub swipe_history: Mutex<VecDeque<i64>>,
+    /// Set while a library import (manual or the auto-import fired after an
+    /// airing scan) is running, so overlapping scans can't launch a second
+    /// concurrent per-series scrape sweep of the same site — that would double
+    /// the Cloudflare-facing request rate. A plain flag (not a queue): once one
+    /// import is in flight, later triggers no-op, and the next scan after it
+    /// finishes picks up whatever is still missing.
+    pub library_import_running: std::sync::atomic::AtomicBool,
 }
 
 /// How many recent swipe decisions `swipe_history` remembers.
