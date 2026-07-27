@@ -42,6 +42,9 @@ pub use mirrors::*;
 mod scan;
 pub use scan::*;
 
+mod maintenance;
+pub use maintenance::*;
+
 #[derive(Serialize, Clone)]
 struct RefreshProgress {
     current: usize,
