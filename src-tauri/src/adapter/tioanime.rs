@@ -101,6 +101,16 @@ impl SiteAdapter for TioanimeAdapter {
         format!("{}/directorio?status=1", base_url.trim_end_matches('/'))
     }
 
+    /// TioAnime's "En emisión" directory paginates with `&p=N` (~20 cards per
+    /// page, ~5 pages) — confirmed live: `?status=1&p=2` returns a completely
+    /// different set of shows than page 1, and `p` past the last page returns an
+    /// empty `ul.animes`, which `scan_airing` uses as the natural stop. Without
+    /// this, only the first 20 airing series were ever scraped and every
+    /// followed show on pages 2+ silently vanished from the airing grid.
+    fn airing_page_url(&self, base_url: &str, page: u32) -> Option<String> {
+        Some(format!("{}/directorio?status=1&p={}", base_url.trim_end_matches('/'), page.max(1)))
+    }
+
     fn parse_airing(&self, html: &str) -> Result<Vec<Series>> {
         let doc = Html::parse_document(html);
         let card_sel = Selector::parse(CARD).unwrap();
@@ -235,6 +245,15 @@ impl SiteAdapter for TioanimeAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn airing_pages_use_the_p_param() {
+        let a = TioanimeAdapter;
+        assert_eq!(a.airing_page_url("https://tioanime.com", 1).as_deref(), Some("https://tioanime.com/directorio?status=1&p=1"));
+        assert_eq!(a.airing_page_url("https://tioanime.com/", 3).as_deref(), Some("https://tioanime.com/directorio?status=1&p=3"));
+        // Always Some — the scan stops on an empty page, not on None.
+        assert!(a.airing_page_url("https://tioanime.com", 99).is_some());
+    }
 
     #[test]
     fn airing_url_uses_the_status_filter() {

@@ -166,6 +166,11 @@ export const linkSeriesToCatalog = () => invoke<number>("link_series_to_catalog"
 export const importLibraryToActiveSite = () =>
   invoke<{ total: number; linked: number; skipped: number }>("import_library_to_active_site");
 
+// Launch the app's own uninstaller (Windows/NSIS) and quit. Resolves before
+// exit begins; on a dev/unpacked build it rejects with a "no uninstaller"
+// message instead. Irreversible — the caller must confirm first.
+export const uninstallApp = () => invoke<void>("uninstall_app");
+
 // Re-fetches catalog rows synced before duration/romaji/studio/start_date
 // existed. Long-running (paced against AniList's rate limit) but resumable —
 // emits "catalog-backfill-progress" ({ done, total }) per 50-row batch.

@@ -90,6 +90,14 @@ export const ca: Messages = {
   "settings.importProgress": "Portant {title} ({done}/{total})…",
   "settings.importDone": "{linked} de {total} portades. {skipped} no trobades en aquest lloc.",
   "settings.maintenanceHeading": "Manteniment",
+  "settings.uninstallHeading": "Desinstal·la l'aplicació",
+  "settings.uninstallHelp":
+    "Tanca AnimeOnTrack i obre el desinstal·lador de Windows. Les teves dades (biblioteca, progrés) es conserven per si la tornes a instal·lar.",
+  "settings.uninstallButton": "Desinstal·la…",
+  "settings.uninstallConfirm":
+    "Segur que vols desinstal·lar AnimeOnTrack? L'aplicació es tancarà i s'obrirà el desinstal·lador.",
+  "settings.uninstallConfirmYes": "Sí, desinstal·la",
+  "settings.uninstalling": "Desinstal·lant…",
   "settings.language": "Idioma",
   "settings.theme": "Tema",
   "settings.themeDark": "Fosc",
@@ -147,7 +155,7 @@ export const ca: Messages = {
 
   // SeriesDetail.tsx
   "seriesDetail.unfollow": "Deixa de seguir",
-  "seriesDetail.openPage": "Obre la pàgina de la sèrie ↗",
+  "seriesDetail.openPage": "Veure a AniList ↗",
   "seriesDetail.seenCount": "{seen} / {total} vistos",
   "seriesDetail.jumpToCurrent": "⇒ Ves a l'episodi actual",
   "seriesDetail.linking": "Cercant al web…",

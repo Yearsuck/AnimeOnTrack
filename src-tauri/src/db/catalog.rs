@@ -107,20 +107,25 @@ impl Db {
         Ok(rows)
     }
 
-    /// Unlinked series that are worth resolving to a catalog row: the ones the
-    /// user has actually engaged with. Scraped-but-untouched rows (the bulk of
-    /// the table) are skipped — linking them buys nothing and multiplies the
-    /// chance of a wrong automatic link.
-    pub fn series_needing_catalog_link(&self, source_id: i64) -> Result<Vec<(i64, String)>> {
+    /// Unlinked series worth resolving to a catalog row: the ones the user has
+    /// engaged with, plus every airing show. Scraped-but-untouched rows (the
+    /// bulk of the table) are skipped — linking them buys nothing and multiplies
+    /// the chance of a wrong automatic link.
+    ///
+    /// **Across all sites** (no source filter): the canonical airing/library
+    /// unions dedup by `anilist_id`, so a show must be linked on *every* site
+    /// that has it, not just the active one — otherwise the same show appears
+    /// twice (linked on one site, title-only on another).
+    pub fn series_needing_catalog_link(&self) -> Result<Vec<(i64, String)>> {
         let mut stmt = self.conn.prepare(
             "SELECT s.id, s.title FROM series s
-             WHERE s.source_id=?1 AND s.anilist_id IS NULL
-               AND (s.followed=1 OR s.watched_externally=1
+             WHERE s.anilist_id IS NULL
+               AND (s.followed=1 OR s.watched_externally=1 OR s.is_airing=1
                     OR EXISTS (SELECT 1 FROM episodes e WHERE e.series_id=s.id AND e.seen=1))
              ORDER BY s.id",
         )?;
         let rows = stmt
-            .query_map([source_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }

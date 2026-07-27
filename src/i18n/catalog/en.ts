@@ -83,6 +83,14 @@ export const en: Messages = {
   "settings.importProgress": "Bringing {title} ({done}/{total})…",
   "settings.importDone": "{linked} of {total} brought over. {skipped} not found on this site.",
   "settings.maintenanceHeading": "Maintenance",
+  "settings.uninstallHeading": "Uninstall the app",
+  "settings.uninstallHelp":
+    "Closes AnimeOnTrack and opens the Windows uninstaller. Your data (library, progress) is kept in case you reinstall.",
+  "settings.uninstallButton": "Uninstall…",
+  "settings.uninstallConfirm":
+    "Are you sure you want to uninstall AnimeOnTrack? The app will close and the uninstaller will open.",
+  "settings.uninstallConfirmYes": "Yes, uninstall",
+  "settings.uninstalling": "Uninstalling…",
   "settings.language": "Language",
   "settings.theme": "Theme",
   "settings.themeDark": "Dark",
@@ -138,7 +146,7 @@ export const en: Messages = {
   "library.studioAll": "All",
 
   "seriesDetail.unfollow": "Unfollow",
-  "seriesDetail.openPage": "Open series page ↗",
+  "seriesDetail.openPage": "View on AniList ↗",
   "seriesDetail.seenCount": "{seen} / {total} watched",
   "seriesDetail.jumpToCurrent": "⇒ Jump to current episode",
   "seriesDetail.linking": "Searching the site…",

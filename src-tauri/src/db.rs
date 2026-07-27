@@ -261,6 +261,13 @@ impl Db {
         // gates this.
         self.sync_library_from_series()?;
 
+        // Push canonical completion back down to the per-site rows: a show
+        // marked "Ya lo vi" on one site was being left as followed-but-unwatched
+        // on another (a cross-site carry propagated the follow but not the
+        // completion), flooding Pendientes with episodes already watched. Runs
+        // on every open so the fix applies to existing data and stays applied.
+        self.reconcile_completion_across_sites()?;
+
         Ok(())
     }
 
