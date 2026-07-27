@@ -226,16 +226,126 @@ fn jaccard(a: &str, b: &str) -> f64 {
     }
 }
 
+/// Season/part marker words: tokens that denote a later season/part of the
+/// *same* show rather than a distinct work. Deliberately excludes "movie",
+/// "ova", "special", "arc"/"saga" — those name different content, and treating
+/// them as season markers would import the wrong episodes.
+const SEASON_MARKERS: &[&str] =
+    &["season", "temporada", "part", "parte", "cour", "final", "the"];
+const ROMAN_NUMERALS: &[&str] = &["ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x"];
+
+fn is_ascii_int(t: &str) -> bool {
+    !t.is_empty() && t.chars().all(|c| c.is_ascii_digit())
+}
+
+/// The "franchise base" of a normalized title: the same title with any
+/// trailing season/part markers stripped, in order. Drops trailing marker
+/// words ("season", "temporada", "part", "final", "the", …), ordinals ("2nd"),
+/// Roman numerals ("ii".."x"), and a bare integer **only when a marker word
+/// immediately precedes it** ("... part 2" → the 2 goes; "steins gate 0" → the
+/// 0 stays, because no marker precedes it, so it's part of the title of a
+/// distinct work). Order-aware on purpose — a token *set* can't tell "Part 2"
+/// (same show, later part) from "Steins;Gate 0" (a different work).
+fn franchise_base(norm: &str) -> String {
+    const MARKERS: &[&str] = SEASON_MARKERS;
+    const ROMANS: &[&str] = ROMAN_NUMERALS;
+    let is_marker = |t: &str| MARKERS.contains(&t);
+    let is_int = is_ascii_int;
+    let is_ordinal = |t: &str| {
+        t.len() > 2
+            && matches!(&t[t.len() - 2..], "st" | "nd" | "rd" | "th")
+            && t[..t.len() - 2].chars().all(|c| c.is_ascii_digit())
+    };
+    // A trailing 4-digit year (1900–2099) is a re-release tag ("Fruits Basket
+    // (2019)", "Hunter x Hunter 2011"), not a distinct work — strip it so year
+    // variants reduce to the same base.
+    let is_year = |t: &str| {
+        t.len() == 4 && is_int(t) && matches!(&t[..2], "19" | "20")
+    };
+    let mut tokens: Vec<&str> = norm.split_whitespace().collect();
+    while let Some(&last) = tokens.last() {
+        if is_marker(last) || is_ordinal(last) || ROMANS.contains(&last) || is_year(last) {
+            tokens.pop();
+        } else if is_int(last) && tokens.len() >= 2 && is_marker(tokens[tokens.len() - 2]) {
+            tokens.pop(); // the number
+            tokens.pop(); // its preceding marker word
+        } else {
+            break;
+        }
+    }
+    tokens.join(" ")
+}
+
+/// Do two normalized titles reduce to the same franchise base — i.e. are they
+/// the same show differing only by a season/part/year suffix? Guarded so the
+/// shared base is substantial: either **≥2 tokens** ("attack on titan") or a
+/// single token of **≥4 chars** ("bleach", "overlord"). This still admits the
+/// many one-word franchises with numbered seasons while rejecting a bare short
+/// word ("one", "the", a lone roman numeral) that could collapse unrelated
+/// shows. An empty base (two pure season markers) never matches.
+fn same_franchise(a: &str, b: &str) -> bool {
+    let ba = franchise_base(a);
+    let tokens = ba.split_whitespace().count();
+    if ba.is_empty() || (tokens < 2 && ba.chars().count() < 4) {
+        return false;
+    }
+    ba == franchise_base(b)
+}
+
+/// One title is a strict token-prefix of the other, and the extra tail is a
+/// **distinguishing** subtitle/sequel rather than a season/part/year suffix —
+/// the pattern of a *different* work that reuses the base name: "Steins;Gate"
+/// vs "Steins;Gate 0", "Digimon Adventure" vs "Digimon Adventure 02", "Mobile
+/// Suit Gundam" vs "Mobile Suit Gundam Wing". We block these outright, because
+/// the raw blend scores a one-word extension high (≈0.76) and would silently
+/// import the wrong episodes into a followed show — whereas a miss is harmless
+/// (the user re-follows). The test is order-aware: the tail is "distinguishing"
+/// exactly when stripping season/part/year markers from the longer title does
+/// **not** collapse it back to the shorter one, so a genuine season suffix
+/// ("…Final Season", "…Part 2", "…2011") is *not* caught and still matches.
+fn distinct_extension(a: &str, b: &str) -> bool {
+    let ta: Vec<&str> = a.split_whitespace().collect();
+    let tb: Vec<&str> = b.split_whitespace().collect();
+    let (short, long, long_norm) = if ta.len() <= tb.len() { (&ta, &tb, b) } else { (&tb, &ta, a) };
+    if short.is_empty() || long.len() <= short.len() {
+        return false; // not a strict extension
+    }
+    if short[..] != long[..short.len()] {
+        return false; // the shorter title is not a leading token-prefix
+    }
+    // Distinguishing unless the extra tail is a pure season/part/year suffix.
+    franchise_base(long_norm) != short.join(" ")
+}
+
 /// Combined score for one (normalized query, normalized candidate) pair.
-/// Exact normalized equality always short-circuits to 1.0 (handles e.g. a
-/// query matching a candidate only after the candidate's noise suffix is
-/// stripped, which token-Jaccard/Levenshtein alone would still score high
-/// but not perfectly).
+/// Exact normalized equality short-circuits to 1.0. Otherwise it's the better
+/// of a **base** blend (token-Jaccard + Levenshtein, for typos/word-order/
+/// partial overlaps) and a **0.9 season-suffix bonus** when the two titles
+/// share a franchise base — the same show differing only by a season/part
+/// suffix (`same_franchise`), which is the dominant reason library shows
+/// failed to match across sites. The bonus is order-aware, so it lifts
+/// "Attack on Titan" ↔ "…Final Season" without ever collapsing distinct works
+/// like "Steins;Gate" ↔ "Steins;Gate 0" or "…Gundam" ↔ "…Gundam Wing" — which
+/// a `distinct_extension` guard actively holds below the threshold even though
+/// the raw blend would otherwise pass them.
 fn score(query_norm: &str, candidate_norm: &str) -> f64 {
     if query_norm == candidate_norm {
         return 1.0;
     }
-    jaccard(query_norm, candidate_norm) * 0.6 + levenshtein_ratio(query_norm, candidate_norm) * 0.4
+    // Distinct name-reusing work ("…Gate" vs "…Gate 0", "…Gundam" vs
+    // "…Gundam Wing") → never a match, no matter how high the blend scores. A
+    // wrong library merge is silent data corruption; a miss is harmless.
+    if distinct_extension(query_norm, candidate_norm) {
+        return 0.0;
+    }
+    let base = jaccard(query_norm, candidate_norm) * 0.6 + levenshtein_ratio(query_norm, candidate_norm) * 0.4;
+    // Same show, different season/part suffix → a strong (but sub-exact) score,
+    // the fix for cross-site/library matches that a full-set overlap missed.
+    if same_franchise(query_norm, candidate_norm) {
+        base.max(0.9)
+    } else {
+        base
+    }
 }
 
 /// Best candidate for any of `queries` (try romaji, then english — callers
@@ -415,5 +525,200 @@ mod tests {
         let index = CatalogIndex::build(&rows);
         assert!(index.is_empty());
         assert_eq!(index.lookup(&[""]), None);
+    }
+
+    // ---- Corpus: does one title match the other, as the library importer sees
+    // it? `best_match` with a single candidate returns Some iff the pair clears
+    // MATCH_THRESHOLD, so this is exactly the "are these the same show?"
+    // decision the importer makes.
+    fn same_show(a: &str, b: &str) -> bool {
+        best_match(&[a], &[TitleCandidate { title: b, url: "u" }]).is_some()
+    }
+
+    /// Recall corpus: pairs that ARE the same show and MUST match. These are
+    /// the real-world variants a cross-site library import trips over — season
+    /// and part suffixes (both worded and Roman), punctuation, romaji↔spelling
+    /// noise, and year re-releases.
+    const SHOULD_MATCH: &[(&str, &str)] = &[
+        // Worded season / part / final-season suffixes.
+        ("Attack on Titan", "Attack on Titan Final Season"),
+        ("Attack on Titan", "Attack on Titan The Final Season"),
+        ("Shingeki no Kyojin", "Shingeki no Kyojin The Final Season"),
+        ("Jujutsu Kaisen", "Jujutsu Kaisen 2nd Season"),
+        ("Spy x Family", "Spy x Family Part 2"),
+        ("Spy x Family", "Spy x Family Season 2"),
+        ("Demon Slayer", "Demon Slayer Season 3"),
+        ("Kimetsu no Yaiba", "Kimetsu no Yaiba Season 2"),
+        ("The Rising of the Shield Hero", "The Rising of the Shield Hero Season 2"),
+        ("Kaguya-sama: Love is War", "Kaguya-sama Love is War Season 3"),
+        ("My Hero Academia", "My Hero Academia Season 6"),
+        ("Black Clover", "Black Clover Season 4"),
+        ("Fire Force", "Fire Force Season 2"),
+        ("The Promised Neverland", "The Promised Neverland Season 2"),
+        ("Dr. Stone", "Dr. Stone Season 3"),
+        ("Made in Abyss", "Made in Abyss Season 2"),
+        ("Re:Zero", "Re:Zero Season 2"),
+        ("Vinland Saga", "Vinland Saga Season 2"),
+        ("Tokyo Revengers", "Tokyo Revengers Season 2"),
+        ("Chainsaw Man", "Chainsaw Man Part 2"),
+        // (Sword Art Online is intentionally absent: "online" is a site
+        // noise-suffix that normalize_title strips, a separate normalizer quirk
+        // outside this metric's scope.)
+        ("The Eminence in Shadow", "The Eminence in Shadow 2nd Season"),
+        ("Classroom of the Elite", "Classroom of the Elite Season 3"),
+        ("Dr. Stone", "Dr. Stone Final Season"),
+        ("Bocchi the Rock", "Bocchi the Rock Season 2"),
+        // Roman-numeral season markers.
+        ("Overlord", "Overlord IV"),
+        ("Mob Psycho 100", "Mob Psycho 100 II"),
+        ("Saekano", "Saekano II"),
+        ("Konosuba", "Konosuba III"),
+        ("Golden Kamuy", "Golden Kamuy IV"),
+        // Cour split with a marker word in front of the number.
+        ("Chainsaw Man", "Chainsaw Man Cour 2"),
+        // Year re-release (4-digit → never treated as a distinct sequel).
+        ("Hunter x Hunter", "Hunter x Hunter (2011)"),
+        ("Fruits Basket", "Fruits Basket (2019)"),
+        ("Bleach", "Bleach 2004"),
+        // Punctuation / casing / spacing only.
+        ("Fullmetal Alchemist: Brotherhood", "Fullmetal Alchemist Brotherhood"),
+        ("Kaguya-sama wa Kokurasetai", "Kaguya sama wa Kokurasetai"),
+        ("Kono Subarashii Sekai ni Shukufuku wo!", "Kono Subarashii Sekai ni Shukufuku wo"),
+        ("That Time I Got Reincarnated as a Slime", "That Time I Got Reincarnated as a Slime"),
+        ("JOJO'S BIZARRE ADVENTURE", "jojo's bizarre adventure"),
+        // Site noise suffixes (stripped by normalize_title before scoring).
+        ("One Piece", "One Piece Sub Español"),
+        ("Naruto Shippuden", "Naruto Shippuden HD"),
+        ("Boruto", "Boruto Latino"),
+        // Worded season on a longer base.
+        ("Rurouni Kenshin", "Rurouni Kenshin Season 2"),
+        ("Dragon Ball Super", "Dragon Ball Super Season 2"),
+        ("One Punch Man", "One Punch Man Season 2"),
+        ("Haikyuu", "Haikyuu Season 4"),
+        ("Mushoku Tensei", "Mushoku Tensei Part 2"),
+        ("Mushoku Tensei", "Mushoku Tensei Season 2"),
+        ("Oshi no Ko", "Oshi no Ko 2nd Season"),
+        ("Frieren Beyond Journey's End", "Frieren Beyond Journey's End Season 2"),
+        ("The Apothecary Diaries", "The Apothecary Diaries Season 2"),
+        ("Solo Leveling", "Solo Leveling Season 2"),
+        ("Blue Lock", "Blue Lock Season 2"),
+        ("Dandadan", "Dandadan Season 2"),
+        ("Wind Breaker", "Wind Breaker Season 2"),
+        ("Tower of God", "Tower of God Season 2"),
+        ("Kaiju No. 8", "Kaiju No. 8 Season 2"),
+        ("Delicious in Dungeon", "Delicious in Dungeon Season 2"),
+        ("My Hero Academia", "My Hero Academia Final Season"),
+        ("Jujutsu Kaisen", "Jujutsu Kaisen Season 2"),
+        ("Attack on Titan", "Attack on Titan Season 2"),
+    ];
+
+    /// Safety corpus: pairs that share tokens but are DIFFERENT works, and must
+    /// NOT match — a false merge silently imports the wrong episodes. The nasty
+    /// ones are name-reusing sequels ("Steins;Gate 0"), same-prefix distinct
+    /// shows ("Fate/Zero" vs "Fate/stay night"), and short titles that overlap
+    /// on one common word.
+    const SHOULD_NOT_MATCH: &[(&str, &str)] = &[
+        // Name-reusing distinct sequels — the bare-number trap.
+        ("Steins;Gate", "Steins;Gate 0"),
+        ("Digimon Adventure", "Digimon Adventure 02"),
+        ("Ghost in the Shell", "Ghost in the Shell 2"),
+        ("Psycho-Pass", "Psycho-Pass 2"),
+        ("Initial D", "Initial D 2"),
+        // Same franchise prefix, genuinely different works.
+        ("Fate/Zero", "Fate/stay night"),
+        ("Fate/stay night", "Fate/Apocrypha"),
+        ("Fate/Zero", "Fate/Grand Order"),
+        ("Code Geass", "Code:Breaker"),
+        ("Mobile Suit Gundam", "Mobile Suit Gundam Wing"),
+        ("Gundam Seed", "Gundam Wing"),
+        ("Persona 4", "Persona 5"),
+        ("Digimon Adventure", "Digimon Tamers"),
+        ("Digimon Adventure", "Digimon Frontier"),
+        ("Precure", "Heartcatch Precure"),
+        // Share exactly one common word — must never carry a match.
+        ("Attack on Titan", "Attack No. 1"),
+        ("One Piece", "One Punch Man"),
+        ("One Piece", "One Room"),
+        ("Black Clover", "Black Lagoon"),
+        ("Black Butler", "Black Clover"),
+        ("Fire Force", "Fairy Tail"),
+        ("Blue Lock", "Blue Exorcist"),
+        ("Blue Period", "Blue Lock"),
+        ("Dragon Ball", "Dragon Quest"),
+        ("Sword Art Online", "Sword of the Stranger"),
+        ("Tokyo Ghoul", "Tokyo Revengers"),
+        ("Tokyo Ghoul", "Tokyo Mew Mew"),
+        ("Monster", "Monster Musume"),
+        ("Bakemonogatari", "Nisemonogatari"),
+        ("Golden Kamuy", "Golden Boy"),
+        ("Hell's Paradise", "Hell Girl"),
+        ("The Seven Deadly Sins", "The Ancient Magus' Bride"),
+        // Completely unrelated titles.
+        ("Naruto", "Bleach"),
+        ("Death Note", "Code Geass"),
+        ("Cowboy Bebop", "Samurai Champloo"),
+        ("Spy x Family", "Sky Wizards Academy"),
+        ("Chainsaw Man", "Chained Soldier"),
+        ("Jujutsu Kaisen", "Jubei-chan"),
+        ("Demon Slayer", "Demon King Daimao"),
+        ("Made in Abyss", "Maid Sama"),
+        ("High School DxD", "High School of the Dead"),
+        ("Boku no Hero Academia", "Boku no Pico"),
+        ("Gundam Seed", "Gundam Seed Destiny"),
+    ];
+
+    #[test]
+    fn corpus_recall_same_show_variants_match() {
+        let misses: Vec<_> = SHOULD_MATCH
+            .iter()
+            .filter(|(a, b)| !same_show(a, b))
+            .collect();
+        assert!(
+            misses.is_empty(),
+            "these same-show pairs failed to match (recall gap): {misses:#?}"
+        );
+    }
+
+    #[test]
+    fn corpus_safety_distinct_works_do_not_match() {
+        let false_merges: Vec<_> = SHOULD_NOT_MATCH
+            .iter()
+            .filter(|(a, b)| same_show(a, b))
+            .collect();
+        assert!(
+            false_merges.is_empty(),
+            "these DISTINCT works were wrongly merged (unsafe false positives): {false_merges:#?}"
+        );
+    }
+
+    #[test]
+    fn corpus_is_large_and_symmetric() {
+        // The user asked for a 100+ title check; keep it honest.
+        assert!(
+            SHOULD_MATCH.len() + SHOULD_NOT_MATCH.len() >= 100,
+            "corpus shrank below 100 pairs"
+        );
+        // Matching must not depend on argument order.
+        for (a, b) in SHOULD_MATCH.iter().chain(SHOULD_NOT_MATCH) {
+            assert_eq!(same_show(a, b), same_show(b, a), "asymmetric verdict for ({a:?}, {b:?})");
+        }
+    }
+
+    #[test]
+    fn distinct_extension_guard_is_targeted() {
+        // Fires: a distinguishing tail (bare number or a subtitle word).
+        assert!(distinct_extension("steins gate", "steins gate 0"));
+        assert!(distinct_extension("digimon adventure", "digimon adventure 02"));
+        assert!(distinct_extension("mobile suit gundam", "mobile suit gundam wing"));
+        // Does not fire: a pure season index (number after a marker)…
+        assert!(!distinct_extension("spy x family", "spy x family part 2"));
+        assert!(!distinct_extension("spy x family", "spy x family season 2"));
+        // …a 4-digit year…
+        assert!(!distinct_extension("hunter x hunter", "hunter x hunter 2011"));
+        // …a Roman-numeral / worded season…
+        assert!(!distinct_extension("overlord", "overlord iv"));
+        assert!(!distinct_extension("attack on titan", "attack on titan final season"));
+        // …and not when neither is a prefix of the other.
+        assert!(!distinct_extension("fate zero", "fate stay night"));
     }
 }

@@ -94,6 +94,14 @@ export const es = {
   "settings.importProgress": "Trayendo {title} ({done}/{total})…",
   "settings.importDone": "{linked} de {total} traídas. {skipped} no encontradas en este sitio.",
   "settings.maintenanceHeading": "Mantenimiento",
+  "settings.uninstallHeading": "Desinstalar la aplicación",
+  "settings.uninstallHelp":
+    "Cierra AnimeOnTrack y abre el desinstalador de Windows. Tus datos (biblioteca, progreso) se conservan por si vuelves a instalarla.",
+  "settings.uninstallButton": "Desinstalar…",
+  "settings.uninstallConfirm":
+    "¿Seguro que quieres desinstalar AnimeOnTrack? La app se cerrará y se abrirá el desinstalador.",
+  "settings.uninstallConfirmYes": "Sí, desinstalar",
+  "settings.uninstalling": "Desinstalando…",
   "settings.language": "Idioma",
   "settings.theme": "Tema",
   "settings.themeDark": "Oscuro",

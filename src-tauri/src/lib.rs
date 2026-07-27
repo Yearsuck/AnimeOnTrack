@@ -52,6 +52,7 @@ pub fn run() {
                 swipe_served: Mutex::new(std::collections::HashMap::new()),
                 swipe_history: Mutex::new(std::collections::VecDeque::new()),
                 html_cache: Mutex::new(html_cache::HtmlCache::default()),
+                library_import_running: std::sync::atomic::AtomicBool::new(false),
             });
 
             // Opportunistic startup cloud backup: silently does nothing
@@ -123,6 +124,7 @@ pub fn run() {
             commands::backup_now,
             commands::restore_latest,
             commands::auto_backup_if_due,
+            commands::uninstall_app,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

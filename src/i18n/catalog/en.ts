@@ -83,6 +83,14 @@ export const en: Messages = {
   "settings.importProgress": "Bringing {title} ({done}/{total})…",
   "settings.importDone": "{linked} of {total} brought over. {skipped} not found on this site.",
   "settings.maintenanceHeading": "Maintenance",
+  "settings.uninstallHeading": "Uninstall the app",
+  "settings.uninstallHelp":
+    "Closes AnimeOnTrack and opens the Windows uninstaller. Your data (library, progress) is kept in case you reinstall.",
+  "settings.uninstallButton": "Uninstall…",
+  "settings.uninstallConfirm":
+    "Are you sure you want to uninstall AnimeOnTrack? The app will close and the uninstaller will open.",
+  "settings.uninstallConfirmYes": "Yes, uninstall",
+  "settings.uninstalling": "Uninstalling…",
   "settings.language": "Language",
   "settings.theme": "Theme",
   "settings.themeDark": "Dark",
