@@ -146,7 +146,7 @@ export const en: Messages = {
   "library.studioAll": "All",
 
   "seriesDetail.unfollow": "Unfollow",
-  "seriesDetail.openPage": "Open series page ↗",
+  "seriesDetail.openPage": "View on AniList ↗",
   "seriesDetail.seenCount": "{seen} / {total} watched",
   "seriesDetail.jumpToCurrent": "⇒ Jump to current episode",
   "seriesDetail.linking": "Searching the site…",

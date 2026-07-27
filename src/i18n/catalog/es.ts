@@ -159,7 +159,7 @@ export const es = {
 
   // SeriesDetail.tsx
   "seriesDetail.unfollow": "Dejar de seguir",
-  "seriesDetail.openPage": "Abrir página de la serie ↗",
+  "seriesDetail.openPage": "Ver en AniList ↗",
   "seriesDetail.seenCount": "{seen} / {total} vistos",
   "seriesDetail.jumpToCurrent": "⇒ Ir al episodio actual",
   "seriesDetail.linking": "Buscando en la web…",

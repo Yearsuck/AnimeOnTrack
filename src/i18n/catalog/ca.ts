@@ -155,7 +155,7 @@ export const ca: Messages = {
 
   // SeriesDetail.tsx
   "seriesDetail.unfollow": "Deixa de seguir",
-  "seriesDetail.openPage": "Obre la pàgina de la sèrie ↗",
+  "seriesDetail.openPage": "Veure a AniList ↗",
   "seriesDetail.seenCount": "{seen} / {total} vistos",
   "seriesDetail.jumpToCurrent": "⇒ Ves a l'episodi actual",
   "seriesDetail.linking": "Cercant al web…",

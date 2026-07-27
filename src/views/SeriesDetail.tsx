@@ -148,14 +148,13 @@ export function SeriesDetail({
         <div className="detail-main">
           <h2 className="page-title detail-title">{series.title}</h2>
           <a
-            href={series.url}
+            // The "open page" link points at AniList — the reliable source of
+            // truth for anime info. The pirate site only supplies episodes (the
+            // play buttons below), so it's the fallback only when this show
+            // isn't linked to the catalog.
+            href={catalogInfo?.url ?? series.url}
             target="_blank"
             rel="noreferrer"
-            onClick={() => {
-              // Middle-click/ctrl-click already opens series.url itself via
-              // the href; this only adds the AniList tab alongside it.
-              if (catalogInfo?.url) window.open(catalogInfo.url, "_blank", "noreferrer");
-            }}
           >
             {t("seriesDetail.openPage")}
           </a>
