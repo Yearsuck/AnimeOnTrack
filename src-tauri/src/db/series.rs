@@ -189,6 +189,50 @@ impl Db {
         Ok(())
     }
 
+    /// Follow/unfollow a show **canonically** — across every site that has it.
+    /// Following is an AniList-level fact, not a per-site one: following One
+    /// Piece on TioAnime marks the AnimeYT/AnimeFLV rows followed too, so your
+    /// "seguidos" are identical whichever site is active (only the *pending
+    /// episodes* differ, since those come from the active site). Members are the
+    /// rows sharing this one's canonical identity — same `anilist_id`, or (for
+    /// rows without one) the same normalized title. Returns rows changed.
+    pub fn set_followed_canonical(&self, series_id: i64, followed: bool) -> Result<usize> {
+        let (anilist_id, title): (Option<i64>, String) = self.conn.query_row(
+            "SELECT anilist_id, title FROM series WHERE id=?1",
+            [series_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        let f = followed as i64;
+        if let Some(aid) = anilist_id {
+            // Fast path: everything sharing the AniList id is the same show.
+            let n = self
+                .conn
+                .execute("UPDATE series SET followed=?1 WHERE anilist_id=?2", (f, aid))?;
+            return Ok(n);
+        }
+        // No AniList id: match by normalized title (computed in Rust — SQL can't
+        // run `normalize_title`). Only rows that are *also* AniList-less are
+        // candidates; a row with an id belongs to a different canonical bucket.
+        let target = crate::matching::normalize_title(&title);
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, title FROM series WHERE anilist_id IS NULL")?;
+        let ids: Vec<i64> = stmt
+            .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .into_iter()
+            .filter(|(_, t)| crate::matching::normalize_title(t) == target)
+            .map(|(id, _)| id)
+            .collect();
+        let mut changed = 0;
+        for id in ids {
+            changed += self
+                .conn
+                .execute("UPDATE series SET followed=?1 WHERE id=?2", (f, id))?;
+        }
+        Ok(changed)
+    }
+
     /// Every followed series on a source OTHER than `exclude_source_id`, with
     /// its title and the highest *seen* episode number (0 when nothing's been
     /// watched). Non-numeric / recap episode numbers never inflate the

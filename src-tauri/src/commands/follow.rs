@@ -43,7 +43,10 @@ pub fn set_followed(
     followed: bool,
 ) -> Result<(), String> {
     let db = state.db.lock().unwrap();
-    db.set_followed(series_id, followed).map_err(|e| e.to_string())
+    // Canonical: following is an AniList-level fact, applied across every site
+    // that has the show, so "seguidos" stay identical when you switch sites.
+    db.set_followed_canonical(series_id, followed).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// Move a discarded row back to 'want'. If it never had its detail page
