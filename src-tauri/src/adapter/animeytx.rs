@@ -61,6 +61,21 @@ impl SiteAdapter for AnimeytxAdapter {
         format!("{}/anime-en-emision/", base_url.trim_end_matches('/'))
     }
 
+    /// DooPlay paginates its archive pages as `/anime-en-emision/page/N/`
+    /// (page 1 is the bare path). The scan walks pages until one comes back
+    /// empty, so an airing list longer than one page is captured in full
+    /// instead of truncated at the first ~page. Safe if the theme happens not
+    /// to paginate: page 2 then re-serves page 1 and the scan stops on the
+    /// "no new series" guard.
+    fn airing_page_url(&self, base_url: &str, page: u32) -> Option<String> {
+        let base = base_url.trim_end_matches('/');
+        Some(if page <= 1 {
+            format!("{base}/anime-en-emision/")
+        } else {
+            format!("{base}/anime-en-emision/page/{page}/")
+        })
+    }
+
     fn parse_airing(&self, html: &str) -> Result<Vec<Series>> {
         let doc = Html::parse_document(html);
         let card_sel = Selector::parse(AIRING_CARD).unwrap();

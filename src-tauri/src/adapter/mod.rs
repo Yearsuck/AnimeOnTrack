@@ -52,6 +52,16 @@ pub fn adapter_for(site_id: &str) -> Option<Box<dyn SiteAdapter>> {
 pub trait SiteAdapter: Send + Sync {
     /// Absolute URL of the "currently airing" listing.
     fn airing_url(&self, base_url: &str) -> String;
+    /// Absolute URL of page `page` (1-based) of the airing listing, or `None`
+    /// when the site has no such page. The default is a **single page**: page 1
+    /// is `airing_url`, and there is no page 2 — correct for sites whose airing
+    /// listing fits one page. Sites whose airing directory paginates (e.g.
+    /// TioAnime's `?p=N`) override this so the scan walks every page instead of
+    /// only the first; `scan_airing` stops at the first `None` or first empty
+    /// page. See `parse_airing` for how each page's HTML is parsed.
+    fn airing_page_url(&self, base_url: &str, page: u32) -> Option<String> {
+        (page <= 1).then(|| self.airing_url(base_url))
+    }
     /// Parse the airing-list HTML into series (id/followed unset -> 0/false).
     fn parse_airing(&self, html: &str) -> Result<Vec<Series>>;
     /// Parse a series page HTML into its episodes (id/series_id/seen unset).

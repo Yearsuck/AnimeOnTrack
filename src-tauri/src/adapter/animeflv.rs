@@ -102,6 +102,19 @@ impl SiteAdapter for AnimeflvAdapter {
         format!("{}/browse?status[]=1", base_url.trim_end_matches('/'))
     }
 
+    /// AnimeFLV's `/browse` results paginate with `&page=N` (page 1 is the bare
+    /// query). The airing set spans several pages, so the scan walks them until
+    /// one is empty; a wrong guess degrades to single-page via the scan's
+    /// "no new series" stop.
+    fn airing_page_url(&self, base_url: &str, page: u32) -> Option<String> {
+        let base = base_url.trim_end_matches('/');
+        Some(if page <= 1 {
+            format!("{base}/browse?status[]=1")
+        } else {
+            format!("{base}/browse?status[]=1&page={page}")
+        })
+    }
+
     fn parse_airing(&self, html: &str) -> Result<Vec<Series>> {
         let doc = Html::parse_document(html);
         let card_sel = Selector::parse(CARD).unwrap();

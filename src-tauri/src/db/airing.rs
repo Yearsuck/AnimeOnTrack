@@ -67,7 +67,7 @@ impl Db {
                     s.next_episode_at, s.site_episode_count,
                     COUNT(*) OVER (PARTITION BY s.id) AS remaining
              FROM episodes e JOIN series s ON s.id = e.series_id
-             WHERE e.seen=0 AND s.followed=1 AND s.source_id=?1
+             WHERE e.seen=0 AND s.followed=1 AND s.watched_externally=0 AND s.source_id=?1
              ORDER BY remaining {dir}, s.title, e.added_at DESC"
         );
         let mut stmt = self.conn.prepare(&sql)?;

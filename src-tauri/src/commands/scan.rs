@@ -137,10 +137,48 @@ async fn scan_airing_via_mirrors(
     site_id: &str,
 ) -> Result<Vec<Series>, String> {
     emit_refresh_progress(app, 0, 1, "Escaneando listado de estrenos");
-    // airing_url() just appends a fixed path; reuse it against an empty base to get that path alone.
-    let path = a.airing_url("").to_string();
-    let (_scraped, series, working_mirror) =
-        scrape_via_mirrors(app, &mirrors, &path, false, |scraped| a.parse_airing(&scraped.html)).await?;
+    // Walk every page of the airing listing, not just the first. Some sites
+    // paginate their "en emisión" directory (TioAnime: ~5 pages of 20), so a
+    // single-page scan silently dropped every followed show past page 1 from
+    // the airing grid. Page 1 must succeed (real content) and picks the working
+    // mirror; later pages are fetched from that mirror and an empty/failed page
+    // is the natural end of pagination, not a scan failure. `airing_page_url`'s
+    // default is a single page, so non-paginating sites behave exactly as before.
+    const MAX_AIRING_PAGES: u32 = 25;
+    let page1_path = a.airing_page_url("", 1).unwrap_or_else(|| a.airing_url(""));
+    let (_scraped, mut series, working_mirror) =
+        scrape_via_mirrors(app, &mirrors, &page1_path, false, |scraped| a.parse_airing(&scraped.html)).await?;
+    let mut seen_slugs: std::collections::HashSet<String> =
+        series.iter().map(|s| s.slug.clone()).collect();
+    let page_mirrors = vec![working_mirror.clone()];
+    for page in 2..=MAX_AIRING_PAGES {
+        let Some(path) = a.airing_page_url("", page) else { break };
+        emit_refresh_progress(app, 0, 1, &format!("Escaneando estrenos (página {page})"));
+        // Wrap the parse in a one-element Vec so scrape_via_mirrors doesn't read
+        // an empty page as a mirror failure (same trick as search_site): an
+        // empty page is the end of pagination, handled right below.
+        let fetched = scrape_via_mirrors(app, &page_mirrors, &path, false, |scraped| {
+            a.parse_airing(&scraped.html).map(|v| vec![v])
+        })
+        .await;
+        let Ok((_s, mut pages, _m)) = fetched else { break };
+        let Some(page_series) = pages.pop() else { break };
+        if page_series.is_empty() {
+            break;
+        }
+        let mut added = 0;
+        for s in page_series {
+            if seen_slugs.insert(s.slug.clone()) {
+                series.push(s);
+                added += 1;
+            }
+        }
+        // A page with no *new* series (a site that clamps `p` to the last page
+        // and re-serves it) also ends the walk — avoids looping to the cap.
+        if added == 0 {
+            break;
+        }
+    }
     emit_refresh_progress(app, 1, 1, "Listado completo");
     // Cover images are intentionally NOT fetched here: doing it for every
     // series on the airing list (~150 at once) reads as scraping abuse to
@@ -177,6 +215,10 @@ async fn scan_airing_via_mirrors(
             db.carry_follow(upserted_ids[idx], watermark).map_err(|e| e.to_string())?;
         }
     }
+    // Keep completion consistent across sites right after a switch/scan: a
+    // show completed elsewhere shouldn't resurface as unwatched-pending here.
+    db.reconcile_completion_across_sites().map_err(|e| e.to_string())?;
+
     *state.source_id.lock().unwrap() = Some(src);
     let airing = db.list_airing(src).map_err(|e| e.to_string())?;
     drop(db);

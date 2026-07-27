@@ -346,21 +346,31 @@ impl Db {
         })
     }
 
-    /// Followed OR watched-externally series with their episode counts
-    /// (total, seen), the most recent episode's `added_at`, and (via
-    /// `next_unseen_episode`) the lowest-numbered unseen episode plus
-    /// `last_watched_at`, for the library view. Series with zero scraped
-    /// episodes still appear (`total=0`, `next_episode=None`) — status
-    /// derivation on the frontend treats that as "plan", never dividing by
-    /// zero, UNLESS `watched_externally=1` (a catalog "Ya lo vi" swipe never
-    /// scrapes episodes), in which case the frontend classifies it as
-    /// completed instead. `followed=1 AND watched_externally=1` rows are not
-    /// duplicated — `GROUP BY s.id` collapses them to one row regardless of
-    /// which condition matched.
-    pub fn list_library(&self, source_id: i64) -> Result<Vec<crate::models::LibraryItem>> {
+    /// The **site-agnostic** library: every followed or watched-externally show
+    /// across *all* sites, collapsed to one entry per canonical identity
+    /// (`anilist_id`, else normalized title — see
+    /// docs/cross-site-library-investigation.md, option C/D). This is why the
+    /// Biblioteca no longer empties out when you switch sites: it shows your
+    /// whole library regardless of the active site, and the active site only
+    /// decides which member row is the clickable/scrapeable one.
+    ///
+    /// `active_source_id` is a *preference*, not a filter: when a canonical show
+    /// exists on several sites the member on the active site is chosen as the
+    /// representative (so opening an episode targets the current site), else the
+    /// most-scraped member. Progress (total/seen/last-watched) is unioned across
+    /// members so switching sites never loses your place. Series with zero
+    /// scraped episodes still appear (`total=0`); `watched_externally` rows are
+    /// classified "completed" on the frontend rather than "plan".
+    pub fn list_library(&self, active_source_id: i64) -> Result<Vec<crate::models::LibraryItem>> {
+        // Per-member row across every site (no source filter). anilist_id and
+        // source_id are carried alongside the Series so we can group canonically
+        // and pick the active-site representative. cover falls back to the
+        // catalog poster when the site row has none.
         let mut stmt = self.conn.prepare(
-            "SELECT s.id, s.slug, s.title, s.url, s.cover_url, s.is_airing, s.followed,
-                    s.next_episode_at, s.site_episode_count, s.watched_externally, s.kind,
+            "SELECT s.id, s.source_id, s.anilist_id, s.slug, s.title, s.url,
+                    COALESCE(s.cover_url, c.cover_url) AS cover_url,
+                    s.is_airing, s.followed, s.next_episode_at, s.site_episode_count,
+                    s.watched_externally, s.kind,
                     COUNT(e.id) AS total,
                     SUM(CASE WHEN e.seen=1 THEN 1 ELSE 0 END) AS seen,
                     MAX(e.added_at) AS last_added,
@@ -369,31 +379,84 @@ impl Db {
              FROM series s
              LEFT JOIN episodes e ON e.series_id = s.id
              LEFT JOIN anilist_catalog c ON c.id = s.anilist_id
-             WHERE s.source_id=?1 AND (s.followed=1 OR s.watched_externally=1)
-             GROUP BY s.id
-             ORDER BY s.title",
+             WHERE s.followed=1 OR s.watched_externally=1
+             GROUP BY s.id",
         )?;
-        let rows = stmt
-            .query_map([source_id], |r| {
-                let series = Self::row_to_series(r)?;
-                Ok((
-                    series,
-                    r.get::<_, i64>("watched_externally")? != 0,
-                    r.get::<_, Option<String>>("kind")?,
-                    r.get::<_, i64>("total")?,
-                    r.get::<_, Option<i64>>("seen")?.unwrap_or(0),
-                    r.get::<_, Option<String>>("last_added")?,
-                    r.get::<_, Option<String>>("last_watched_at")?,
-                    r.get::<_, Option<String>>("studio")?,
-                ))
+        struct Member {
+            source_id: i64,
+            anilist_id: Option<i64>,
+            series: crate::models::Series,
+            watched_externally: bool,
+            kind: Option<String>,
+            total: i64,
+            seen: i64,
+            last_added: Option<String>,
+            last_watched_at: Option<String>,
+            studio: Option<String>,
+        }
+        let members = stmt
+            .query_map([], |r| {
+                Ok(Member {
+                    source_id: r.get::<_, i64>("source_id")?,
+                    anilist_id: r.get::<_, Option<i64>>("anilist_id")?,
+                    series: Self::row_to_series(r)?,
+                    watched_externally: r.get::<_, i64>("watched_externally")? != 0,
+                    kind: r.get::<_, Option<String>>("kind")?,
+                    total: r.get::<_, i64>("total")?,
+                    seen: r.get::<_, Option<i64>>("seen")?.unwrap_or(0),
+                    last_added: r.get::<_, Option<String>>("last_added")?,
+                    last_watched_at: r.get::<_, Option<String>>("last_watched_at")?,
+                    studio: r.get::<_, Option<String>>("studio")?,
+                })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
 
-        // Bulk-fetch genres for every series in this result set in one extra
-        // statement (not one query per series — see the library-filters
-        // design doc's N+1 warning). `rusqlite` has no native array-bind, so
-        // the IN(...) list is built from `?N` placeholders.
-        let ids: Vec<i64> = rows.iter().map(|(series, ..)| series.id).collect();
+        // Group members by canonical identity, preserving first-seen order.
+        let mut order: Vec<String> = Vec::new();
+        let mut groups: std::collections::HashMap<String, Vec<Member>> = std::collections::HashMap::new();
+        for m in members {
+            let key = super::library::canon_key(m.anilist_id, &m.series.title);
+            if !groups.contains_key(&key) {
+                order.push(key.clone());
+            }
+            groups.entry(key).or_default().push(m);
+        }
+
+        // Pick each group's representative: prefer the active-site member, then
+        // the most-scraped, then one with a cover, then stable by id. Progress
+        // fields are unioned across the group.
+        struct Rep {
+            member: Member,
+            total_episodes: i64,
+            seen_episodes: i64,
+            watched_externally: bool,
+            last_added: Option<String>,
+            last_watched_at: Option<String>,
+        }
+        let mut reps: Vec<Rep> = Vec::new();
+        for key in &order {
+            let mut group = groups.remove(key).unwrap();
+            let total_episodes = group.iter().map(|m| m.total).max().unwrap_or(0);
+            let seen_episodes = group.iter().map(|m| m.seen).max().unwrap_or(0);
+            let watched_externally = group.iter().any(|m| m.watched_externally);
+            let last_added = group.iter().filter_map(|m| m.last_added.clone()).max();
+            let last_watched_at = group.iter().filter_map(|m| m.last_watched_at.clone()).max();
+            group.sort_by(|a, b| {
+                let a_active = (a.source_id == active_source_id) as u8;
+                let b_active = (b.source_id == active_source_id) as u8;
+                b_active
+                    .cmp(&a_active)
+                    .then(b.total.cmp(&a.total))
+                    .then((b.series.cover_url.is_some()).cmp(&(a.series.cover_url.is_some())))
+                    .then(a.series.id.cmp(&b.series.id))
+            });
+            let member = group.into_iter().next().unwrap();
+            reps.push(Rep { member, total_episodes, seen_episodes, watched_externally, last_added, last_watched_at });
+        }
+
+        // Bulk-fetch genres for the representative rows only (one statement, not
+        // an N+1 per-series query — see the library-filters design doc).
+        let ids: Vec<i64> = reps.iter().map(|r| r.member.series.id).collect();
         let mut genres_by_series: std::collections::HashMap<i64, Vec<String>> =
             std::collections::HashMap::new();
         if !ids.is_empty() {
@@ -405,32 +468,31 @@ impl Db {
             let mut gstmt = self.conn.prepare(&sql)?;
             let params = rusqlite::params_from_iter(ids.iter());
             let grows = gstmt
-                .query_map(params, |r| {
-                    Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
-                })?
+                .query_map(params, |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             for (series_id, genre) in grows {
                 genres_by_series.entry(series_id).or_default().push(genre);
             }
         }
 
-        let mut out = Vec::with_capacity(rows.len());
-        for (series, watched_externally, kind, total_episodes, seen_episodes, last_added, last_watched_at, studio) in rows {
-            let next_episode = self.next_unseen_episode(series.id)?;
-            let genres = genres_by_series.remove(&series.id).unwrap_or_default();
+        let mut out = Vec::with_capacity(reps.len());
+        for r in reps {
+            let next_episode = self.next_unseen_episode(r.member.series.id)?;
+            let genres = genres_by_series.remove(&r.member.series.id).unwrap_or_default();
             out.push(crate::models::LibraryItem {
-                series,
-                total_episodes,
-                seen_episodes,
-                last_added,
+                series: r.member.series,
+                total_episodes: r.total_episodes,
+                seen_episodes: r.seen_episodes,
+                last_added: r.last_added,
                 next_episode,
-                last_watched_at,
-                watched_externally,
-                kind,
+                last_watched_at: r.last_watched_at,
+                watched_externally: r.watched_externally,
+                kind: r.member.kind,
                 genres,
-                studio,
+                studio: r.member.studio,
             });
         }
+        out.sort_by_key(|item| item.series.title.to_lowercase());
         Ok(out)
     }
 

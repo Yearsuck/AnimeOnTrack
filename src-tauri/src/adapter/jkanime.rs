@@ -169,6 +169,19 @@ impl SiteAdapter for JkanimeAdapter {
         format!("{}/directorio/?estado=emision", base_url.trim_end_matches('/'))
     }
 
+    /// JKanime's directorio carries the page in the path: `/directorio/N/?...`
+    /// (page 1 is the bare `/directorio/?...`). The scan walks pages until one
+    /// is empty; a wrong guess degrades to single-page via the "no new series"
+    /// stop.
+    fn airing_page_url(&self, base_url: &str, page: u32) -> Option<String> {
+        let base = base_url.trim_end_matches('/');
+        Some(if page <= 1 {
+            format!("{base}/directorio/?estado=emision")
+        } else {
+            format!("{base}/directorio/{page}/?estado=emision")
+        })
+    }
+
     fn parse_airing(&self, html: &str) -> Result<Vec<Series>> {
         let doc = Html::parse_document(html);
         let card_sel = Selector::parse(CARD).unwrap();
