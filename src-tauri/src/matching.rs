@@ -119,11 +119,33 @@ pub struct CatalogTitleRow {
 /// the site title (see `lookup`), each of which is still an exact match.
 pub struct CatalogIndex {
     by_normalized_title: HashMap<String, (i64, i64)>,
+    /// Parallel arrays for the fuzzy fallback: every catalog title's normalized
+    /// form with its `(id, popularity)`. Indexed by position.
+    fuzzy_titles: Vec<(String, i64, i64)>,
+    /// Inverted token -> positions in `fuzzy_titles`, so a fuzzy lookup only
+    /// scores catalog titles that share a real word with the query instead of
+    /// all ~22k of them.
+    token_index: HashMap<String, Vec<u32>>,
 }
+
+/// Minimum score for the fuzzy catalog fallback to *auto-link* a series.
+/// Stricter than `MATCH_THRESHOLD` (which scores a handful of candidates the
+/// user just searched): here it runs unattended over every unlinked row, and a
+/// wrong automatic link is worse than none. 0.84 clears the 0.9 season-suffix
+/// bonus ("…2nd Season" vs "…Temporada 2") and near-exact romaji/English
+/// variants, while rejecting loose partial overlaps.
+const FUZZY_LINK_THRESHOLD: f64 = 0.84;
+
+/// Tokens shorter than this are skipped in the token index — anime romaji is
+/// full of particles ("no", "wa", "de", "ni") that would bloat postings and
+/// match everything. Distinctive words are longer.
+const MIN_INDEX_TOKEN_LEN: usize = 4;
 
 impl CatalogIndex {
     pub fn build(rows: &[CatalogTitleRow]) -> Self {
         let mut by_normalized_title: HashMap<String, (i64, i64)> = HashMap::new();
+        let mut fuzzy_titles: Vec<(String, i64, i64)> = Vec::new();
+        let mut token_index: HashMap<String, Vec<u32>> = HashMap::new();
         for row in rows {
             for title in &row.titles {
                 let key = normalize_title(title);
@@ -131,7 +153,7 @@ impl CatalogIndex {
                     continue;
                 }
                 by_normalized_title
-                    .entry(key)
+                    .entry(key.clone())
                     .and_modify(|existing| {
                         // Higher popularity wins; equal popularity resolves to
                         // the lower id so a run is reproducible regardless of
@@ -143,9 +165,50 @@ impl CatalogIndex {
                         }
                     })
                     .or_insert((row.id, row.popularity));
+
+                let pos = fuzzy_titles.len() as u32;
+                for tok in key.split_whitespace().filter(|t| t.len() >= MIN_INDEX_TOKEN_LEN) {
+                    let postings = token_index.entry(tok.to_string()).or_default();
+                    if postings.last() != Some(&pos) {
+                        postings.push(pos);
+                    }
+                }
+                fuzzy_titles.push((key, row.id, row.popularity));
             }
         }
-        Self { by_normalized_title }
+        Self { by_normalized_title, fuzzy_titles, token_index }
+    }
+
+    /// Best fuzzy catalog id for any of `queries`, or `None` when nothing clears
+    /// `FUZZY_LINK_THRESHOLD`. Only catalog titles sharing a ≥4-char word with
+    /// the query are scored (via `token_index`), so this stays cheap even over
+    /// the whole catalog. Ties break toward the more popular row — remakes and
+    /// shorts reuse a show's words, and the popular entry is the one meant.
+    pub fn fuzzy_lookup(&self, queries: &[&str]) -> Option<i64> {
+        let mut best: Option<(f64, i64, i64)> = None; // (score, popularity, id)
+        for q in queries {
+            let qn = normalize_title(q);
+            if qn.is_empty() {
+                continue;
+            }
+            // Candidate positions: union of postings for the query's real words.
+            let mut seen: HashSet<u32> = HashSet::new();
+            for tok in qn.split_whitespace().filter(|t| t.len() >= MIN_INDEX_TOKEN_LEN) {
+                if let Some(postings) = self.token_index.get(tok) {
+                    seen.extend(postings.iter().copied());
+                }
+            }
+            for pos in seen {
+                let (cand_norm, id, pop) = &self.fuzzy_titles[pos as usize];
+                let s = score(&qn, cand_norm);
+                if s >= FUZZY_LINK_THRESHOLD
+                    && best.as_ref().is_none_or(|(bs, bpop, _)| s > *bs || (s == *bs && pop > bpop))
+                {
+                    best = Some((s, *pop, *id));
+                }
+            }
+        }
+        best.map(|(_, _, id)| id)
     }
 
     /// First `candidates` entry with an exact normalized hit, so callers pass
@@ -290,6 +353,17 @@ fn same_franchise(a: &str, b: &str) -> bool {
         return false;
     }
     ba == franchise_base(b)
+}
+
+/// A key for deduping *unlinked* (no `anilist_id`) rows of the same show across
+/// sites in the airing/library unions. Normalizes, strips trailing season/part
+/// markers (so "…2nd Season" and "…Temporada 2" collapse), then removes all
+/// whitespace (so romanization spacing differences — "Yarikomi-zuki" vs
+/// "Yarikomizuki", "Dai Dai Dai" vs "Daidaidai" — collapse too). Two rows with
+/// the same key are treated as the same show. Empty only for a title that
+/// normalizes to nothing.
+pub fn franchise_dedup_key(title: &str) -> String {
+    franchise_base(&normalize_title(title)).split_whitespace().collect()
 }
 
 /// One title is a strict token-prefix of the other, and the extra tail is a
@@ -517,6 +591,46 @@ mod tests {
         assert_eq!(index.lookup(&["Totally Different Show"]), None);
         // A near-miss is still a miss — this index never fuzzy-matches.
         assert_eq!(index.lookup(&["One Piece Film"]), None);
+    }
+
+    #[test]
+    fn fuzzy_lookup_links_cross_language_and_season_variants() {
+        let rows = vec![
+            catalog_row(209983, 5000, &["Hell Mode: Yarikomizuki no Gamer wa Hai Settei no Isekai de Musou suru"]),
+            catalog_row(21, 900000, &["One Piece"]),
+        ];
+        let index = CatalogIndex::build(&rows);
+        // Season-suffix variant a site adds ("Temporada 2") still resolves.
+        assert_eq!(
+            index.fuzzy_lookup(&["Hell Mode: Yarikomizuki no Gamer wa Hai Settei no Isekai de Musou suru Temporada 2"]),
+            Some(209983)
+        );
+        // A completely different show is not force-linked.
+        assert_eq!(index.fuzzy_lookup(&["Totally Unrelated Mecha Show"]), None);
+    }
+
+    #[test]
+    fn franchise_dedup_key_collapses_season_and_spacing_variants() {
+        // Season marker in two languages → same key.
+        assert_eq!(
+            franchise_dedup_key("Hell Mode: Yarikomizuki no Gamer 2nd Season"),
+            franchise_dedup_key("Hell Mode: Yarikomizuki no Gamer Temporada 2"),
+        );
+        // Romanization spacing differences → same key.
+        assert_eq!(
+            franchise_dedup_key("Kimi no Koto ga Dai Dai Daisuki"),
+            franchise_dedup_key("Kimi no Koto ga Daidaidaisuki"),
+        );
+        // A distinguishing sequel word is NOT a season marker → distinct keys.
+        assert_ne!(franchise_dedup_key("Naruto"), franchise_dedup_key("Naruto Shippuden"));
+    }
+
+    #[test]
+    fn fuzzy_lookup_does_not_link_a_mere_word_overlap() {
+        let rows = vec![catalog_row(21, 900000, &["One Piece"])];
+        let index = CatalogIndex::build(&rows);
+        // Shares the word "piece" but is a different work — must stay unlinked.
+        assert_eq!(index.fuzzy_lookup(&["A Piece of Cake at the Bakery"]), None);
     }
 
     #[test]

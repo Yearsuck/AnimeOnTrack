@@ -65,7 +65,14 @@ impl Db {
         let mut groups: std::collections::HashMap<String, Vec<AiringRow>> =
             std::collections::HashMap::new();
         for row in rows {
-            let key = super::library::canon_key(row.anilist_id, &row.series.title);
+            // Linked rows dedup by AniList id. Unlinked rows dedup by franchise
+            // key (season markers + spacing stripped) so the same show under two
+            // sites' title variants ("…2nd Season" vs "…Temporada 2") collapses
+            // to one entry even when neither is matched to the catalog.
+            let key = match row.anilist_id {
+                Some(id) => format!("al:{id}"),
+                None => format!("t:{}", crate::matching::franchise_dedup_key(&row.series.title)),
+            };
             if !groups.contains_key(&key) {
                 order.push(key.clone());
             }
@@ -76,6 +83,14 @@ impl Db {
         for key in &order {
             let group = groups.remove(key).unwrap();
             let followed_any = group.iter().any(|m| m.followed);
+            // Freshest `next_episode_at` across every member, not just the
+            // representative: a group can pair an up-to-date site with one
+            // that's stale or currently unreachable (mirror down, not
+            // rescanned recently), and the sort order must reflect whichever
+            // site actually saw a new episode most recently, not whichever
+            // happens to be active — otherwise a stale active-site member
+            // silently drags the whole show to the bottom of the list.
+            let freshest_next_episode_at = group.iter().filter_map(|m| m.series.next_episode_at).max();
             // Representative: prefer the active-site member (its episodes are the
             // ones you'll actually open), then a followed member, then stable id.
             let rep = group
@@ -93,6 +108,7 @@ impl Db {
                 .unwrap();
             let mut series = rep.series;
             series.followed = followed_any;
+            series.next_episode_at = freshest_next_episode_at;
             out.push(series);
         }
 
@@ -304,6 +320,54 @@ mod tests {
         // Representative prefers the active site (so its episodes open there).
         let op_from_b = from_b.iter().find(|s| s.title.eq_ignore_ascii_case("one piece")).unwrap();
         assert_eq!(op_from_b.id, one_b, "active-site member is the representative");
+    }
+
+    #[test]
+    fn list_airing_uses_the_freshest_next_episode_at_across_merged_members() {
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("AnimeYT", "https://a", "animeytx").unwrap();
+        let b = db.upsert_source("TioAnime", "https://b", "tioanime").unwrap();
+        let mk = |slug: &str, title: &str, next: Option<i64>| crate::models::Series {
+            id: 0, slug: slug.into(), title: title.into(), url: format!("u-{slug}"),
+            cover_url: None, is_airing: true, followed: false, next_episode_at: next, site_episode_count: None,
+        };
+        // Active site's member (a) is stale/missing next_episode_at (e.g. its
+        // mirror has been down and hasn't rescanned successfully); site b's
+        // member has fresh data. The merged entry must surface b's timestamp
+        // instead of silently falling back to a's None just because a is the
+        // representative (active-site) member — otherwise a stale site drags
+        // an otherwise-current show to the bottom of "En emisión".
+        let one_a = db.upsert_series(a, &mk("op-a", "One Piece", None)).unwrap();
+        db.set_anilist_id(one_a, 21).unwrap();
+        let one_b = db.upsert_series(b, &mk("op-b", "One Piece", Some(1_800_000_000))).unwrap();
+        db.set_anilist_id(one_b, 21).unwrap();
+
+        let airing = db.list_airing(a).unwrap();
+        assert_eq!(airing.len(), 1);
+        let entry = &airing[0];
+        assert_eq!(entry.id, one_a, "active-site member is still the representative for id/url");
+        assert_eq!(
+            entry.next_episode_at,
+            Some(1_800_000_000),
+            "but the sort-relevant timestamp is the freshest across the whole group"
+        );
+    }
+
+    #[test]
+    fn list_airing_dedups_unlinked_season_variants_across_sites() {
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("AnimeYT", "https://a", "animeytx").unwrap();
+        let b = db.upsert_source("TioAnime", "https://b", "tioanime").unwrap();
+        let mk = |slug: &str, title: &str| crate::models::Series {
+            id: 0, slug: slug.into(), title: title.into(), url: format!("u-{slug}"),
+            cover_url: None, is_airing: true, followed: false, next_episode_at: None, site_episode_count: None,
+        };
+        // Same show, NO anilist id on either, titles differ only by the season
+        // marker's language — must still collapse to one airing entry.
+        db.upsert_series(a, &mk("hm-a", "Hell Mode: Yarikomizuki no Gamer Temporada 2")).unwrap();
+        db.upsert_series(b, &mk("hm-b", "Hell Mode: Yarikomizuki no Gamer 2nd Season")).unwrap();
+        let airing = db.list_airing(a).unwrap();
+        assert_eq!(airing.len(), 1, "unlinked season variants dedup to one entry");
     }
 
     #[test]

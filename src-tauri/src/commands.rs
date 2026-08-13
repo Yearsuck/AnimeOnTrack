@@ -75,6 +75,11 @@ pub struct AppState {
     /// within the TTL. Never used for refresh()'s own fetches, whose whole
     /// point is checking for *changes*.
     pub html_cache: Mutex<crate::html_cache::HtmlCache>,
+    /// Last mirror base URL that actually worked, per site_id — see
+    /// `remember_working_mirror`/`prioritize_mirror`. In-memory session state,
+    /// never persisted: on restart every site re-probes from the top of its
+    /// configured mirror list.
+    pub sticky_mirror: Mutex<HashMap<String, String>>,
     /// Cards from a (genre, page) fetch not yet shown this session — lets
     /// discover_swipe_card serve ~10 swipes off one HTTP fetch instead of one
     /// fetch per swipe.
@@ -153,6 +158,33 @@ fn with_mirror(mirrors: Vec<String>, url: &str) -> Vec<String> {
     }
 }
 
+/// Move `sticky` to the front of `mirrors` if it's still one of the
+/// configured entries, otherwise leave the order alone (the user may have
+/// removed it from Settings since it last worked — never reintroduce a
+/// mirror that isn't configured anymore).
+fn prioritize_mirror(mirrors: &[String], sticky: &str) -> Vec<String> {
+    let Some(matched) = mirrors.iter().find(|m| m.eq_ignore_ascii_case(sticky)) else {
+        return mirrors.to_vec();
+    };
+    let mut out = vec![matched.clone()];
+    out.extend(mirrors.iter().filter(|m| !m.eq_ignore_ascii_case(sticky)).cloned());
+    out
+}
+
+/// Remember `mirror` as the last one that actually worked for the active
+/// site, so the next `scrape_via_mirrors` call tries it first instead of
+/// restarting from the top of the configured list every time. Without this,
+/// once mirror #1 goes down, every command (scan, per-series fetch, cover
+/// fetch...) keeps retrying and failing against it before falling through —
+/// wasted requests against a dead site, and no guarantee two commands in the
+/// same session land on the same live mirror. In-memory only (`AppState`,
+/// not persisted): a fresh app launch is free to re-probe from the top.
+fn remember_working_mirror(app: &AppHandle, mirror: &str) {
+    let state = app.state::<AppState>();
+    let site_id = get_active_site_id(&state);
+    state.sticky_mirror.lock().unwrap().insert(site_id, mirror.to_string());
+}
+
 /// Try `path` (e.g. "/anime-en-emision/" or "/tv/some-series/") against each
 /// mirror in order, returning the first scrape that ALSO parses to something
 /// non-empty via `parse`, along with the mirror that worked.
@@ -206,8 +238,18 @@ async fn scrape_via_mirrors_with_script<T>(
     if mirrors.is_empty() {
         return Err("no hay ninguna web configurada".into());
     }
+    let sticky = {
+        let state = app.state::<AppState>();
+        let site_id = get_active_site_id(&state);
+        let sticky = state.sticky_mirror.lock().unwrap().get(&site_id).cloned();
+        sticky
+    };
+    let ordered = match &sticky {
+        Some(m) => prioritize_mirror(mirrors, m),
+        None => mirrors.to_vec(),
+    };
     let mut last_err = String::new();
-    for mirror in mirrors {
+    for mirror in &ordered {
         let url = format!("{mirror}{path}");
         if use_cache {
             let cached = {
@@ -219,6 +261,7 @@ async fn scrape_via_mirrors_with_script<T>(
                 let scraped = ScrapeResult { html, extra: None };
                 if let Ok(items) = parse(&scraped) {
                     if !items.is_empty() {
+                        remember_working_mirror(app, mirror);
                         return Ok((scraped, items, mirror.clone()));
                     }
                 }
@@ -232,6 +275,7 @@ async fn scrape_via_mirrors_with_script<T>(
                     let state = app.state::<AppState>();
                     let mut cache = state.html_cache.lock().unwrap();
                     cache.put(&url, scraped.html.clone(), std::time::Instant::now());
+                    remember_working_mirror(app, mirror);
                     return Ok((scraped, items, mirror.clone()));
                 }
                 Ok(_) => {
@@ -336,6 +380,29 @@ mod tests {
         push_history(&mut h, 10);
         assert_eq!(h.iter().copied().collect::<Vec<i64>>(), vec![10, 20]);
         assert_eq!(h.len(), 2, "10 must appear exactly once, not twice");
+    }
+
+    #[test]
+    fn prioritize_mirror_moves_the_known_working_one_to_the_front() {
+        let mirrors = vec!["https://a.example".to_string(), "https://b.example".to_string(), "https://c.example".to_string()];
+        let got = prioritize_mirror(&mirrors, "https://c.example");
+        assert_eq!(got, vec!["https://c.example", "https://a.example", "https://b.example"]);
+    }
+
+    #[test]
+    fn prioritize_mirror_is_case_insensitive_and_does_not_duplicate() {
+        let mirrors = vec!["https://a.example".to_string(), "https://B.example".to_string()];
+        let got = prioritize_mirror(&mirrors, "https://b.example");
+        assert_eq!(got, vec!["https://B.example", "https://a.example"]);
+    }
+
+    #[test]
+    fn prioritize_mirror_leaves_order_alone_when_the_sticky_one_is_gone() {
+        // The user may have removed a previously-working mirror from Settings
+        // since it was remembered — must not reintroduce it.
+        let mirrors = vec!["https://a.example".to_string(), "https://b.example".to_string()];
+        let got = prioritize_mirror(&mirrors, "https://removed.example");
+        assert_eq!(got, mirrors);
     }
 
 }
