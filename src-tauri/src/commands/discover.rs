@@ -416,7 +416,7 @@ pub fn discover_catalog_card(
     // doc comment) still blocks a same-titled catalog entry from being
     // re-offered by the deck. Built once per call, not per genre attempt.
     let excluded_norm_titles: HashSet<String> = db
-        .engaged_series_titles(src)
+        .engaged_series_titles()
         .map_err(|e| e.to_string())?
         .iter()
         .map(|t| crate::matching::normalize_title(t))
