@@ -224,6 +224,10 @@ async fn scan_airing_via_mirrors(
     // switch/scan, not just at first-follow, or episodes watched on the
     // other site keep reappearing as pending here.
     db.sync_seen_progress_across_sites().map_err(|e| e.to_string())?;
+    // A site's own scrape never un-airs a show once scraped as airing (see
+    // sync_finished_status_from_catalog's doc comment) — AniList's synced
+    // status is the only signal that actually catches a real finish.
+    db.sync_finished_status_from_catalog().map_err(|e| e.to_string())?;
 
     *state.source_id.lock().unwrap() = Some(src);
     let airing = db.list_airing(src).map_err(|e| e.to_string())?;
@@ -527,6 +531,7 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
         // on this site fell behind progress made on another (same reason as
         // scan_airing_via_mirrors — see sync_seen_progress_across_sites).
         db.sync_seen_progress_across_sites().map_err(|e| e.to_string())?;
+        db.sync_finished_status_from_catalog().map_err(|e| e.to_string())?;
         db.list_followed(src).map_err(|e| e.to_string())?
     };
     let total_series = followed.len();

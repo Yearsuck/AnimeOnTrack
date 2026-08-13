@@ -238,6 +238,32 @@ impl Db {
         Ok(changed)
     }
 
+    /// Flip a linked series' `is_airing` off when AniList's own catalog
+    /// entry says the show has actually finished.
+    ///
+    /// Every site adapter's airing-listing parser hardcodes `is_airing:
+    /// true` on every row it returns, and nothing else in this codebase
+    /// ever sets it back to `false` — a show scraped as airing stays
+    /// "airing" in the DB forever, even long after it truly finishes and
+    /// the site itself stops listing it. This uses `anilist_catalog.status`
+    /// (already synced by the regular catalog sync) as the authoritative
+    /// signal for a linked show: only `FINISHED` is acted on.
+    /// `RELEASING`/`NOT_YET_RELEASED`/`NULL` are left alone — a site's own
+    /// live scrape remains the better "is this still airing" signal in
+    /// every other case, and an unsynced/unlinked series (`anilist_id`
+    /// `NULL`) is untouched entirely. Non-destructive: only ever flips
+    /// `is_airing` from 1 to 0, never touches followed/seen/episode state.
+    /// Returns the number of rows changed.
+    pub fn sync_finished_status_from_catalog(&self) -> Result<usize> {
+        Ok(self.conn.execute(
+            "UPDATE series SET is_airing=0
+             WHERE is_airing=1 AND anilist_id IN (
+                SELECT id FROM anilist_catalog WHERE status='FINISHED'
+             )",
+            [],
+        )?)
+    }
+
     /// Bring every followed series' seen-episode watermark up to the highest
     /// mark any of its canonical twins (same show, any site) has reached.
     ///
@@ -527,6 +553,71 @@ mod tests {
         assert_eq!(db.reconcile_completion_across_sites().unwrap(), 0);
         let eps = db.list_series_episodes(sid).unwrap();
         assert_eq!(eps.iter().filter(|e| e.seen).count(), 3, "watermark untouched");
+    }
+
+    // ---- sync_finished_status_from_catalog (2026-08-13 never-finishes bug) ----
+
+    #[test]
+    fn sync_finished_status_flips_is_airing_off_when_catalog_says_finished() {
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        let mut finished = crate::db::test_support::catalog_anime(21, "One Piece", &[]);
+        finished.status = Some("FINISHED".into());
+        db.upsert_catalog_anime(&finished, 0).unwrap();
+        let sid = db.upsert_series(a, &mk_airing("op", "One Piece", None)).unwrap();
+        db.set_anilist_id(sid, 21).unwrap();
+
+        let changed = db.sync_finished_status_from_catalog().unwrap();
+        assert_eq!(changed, 1);
+        let is_airing: bool = db.conn.query_row(
+            "SELECT is_airing FROM series WHERE id=?1", [sid], |r| r.get(0),
+        ).unwrap();
+        assert!(!is_airing, "AniList says finished -> is_airing flips off");
+    }
+
+    #[test]
+    fn sync_finished_status_leaves_releasing_shows_airing() {
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        let mut releasing = crate::db::test_support::catalog_anime(21, "One Piece", &[]);
+        releasing.status = Some("RELEASING".into());
+        db.upsert_catalog_anime(&releasing, 0).unwrap();
+        let sid = db.upsert_series(a, &mk_airing("op", "One Piece", None)).unwrap();
+        db.set_anilist_id(sid, 21).unwrap();
+
+        assert_eq!(db.sync_finished_status_from_catalog().unwrap(), 0);
+        let is_airing: bool = db.conn.query_row(
+            "SELECT is_airing FROM series WHERE id=?1", [sid], |r| r.get(0),
+        ).unwrap();
+        assert!(is_airing);
+    }
+
+    #[test]
+    fn sync_finished_status_leaves_unlinked_series_untouched() {
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        // No catalog data synced at all; series has no anilist_id.
+        let sid = db.upsert_series(a, &mk_airing("op", "One Piece", None)).unwrap();
+
+        assert_eq!(db.sync_finished_status_from_catalog().unwrap(), 0);
+        let is_airing: bool = db.conn.query_row(
+            "SELECT is_airing FROM series WHERE id=?1", [sid], |r| r.get(0),
+        ).unwrap();
+        assert!(is_airing);
+    }
+
+    #[test]
+    fn sync_finished_status_is_idempotent() {
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        let mut finished = crate::db::test_support::catalog_anime(21, "One Piece", &[]);
+        finished.status = Some("FINISHED".into());
+        db.upsert_catalog_anime(&finished, 0).unwrap();
+        let sid = db.upsert_series(a, &mk_airing("op", "One Piece", None)).unwrap();
+        db.set_anilist_id(sid, 21).unwrap();
+
+        assert_eq!(db.sync_finished_status_from_catalog().unwrap(), 1);
+        assert_eq!(db.sync_finished_status_from_catalog().unwrap(), 0, "second run has nothing left to flip");
     }
 
     // ---- sync_seen_progress_across_sites (2026-08-13 site-switch bug) ----
