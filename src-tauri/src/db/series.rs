@@ -1274,12 +1274,38 @@ mod tests {
         // Untouched row must NOT be engaged.
         db.upsert_series(src, &make("untouched-show", "Untouched Show")).unwrap();
 
-        let titles: std::collections::HashSet<String> = db.engaged_series_titles(src).unwrap().into_iter().collect();
+        let titles: std::collections::HashSet<String> = db.engaged_series_titles().unwrap().into_iter().collect();
         assert!(titles.contains("Followed Show"));
         assert!(titles.contains("Want Show"));
         assert!(titles.contains("Discarded Show"));
         assert!(titles.contains("Watched Show"));
         assert!(!titles.contains("Untouched Show"));
+    }
+
+    #[test]
+    fn engaged_series_titles_covers_engagement_on_any_site_not_just_one() {
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        let b = db.upsert_source("TioAnime", "b", "tioanime").unwrap();
+
+        let make = |slug: &str, title: &str| crate::models::Series {
+            id: 0, slug: slug.into(), title: title.into(),
+            url: format!("https://example.com/tv/{slug}"),
+            cover_url: None, is_airing: false, followed: false,
+            next_episode_at: None, site_episode_count: None,
+        };
+
+        // Followed on site B only — must still show up globally, so the
+        // Descubrir deck (which reads this without a site filter) never
+        // re-offers it while site A happens to be active.
+        let sid = db.upsert_series(b, &make("overlord-iv", "Overlord IV")).unwrap();
+        db.set_followed(sid, true).unwrap();
+        // Untouched on site A.
+        db.upsert_series(a, &make("other", "Other Show")).unwrap();
+
+        let titles: std::collections::HashSet<String> = db.engaged_series_titles().unwrap().into_iter().collect();
+        assert!(titles.contains("Overlord IV"), "engagement on a non-active site must still be visible");
+        assert!(!titles.contains("Other Show"));
     }
 
     #[test]

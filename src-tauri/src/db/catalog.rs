@@ -639,20 +639,22 @@ impl Db {
     }
 
     /// Normalized-title exclusion set input: titles of `series` rows the
-    /// user has already decided on for this source — followed, "want",
-    /// "discarded", or watched-externally. See
-    /// `random_catalog_anime_in_genre`'s doc comment for why this is needed
-    /// alongside (not instead of) its `anilist_id NOT IN series` clause.
-    /// Returns raw titles (not yet normalized) — callers normalize via
-    /// `matching::normalize_title` when building the exclusion set, keeping
-    /// this function a pure DB read.
-    pub fn engaged_series_titles(&self, source_id: i64) -> Result<Vec<String>> {
+    /// user has already decided on — followed, "want", "discarded", or
+    /// watched-externally, on ANY of the app's sites, not just the active
+    /// one. See `random_catalog_anime_in_genre`'s doc comment for why this
+    /// is needed alongside (not instead of) its `anilist_id NOT IN series`
+    /// clause. Same site-scoping bug class already fixed for Estadísticas
+    /// and cross-site progress sync — a title engaged with on site B must
+    /// never keep getting re-offered by the Descubrir deck just because
+    /// site A happens to be active. Returns raw titles (not yet normalized)
+    /// — callers normalize via `matching::normalize_title` when building the
+    /// exclusion set, keeping this function a pure DB read.
+    pub fn engaged_series_titles(&self) -> Result<Vec<String>> {
         let mut stmt = self.conn.prepare(
             "SELECT title FROM series
-             WHERE source_id=?1
-               AND (followed=1 OR watched_externally=1 OR backlog_status IN ('want','discarded'))",
+             WHERE followed=1 OR watched_externally=1 OR backlog_status IN ('want','discarded')",
         )?;
-        let titles = stmt.query_map([source_id], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let titles = stmt.query_map([], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(titles)
     }
 }
@@ -1030,7 +1032,7 @@ mod tests {
         // followed=1, anilist_id NULL.
 
         let excluded: std::collections::HashSet<String> =
-            db.engaged_series_titles(src).unwrap().iter().map(|t| crate::matching::normalize_title(t)).collect();
+            db.engaged_series_titles().unwrap().iter().map(|t| crate::matching::normalize_title(t)).collect();
         assert!(excluded.contains(&crate::matching::normalize_title("Overlord IV")));
 
         for _ in 0..10 {
@@ -1060,7 +1062,7 @@ mod tests {
         db.set_followed(sid, true).unwrap();
 
         let excluded: std::collections::HashSet<String> =
-            db.engaged_series_titles(src).unwrap().iter().map(|t| crate::matching::normalize_title(t)).collect();
+            db.engaged_series_titles().unwrap().iter().map(|t| crate::matching::normalize_title(t)).collect();
         assert!(db.random_catalog_anime_in_genre("Fantasy", &[], &excluded, &std::collections::HashMap::new(), &std::collections::HashMap::new(), true, false, None, None).unwrap().is_none());
     }
 
@@ -1187,7 +1189,7 @@ mod tests {
         db.set_followed(sid, true).unwrap();
 
         let excluded: std::collections::HashSet<String> =
-            db.engaged_series_titles(src).unwrap().iter().map(|t| crate::matching::normalize_title(t)).collect();
+            db.engaged_series_titles().unwrap().iter().map(|t| crate::matching::normalize_title(t)).collect();
 
         for _ in 0..10 {
             let picked = db

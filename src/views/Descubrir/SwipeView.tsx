@@ -34,6 +34,19 @@ export function SwipeView() {
   const busyRef = useRef(false);
   const queueRef = useRef<SwipeCard[]>([]);
   const fillingRef = useRef(false);
+  // Bumped by resetQueue so an in-flight fillQueue round started under the
+  // OLD filters can tell its results are stale once it resolves (see
+  // fillQueue/resetQueue below) — a save-then-refetch race that otherwise
+  // let a stale round silently refill the just-cleared queue with
+  // old-filter cards, which then kept getting served until the buffer ran
+  // out or the view remounted.
+  const fillGenerationRef = useRef(0);
+  // Set when resetQueue fires while fillingRef is already true (the guard
+  // below would otherwise make its own fillQueue() call a no-op) — tells
+  // the in-flight run's `finally` to kick off one fresh run under the new
+  // generation as soon as it exits, instead of waiting for the next
+  // popNext() to notice the queue is empty.
+  const pendingResetRef = useRef(false);
   const cardUrlRef = useRef<string | null>(null);
   // Every url decided this session (Discard/Want/Seen), so a concurrent
   // fillQueue round can never re-serve a card the user already swiped even
@@ -78,12 +91,18 @@ export function SwipeView() {
   const fillQueue = useCallback(async () => {
     if (fillingRef.current) return;
     fillingRef.current = true;
+    const myGeneration = fillGenerationRef.current;
     try {
       for (let round = 0; round < MAX_FILL_ROUNDS && queueRef.current.length < PREFETCH_TARGET; round++) {
         const need = PREFETCH_TARGET - queueRef.current.length;
         const results = await Promise.all(
           Array.from({ length: need }, () => discoverCatalogCard(discoverMode === "recommended"))
         );
+        // resetQueue fired while this round was in flight (e.g. the deck
+        // panel just saved new filters) — these results were requested
+        // before that, discard them rather than refilling the just-cleared
+        // queue with stale-filtered cards.
+        if (fillGenerationRef.current !== myGeneration) break;
         const seen = new Set(queueRef.current.map((c) => c.url));
         if (cardUrlRef.current) seen.add(cardUrlRef.current);
         decidedUrlsRef.current.forEach((url) => seen.add(url));
@@ -107,6 +126,14 @@ export function SwipeView() {
       }
     } finally {
       fillingRef.current = false;
+      // A resetQueue came in while we were running and couldn't start its
+      // own fill (the guard above made it a no-op) — run one now, under the
+      // new generation, instead of waiting for the next popNext() to notice
+      // the queue is empty.
+      if (pendingResetRef.current) {
+        pendingResetRef.current = false;
+        fillQueue();
+      }
     }
   }, [discoverMode]);
 
@@ -161,8 +188,16 @@ export function SwipeView() {
   // section now) — up to PREFETCH_TARGET stale-banned cards would otherwise
   // keep being served from the old queue.
   const resetQueue = useCallback(() => {
+    fillGenerationRef.current += 1;
     queueRef.current = [];
-    fillQueue();
+    if (fillingRef.current) {
+      // A round is already in flight — it will discard its stale results
+      // and self-heal via `pendingResetRef` in fillQueue's `finally` once it
+      // exits, rather than this call silently no-op'ing against the guard.
+      pendingResetRef.current = true;
+    } else {
+      fillQueue();
+    }
   }, [fillQueue]);
 
   // Switching Recomendado <-> Aleatorio must refresh the *upcoming* deck

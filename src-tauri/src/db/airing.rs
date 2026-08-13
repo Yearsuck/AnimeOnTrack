@@ -143,8 +143,13 @@ impl Db {
     /// episodes stay contiguous (grouped in the UI) and the *groups* come out
     /// sorted by how many pending episodes each series has — see `PendingSort`.
     /// `COUNT(*) OVER (PARTITION BY s.id)` is the per-series remaining count;
-    /// `s.title` then `e.added_at DESC` keep ordering stable within a group and
-    /// across equal-count series.
+    /// `s.title` then `CAST(e.number AS INTEGER) ASC` order each series'
+    /// episodes by episode number (the watch order), not by when they
+    /// happened to be scraped/inserted — a re-scan or backfill can insert a
+    /// later episode before an earlier one, which an insertion-order sort
+    /// would surface as "episode 10 before episode 2". `e.id ASC` is the
+    /// final tiebreak for episodes sharing a number (non-numeric titles like
+    /// "Recap" all cast to 0).
     pub fn list_pending(
         &self,
         source_id: i64,
@@ -161,7 +166,7 @@ impl Db {
                     COUNT(*) OVER (PARTITION BY s.id) AS remaining
              FROM episodes e JOIN series s ON s.id = e.series_id
              WHERE e.seen=0 AND s.followed=1 AND s.watched_externally=0 AND s.source_id=?1
-             ORDER BY remaining {dir}, s.title, e.added_at DESC"
+             ORDER BY remaining {dir}, s.title, CAST(e.number AS INTEGER) ASC, e.id ASC"
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt
@@ -288,6 +293,31 @@ mod tests {
         // Each series' episodes stay contiguous (no interleaving).
         let ids: Vec<i64> = asc.iter().map(|(s, _)| s.id).collect();
         assert_eq!(ids, vec![few, many, many, many]);
+    }
+
+    #[test]
+    fn list_pending_orders_episodes_numerically_within_a_series_not_by_insertion_order() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "https://a.example", "animeytx").unwrap();
+        let mk = |slug: &str| crate::models::Series {
+            id: 0, slug: slug.into(), title: slug.into(), url: format!("u-{slug}"),
+            cover_url: None, is_airing: true, followed: false, next_episode_at: None, site_episode_count: None,
+        };
+        let sid = db.upsert_series(src, &mk("show")).unwrap();
+        db.set_followed(sid, true).unwrap();
+        // Inserted out of numeric order — a re-scan/backfill shape. If the
+        // ordering were still keyed on insertion time (or a plain string
+        // sort), "10" would surface before "2".
+        for n in ["10", "2", "1"] {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: sid, number: n.into(), title: None,
+                url: format!("show/{n}"), released_at: None, seen: false,
+            }).unwrap();
+        }
+
+        let pending = db.list_pending(src, PendingSort::RemainingAsc).unwrap();
+        let numbers: Vec<&str> = pending.iter().map(|(_, e)| e.number.as_str()).collect();
+        assert_eq!(numbers, vec!["1", "2", "10"], "numeric order, not insertion order or string order");
     }
 
     #[test]
