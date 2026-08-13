@@ -24,12 +24,22 @@ pub struct JkanimeAdapter;
 // - Airing: `{base}/directorio/?estado=emision` — the query param, NOT the
 //   `/directorio/emision/` path segment (that's silently ignored by the
 //   site and returns the unfiltered directory, mixing in finished/movie
-//   cards). Cards: `.dirbox .card` -> `a` (wraps `.d-thumb` with the poster
-//   `img[src]`, already an absolute URL like AnimeYT's markup) + sibling
-//   `.svea .card-title` (title). hrefs are already absolute too. No
-//   countdown/episode-count badge exists on listing cards at all, so
+//   cards). Cards: `.page_directorio .card` -> `a` (wraps `.d-thumb` with the
+//   poster `img[src]`, already an absolute URL like AnimeYT's markup) +
+//   `.card-title` (title, inside the same `<a>`). hrefs are already absolute
+//   too. No countdown/episode-count badge exists on listing cards at all, so
 //   `next_episode_at`/`site_episode_count` are always `None` (same
 //   limitation as tioanime).
+//   Re-confirmed live 2026-08-13 (see docs/superpowers/specs — the pre-launch
+//   site validation): the site redesigned its directory page since the
+//   original 2026-07-22 capture. The wrapping container changed from a
+//   `.dirbox`-classed element to `.page_directorio` (each card sits in a
+//   `.dir1` item inside it); `.card`/`.card-title`/`img[src]`/the anchor's
+//   `href` — everything actually parsed — are unchanged. The `.svea` class
+//   this comment used to cite as the title's container was never the title's
+//   parent in the live markup (it's a separate "save"/bookmark button
+//   sibling of the card) — `.card-title` alone, matched anywhere inside the
+//   card, is what actually works and is what `parse_airing` already used.
 //
 // - Episode list is NOT in the series page's HTML at all — it's fetched
 //   client-side via a paginated JSON AJAX endpoint requiring a CSRF token
@@ -80,7 +90,7 @@ pub struct JkanimeAdapter;
 //   separate finished/ongoing marker beyond the directory's own `estado`
 //   filter) — the five genre-archive trait methods are left at their
 //   default (no-op) implementations, same as tioanime.
-const CARD: &str = ".dirbox .card";
+const CARD: &str = ".page_directorio .card";
 const SEARCH_ITEM: &str = ".anime__item";
 
 /// See the module doc comment above for what this does and why it exists.
