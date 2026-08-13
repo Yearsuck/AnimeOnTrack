@@ -213,7 +213,13 @@ pub fn link_series_to_catalog(state: State<'_, AppState>) -> Result<i64, String>
         // differs; otherwise this is the same query twice.
         let candidates: Vec<&str> =
             if base == title { vec![&title] } else { vec![&title, &base] };
-        if let Some(anilist_id) = index.lookup(&candidates) {
+        // Exact first; fall back to a strict fuzzy match so cross-language and
+        // season-suffix title variants ("…2nd Season" vs "…Temporada 2") still
+        // resolve to the same AniList id — otherwise the same show, unlinked on
+        // one site, becomes a second canonical entry and shows up twice in the
+        // "En emisión"/library unions.
+        let matched = index.lookup(&candidates).or_else(|| index.fuzzy_lookup(&candidates));
+        if let Some(anilist_id) = matched {
             db.set_anilist_id(series_id, anilist_id).map_err(|e| e.to_string())?;
             linked += 1;
         }

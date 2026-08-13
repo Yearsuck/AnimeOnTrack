@@ -52,6 +52,7 @@ pub fn run() {
                 swipe_served: Mutex::new(std::collections::HashMap::new()),
                 swipe_history: Mutex::new(std::collections::VecDeque::new()),
                 html_cache: Mutex::new(html_cache::HtmlCache::default()),
+                sticky_mirror: Mutex::new(std::collections::HashMap::new()),
                 library_import_running: std::sync::atomic::AtomicBool::new(false),
             });
 
