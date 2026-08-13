@@ -45,7 +45,7 @@ the box set exists.
 
 ## Supported sites
 
-Six sites ship today, each behind the same pluggable `SiteAdapter`. Switch between them in **Settings**; each keeps its **own library**, so your followed shows and progress on one site never touch another. Every site has a per-site mirror list, so when a domain goes down the app falls through to a working clone automatically.
+Six sites ship today, each behind the same pluggable `SiteAdapter`. Switch between them in **Settings** — your followed shows, seen episodes, watch progress, and backlog are one **shared, canonical** state across every site you use a show on, unified by its AniList id (or a normalized title when unlinked). Only the actual episode-playback links point at whichever site's copy you have open: switching the active site changes which URLs you click through to watch, not *which* shows you follow or how much you've watched. Every site still has a per-site mirror list, so when a domain goes down the app falls through to a working clone automatically.
 
 | Site | Default domain | Adapter id |
 |---|---|---|
@@ -83,6 +83,9 @@ Adding a seventh is one `SiteInfo` row plus a `SiteAdapter` implementation — n
 
 ## What's new
 
+- **v0.4.3** — Real per-episode progress now syncs across sites continuously. Follow the same show on two sites, watch on one, the other updates automatically — no more stale "unwatched" entries when switching sites.
+- **v0.4.2** — **Estadísticas** computed canonically across *every* site you use. Before this, Stats only reflected the active site's slice of your data (e.g. showing 0 "want to watch" when you had hundreds tracked under a different site).
+- **v0.4.1** — Scraper remembers the last working mirror per site and tries it first next time. Cross-site airing entries use the freshest "next episode" timestamp across *all* sites that have the show. Catalog linking falls back to fuzzy title match (season markers, cross-language variants), collapsing duplicate entries into one canonical "En emisión"/library row.
 - **Six sites**, up from three — JKanime, GogoAnime, and AnimeLand joined the adapter registry.
 - **Google Drive backup & restore**, configurable entirely in-app: paste a Desktop OAuth client into Settings, no rebuild. Automatic daily backups; restoring onto a new machine finds the backup by name.
 - **Stats accuracy pass.** Franchise roll-up fixes long-runners the site splits into per-arc rows (One Piece counted only one arc before), real-vs-estimated watch counts that never double-count, local-time activity buckets, and honest empty states.
