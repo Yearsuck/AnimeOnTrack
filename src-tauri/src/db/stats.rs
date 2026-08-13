@@ -289,39 +289,58 @@ impl FranchiseRollup {
     }
 }
 
+/// One canonical (cross-site) followed show, as grouped by
+/// `Db::group_followed_canonically` — the descriptive-stats counterpart to
+/// `FranchiseRollup` (which handles the numeric watch totals).
+struct CanonicalFollowed {
+    member_ids: Vec<i64>,
+    display_title: String,
+    kind: Option<String>,
+    cover_url: Option<String>,
+}
+
 impl Db {
-    pub fn get_genre_stats(&self, source_id: i64) -> Result<Vec<crate::models::GenreStat>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT g.genre, COUNT(DISTINCT g.series_id) AS cnt
-             FROM series_genres g
-             JOIN series s ON s.id = g.series_id
-             WHERE s.source_id=?1 AND s.followed=1
-             GROUP BY g.genre
-             ORDER BY cnt DESC, g.genre",
-        )?;
-        let rows = stmt
-            .query_map([source_id], |r| {
-                Ok(crate::models::GenreStat { genre: r.get(0)?, count: r.get(1)? })
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
+    /// Genre counts across every followed show, canonical across sites: a
+    /// show followed on two sites contributes its genre set once (the union
+    /// of what each site tagged it with), not twice — see
+    /// `group_followed_canonically`.
+    pub fn get_genre_stats(&self) -> Result<Vec<crate::models::GenreStat>> {
+        let groups = self.group_followed_canonically()?;
+        let mut counts: HashMap<String, i64> = HashMap::new();
+        for g in &groups {
+            let mut genres: HashSet<String> = HashSet::new();
+            for &id in &g.member_ids {
+                genres.extend(self.list_series_genres(id)?);
+            }
+            for genre in genres {
+                *counts.entry(genre).or_insert(0) += 1;
+            }
+        }
+        let mut rows: Vec<crate::models::GenreStat> = counts
+            .into_iter()
+            .map(|(genre, count)| crate::models::GenreStat { genre, count })
+            .collect();
+        rows.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.genre.cmp(&b.genre)));
         Ok(rows)
     }
 
-    /// Followed-series count per `kind` ("TV"/"OVA"/...), descending. Series
-    /// with no `kind` set are excluded.
-    pub fn get_type_stats(&self, source_id: i64) -> Result<Vec<crate::models::TypeStat>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT s.kind, COUNT(*) AS cnt
-             FROM series s
-             WHERE s.source_id=?1 AND s.followed=1 AND s.kind IS NOT NULL AND s.kind <> ''
-             GROUP BY s.kind
-             ORDER BY cnt DESC, s.kind",
-        )?;
-        let rows = stmt
-            .query_map([source_id], |r| {
-                Ok(crate::models::TypeStat { kind: r.get(0)?, count: r.get(1)? })
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
+    /// Followed-show count per `kind` ("TV"/"OVA"/...), descending, canonical
+    /// across sites (one show followed on two sites counts once, under
+    /// whichever site's `kind` is set first). Shows with no `kind` on any
+    /// member are excluded.
+    pub fn get_type_stats(&self) -> Result<Vec<crate::models::TypeStat>> {
+        let groups = self.group_followed_canonically()?;
+        let mut counts: HashMap<String, i64> = HashMap::new();
+        for g in &groups {
+            if let Some(kind) = g.kind.as_deref().filter(|k| !k.is_empty()) {
+                *counts.entry(kind.to_string()).or_insert(0) += 1;
+            }
+        }
+        let mut rows: Vec<crate::models::TypeStat> = counts
+            .into_iter()
+            .map(|(kind, count)| crate::models::TypeStat { kind, count })
+            .collect();
+        rows.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.kind.cmp(&b.kind)));
         Ok(rows)
     }
 
@@ -372,48 +391,132 @@ impl Db {
         Ok(scores)
     }
 
-    /// Followed series with their genres (aggregated) and kind, for the 3D
-    /// relationship graph. One follow-up `list_series_genres` query per
-    /// series — simplest option given that helper already exists, and the
-    /// followed-series count here is small (never bulk-scraped).
-    pub fn get_stats_graph_data(&self, source_id: i64) -> Result<Vec<crate::models::SeriesGraphNode>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, title, cover_url, kind FROM series
-             WHERE source_id=?1 AND followed=1 ORDER BY title",
-        )?;
-        let rows: Vec<(i64, String, Option<String>, Option<String>)> = stmt
-            .query_map([source_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        rows.into_iter()
-            .map(|(id, title, cover_url, kind)| {
+    /// Followed shows with their genres (unioned across sites) and kind, for
+    /// the 3D relationship graph, canonical across sites — one node per show,
+    /// not per site's `series` row (see `group_followed_canonically`). The
+    /// node's `id` is one representative member's `series.id`; it only needs
+    /// to be a stable per-node key for the graph, not a specific site's row.
+    pub fn get_stats_graph_data(&self) -> Result<Vec<crate::models::SeriesGraphNode>> {
+        let groups = self.group_followed_canonically()?;
+        let mut nodes: Vec<crate::models::SeriesGraphNode> = groups
+            .into_iter()
+            .map(|g| {
+                let mut genres: HashSet<String> = HashSet::new();
+                for &id in &g.member_ids {
+                    genres.extend(self.list_series_genres(id)?);
+                }
+                let mut genres: Vec<String> = genres.into_iter().collect();
+                genres.sort();
                 Ok(crate::models::SeriesGraphNode {
-                    id,
-                    title,
-                    cover_url,
-                    genres: self.list_series_genres(id)?,
-                    kind,
+                    id: g.member_ids[0],
+                    title: g.display_title,
+                    cover_url: g.cover_url,
+                    genres,
+                    kind: g.kind,
                 })
             })
-            .collect()
+            .collect::<Result<Vec<_>>>()?;
+        nodes.sort_by(|a, b| a.title.cmp(&b.title));
+        Ok(nodes)
+    }
+
+    /// One canonical followed show, grouped from every `series` row (any
+    /// site) sharing its `canon_key` — see `super::library::canon_key`. Used
+    /// by the descriptive stats (genre/type/graph) that need more than a
+    /// count: which `kind`, which cover, which genres. `display_title` and
+    /// `kind`/`cover_url` come from the first member encountered per group
+    /// (arbitrary but deterministic per query — good enough for display,
+    /// unlike watch totals which must never depend on row order).
+    fn group_followed_canonically(&self) -> Result<Vec<CanonicalFollowed>> {
+        struct Row {
+            id: i64,
+            anilist_id: Option<i64>,
+            title: String,
+            kind: Option<String>,
+            cover_url: Option<String>,
+        }
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, anilist_id, title, kind, cover_url FROM series WHERE followed=1")?;
+        let rows: Vec<Row> = stmt
+            .query_map([], |r| {
+                Ok(Row {
+                    id: r.get(0)?,
+                    anilist_id: r.get(1)?,
+                    title: r.get(2)?,
+                    kind: r.get(3)?,
+                    cover_url: r.get(4)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        let mut grouped: HashMap<String, CanonicalFollowed> = HashMap::new();
+        for row in rows {
+            let key = super::library::canon_key(row.anilist_id, &row.title);
+            let entry = grouped.entry(key).or_insert_with(|| CanonicalFollowed {
+                member_ids: Vec::new(),
+                display_title: row.title.clone(),
+                kind: None,
+                cover_url: None,
+            });
+            entry.member_ids.push(row.id);
+            if entry.kind.is_none() {
+                entry.kind = row.kind.clone();
+            }
+            if entry.cover_url.is_none() {
+                entry.cover_url = row.cover_url.clone();
+            }
+            if prefer_display_title(&row.title, &entry.display_title) {
+                entry.display_title = row.title;
+            }
+        }
+        Ok(grouped.into_values().collect())
+    }
+
+    /// Count of distinct `canon_key`s among rows returned by `query` (which
+    /// must select `(anilist_id, title)` in that order and take no params) —
+    /// the cross-site dedup used by the scalar watch counts in
+    /// `get_watch_summary`/`get_watch_insights`. Never reads the `library`
+    /// table (see `get_watch_summary`'s doc comment for why); always
+    /// recomputed live from `series`.
+    fn distinct_canon_count(&self, query: &str) -> Result<i64> {
+        let mut stmt = self.conn.prepare(query)?;
+        let keys: HashSet<String> = stmt
+            .query_map([], |r| {
+                let anilist_id: Option<i64> = r.get(0)?;
+                let title: String = r.get(1)?;
+                Ok(super::library::canon_key(anilist_id, &title))
+            })?
+            .collect::<rusqlite::Result<HashSet<_>>>()?;
+        Ok(keys.len() as i64)
     }
 
     /// Every franchise with watch evidence, rolled up from its member `series`
-    /// rows. One query for the whole dashboard — `get_watch_summary` and
-    /// `get_watch_insights` both build on this so they can never disagree
-    /// about what a franchise's episode/minute totals are.
-    pub(crate) fn franchise_rollups(&self, source_id: i64) -> Result<Vec<FranchiseRollup>> {
+    /// rows **across every site** (not just the active one) — a show followed
+    /// or watched on any of the 3 sites contributes its evidence here, so
+    /// switching the active site never changes the totals. One query for the
+    /// whole dashboard — `get_watch_summary` and `get_watch_insights` both
+    /// build on this so they can never disagree about what a franchise's
+    /// episode/minute totals are.
+    ///
+    /// Cross-site merging reuses the exact same `franchise_key` grouping that
+    /// already collapses one site's per-arc rows ("One Piece", "One Piece:
+    /// Wano") into one franchise — normalized-title matching also collapses
+    /// the same show scraped under near-identical titles on two different
+    /// sites, without needing `anilist_id` as the primary key (which would
+    /// regress the arc-collapsing case whenever only *some* arcs are linked).
+    pub(crate) fn franchise_rollups(&self) -> Result<Vec<FranchiseRollup>> {
         let mut stmt = self.conn.prepare(
             "SELECT s.title, s.kind, s.watched_externally,
                     (SELECT COUNT(*) FROM episodes e WHERE e.series_id=s.id AND e.seen=1) AS seen_cnt,
                     c.episodes, c.format, c.duration
              FROM series s
              LEFT JOIN anilist_catalog c ON c.id = s.anilist_id
-             WHERE s.source_id=?1
-               AND (s.watched_externally=1
-                    OR EXISTS (SELECT 1 FROM episodes e WHERE e.series_id=s.id AND e.seen=1))",
+             WHERE s.watched_externally=1
+                OR EXISTS (SELECT 1 FROM episodes e WHERE e.series_id=s.id AND e.seen=1)",
         )?;
         let rows: Vec<SeriesWatchRow> = stmt
-            .query_map([source_id], |r| {
+            .query_map([], |r| {
                 Ok(SeriesWatchRow {
                     title: r.get(0)?,
                     kind: r.get(1)?,
@@ -477,13 +580,16 @@ impl Db {
         Ok(merge_into_parent_franchises(grouped, &parent_of))
     }
 
-    /// Scalar watch totals for the stats dashboard.
-    pub fn get_watch_summary(&self, source_id: i64) -> Result<crate::models::WatchSummary> {
-        let followed_series: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM series WHERE source_id=?1 AND followed=1",
-            [source_id],
-            |r| r.get(0),
-        )?;
+    /// Scalar watch totals for the stats dashboard, **canonical across every
+    /// site**: a show followed (or wanted, or pending) on any of the 3 sites
+    /// counts once, via `canon_key` dedup — see `distinct_canon_count`. Never
+    /// reads the `library` table: it's only resynced at startup and on the
+    /// cross-site import flow, not on every follow/seen, so it would show
+    /// stale numbers mid-session. This recomputes live from `series` instead,
+    /// same as `list_airing` does for the same reason.
+    pub fn get_watch_summary(&self) -> Result<crate::models::WatchSummary> {
+        let followed_series =
+            self.distinct_canon_count("SELECT anilist_id, title FROM series WHERE followed=1")?;
         // Real seen-episode count across ALL series, followed or not — a
         // "Ya lo vi" swipe whose site-link scraped real episodes must count
         // too (see the episode/anime-counts-fix design doc). `episodes_total`
@@ -491,21 +597,18 @@ impl Db {
         // am I" denominator: followed, or with at least one real seen
         // episode — so discarded/never-touched scraped rows don't inflate it.
         let episodes_watched: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM episodes e
-             JOIN series s ON s.id = e.series_id
-             WHERE s.source_id=?1 AND e.seen=1",
-            [source_id],
+            "SELECT COUNT(*) FROM episodes e WHERE e.seen=1",
+            [],
             |r| r.get(0),
         )?;
         let episodes_total: i64 = self.conn.query_row(
             "SELECT COUNT(*) FROM episodes e
              JOIN series s ON s.id = e.series_id
-             WHERE s.source_id=?1
-               AND (s.followed=1 OR EXISTS (SELECT 1 FROM episodes x WHERE x.series_id=s.id AND x.seen=1))",
-            [source_id],
+             WHERE s.followed=1 OR EXISTS (SELECT 1 FROM episodes x WHERE x.series_id=s.id AND x.seen=1)",
+            [],
             |r| r.get(0),
         )?;
-        let rollups = self.franchise_rollups(source_id)?;
+        let rollups = self.franchise_rollups()?;
         // Episodes credited on top of `episodes_watched` from "Ya lo vi"
         // catalog estimates. Deliberately the per-franchise *remainder* (see
         // `FranchiseRollup`), not a raw sum: a franchise whose arc rows
@@ -514,22 +617,16 @@ impl Db {
         // rather than to 1291.
         let episodes_watched_external: i64 =
             rollups.iter().map(|r| r.extra_external_episodes()).sum();
-        let backlog_want: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM series WHERE source_id=?1 AND backlog_status='want'",
-            [source_id],
-            |r| r.get(0),
+        let backlog_want = self.distinct_canon_count(
+            "SELECT anilist_id, title FROM series WHERE backlog_status='want'",
         )?;
-        let airing_followed: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM series WHERE source_id=?1 AND followed=1 AND is_airing=1",
-            [source_id],
-            |r| r.get(0),
+        let airing_followed = self.distinct_canon_count(
+            "SELECT anilist_id, title FROM series WHERE followed=1 AND is_airing=1",
         )?;
-        let pending_to_watch: i64 = self.conn.query_row(
-            "SELECT COUNT(DISTINCT s.id) FROM series s
+        let pending_to_watch = self.distinct_canon_count(
+            "SELECT DISTINCT s.anilist_id, s.title FROM series s
              JOIN episodes e ON e.series_id = s.id
-             WHERE s.source_id=?1 AND s.followed=1 AND e.seen=0",
-            [source_id],
-            |r| r.get(0),
+             WHERE s.followed=1 AND e.seen=0",
         )?;
         // Distinct animes = distinct franchises with actual watch evidence —
         // watched-externally (a "Ya lo vi" swipe) OR at least one real seen
@@ -557,14 +654,14 @@ impl Db {
     /// synced catalog row that has one, falling back to `minutes_per_episode`'s
     /// format/kind-based estimate otherwise (unsynced/unlinked rows, or rows
     /// synced before `duration` existed).
-    pub fn get_watch_insights(&self, source_id: i64) -> Result<crate::models::WatchInsights> {
+    pub fn get_watch_insights(&self) -> Result<crate::models::WatchInsights> {
         // Both minute figures come off the same franchise roll-up that
         // `get_watch_summary` uses, so the two screens can never disagree.
         // "Tracked" is the minutes behind really-marked episodes; "external"
         // is only the *remainder* a "Ya lo vi" catalog estimate adds on top of
         // those, never a parallel total that would double-count the overlap
         // (see `FranchiseRollup`).
-        let rollups = self.franchise_rollups(source_id)?;
+        let rollups = self.franchise_rollups()?;
         let estimated_minutes_tracked: i64 = rollups.iter().map(|r| r.real_minutes).sum();
         let estimated_minutes_external: i64 =
             rollups.iter().map(|r| r.extra_external_minutes()).sum();
@@ -577,13 +674,13 @@ impl Db {
             rollups.iter().filter(|r| r.external_episodes > 0).count() as i64;
 
         // Counted as franchises, not raw rows, so it is comparable with
-        // `external_titles_estimated` — the site lists one row per season/arc,
-        // which would otherwise make the "X of Y estimated" ratio nonsense.
-        let mut stmt = self.conn.prepare(
-            "SELECT title FROM series WHERE source_id=?1 AND watched_externally=1",
-        )?;
+        // `external_titles_estimated` — the site lists one row per season/arc
+        // (and now, across sites, one row per site too), which would otherwise
+        // make the "X of Y estimated" ratio nonsense.
+        let mut stmt =
+            self.conn.prepare("SELECT title FROM series WHERE watched_externally=1")?;
         let external_franchises: HashSet<String> = stmt
-            .query_map([source_id], |r| r.get::<_, String>(0))?
+            .query_map([], |r| r.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<String>>>()?
             .iter()
             .map(|t| franchise_key(t))
@@ -591,43 +688,41 @@ impl Db {
         let external_titles_total = external_franchises.len() as i64;
 
         // Mean episode count (all episodes, not just seen) across followed
-        // series. NULL (no followed series at all) reads as 0.0, not a crash.
+        // series rows (every site's row counts separately — this is a rough
+        // "how long are the shows I follow" gauge, not a watch total, so
+        // cross-site duplicates skewing it slightly is an acceptable
+        // approximation). NULL (no followed series at all) reads as 0.0.
         let avg_episodes_per_series: Option<f64> = self.conn.query_row(
             "SELECT AVG(cnt) FROM (
                 SELECT s.id, COUNT(e.id) AS cnt
                 FROM series s LEFT JOIN episodes e ON e.series_id = s.id
-                WHERE s.source_id=?1 AND s.followed=1
+                WHERE s.followed=1
                 GROUP BY s.id
              )",
-            [source_id],
+            [],
             |r| r.get(0),
         )?;
         let avg_episodes_per_series = avg_episodes_per_series.unwrap_or(0.0);
 
-        let followed_airing: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM series WHERE source_id=?1 AND followed=1 AND is_airing=1",
-            [source_id],
-            |r| r.get(0),
+        // Canonical (cross-site-deduped) funnel counts — see
+        // `get_watch_summary`'s doc comment for why this never reads the
+        // `library` table. Kept consistent with `get_watch_summary`'s own
+        // `airing_followed`/`backlog_want`/`watched_externally`-shaped counts
+        // so the two screens can't disagree with each other either.
+        let followed_airing = self.distinct_canon_count(
+            "SELECT anilist_id, title FROM series WHERE followed=1 AND is_airing=1",
         )?;
-        let followed_finished: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM series WHERE source_id=?1 AND followed=1 AND is_airing=0",
-            [source_id],
-            |r| r.get(0),
+        let followed_finished = self.distinct_canon_count(
+            "SELECT anilist_id, title FROM series WHERE followed=1 AND is_airing=0",
         )?;
-        let discarded: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM series WHERE source_id=?1 AND backlog_status='discarded'",
-            [source_id],
-            |r| r.get(0),
+        let discarded = self.distinct_canon_count(
+            "SELECT anilist_id, title FROM series WHERE backlog_status='discarded'",
         )?;
-        let want: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM series WHERE source_id=?1 AND backlog_status='want'",
-            [source_id],
-            |r| r.get(0),
+        let want = self.distinct_canon_count(
+            "SELECT anilist_id, title FROM series WHERE backlog_status='want'",
         )?;
-        let watched_externally: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM series WHERE source_id=?1 AND watched_externally=1",
-            [source_id],
-            |r| r.get(0),
+        let watched_externally = self.distinct_canon_count(
+            "SELECT anilist_id, title FROM series WHERE watched_externally=1",
         )?;
 
         // One row per franchise, not per `series` row: the scraped site models
@@ -656,14 +751,14 @@ impl Db {
         // used, so the misattribution is the common case, not an edge one.
         let mut stmt = self.conn.prepare(
             "SELECT DATE(e.seen_at, 'localtime') AS d, COUNT(*) AS cnt
-             FROM episodes e JOIN series s ON s.id = e.series_id
-             WHERE e.seen_at IS NOT NULL AND s.source_id=?1
+             FROM episodes e
+             WHERE e.seen_at IS NOT NULL
                AND DATE(e.seen_at, 'localtime') >= DATE('now', 'localtime', '-29 days')
              GROUP BY d
              ORDER BY d",
         )?;
         let counted_days: HashMap<String, i64> = stmt
-            .query_map([source_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
             .collect::<rusqlite::Result<HashMap<_, _>>>()?;
 
         // Zero-filled 30-day spine. SQL only emits days that have marks, and a
@@ -683,9 +778,8 @@ impl Db {
             .collect();
 
         let marks_tracked_since: Option<String> = self.conn.query_row(
-            "SELECT MIN(DATE(e.seen_at, 'localtime')) FROM episodes e JOIN series s ON s.id = e.series_id
-             WHERE e.seen_at IS NOT NULL AND s.source_id=?1",
-            [source_id],
+            "SELECT MIN(DATE(e.seen_at, 'localtime')) FROM episodes e WHERE e.seen_at IS NOT NULL",
+            [],
             |r| r.get(0),
         )?;
 
@@ -822,7 +916,7 @@ mod tests {
             db.set_seen_cascade(id, "1", true).unwrap();
         }
 
-        let insights = db.get_watch_insights(src).unwrap();
+        let insights = db.get_watch_insights().unwrap();
         let titles: HashSet<&str> = insights.top_series.iter().map(|t| t.title.as_str()).collect();
         assert_eq!(insights.top_series.len(), 2, "One Piece merged, Re:Zero did not: {titles:?}");
         assert!(titles.contains("One Piece"));
@@ -876,7 +970,7 @@ mod tests {
         db.set_watched_externally(whole, true).unwrap();
         db.set_anilist_id(whole, 21).unwrap();
 
-        let insights = db.get_watch_insights(src).unwrap();
+        let insights = db.get_watch_insights().unwrap();
         let top = insights.top_series.first().expect("one franchise expected");
         assert_eq!(top.title, "One Piece", "labelled with the franchise, not the arc");
         assert_eq!(top.count, 1140, "credited with the whole show, not one arc's 20 episodes");
@@ -914,14 +1008,14 @@ mod tests {
         db.set_watched_externally(whole, true).unwrap();
         db.set_anilist_id(whole, 21).unwrap();
 
-        let summary = db.get_watch_summary(src).unwrap();
+        let summary = db.get_watch_summary().unwrap();
         assert_eq!(summary.episodes_watched, 30, "real marks stay exactly as marked");
         assert_eq!(
             summary.episodes_watched_external, 70,
             "only the 100-30 remainder is credited on top, so the two add up to 100 not 130"
         );
 
-        let insights = db.get_watch_insights(src).unwrap();
+        let insights = db.get_watch_insights().unwrap();
         assert_eq!(insights.estimated_minutes_tracked, 30 * 24);
         assert_eq!(insights.estimated_minutes_external, 70 * 24, "remainder minutes only");
         assert_eq!(insights.external_titles_estimated, 1);
@@ -962,7 +1056,7 @@ mod tests {
         let w = db.upsert_series(src, &mk_airing("frieren", "Frieren", None)).unwrap();
         db.set_watched_externally(w, true).unwrap();
 
-        let summary = db.get_watch_summary(src).unwrap();
+        let summary = db.get_watch_summary().unwrap();
         assert_eq!(summary.followed_series, 4, "4 followed rows");
         assert_eq!(summary.distinct_anime, 3, "Slime(x3 seasons)=1, Naruto=1, Frieren=1");
     }
@@ -1012,7 +1106,7 @@ mod tests {
         let want_id = db.upsert_series(src, &want).unwrap();
         db.set_backlog_status(want_id, Some("want")).unwrap();
 
-        let summary = db.get_watch_summary(src).unwrap();
+        let summary = db.get_watch_summary().unwrap();
         assert_eq!(summary.airing_followed, 1, "only the airing+followed row counts");
         assert_eq!(summary.pending_to_watch, 1, "only the followed row with an unseen episode counts");
         assert_eq!(summary.backlog_want, 1, "only the want-only row counts");
@@ -1111,7 +1205,7 @@ mod tests {
         let ext2_id = db.upsert_series(src, &mk_airing("ext2", "Unlinked External", None)).unwrap();
         db.set_watched_externally(ext2_id, true).unwrap();
 
-        let insights = db.get_watch_insights(src).unwrap();
+        let insights = db.get_watch_insights().unwrap();
 
         // Both series are followed (one airing, one finished) — tracked
         // minutes sum across ALL followed series' seen episodes, not just
@@ -1180,7 +1274,7 @@ mod tests {
         db.set_watched_externally(ext_id, true).unwrap();
         db.set_anilist_id(ext_id, 200).unwrap();
 
-        let insights = db.get_watch_insights(src).unwrap();
+        let insights = db.get_watch_insights().unwrap();
         assert_eq!(insights.estimated_minutes_tracked, 72);
         assert_eq!(insights.estimated_minutes_external, 288);
     }
@@ -1208,7 +1302,7 @@ mod tests {
         db.set_watched_externally(ext_id, true).unwrap();
         db.set_anilist_id(ext_id, 201).unwrap();
 
-        let insights = db.get_watch_insights(src).unwrap();
+        let insights = db.get_watch_insights().unwrap();
         assert_eq!(insights.estimated_minutes_external, 276, "23 min/ep * 12 eps beats the 24 min/ep TV estimate");
     }
 
@@ -1233,15 +1327,14 @@ mod tests {
         db.set_watched_externally(ext_id, true).unwrap();
         db.set_anilist_id(ext_id, 202).unwrap();
 
-        let insights = db.get_watch_insights(src).unwrap();
+        let insights = db.get_watch_insights().unwrap();
         assert_eq!(insights.estimated_minutes_external, 288, "falls back to 24 min/ep (TV) estimate, unchanged");
     }
 
     #[test]
     fn get_watch_insights_empty_db_has_no_divide_by_zero_and_empty_collections() {
         let db = Db::open(":memory:").unwrap();
-        let src = db.upsert_source("A", "a", "animeytx").unwrap();
-        let insights = db.get_watch_insights(src).unwrap();
+        let insights = db.get_watch_insights().unwrap();
         assert_eq!(insights.estimated_minutes_tracked, 0);
         assert_eq!(insights.estimated_minutes_external, 0);
         assert_eq!(insights.external_titles_estimated, 0);
@@ -1278,7 +1371,7 @@ mod tests {
         db.set_followed(n, true).unwrap();
         insert_eps_seen_up_to(&db, n, 50, 50);
 
-        let insights = db.get_watch_insights(src).unwrap();
+        let insights = db.get_watch_insights().unwrap();
         let one_piece = insights.top_series.iter().find(|t| t.title == "One Piece").expect("collapsed One Piece entry");
         assert_eq!(one_piece.count, 1014, "500 + 400 + 114 summed across all arc rows");
         assert!(
@@ -1356,7 +1449,7 @@ mod tests {
         };
         db.upsert_series(src, &other).unwrap();
 
-        let rows = db.get_stats_graph_data(src).unwrap();
+        let rows = db.get_stats_graph_data().unwrap();
         assert_eq!(rows.len(), 2);
 
         let full_row = rows.iter().find(|r| r.id == sid_full).unwrap();
@@ -1399,6 +1492,94 @@ mod tests {
         assert_eq!(scores.get("Acción"), None);
         // Site-only tag with no AniList equivalent keeps its raw name.
         assert_eq!(scores.get("Isekai"), Some(&2.0));
+    }
+
+    // ---- Cross-site aggregation (2026-08-13 stats-scoping fix) ----
+    //
+    // Every test above uses a single `upsert_source`, so it never exercised
+    // the bug: every stats query used to filter by `source_id`, silently
+    // hiding everything followed/watched/wanted on the app's other sites.
+    // These reproduce the real shape — the same show followed on two sites,
+    // plus a site-only show — and assert the canonical (deduped) totals.
+
+    #[test]
+    fn get_watch_summary_aggregates_and_dedups_a_show_followed_on_two_sites() {
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        let b = db.upsert_source("TioAnime", "b", "tioanime").unwrap();
+
+        // Same show, no anilist_id on either — same normalized title is what
+        // must collapse them into one canonical entry.
+        let shared_a = db.upsert_series(a, &mk_airing("shared", "Shared Show", None)).unwrap();
+        db.set_followed(shared_a, true).unwrap();
+        insert_eps_seen_up_to(&db, shared_a, 3, 3);
+        let shared_b = db.upsert_series(b, &mk_airing("shared", "Shared Show", None)).unwrap();
+        db.set_followed(shared_b, true).unwrap();
+        insert_eps_seen_up_to(&db, shared_b, 2, 2);
+
+        // Site-B-only show, want-listed — must still surface even though the
+        // active site in real use is usually A.
+        let want_only = db.upsert_series(b, &mk_airing("wantonly", "Only On B", None)).unwrap();
+        db.set_backlog_status(want_only, Some("want")).unwrap();
+
+        let summary = db.get_watch_summary().unwrap();
+        assert_eq!(summary.followed_series, 1, "the shared show counts once, not twice");
+        assert_eq!(summary.episodes_watched, 5, "real marks sum across both sites' rows");
+        assert_eq!(summary.backlog_want, 1, "site-B-only want show is not hidden by site A's scope");
+        assert_eq!(summary.distinct_anime, 1);
+    }
+
+    #[test]
+    fn get_watch_insights_funnel_dedups_a_show_followed_and_airing_on_two_sites() {
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        let b = db.upsert_source("TioAnime", "b", "tioanime").unwrap();
+
+        let mut airing_a = mk_airing("dup", "Dup Show", None);
+        airing_a.is_airing = true;
+        let sid_a = db.upsert_series(a, &airing_a).unwrap();
+        db.set_followed(sid_a, true).unwrap();
+        let mut airing_b = mk_airing("dup", "Dup Show", None);
+        airing_b.is_airing = true;
+        let sid_b = db.upsert_series(b, &airing_b).unwrap();
+        db.set_followed(sid_b, true).unwrap();
+
+        let discarded_b = db.upsert_series(b, &mk_airing("disc", "Discarded On B", None)).unwrap();
+        db.set_backlog_status(discarded_b, Some("discarded")).unwrap();
+
+        let insights = db.get_watch_insights().unwrap();
+        assert_eq!(insights.followed_airing, 1, "followed+airing on both sites is still one show");
+        assert_eq!(insights.discarded, 1, "a site-B-only discard is not lost");
+    }
+
+    #[test]
+    fn get_genre_and_type_stats_dedup_a_cross_site_show_and_union_its_genres() {
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        let b = db.upsert_source("TioAnime", "b", "tioanime").unwrap();
+
+        // Same show followed on both sites, each site's scrape tagged it with
+        // a different genre subset and only site A recorded a `kind`.
+        let sid_a = db.upsert_series(a, &mk_airing("dup", "Dup Show", None)).unwrap();
+        db.set_followed(sid_a, true).unwrap();
+        db.set_kind(sid_a, "TV").unwrap();
+        db.insert_series_genres(sid_a, &["Seinen".to_string()]).unwrap();
+        let sid_b = db.upsert_series(b, &mk_airing("dup", "Dup Show", None)).unwrap();
+        db.set_followed(sid_b, true).unwrap();
+        db.insert_series_genres(sid_b, &["Drama".to_string()]).unwrap();
+
+        let genre_stats = db.get_genre_stats().unwrap();
+        let genres: HashSet<&str> = genre_stats.iter().map(|g| g.genre.as_str()).collect();
+        assert_eq!(genres, HashSet::from(["Seinen", "Drama"]), "genres from both sites' rows are unioned");
+        assert!(
+            genre_stats.iter().all(|g| g.count == 1),
+            "one canonical show contributes 1 to each genre it carries, not 2: {genre_stats:?}"
+        );
+
+        let type_stats = db.get_type_stats().unwrap();
+        assert_eq!(type_stats.len(), 1);
+        assert_eq!(type_stats[0].kind, "TV");
+        assert_eq!(type_stats[0].count, 1, "the one canonical show, not one per site row");
     }
 
     #[test]

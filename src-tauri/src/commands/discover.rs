@@ -366,7 +366,7 @@ pub fn discover_catalog_card(
     // for everyone, i.e. cold start behaves like the pre-recommendation-
     // engine build). Also empty in "Aleatorio" mode.
     let format_affinity = if recommended {
-        crate::recommend::format_affinity_from_type_stats(&db.get_type_stats(src).map_err(|e| e.to_string())?)
+        crate::recommend::format_affinity_from_type_stats(&db.get_type_stats().map_err(|e| e.to_string())?)
     } else {
         HashMap::new()
     };

@@ -715,7 +715,7 @@ mod tests {
             }).unwrap();
         }
 
-        let summary = db.get_watch_summary(src).unwrap();
+        let summary = db.get_watch_summary().unwrap();
         assert_eq!(summary.episodes_watched, 3, "the 3 real seen episodes count, even though the series isn't followed");
         assert_eq!(summary.episodes_watched_external, 9, "12 catalog episodes minus the 3 already marked");
         assert_eq!(
@@ -723,7 +723,7 @@ mod tests {
             "the two figures add up to the catalog total, never past it"
         );
 
-        let insights = db.get_watch_insights(src).unwrap();
+        let insights = db.get_watch_insights().unwrap();
         assert_eq!(insights.estimated_minutes_tracked, 72, "3 seen eps * 24 min (TV), tracked minutes aren't followed-only anymore");
         assert_eq!(insights.estimated_minutes_external, 9 * 24, "remainder minutes only");
     }
@@ -749,11 +749,11 @@ mod tests {
         db.set_watched_externally(sid, true).unwrap();
         db.set_anilist_id(sid, 301).unwrap();
 
-        let summary = db.get_watch_summary(src).unwrap();
+        let summary = db.get_watch_summary().unwrap();
         assert_eq!(summary.episodes_watched, 0, "no real episodes for this series");
         assert_eq!(summary.episodes_watched_external, 12, "falls back to the catalog's episode count");
 
-        let insights = db.get_watch_insights(src).unwrap();
+        let insights = db.get_watch_insights().unwrap();
         assert_eq!(insights.estimated_minutes_external, 12 * 24, "12 catalog eps * minutes_per_episode(TV)");
     }
 
@@ -779,7 +779,7 @@ mod tests {
         let ext_id = db.upsert_series(src, &mk_airing("ext3", "Ext3", None)).unwrap();
         db.set_watched_externally(ext_id, true).unwrap();
 
-        let summary = db.get_watch_summary(src).unwrap();
+        let summary = db.get_watch_summary().unwrap();
         assert_eq!(summary.distinct_anime, 1, "only the watched-externally show counts; the unwatched followed show is excluded");
     }
 
@@ -815,14 +815,14 @@ mod tests {
             }).unwrap();
         }
 
-        let insights = db.get_watch_insights(src).unwrap();
+        let insights = db.get_watch_insights().unwrap();
         assert_eq!(insights.estimated_minutes_tracked, 72, "3 seen eps * 24 min (TV)");
         assert_eq!(insights.estimated_minutes_external, 9 * 24, "the other 9 catalog eps, counted once");
 
         // Criterion 4: episodes and hours cover the exact same universe —
         // episodes_watched + episodes_watched_external matches what the
         // minutes were computed from (3 real eps + 9 remainder eps).
-        let summary = db.get_watch_summary(src).unwrap();
+        let summary = db.get_watch_summary().unwrap();
         assert_eq!(summary.episodes_watched, 3);
         assert_eq!(summary.episodes_watched_external, 9);
         assert_eq!(
