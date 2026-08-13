@@ -5,6 +5,17 @@ import { DECK_FORMATS } from "./constants";
 import { DiscoverModeToggle } from "./DiscoverModeToggle";
 import { getInitialDeckPanelOpen, persistDeckPanelOpen } from "./helpers";
 
+// "YYYY-MM-DD" <-> Unix seconds, both as UTC midnight of that calendar date
+// -- matches src-tauri/src/anilist.rs's FuzzyDate::to_timestamp(), which
+// stores AniList start_date as UTC midnight, not local time.
+function dateInputToEpoch(iso: string): number {
+  const [y, m, d] = iso.split("-").map(Number);
+  return Math.floor(Date.UTC(y, m - 1, d) / 1000);
+}
+function epochToDateInput(epoch: number): string {
+  return new Date(epoch * 1000).toISOString().slice(0, 10);
+}
+
 // Deck settings panel — lives inside SwipeView (see the design spec at
 // docs/superpowers/specs/2026-07-13-discover-swipe-sidepanel-design.md).
 // Combines the deck-mode toggle with the genre/type bans (formerly the
@@ -24,6 +35,8 @@ export function DeckPanel({ onBansSaved }: { onBansSaved: () => void }) {
   const [bannedFormats, setBannedFormats] = useState<Set<string>>(new Set());
   const [hideUpcoming, setHideUpcoming] = useState(false);
   const [statusDataSynced, setStatusDataSynced] = useState(true);
+  const [minStartDate, setMinStartDate] = useState<number | null>(null);
+  const [maxStartDate, setMaxStartDate] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [open, setOpen] = useState(getInitialDeckPanelOpen);
@@ -35,6 +48,8 @@ export function DeckPanel({ onBansSaved }: { onBansSaved: () => void }) {
         setBannedFormats(new Set(b.formats));
         setHideUpcoming(b.hide_upcoming);
         setStatusDataSynced(b.status_data_synced);
+        setMinStartDate(b.min_start_date);
+        setMaxStartDate(b.max_start_date);
       })
       .catch((err) => console.error("getDeckBans failed", err));
     getCatalogFacets()
@@ -53,7 +68,7 @@ export function DeckPanel({ onBansSaved }: { onBansSaved: () => void }) {
   async function save() {
     setSaving(true);
     try {
-      await setDeckBans([...bannedGenres], [...bannedFormats], hideUpcoming);
+      await setDeckBans([...bannedGenres], [...bannedFormats], hideUpcoming, minStartDate, maxStartDate);
       setSaved(true);
       onBansSaved();
     } finally {
@@ -154,6 +169,37 @@ export function DeckPanel({ onBansSaved }: { onBansSaved: () => void }) {
               {t("discover.filtersHideUpcomingNeedsSync")}
             </p>
           )}
+
+          <h3 className="section-title deck-panel-heading">
+            {t("discover.filtersDateHeading")}
+          </h3>
+          <div className="row deck-panel-daterange">
+            <label className="deck-panel-date-field">
+              <span className="muted text-sm">{t("discover.filtersDateFrom")}</span>
+              <input
+                type="date"
+                value={minStartDate === null ? "" : epochToDateInput(minStartDate)}
+                onChange={(e) => {
+                  setMinStartDate(e.target.value ? dateInputToEpoch(e.target.value) : null);
+                  setSaved(false);
+                }}
+              />
+            </label>
+            <label className="deck-panel-date-field">
+              <span className="muted text-sm">{t("discover.filtersDateTo")}</span>
+              <input
+                type="date"
+                value={maxStartDate === null ? "" : epochToDateInput(maxStartDate)}
+                onChange={(e) => {
+                  setMaxStartDate(e.target.value ? dateInputToEpoch(e.target.value) : null);
+                  setSaved(false);
+                }}
+              />
+            </label>
+          </div>
+          <p className="muted text-sm deck-panel-date-hint">
+            {t("discover.filtersDateHint")}
+          </p>
 
           <div className="row deck-panel-save">
             <button className="btn btn-primary" onClick={save} disabled={saving}>

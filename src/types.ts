@@ -153,6 +153,8 @@ export interface DeckBans {
   formats: string[];
   hide_upcoming: boolean;
   status_data_synced: boolean;
+  min_start_date: number | null;
+  max_start_date: number | null;
 }
 
 export type LinkOutcome =

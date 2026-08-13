@@ -230,6 +230,11 @@ export const ca: Messages = {
   "discover.filtersHideUpcoming": "Amaga els propers estrenes",
   "discover.filtersHideUpcomingNeedsSync":
     "Encara no hi ha dades d'estrena sincronitzades — aquest filtre no tindrà efecte fins que sincronitzis el catàleg (pestanya Catàleg).",
+  "discover.filtersDateHeading": "Data d'estrena",
+  "discover.filtersDateFrom": "Des de",
+  "discover.filtersDateTo": "Fins a",
+  "discover.filtersDateHint":
+    "Buit = sense límit. Per defecte: des dels dinosaures 🦖 fins avui.",
   "discover.filtersSave": "Desa els filtres",
   "discover.filtersSaving": "Desant…",
   "discover.filtersSaved": "Filtres desats.",

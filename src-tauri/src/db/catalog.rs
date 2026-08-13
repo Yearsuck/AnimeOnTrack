@@ -548,6 +548,8 @@ impl Db {
         format_affinity: &std::collections::HashMap<String, f64>,
         recommended: bool,
         hide_upcoming: bool,
+        min_start_date: Option<i64>,
+        max_start_date: Option<i64>,
     ) -> Result<Option<crate::anilist::CatalogAnime>> {
         const MIN_POPULARITY: i64 = 500;
         // Raised from 40: a random 40-title sample out of a genre that can
@@ -572,6 +574,22 @@ impl Db {
         // this toggle is flipped on.
         let upcoming_clause =
             if hide_upcoming { "AND (c.status IS NULL OR c.status != 'NOT_YET_RELEASED')" } else { "" };
+        // Same "don't punish unsynced data" policy as `upcoming_clause`: a
+        // NULL `start_date` (unsynced, or synced before the column existed)
+        // always passes, regardless of either bound. A non-NULL date must
+        // satisfy BOTH bounds together (not either), so the min/max pair is
+        // parenthesized as its own AND group, then OR'd with the NULL case.
+        let mut date_clause = String::new();
+        if min_start_date.is_some() || max_start_date.is_some() {
+            date_clause.push_str("AND (c.start_date IS NULL OR (1=1");
+            if min_start_date.is_some() {
+                date_clause.push_str(" AND c.start_date >= ?");
+            }
+            if max_start_date.is_some() {
+                date_clause.push_str(" AND c.start_date <= ?");
+            }
+            date_clause.push_str("))");
+        }
         let sql = format!(
             "SELECT c.id, c.title, c.title_romaji, c.title_english, c.cover_url, c.format, c.episodes, c.average_score, c.popularity, c.url, c.status, c.duration, c.studio, c.start_date
              FROM anilist_catalog c
@@ -581,6 +599,7 @@ impl Db {
                AND c.popularity >= ?
                AND c.id NOT IN (SELECT anilist_id FROM series WHERE anilist_id IS NOT NULL)
                {upcoming_clause}
+               {date_clause}
              ORDER BY RANDOM() LIMIT {BATCH_SIZE}"
         );
         let mut params: Vec<Value> = vec![Value::Text(genre.to_string())];
@@ -588,6 +607,12 @@ impl Db {
             params.push(Value::Text((*f).to_string()));
         }
         params.push(Value::Integer(MIN_POPULARITY));
+        if let Some(min) = min_start_date {
+            params.push(Value::Integer(min));
+        }
+        if let Some(max) = max_start_date {
+            params.push(Value::Integer(max));
+        }
         let mut stmt = self.conn.prepare(&sql)?;
         let batch: Vec<crate::anilist::CatalogAnime> = stmt
             .query_map(rusqlite::params_from_iter(params.iter()), Self::row_to_catalog_anime)?
@@ -740,13 +765,13 @@ mod tests {
     #[test]
     fn random_catalog_anime_in_genre_none_when_empty_some_when_populated() {
         let db = Db::open(":memory:").unwrap();
-        assert!(db.random_catalog_anime_in_genre("Drama", &[], &std::collections::HashSet::new(), &std::collections::HashMap::new(), &std::collections::HashMap::new(), true, false).unwrap().is_none());
+        assert!(db.random_catalog_anime_in_genre("Drama", &[], &std::collections::HashSet::new(), &std::collections::HashMap::new(), &std::collections::HashMap::new(), true, false, None, None).unwrap().is_none());
         db.upsert_catalog_anime(
             &catalog_anime_with_popularity(1, "Only", &["Drama"], Some(1000)),
             0,
         )
         .unwrap();
-        let picked = db.random_catalog_anime_in_genre("Drama", &[], &std::collections::HashSet::new(), &std::collections::HashMap::new(), &std::collections::HashMap::new(), true, false).unwrap().unwrap();
+        let picked = db.random_catalog_anime_in_genre("Drama", &[], &std::collections::HashSet::new(), &std::collections::HashMap::new(), &std::collections::HashMap::new(), true, false, None, None).unwrap().unwrap();
         assert_eq!(picked.id, 1);
         assert_eq!(picked.genres, vec!["Drama".to_string()]);
     }
@@ -756,7 +781,7 @@ mod tests {
         let db = Db::open(":memory:").unwrap();
         db.upsert_catalog_anime(&catalog_anime_with_popularity(1, "Dramatic", &["Drama"], Some(1000)), 0).unwrap();
         db.upsert_catalog_anime(&catalog_anime_with_popularity(2, "Actiony", &["Action"], Some(1000)), 1).unwrap();
-        let picked = db.random_catalog_anime_in_genre("Action", &[], &std::collections::HashSet::new(), &std::collections::HashMap::new(), &std::collections::HashMap::new(), true, false).unwrap().unwrap();
+        let picked = db.random_catalog_anime_in_genre("Action", &[], &std::collections::HashSet::new(), &std::collections::HashMap::new(), &std::collections::HashMap::new(), true, false, None, None).unwrap().unwrap();
         assert_eq!(picked.title, "Actiony");
     }
 
@@ -772,7 +797,7 @@ mod tests {
         // Qualifies on both counts.
         db.upsert_catalog_anime(&catalog_anime_with_popularity(3, "Qualifies", &["Drama"], Some(1000)), 2).unwrap();
 
-        let picked = db.random_catalog_anime_in_genre("Drama", &[], &std::collections::HashSet::new(), &std::collections::HashMap::new(), &std::collections::HashMap::new(), true, false).unwrap().unwrap();
+        let picked = db.random_catalog_anime_in_genre("Drama", &[], &std::collections::HashSet::new(), &std::collections::HashMap::new(), &std::collections::HashMap::new(), true, false, None, None).unwrap().unwrap();
         assert_eq!(picked.title, "Qualifies");
     }
 
@@ -785,7 +810,7 @@ mod tests {
         db.upsert_catalog_anime(&catalog_anime_with_popularity(2, "OutNow", &["Drama"], Some(1000)), 1).unwrap();
 
         let picked = db
-            .random_catalog_anime_in_genre("Drama", &[], &std::collections::HashSet::new(), &std::collections::HashMap::new(), &std::collections::HashMap::new(), true, true)
+            .random_catalog_anime_in_genre("Drama", &[], &std::collections::HashSet::new(), &std::collections::HashMap::new(), &std::collections::HashMap::new(), true, true, None, None)
             .unwrap()
             .unwrap();
         assert_eq!(picked.title, "OutNow");
@@ -801,7 +826,7 @@ mod tests {
         db.upsert_catalog_anime(&catalog_anime_with_popularity(1, "UnsyncedStatus", &["Drama"], Some(1000)), 0).unwrap();
 
         let picked = db
-            .random_catalog_anime_in_genre("Drama", &[], &std::collections::HashSet::new(), &std::collections::HashMap::new(), &std::collections::HashMap::new(), true, true)
+            .random_catalog_anime_in_genre("Drama", &[], &std::collections::HashSet::new(), &std::collections::HashMap::new(), &std::collections::HashMap::new(), true, true, None, None)
             .unwrap()
             .unwrap();
         assert_eq!(picked.title, "UnsyncedStatus");
@@ -815,10 +840,85 @@ mod tests {
         db.upsert_catalog_anime(&upcoming, 0).unwrap();
 
         let picked = db
-            .random_catalog_anime_in_genre("Drama", &[], &std::collections::HashSet::new(), &std::collections::HashMap::new(), &std::collections::HashMap::new(), true, false)
+            .random_catalog_anime_in_genre("Drama", &[], &std::collections::HashSet::new(), &std::collections::HashMap::new(), &std::collections::HashMap::new(), true, false, None, None)
             .unwrap()
             .unwrap();
         assert_eq!(picked.title, "Upcoming");
+    }
+
+    #[test]
+    fn random_catalog_anime_in_genre_date_range_excludes_before_min_and_after_max() {
+        let db = Db::open(":memory:").unwrap();
+        let mut too_old = catalog_anime_with_popularity(1, "TooOld", &["Drama"], Some(1000));
+        too_old.start_date = Some(1_000);
+        db.upsert_catalog_anime(&too_old, 0).unwrap();
+        let mut too_new = catalog_anime_with_popularity(2, "TooNew", &["Drama"], Some(1000));
+        too_new.start_date = Some(3_000);
+        db.upsert_catalog_anime(&too_new, 1).unwrap();
+        let mut in_range = catalog_anime_with_popularity(3, "InRange", &["Drama"], Some(1000));
+        in_range.start_date = Some(2_000);
+        db.upsert_catalog_anime(&in_range, 2).unwrap();
+
+        let picked = db
+            .random_catalog_anime_in_genre(
+                "Drama", &[], &std::collections::HashSet::new(),
+                &std::collections::HashMap::new(), &std::collections::HashMap::new(),
+                true, false, Some(1_500), Some(2_500),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(picked.title, "InRange");
+    }
+
+    #[test]
+    fn random_catalog_anime_in_genre_date_range_keeps_unsynced_start_date_regardless_of_bounds() {
+        let db = Db::open(":memory:").unwrap();
+        // start_date: None (unsynced) — same "don't punish unsynced data"
+        // policy as hide_upcoming's NULL-status handling.
+        db.upsert_catalog_anime(&catalog_anime_with_popularity(1, "Unsynced", &["Drama"], Some(1000)), 0).unwrap();
+
+        let picked = db
+            .random_catalog_anime_in_genre(
+                "Drama", &[], &std::collections::HashSet::new(),
+                &std::collections::HashMap::new(), &std::collections::HashMap::new(),
+                true, false, Some(1_500), Some(2_500),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(picked.title, "Unsynced");
+    }
+
+    #[test]
+    fn random_catalog_anime_in_genre_date_range_only_min_or_only_max_still_filters() {
+        let db = Db::open(":memory:").unwrap();
+        let mut low = catalog_anime_with_popularity(1, "Low", &["Drama"], Some(1000));
+        low.start_date = Some(1_000);
+        db.upsert_catalog_anime(&low, 0).unwrap();
+        let mut high = catalog_anime_with_popularity(2, "High", &["Drama"], Some(1000));
+        high.start_date = Some(3_000);
+        db.upsert_catalog_anime(&high, 1).unwrap();
+
+        // Only a min bound: excludes Low, keeps High.
+        let picked = db
+            .random_catalog_anime_in_genre(
+                "Drama", &[], &std::collections::HashSet::new(),
+                &std::collections::HashMap::new(), &std::collections::HashMap::new(),
+                true, false, Some(2_000), None,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(picked.title, "High");
+
+        // Only a max bound: excludes High, keeps Low.
+        let picked = db
+            .random_catalog_anime_in_genre(
+                "Drama", &[], &std::collections::HashSet::new(),
+                &std::collections::HashMap::new(), &std::collections::HashMap::new(),
+                true, false, None, Some(2_000),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(picked.title, "Low");
     }
 
     #[test]
@@ -838,7 +938,7 @@ mod tests {
         db.set_backlog_status(sid, Some("discarded")).unwrap();
 
         for _ in 0..10 {
-            let picked = db.random_catalog_anime_in_genre("Drama", &[], &std::collections::HashSet::new(), &std::collections::HashMap::new(), &std::collections::HashMap::new(), true, false).unwrap().unwrap();
+            let picked = db.random_catalog_anime_in_genre("Drama", &[], &std::collections::HashSet::new(), &std::collections::HashMap::new(), &std::collections::HashMap::new(), true, false, None, None).unwrap().unwrap();
             assert_eq!(picked.title, "Undecided");
         }
     }
@@ -857,7 +957,7 @@ mod tests {
         db.set_anilist_id(sid, 1).unwrap();
         db.set_backlog_status(sid, Some("want")).unwrap();
 
-        assert!(db.random_catalog_anime_in_genre("Drama", &[], &std::collections::HashSet::new(), &std::collections::HashMap::new(), &std::collections::HashMap::new(), true, false).unwrap().is_none());
+        assert!(db.random_catalog_anime_in_genre("Drama", &[], &std::collections::HashSet::new(), &std::collections::HashMap::new(), &std::collections::HashMap::new(), true, false, None, None).unwrap().is_none());
     }
 
     #[test]
@@ -873,7 +973,7 @@ mod tests {
         // With MOVIE banned, only the TV entry can ever be picked.
         for _ in 0..10 {
             let picked = db
-                .random_catalog_anime_in_genre("Drama", &["MOVIE".to_string()], &std::collections::HashSet::new(), &std::collections::HashMap::new(), &std::collections::HashMap::new(), true, false)
+                .random_catalog_anime_in_genre("Drama", &["MOVIE".to_string()], &std::collections::HashSet::new(), &std::collections::HashMap::new(), &std::collections::HashMap::new(), true, false, None, None)
                 .unwrap()
                 .unwrap();
             assert_eq!(picked.title, "ATVShow");
@@ -891,7 +991,7 @@ mod tests {
             ["TV", "MOVIE", "OVA", "ONA", "SPECIAL"].iter().map(|s| s.to_string()).collect();
         // An invalid empty SQL IN () would error here if not short-circuited.
         assert!(db
-            .random_catalog_anime_in_genre("Drama", &all_banned, &std::collections::HashSet::new(), &std::collections::HashMap::new(), &std::collections::HashMap::new(), true, false)
+            .random_catalog_anime_in_genre("Drama", &all_banned, &std::collections::HashSet::new(), &std::collections::HashMap::new(), &std::collections::HashMap::new(), true, false, None, None)
             .unwrap()
             .is_none());
     }
@@ -934,7 +1034,7 @@ mod tests {
         assert!(excluded.contains(&crate::matching::normalize_title("Overlord IV")));
 
         for _ in 0..10 {
-            let picked = db.random_catalog_anime_in_genre("Fantasy", &[], &excluded, &std::collections::HashMap::new(), &std::collections::HashMap::new(), true, false).unwrap().unwrap();
+            let picked = db.random_catalog_anime_in_genre("Fantasy", &[], &excluded, &std::collections::HashMap::new(), &std::collections::HashMap::new(), true, false, None, None).unwrap().unwrap();
             assert_eq!(picked.title, "Some Other Show");
         }
     }
@@ -961,7 +1061,7 @@ mod tests {
 
         let excluded: std::collections::HashSet<String> =
             db.engaged_series_titles(src).unwrap().iter().map(|t| crate::matching::normalize_title(t)).collect();
-        assert!(db.random_catalog_anime_in_genre("Fantasy", &[], &excluded, &std::collections::HashMap::new(), &std::collections::HashMap::new(), true, false).unwrap().is_none());
+        assert!(db.random_catalog_anime_in_genre("Fantasy", &[], &excluded, &std::collections::HashMap::new(), &std::collections::HashMap::new(), true, false, None, None).unwrap().is_none());
     }
 
     #[test]
@@ -997,6 +1097,8 @@ mod tests {
                     &format_affinity,
                     true,
                     false,
+                    None,
+                    None,
                 )
                 .unwrap()
                 .unwrap();
@@ -1040,6 +1142,8 @@ mod tests {
                     &format_affinity,
                     false,
                     false,
+                    None,
+                    None,
                 )
                 .unwrap()
                 .unwrap();
@@ -1095,6 +1199,8 @@ mod tests {
                     &std::collections::HashMap::new(),
                     false,
                     false,
+                    None,
+                    None,
                 )
                 .unwrap()
                 .unwrap();

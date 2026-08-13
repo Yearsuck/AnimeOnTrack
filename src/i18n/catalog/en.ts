@@ -220,6 +220,11 @@ export const en: Messages = {
   "discover.filtersHideUpcoming": "Hide upcoming titles",
   "discover.filtersHideUpcomingNeedsSync":
     "No release-status data synced yet — this filter won't take effect until you sync the catalog (Catálogo tab).",
+  "discover.filtersDateHeading": "Release date",
+  "discover.filtersDateFrom": "From",
+  "discover.filtersDateTo": "To",
+  "discover.filtersDateHint":
+    "Empty = no limit. Default: since the dawn of time 🦖 to today.",
   "discover.filtersSave": "Save filters",
   "discover.filtersSaving": "Saving…",
   "discover.filtersSaved": "Filters saved.",
