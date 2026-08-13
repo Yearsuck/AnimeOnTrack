@@ -234,6 +234,11 @@ export const es = {
   "discover.filtersHideUpcoming": "Ocultar próximos estrenos",
   "discover.filtersHideUpcomingNeedsSync":
     "Todavía no hay datos de estreno sincronizados — este filtro no tendrá efecto hasta que sincronices el catálogo (pestaña Catálogo).",
+  "discover.filtersDateHeading": "Fecha de estreno",
+  "discover.filtersDateFrom": "Desde",
+  "discover.filtersDateTo": "Hasta",
+  "discover.filtersDateHint":
+    "Vacío = sin límite. Por defecto: desde los cavernícolas 🦖 hasta hoy.",
   "discover.filtersSave": "Guardar filtros",
   "discover.filtersSaving": "Guardando…",
   "discover.filtersSaved": "Filtros guardados.",

@@ -73,6 +73,35 @@ impl Db {
         self.set_setting("hide_upcoming_releases", if hide { "true" } else { "false" })
     }
 
+    /// Global lower bound (Unix seconds) on `anilist_catalog.start_date` for
+    /// the Descubrir catalog deck. Absent key = `None` = unbounded ("since
+    /// forever") — the deck's pre-existing behavior, no default substitution.
+    pub fn get_deck_min_start_date(&self) -> Result<Option<i64>> {
+        Ok(self.get_setting("deck_min_start_date")?.and_then(|v| v.parse().ok()))
+    }
+
+    pub fn set_deck_min_start_date(&self, value: Option<i64>) -> Result<()> {
+        match value {
+            Some(v) => self.set_setting("deck_min_start_date", &v.to_string()),
+            None => self.delete_setting("deck_min_start_date"),
+        }
+    }
+
+    /// Global upper bound (Unix seconds) on `anilist_catalog.start_date`.
+    /// Absent key = `None` — the caller (`commands::discover_catalog_card`)
+    /// substitutes "today" as a moving default; this getter itself never
+    /// does, so it stays a plain, testable settings round-trip.
+    pub fn get_deck_max_start_date(&self) -> Result<Option<i64>> {
+        Ok(self.get_setting("deck_max_start_date")?.and_then(|v| v.parse().ok()))
+    }
+
+    pub fn set_deck_max_start_date(&self, value: Option<i64>) -> Result<()> {
+        match value {
+            Some(v) => self.set_setting("deck_max_start_date", &v.to_string()),
+            None => self.delete_setting("deck_max_start_date"),
+        }
+    }
+
     /// Record "this series' episode list was actually fetched just now" —
     /// gates the FINISHED_RECHECK interval for followed series absent from
     /// the airing listing (see `commands::should_fetch_series`).
@@ -136,5 +165,23 @@ mod tests {
 
         db.set_hide_upcoming_releases(false).unwrap();
         assert!(!db.get_hide_upcoming_releases().unwrap());
+    }
+
+    #[test]
+    fn deck_date_range_defaults_none_and_round_trips_through_settings() {
+        let db = Db::open(":memory:").unwrap();
+        assert_eq!(db.get_deck_min_start_date().unwrap(), None);
+        assert_eq!(db.get_deck_max_start_date().unwrap(), None);
+
+        db.set_deck_min_start_date(Some(1_000)).unwrap();
+        db.set_deck_max_start_date(Some(2_000)).unwrap();
+        assert_eq!(db.get_deck_min_start_date().unwrap(), Some(1_000));
+        assert_eq!(db.get_deck_max_start_date().unwrap(), Some(2_000));
+
+        // Setting None after a Some clears it back to None, not the string "None".
+        db.set_deck_min_start_date(None).unwrap();
+        db.set_deck_max_start_date(None).unwrap();
+        assert_eq!(db.get_deck_min_start_date().unwrap(), None);
+        assert_eq!(db.get_deck_max_start_date().unwrap(), None);
     }
 }

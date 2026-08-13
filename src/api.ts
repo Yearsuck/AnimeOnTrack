@@ -109,8 +109,13 @@ export const undoSwipeEntry = (seriesId: number) =>
 // discover_catalog_card call reads them fresh.
 export const getDeckBans = () => invoke<DeckBans>("get_deck_bans");
 
-export const setDeckBans = (genres: string[], formats: string[], hideUpcoming: boolean) =>
-  invoke<void>("set_deck_bans", { genres, formats, hideUpcoming });
+export const setDeckBans = (
+  genres: string[],
+  formats: string[],
+  hideUpcoming: boolean,
+  minStartDate: number | null,
+  maxStartDate: number | null,
+) => invoke<void>("set_deck_bans", { genres, formats, hideUpcoming, minStartDate, maxStartDate });
 
 export const startWatching = (seriesId: number) =>
   invoke<LinkOutcome>("start_watching", { seriesId });

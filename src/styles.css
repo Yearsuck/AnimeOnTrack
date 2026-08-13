@@ -1985,6 +1985,33 @@ select.lib-filter-select {
   align-items: center;
   gap: var(--sp-3);
 }
+.deck-panel-daterange {
+  gap: var(--sp-4);
+  margin-bottom: var(--sp-2);
+}
+.deck-panel-date-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+.deck-panel-date-field input[type="date"] {
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text);
+  padding: 6px 10px;
+  border-radius: var(--radius-md);
+  font-size: var(--fs-sm);
+  font-family: inherit;
+  color-scheme: light dark;
+}
+.deck-panel-date-field input[type="date"]:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+.deck-panel-date-hint {
+  margin-top: calc(-1 * var(--sp-1));
+  margin-bottom: var(--sp-4);
+}
 .swipe-card-title {
   min-height: auto;
 }

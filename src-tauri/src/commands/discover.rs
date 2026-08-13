@@ -261,6 +261,16 @@ pub struct DeckBans {
     /// `Db::has_synced_catalog_status`). The frontend shows a warning when
     /// `hide_upcoming` is on but this is `false`.
     pub status_data_synced: bool,
+    /// Raw stored bound (Unix seconds), `None` = unbounded ("since forever")
+    /// — never defaulted here, unlike `max_start_date`. See
+    /// `discover_catalog_card`'s doc comment for why the default lives there
+    /// instead of in the getter.
+    pub min_start_date: Option<i64>,
+    /// Raw stored bound (Unix seconds), `None` here just means "not
+    /// explicitly set" — the frontend and `discover_catalog_card` both treat
+    /// `None` as "today", but *today* changes daily, so freezing that into a
+    /// stored default at save time would be wrong.
+    pub max_start_date: Option<i64>,
 }
 
 /// Read the current deck bans for the Descubrir "Filtros" sub-view.
@@ -271,7 +281,9 @@ pub fn get_deck_bans(state: State<'_, AppState>) -> Result<DeckBans, String> {
     let formats = db.get_banned_formats().map_err(|e| e.to_string())?;
     let hide_upcoming = db.get_hide_upcoming_releases().map_err(|e| e.to_string())?;
     let status_data_synced = db.has_synced_catalog_status().map_err(|e| e.to_string())?;
-    Ok(DeckBans { genres, formats, hide_upcoming, status_data_synced })
+    let min_start_date = db.get_deck_min_start_date().map_err(|e| e.to_string())?;
+    let max_start_date = db.get_deck_max_start_date().map_err(|e| e.to_string())?;
+    Ok(DeckBans { genres, formats, hide_upcoming, status_data_synced, min_start_date, max_start_date })
 }
 
 /// Persist the deck bans. Takes effect on the very next `discover_catalog_card`
@@ -283,11 +295,15 @@ pub fn set_deck_bans(
     genres: Vec<String>,
     formats: Vec<String>,
     hide_upcoming: bool,
+    min_start_date: Option<i64>,
+    max_start_date: Option<i64>,
 ) -> Result<(), String> {
     let db = state.db.lock().unwrap();
     db.set_banned_genres(&genres).map_err(|e| e.to_string())?;
     db.set_banned_formats(&formats).map_err(|e| e.to_string())?;
     db.set_hide_upcoming_releases(hide_upcoming).map_err(|e| e.to_string())?;
+    db.set_deck_min_start_date(min_start_date).map_err(|e| e.to_string())?;
+    db.set_deck_max_start_date(max_start_date).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -375,6 +391,17 @@ pub fn discover_catalog_card(
     let banned_genres = db.get_banned_genres().map_err(|e| e.to_string())?;
     let banned_formats = db.get_banned_formats().map_err(|e| e.to_string())?;
     let hide_upcoming = db.get_hide_upcoming_releases().map_err(|e| e.to_string())?;
+    let min_start_date = db.get_deck_min_start_date().map_err(|e| e.to_string())?;
+    // `max_start_date` defaults to "today" (end of the current UTC day) when
+    // never explicitly set — a moving target, not a value frozen at whatever
+    // day the setting happened to be read on. `min_start_date` gets no such
+    // substitution: unbounded really does mean unbounded.
+    let max_start_date = db.get_deck_max_start_date().map_err(|e| e.to_string())?.or_else(|| {
+        chrono::Utc::now()
+            .date_naive()
+            .and_hms_opt(23, 59, 59)
+            .map(|dt| dt.and_utc().timestamp())
+    });
     let candidates = filter_candidate_genres(
         db.distinct_catalog_genres().map_err(|e| e.to_string())?,
         &banned_genres,
@@ -420,6 +447,8 @@ pub fn discover_catalog_card(
                 &format_affinity,
                 recommended,
                 hide_upcoming,
+                min_start_date,
+                max_start_date,
             )
             .map_err(|e| e.to_string())?
         {
