@@ -218,6 +218,12 @@ async fn scan_airing_via_mirrors(
     // Keep completion consistent across sites right after a switch/scan: a
     // show completed elsewhere shouldn't resurface as unwatched-pending here.
     db.reconcile_completion_across_sites().map_err(|e| e.to_string())?;
+    // And ordinary per-episode progress too — carry_follow above only ever
+    // fires once (the first time a site gains the follow); a show followed
+    // on two sites for a while needs its watermark re-checked on every
+    // switch/scan, not just at first-follow, or episodes watched on the
+    // other site keep reappearing as pending here.
+    db.sync_seen_progress_across_sites().map_err(|e| e.to_string())?;
 
     *state.source_id.lock().unwrap() = Some(src);
     let airing = db.list_airing(src).map_err(|e| e.to_string())?;
@@ -517,6 +523,10 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
     // site_episode_count are this scan's values, not last week's.
     let followed = {
         let db = state.db.lock().unwrap();
+        // Local-only, no network: catch up any followed show whose watermark
+        // on this site fell behind progress made on another (same reason as
+        // scan_airing_via_mirrors — see sync_seen_progress_across_sites).
+        db.sync_seen_progress_across_sites().map_err(|e| e.to_string())?;
         db.list_followed(src).map_err(|e| e.to_string())?
     };
     let total_series = followed.len();

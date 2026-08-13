@@ -238,6 +238,64 @@ impl Db {
         Ok(changed)
     }
 
+    /// Bring every followed series' seen-episode watermark up to the highest
+    /// mark any of its canonical twins (same show, any site) has reached.
+    ///
+    /// Complements `reconcile_completion_across_sites`, which only handles a
+    /// show explicitly flagged `watched_externally` ("Ya lo vi"). This covers
+    /// the far more common case: you watch a followed show's new episodes on
+    /// site A, and a twin `series` row for the same show on site B — followed
+    /// there too, e.g. via `carry_follow`'s one-time carry, or because you
+    /// followed it independently on both — never hears about it, so it keeps
+    /// showing those episodes as pending every time you switch to site B.
+    ///
+    /// Strictly additive, like the carry-over it extends: only ever calls
+    /// `set_seen_cascade(id, watermark, true)`, which marks episodes numbered
+    /// <= watermark seen and leaves everything above it — including on a row
+    /// that already has MORE progress than the canonical watermark — exactly
+    /// as it was. Never unmarks anything. Scoped to `followed=1`: an
+    /// unfollowed or backlog-only twin is not touched. Returns how many
+    /// series rows were actually advanced.
+    pub fn sync_seen_progress_across_sites(&self) -> Result<usize> {
+        let mut stmt = self.conn.prepare(
+            "SELECT s.id, s.anilist_id, s.title,
+                    COALESCE(MAX(CASE WHEN e.seen=1 THEN CAST(e.number AS INTEGER) END), 0) AS own_watermark
+             FROM series s LEFT JOIN episodes e ON e.series_id = s.id
+             WHERE s.followed=1
+             GROUP BY s.id",
+        )?;
+        struct Row {
+            id: i64,
+            key: String,
+            own_watermark: i64,
+        }
+        let rows: Vec<Row> = stmt
+            .query_map([], |r| {
+                let anilist_id: Option<i64> = r.get(1)?;
+                let title: String = r.get(2)?;
+                Ok(Row { id: r.get(0)?, key: canon_key(anilist_id, &title), own_watermark: r.get(3)? })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        let mut canonical: HashMap<String, i64> = HashMap::new();
+        for row in &rows {
+            let entry = canonical.entry(row.key.clone()).or_insert(0);
+            if row.own_watermark > *entry {
+                *entry = row.own_watermark;
+            }
+        }
+
+        let mut advanced = 0usize;
+        for row in &rows {
+            let ceiling = canonical[&row.key];
+            if ceiling > row.own_watermark {
+                self.set_seen_cascade(row.id, &ceiling.to_string(), true)?;
+                advanced += 1;
+            }
+        }
+        Ok(advanced)
+    }
+
     /// Canonical **followed** entries that are NOT yet present on `source_id`
     /// — i.e. the part of your library that switching to this site would
     /// strand. "Present" means the site has a `series` row that either shares
@@ -469,6 +527,84 @@ mod tests {
         assert_eq!(db.reconcile_completion_across_sites().unwrap(), 0);
         let eps = db.list_series_episodes(sid).unwrap();
         assert_eq!(eps.iter().filter(|e| e.seen).count(), 3, "watermark untouched");
+    }
+
+    // ---- sync_seen_progress_across_sites (2026-08-13 site-switch bug) ----
+
+    #[test]
+    fn sync_seen_progress_advances_a_lagging_twin_followed_on_two_sites() {
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        let b = db.upsert_source("TioAnime", "b", "tioanime").unwrap();
+        // Followed on both, no anilist_id (matches by normalized title) — the
+        // real-world shape: carry_follow only fires once, so this pairing is
+        // never revisited by anything else.
+        seed_followed(&db, a, "shared", "Shared Show", None, 5, 10);
+        let ob = seed_followed(&db, b, "shared-b", "Shared Show", None, 0, 10);
+
+        let advanced = db.sync_seen_progress_across_sites().unwrap();
+        assert_eq!(advanced, 1, "only B needed to catch up");
+        let seen_count = db.list_series_episodes(ob).unwrap().iter().filter(|e| e.seen).count();
+        assert_eq!(seen_count, 5, "B is caught up to A's watermark");
+        assert!(
+            db.list_series_episodes(ob).unwrap().iter().any(|e| e.number == "6" && !e.seen),
+            "episodes past the watermark stay pending"
+        );
+    }
+
+    #[test]
+    fn sync_seen_progress_never_regresses_the_side_with_more_progress() {
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        let b = db.upsert_source("TioAnime", "b", "tioanime").unwrap();
+        let oa = seed_followed(&db, a, "shared", "Shared Show", None, 2, 10);
+        seed_followed(&db, b, "shared-b", "Shared Show", None, 7, 10);
+
+        let advanced = db.sync_seen_progress_across_sites().unwrap();
+        assert_eq!(advanced, 1, "only A (behind) is advanced, not B");
+        let a_seen = db.list_series_episodes(oa).unwrap().iter().filter(|e| e.seen).count();
+        assert_eq!(a_seen, 7, "A raised to B's watermark");
+        // B, already ahead, is completely untouched — same watermark as before.
+        let b_seen = db
+            .list_series_episodes(db.conn.query_row(
+                "SELECT id FROM series WHERE slug='shared-b'", [], |r| r.get::<_, i64>(0),
+            ).unwrap())
+            .unwrap()
+            .iter()
+            .filter(|e| e.seen)
+            .count();
+        assert_eq!(b_seen, 7);
+    }
+
+    #[test]
+    fn sync_seen_progress_is_idempotent() {
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        let b = db.upsert_source("TioAnime", "b", "tioanime").unwrap();
+        seed_followed(&db, a, "shared", "Shared Show", None, 5, 10);
+        seed_followed(&db, b, "shared-b", "Shared Show", None, 0, 10);
+
+        assert_eq!(db.sync_seen_progress_across_sites().unwrap(), 1);
+        assert_eq!(db.sync_seen_progress_across_sites().unwrap(), 0, "second run has nothing left to advance");
+    }
+
+    #[test]
+    fn sync_seen_progress_ignores_an_unfollowed_twin() {
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        let b = db.upsert_source("TioAnime", "b", "tioanime").unwrap();
+        seed_followed(&db, a, "shared", "Shared Show", None, 5, 10);
+        // Same show scraped on B but never followed there — must be left alone.
+        let ob = db.upsert_series(b, &mk_airing("shared-b", "Shared Show", None)).unwrap();
+        for n in 1..=10 {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: ob, number: n.to_string(), title: None,
+                url: format!("https://site/shared-b-{n}"), released_at: None, seen: false,
+            }).unwrap();
+        }
+
+        assert_eq!(db.sync_seen_progress_across_sites().unwrap(), 0);
+        assert_eq!(db.list_series_episodes(ob).unwrap().iter().filter(|e| e.seen).count(), 0);
     }
 
     #[test]
