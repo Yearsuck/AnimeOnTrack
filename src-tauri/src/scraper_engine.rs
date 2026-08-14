@@ -9,12 +9,18 @@ use tauri::{AppHandle, Emitter, WebviewUrl, WebviewWindow, WebviewWindowBuilder}
 /// refresh() fetching 2 series at a time) with no awareness of any other
 /// command doing the same thing at the same time — so a refresh running
 /// while the user swiped through the discovery deck could pile up well
-/// beyond 2 simultaneous WebView2 windows, which is what was actually
-/// causing the multi-second stalls and the occasional `ExecuteScript timed
-/// out` failure, not the per-fetch poll timing. A single shared semaphore
-/// here means "2 concurrent scraper windows" is a real app-wide ceiling,
-/// not a per-caller one that different commands can stack on top of.
-const SCRAPE_CONCURRENCY: usize = 2;
+/// beyond a handful of simultaneous WebView2 windows, which is what was
+/// actually causing multi-second stalls and occasional `ExecuteScript timed
+/// out` failures at higher counts, not the per-fetch poll timing. A single
+/// shared semaphore here means this is a real app-wide ceiling, not a
+/// per-caller one that different commands can stack on top of.
+///
+/// Raised from 2 to 4 on 2026-08-14 (user request, informed of the tradeoff:
+/// Cloudflare bot-detection can key off unnaturally-parallel requests to the
+/// same site, and higher counts previously correlated with the
+/// `ExecuteScript timed out` failures above) — if stalls/timeouts or mirror
+/// blocks start showing up, this is the first thing to dial back down.
+const SCRAPE_CONCURRENCY: usize = 4;
 static SCRAPE_PERMITS: LazyLock<tokio::sync::Semaphore> =
     LazyLock::new(|| tokio::sync::Semaphore::new(SCRAPE_CONCURRENCY));
 
