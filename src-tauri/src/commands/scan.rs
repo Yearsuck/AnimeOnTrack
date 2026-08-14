@@ -224,6 +224,15 @@ async fn scan_airing_via_mirrors(
     // switch/scan, not just at first-follow, or episodes watched on the
     // other site keep reappearing as pending here.
     db.sync_seen_progress_across_sites().map_err(|e| e.to_string())?;
+    // Local-only, no network: resolve any newly-visible unlinked series (this
+    // site's own rows, or ones carried over just above) to their AniList
+    // catalog entry BEFORE the finished-status sync below, so a show that
+    // only just got linked is corrected in the same pass instead of waiting
+    // for the next scan. Previously this only ran once at app startup, so a
+    // site that became active mid-session (never the one open at launch)
+    // could sit at 0% linked indefinitely — see the pre-launch
+    // site-consistency investigation.
+    db.link_series_to_catalog().map_err(|e| e.to_string())?;
     // A site's own scrape never un-airs a show once scraped as airing (see
     // sync_finished_status_from_catalog's doc comment) — AniList's synced
     // status is the only signal that actually catches a real finish.
@@ -240,6 +249,13 @@ async fn scan_airing_via_mirrors(
     // airing list returns now; the import (a no-op once the library is fully
     // resolved) runs behind it, guarded against overlapping scans.
     spawn_library_import(app.clone());
+    // Same reasoning, for episodes: a show carried over (or already followed)
+    // on this site may never have had its episode list actually fetched if
+    // this site only just became active — refresh() is the only place that
+    // normally happens, and it only runs at app startup or on a manual
+    // "Actualizar" against whichever site is active then. Fire-and-forget,
+    // paced, guarded against overlap — see `spawn_episode_backfill`.
+    spawn_episode_backfill(app.clone());
     Ok(airing)
 }
 
@@ -475,6 +491,75 @@ async fn fetch_series_episodes(
         Ok((_scraped, eps, working_mirror)) => Some((eps, working_mirror, path)),
         Err(_) => None,
     }
+}
+
+/// Fire the episode backfill in the background after a site switch/scan, so
+/// followed shows with zero episodes on this site (see
+/// `Db::followed_series_without_episodes`'s doc comment for why that
+/// happens — mainly a site that became active mid-session) catch up
+/// automatically instead of sitting empty until the user happens to have
+/// this site active at app startup or clicks "Actualizar". Same
+/// fire-and-forget, guarded-against-overlap shape as `spawn_library_import`.
+pub fn spawn_episode_backfill(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = run_episode_backfill(app).await {
+            eprintln!("[scrape] episode backfill after site switch failed: {e}");
+        }
+    });
+}
+
+async fn run_episode_backfill(app: AppHandle) -> Result<(), String> {
+    use std::sync::atomic::Ordering;
+    use tauri::Manager;
+    const PACED: std::time::Duration = std::time::Duration::from_millis(1500);
+
+    let state = app.state::<AppState>();
+    // Only one backfill at a time — same reasoning as library_import_running:
+    // an overlapping run would double the Cloudflare-facing request rate.
+    if state.episode_backfill_running.swap(true, Ordering::SeqCst) {
+        return Ok(());
+    }
+    let _clear = crate::commands::follow::RunningGuard(&state.episode_backfill_running);
+
+    let (a, mirrors, needing) = {
+        let db = state.db.lock().unwrap();
+        let src = get_source_id(&state)?;
+        let a = get_active_adapter(&state)?;
+        let site_id = get_active_site_id(&state);
+        let mirrors = load_mirrors(&db, &site_id)?;
+        let needing = db.followed_series_without_episodes(src).map_err(|e| e.to_string())?;
+        (a, mirrors, needing)
+    };
+
+    for s in needing {
+        let Some((eps, working_mirror, path)) =
+            fetch_series_episodes(&app, &mirrors, a.as_ref(), &s.url).await
+        else {
+            continue;
+        };
+        {
+            let db = state.db.lock().unwrap();
+            let new_url = format!("{working_mirror}{path}");
+            if new_url != s.url {
+                db.update_series_url(s.id, &new_url).map_err(|e| e.to_string())?;
+            }
+            // A never-fetched series has no known episode numbers yet, so
+            // this is always the full list — same insert path `refresh()`
+            // uses, so a later real refresh() sees these as already-known
+            // and doesn't duplicate them.
+            let known = db.existing_episode_numbers(s.id).map_err(|e| e.to_string())?;
+            for mut e in new_episodes(&eps, &known) {
+                e.series_id = s.id;
+                db.insert_episode(&e).map_err(|e| e.to_string())?;
+            }
+            db.set_last_checked_at(s.id).map_err(|e| e.to_string())?;
+            if let Some(n) = db.take_carried_seen_number(s.id).map_err(|e| e.to_string())? {
+                db.set_seen_cascade(s.id, &n.to_string(), true).map_err(|e| e.to_string())?;
+            }
+        }
+        tokio::time::sleep(PACED).await;
+    }
+    Ok(())
 }
 
 /// For each followed series: decide (from one fresh airing-listing fetch)

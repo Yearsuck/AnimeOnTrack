@@ -589,6 +589,29 @@ impl Db {
         Ok(rows)
     }
 
+    /// Followed series on `source_id` with NO episode rows at all yet —
+    /// series that were carried over onto this site (`carry_follow`) or
+    /// followed here directly, but whose episode list has never actually
+    /// been fetched. Only `refresh()`'s per-series loop does that fetch, and
+    /// (before the site-switch fix that calls this) `refresh()` only runs
+    /// for whichever site is active at app startup or on a manual
+    /// "Actualizar" — a site that only becomes active mid-session never got
+    /// a chance, leaving its followed shows permanently at 0 episodes /
+    /// 0 pending. See the pre-launch site-consistency investigation.
+    pub fn followed_series_without_episodes(&self, source_id: i64) -> Result<Vec<crate::models::Series>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, slug, title, url, cover_url, is_airing, followed, next_episode_at, site_episode_count
+             FROM series s
+             WHERE s.source_id=?1 AND s.followed=1
+               AND NOT EXISTS (SELECT 1 FROM episodes e WHERE e.series_id=s.id)
+             ORDER BY title",
+        )?;
+        let rows = stmt
+            .query_map([source_id], Self::row_to_series)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
     /// The subset of a `series` row's fields the swipe-history strip needs
     /// to render one entry (`commands::list_swipe_history`): title, poster,
     /// url (so the frontend can clear it from its decided-set on undo /
@@ -1306,6 +1329,37 @@ mod tests {
         let titles: std::collections::HashSet<String> = db.engaged_series_titles().unwrap().into_iter().collect();
         assert!(titles.contains("Overlord IV"), "engagement on a non-active site must still be visible");
         assert!(!titles.contains("Other Show"));
+    }
+
+    #[test]
+    fn followed_series_without_episodes_finds_only_never_fetched_followed_rows() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        let make = |slug: &str, title: &str| crate::models::Series {
+            id: 0, slug: slug.into(), title: title.into(),
+            url: format!("https://example.com/tv/{slug}"),
+            cover_url: None, is_airing: true, followed: false,
+            next_episode_at: None, site_episode_count: None,
+        };
+
+        // Followed, never fetched — the carry-over-onto-a-new-site shape.
+        let empty = db.upsert_series(src, &make("empty", "Empty Show")).unwrap();
+        db.set_followed(empty, true).unwrap();
+
+        // Followed, already has episodes — must NOT show up again.
+        let has_eps = db.upsert_series(src, &make("has-eps", "Has Episodes")).unwrap();
+        db.set_followed(has_eps, true).unwrap();
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: has_eps, number: "1".into(), title: None,
+            url: "https://example.com/has-eps-1".into(), released_at: None, seen: false,
+        }).unwrap();
+
+        // Never fetched but NOT followed — must not show up either.
+        db.upsert_series(src, &make("not-followed", "Not Followed")).unwrap();
+
+        let needing = db.followed_series_without_episodes(src).unwrap();
+        let titles: Vec<&str> = needing.iter().map(|s| s.title.as_str()).collect();
+        assert_eq!(titles, vec!["Empty Show"]);
     }
 
     #[test]
