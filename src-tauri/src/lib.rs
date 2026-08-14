@@ -59,6 +59,39 @@ fn migrate_legacy_app_data(new_dir: &std::path::Path) {
     }
 }
 
+/// Append every panic (message + location) to `panic.log` next to the
+/// database, on top of the default stderr behaviour.
+///
+/// A release build is a `windows_subsystem = "windows"` binary with no
+/// console, so a panic message goes nowhere. That matters far more here than
+/// in a normal Rust program: synchronous `#[tauri::command]`s run on the main
+/// thread, invoked from the WebView2/COM callback, and a panic there cannot
+/// unwind across the FFI boundary — the runtime aborts the process instead
+/// (Windows exception `0xC0000409`, `FAST_FAIL_FATAL_APP_EXIT`). To the user
+/// that is "the app just closed", with nothing to go on but a crash dump.
+///
+/// This is diagnosis, not a fix: the panic still aborts. It only means the
+/// next one names its own file and line instead of costing a dump analysis.
+fn install_panic_log(dir: &std::path::Path) {
+    let log_path = dir.join("panic.log");
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        use std::io::Write;
+        let when = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}", l.file(), l.line()))
+            .unwrap_or_else(|| "unknown location".to_string());
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&log_path) {
+            let _ = writeln!(f, "[{when}] panic at {location}: {info}");
+        }
+        previous(info);
+    }));
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -66,6 +99,8 @@ pub fn run() {
         .setup(|app| {
             let dir = app.path().app_data_dir().expect("app data dir");
             std::fs::create_dir_all(&dir).ok();
+            // Before anything that can panic below.
+            install_panic_log(&dir);
             // Carry the database over from the pre-0.5.5 app-data directory,
             // which was keyed on the old `com.ernes.aot-scaffold` identifier.
             // Runs before everything below, so the rest of startup sees a
