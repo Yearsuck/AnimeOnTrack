@@ -171,7 +171,7 @@ npm run build
 ```
 
 On first launch, add a site in **Settings** and let it scan. The app's SQLite database
-lives at `%APPDATA%\com.ernes.aot-scaffold\animeontrack.sqlite`. To enable cloud backup,
+lives at `%APPDATA%\com.animeontrack.app\animeontrack.sqlite`. To enable cloud backup,
 follow [`docs/google-drive-setup.md`](docs/google-drive-setup.md).
 
 ---

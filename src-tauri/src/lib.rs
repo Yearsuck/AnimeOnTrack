@@ -18,6 +18,47 @@ use commands::AppState;
 use std::sync::Mutex;
 use tauri::Manager;
 
+/// The app-data directory name used before 0.5.5, when the Tauri identifier
+/// still carried the author's own name (`com.ernes.aot-scaffold`).
+const LEGACY_APP_DATA_DIR: &str = "com.ernes.aot-scaffold";
+
+/// One-time carry-over of the database from the pre-0.5.5 app-data directory.
+///
+/// Changing the Tauri identifier moves `app_data_dir()`, which would
+/// otherwise strand an existing install's whole library — the exact reason
+/// the identifier had been pinned until now (see CLAUDE.md). This copies the
+/// old database across the first time the new location is empty.
+///
+/// Deliberately a **copy, not a move**: the old directory is left untouched
+/// so a mistake here is recoverable by simply reinstalling the old build,
+/// and so the two installs (which Windows treats as separate apps, since the
+/// identifier is part of the product code) can't corrupt each other by
+/// sharing one file. Does nothing when the new location already has a
+/// database, so it never overwrites real data on later launches — including
+/// the case where the user has since used the app and the *old* copy is now
+/// the stale one.
+fn migrate_legacy_app_data(new_dir: &std::path::Path) {
+    let db_name = "animeontrack.sqlite";
+    if new_dir.join(db_name).exists() {
+        return;
+    }
+    // The legacy directory is a sibling of the new one — same parent
+    // (%APPDATA% on Windows), different identifier-derived name.
+    let Some(legacy_dir) = new_dir.parent().map(|p| p.join(LEGACY_APP_DATA_DIR)) else {
+        return;
+    };
+    let legacy_db = legacy_dir.join(db_name);
+    if !legacy_db.exists() {
+        return;
+    }
+    match std::fs::copy(&legacy_db, new_dir.join(db_name)) {
+        Ok(bytes) => eprintln!("[migrate] carried {bytes} bytes over from {LEGACY_APP_DATA_DIR}"),
+        // Non-fatal: the app still opens, just with an empty library, and
+        // the legacy file is still sitting there to retry or recover from.
+        Err(e) => eprintln!("[migrate] could not carry over the legacy database: {e}"),
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -25,6 +66,11 @@ pub fn run() {
         .setup(|app| {
             let dir = app.path().app_data_dir().expect("app data dir");
             std::fs::create_dir_all(&dir).ok();
+            // Carry the database over from the pre-0.5.5 app-data directory,
+            // which was keyed on the old `com.ernes.aot-scaffold` identifier.
+            // Runs before everything below, so the rest of startup sees a
+            // populated directory exactly as if it had always been here.
+            migrate_legacy_app_data(&dir);
             // If a validated restore was staged by `restore_latest` on the
             // previous run, swap it in now, before the DB connection is
             // opened (Windows won't let us touch the file while it's held
