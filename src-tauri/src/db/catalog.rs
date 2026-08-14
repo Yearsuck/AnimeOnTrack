@@ -130,6 +130,44 @@ impl Db {
         Ok(rows)
     }
 
+    /// Resolve engaged-but-unlinked series to their AniList catalog row using
+    /// only the local catalog — no network, no scraping.
+    ///
+    /// Every followed series on this database has `anilist_id IS NULL` until
+    /// something sets it: the existing `link_catalog_series` runs the other
+    /// direction (catalog entry -> find it on the site) and only when the
+    /// user swipes a catalog card. Without a link, a series has no real
+    /// per-episode duration and no real episode total, so the stats screen
+    /// falls back to format-based estimates — and, more visibly, its
+    /// `is_airing` can never be corrected by `sync_finished_status_from_catalog`
+    /// (which only acts on linked rows), so a long-finished unlinked show
+    /// keeps showing as airing forever.
+    ///
+    /// Matching is exact-only first (see `matching::CatalogIndex`), tried on
+    /// the site title then the franchise base name, then a strict fuzzy
+    /// fallback so cross-language and season-suffix title variants ("…2nd
+    /// Season" vs "…Temporada 2") still resolve to the same AniList id —
+    /// otherwise the same show, unlinked on one site, becomes a second
+    /// canonical entry and shows up twice in the "En emisión"/library
+    /// unions. Returns how many series were newly linked.
+    pub fn link_series_to_catalog(&self) -> Result<i64> {
+        let index = crate::matching::CatalogIndex::build(&self.catalog_titles_for_index()?);
+        let mut linked = 0i64;
+        for (series_id, title) in self.series_needing_catalog_link()? {
+            let base = crate::db::stats::franchise_base_title(&title);
+            // The reduced form is only worth a second lookup when it
+            // actually differs; otherwise this is the same query twice.
+            let candidates: Vec<&str> =
+                if base == title { vec![&title] } else { vec![&title, &base] };
+            let matched = index.lookup(&candidates).or_else(|| index.fuzzy_lookup(&candidates));
+            if let Some(anilist_id) = matched {
+                self.set_anilist_id(series_id, anilist_id)?;
+                linked += 1;
+            }
+        }
+        Ok(linked)
+    }
+
     /// AniList ids of catalog rows that predate the extended metadata fields.
     ///
     /// `title_romaji` is the marker rather than `duration` or `studio`:
@@ -1208,6 +1246,47 @@ mod tests {
                 .unwrap();
             assert_eq!(picked.title, "Some Other Show");
         }
+    }
+
+    #[test]
+    fn link_series_to_catalog_links_an_exact_case_insensitive_title_match() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("GogoAnime", "g", "gogoanime").unwrap();
+        db.upsert_catalog_anime(&catalog_anime(187538, "BLACK TORCH", &["Action"]), 0).unwrap();
+
+        let sid = db.upsert_series(src, &crate::models::Series {
+            id: 0, slug: "black-torch".into(), title: "Black Torch".into(),
+            url: "https://gogoanime.example/series/black-torch".into(),
+            cover_url: None, is_airing: true, followed: true,
+            next_episode_at: None, site_episode_count: None,
+        }).unwrap();
+        db.set_followed(sid, true).unwrap();
+
+        let linked = db.link_series_to_catalog().unwrap();
+        assert_eq!(linked, 1);
+        assert_eq!(
+            db.conn.query_row("SELECT anilist_id FROM series WHERE id=?1", [sid], |r| r.get::<_, Option<i64>>(0)).unwrap(),
+            Some(187538)
+        );
+    }
+
+    #[test]
+    fn link_series_to_catalog_leaves_a_title_with_no_catalog_match_unlinked() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("GogoAnime", "g", "gogoanime").unwrap();
+        let sid = db.upsert_series(src, &crate::models::Series {
+            id: 0, slug: "totally-obscure".into(), title: "Totally Obscure Show Nobody Synced".into(),
+            url: "https://gogoanime.example/series/totally-obscure".into(),
+            cover_url: None, is_airing: true, followed: true,
+            next_episode_at: None, site_episode_count: None,
+        }).unwrap();
+        db.set_followed(sid, true).unwrap();
+
+        assert_eq!(db.link_series_to_catalog().unwrap(), 0);
+        assert_eq!(
+            db.conn.query_row("SELECT anilist_id FROM series WHERE id=?1", [sid], |r| r.get::<_, Option<i64>>(0)).unwrap(),
+            None
+        );
     }
 
     #[test]

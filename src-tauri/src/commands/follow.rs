@@ -323,8 +323,13 @@ pub async fn link_catalog_series(
 /// as a silent bulk crawl (Cloudflare). Emits `library-import-progress`.
 /// Clears `library_import_running` on drop, so the flag is released on every
 /// exit path of `run_library_import` (early `?` errors included).
-struct ImportGuard<'a>(&'a std::sync::atomic::AtomicBool);
-impl Drop for ImportGuard<'_> {
+/// RAII reset for a "one at a time" `AtomicBool` guard (see
+/// `library_import_running`/`episode_backfill_running` on `AppState`) — flips
+/// it back to `false` however the guarded scope is left (early `?` return or
+/// normal completion), so one error can't wedge it on and block every future
+/// run for the rest of the session.
+pub(crate) struct RunningGuard<'a>(pub(crate) &'a std::sync::atomic::AtomicBool);
+impl Drop for RunningGuard<'_> {
     fn drop(&mut self) {
         self.0.store(false, std::sync::atomic::Ordering::SeqCst);
     }
@@ -375,7 +380,7 @@ async fn run_library_import(app: AppHandle) -> Result<crate::models::LibraryImpo
     // Clear the flag no matter how we leave this function (any `?` early
     // return, or normal completion) — otherwise one error would wedge the
     // guard on and block every future import for the whole session.
-    let _clear = ImportGuard(&state.library_import_running);
+    let _clear = RunningGuard(&state.library_import_running);
 
     let (src, missing) = {
         let db = state.db.lock().unwrap();

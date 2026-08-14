@@ -24,6 +24,13 @@ pub struct AnimelandAdapter;
 //   this site (89 `/category/` links there alone on a real capture — a trap
 //   for any selector broader than `.new_added`). No episode-count or
 //   release-date signal on these cards at all.
+//   Re-confirmed live 2026-08-14 (pre-launch site-consistency investigation):
+//   each card is `.gallery > .picture > a[href]` (wraps only the `<img>`,
+//   empty text) followed by a sibling `.gallery > .title > a[href]` (same
+//   href, real title text) — title must be read from `.title`, not from the
+//   first anchor's own text, which had silently been empty and falling back
+//   to the URL slug as the "title" for every card since the site changed
+//   this structure at some point after the original 2026-07-23 capture.
 // - Series page episodes are `.anime-col li.play a` (confirmed scoped away
 //   from the same sidebar) — text "Episode N", digit-extracted. No
 //   per-episode title or date exist on this site.
@@ -59,6 +66,13 @@ fn slug_from_url(url: &str) -> String {
     url.trim_end_matches('/').rsplit('/').next().unwrap_or("").to_string()
 }
 
+fn text_of(el: scraper::ElementRef, sel: &Selector) -> Option<String> {
+    el.select(sel)
+        .next()
+        .map(|n| n.text().collect::<String>().trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
 /// Trailing run of ASCII digits in `s`, e.g. "Episode 12" -> "12". Falls
 /// back to the whole trimmed string if there are no digits at all, mirroring
 /// the never-panic discipline the other adapters' own digit helpers use.
@@ -80,6 +94,7 @@ impl SiteAdapter for AnimelandAdapter {
         let doc = Html::parse_document(html);
         let card_sel = Selector::parse(AIRING_CARD).unwrap();
         let a_sel = Selector::parse("a").unwrap();
+        let title_sel = Selector::parse(".title").unwrap();
         let img_sel = Selector::parse("img").unwrap();
 
         let mut out = Vec::new();
@@ -87,8 +102,14 @@ impl SiteAdapter for AnimelandAdapter {
             let Some(anchor) = card.select(&a_sel).next() else { continue };
             let Some(href) = anchor.value().attr("href") else { continue };
             let url = abs(href);
-            let title = anchor.text().collect::<String>().trim().to_string();
-            let title = if title.is_empty() { slug_from_url(&url) } else { title };
+            // Title lives in a SEPARATE `.title a` sibling of the thumbnail's
+            // own `.picture a` (same href, no text — just the `<img>`), not
+            // as text inside the first anchor. Re-confirmed live 2026-08-14:
+            // reading `anchor.text()` off that first (picture) anchor always
+            // returned empty, silently falling back to the URL slug as the
+            // "title" for every card — see the pre-launch site-consistency
+            // investigation.
+            let title = text_of(card, &title_sel).unwrap_or_else(|| slug_from_url(&url));
             let cover_url = card.select(&img_sel).next().and_then(|i| i.value().attr("src")).map(abs);
             out.push(Series {
                 id: 0,

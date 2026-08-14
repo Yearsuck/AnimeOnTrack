@@ -103,6 +103,11 @@ pub struct AppState {
     /// import is in flight, later triggers no-op, and the next scan after it
     /// finishes picks up whatever is still missing.
     pub library_import_running: std::sync::atomic::AtomicBool,
+    /// Same one-at-a-time guard as `library_import_running`, for the
+    /// post-scan episode backfill (`spawn_episode_backfill`) — a separate
+    /// flag because the two background jobs do unrelated work and either can
+    /// legitimately still be running when the other's scan trigger fires.
+    pub episode_backfill_running: std::sync::atomic::AtomicBool,
 }
 
 /// How many recent swipe decisions `swipe_history` remembers.
