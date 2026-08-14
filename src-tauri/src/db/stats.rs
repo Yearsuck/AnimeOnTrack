@@ -68,9 +68,20 @@ fn strip_season_markers(
     let is_marker_word = |t: &str| MARKER_WORDS.contains(&t);
     let is_int = |t: &str| !t.is_empty() && t.chars().all(|c| c.is_ascii_digit());
     let is_ordinal = |t: &str| {
-        t.len() > 2
-            && matches!(&t[t.len() - 2..], "st" | "nd" | "rd" | "th")
-            && t[..t.len() - 2].chars().all(|c| c.is_ascii_digit())
+        // char-boundary safe: use strip_suffix instead of byte indexing.
+        // Titles can contain multi-byte Unicode (roman numerals, Cyrillic,
+        // superscripts, fullwidth, fractions). Byte-slicing panics on non-char
+        // boundaries; in #[tauri::command] paths on the main thread this aborts
+        // the whole process (FAST_FAIL_FATAL_APP_EXIT).
+        let Some(head) = t
+            .strip_suffix("st")
+            .or_else(|| t.strip_suffix("nd"))
+            .or_else(|| t.strip_suffix("rd"))
+            .or_else(|| t.strip_suffix("th"))
+        else {
+            return false;
+        };
+        !head.is_empty() && head.chars().all(|c| c.is_ascii_digit())
     };
 
     while let Some(&last) = tokens.last() {
@@ -880,6 +891,66 @@ mod tests {
         // A digit introduced by a season marker still strips.
         assert_eq!(franchise_key("Kimetsu no Yaiba Temporada 2"), franchise_key("Kimetsu no Yaiba"));
         assert_eq!(franchise_key("Overlord IV"), franchise_key("Overlord"));
+    }
+
+    /// Regression guard for the char-boundary panic this bug caused in
+    /// `strip_season_markers` (a byte-for-byte duplicate of matching.rs'
+    /// `is_ordinal`, now fixed identically). Every title comes from the user's
+    /// live database and carries a multi-byte Unicode char (Roman numeral Ⅱ,
+    /// Cyrillic о, fraction ⅐, superscript ⁿ, fullwidth Ａ) that byte-index
+    /// slicing would have split on a non-char boundary and panicked — in a
+    /// main-thread `#[tauri::command]` that aborts the whole process
+    /// (FAST_FAIL_FATAL_APP_EXIT). `franchise_key`/`franchise_display_title`
+    /// feed raw site titles through this path.
+    /// The multi-byte char has to be in the **trailing** token: this loop reads
+    /// `tokens.last()` and breaks at the first non-marker, so a multi-byte char
+    /// in a leading token never reaches `is_ordinal` and never panicked — a
+    /// test built on one of those would pass against the buggy code too.
+    ///
+    /// Second field is the ASCII core that must survive, asserted per title so
+    /// one entry can't satisfy the check on behalf of the other five.
+    const MULTIBYTE_TITLES: &[(&str, &str)] = &[
+        // Real catalog rows: Ⅱ = U+2161 lowercases to ⅱ (U+2171), a trailing
+        // token that is a single 3-byte char.
+        ("Long Sword Ⅱ", "sword"),
+        ("The Morose Mononokean Ⅱ", "mononokean"),
+        ("Zhu Dick: Guguai Dao Da Maoxian Ⅰ", "maoxian"),
+        // Other scripts from the catalog, moved into trailing position so they
+        // exercise the loop: fullwidth Ａ, superscript ⁿ, fraction ⅐.
+        ("Galaxy Angel Ａ", "angel"),
+        ("Kuusou Episodeⁿ", "kuusou"),
+        ("Tom Thumb 00⅐", "thumb"),
+    ];
+
+    #[test]
+    fn multibyte_titles_do_not_panic_in_franchise_key() {
+        for (title, core) in MULTIBYTE_TITLES {
+            // Not panicking IS the assertion — the old byte-slicing version
+            // aborted the process on every one of these. The multi-byte chars
+            // are in none of the ordinal/ROMANS/marker lists, so they survive
+            // intact: the fix removes a panic, it invents no stripping rule.
+            let key = franchise_key(title);
+            assert!(
+                key.contains(core),
+                "expected {core:?} to survive in {title:?} -> {key:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn multibyte_titles_do_not_panic_in_franchise_display_title() {
+        for (title, core) in MULTIBYTE_TITLES {
+            let display = franchise_display_title(title);
+            assert!(
+                display.to_lowercase().contains(core),
+                "expected {core:?} to survive in {title:?} -> {display:?}"
+            );
+            // Unlike franchise_key, the display path keeps the original casing.
+            assert!(
+                display.chars().any(|c| c.is_uppercase()),
+                "display title lost its casing: {title:?} -> {display:?}"
+            );
+        }
     }
 
     #[test]

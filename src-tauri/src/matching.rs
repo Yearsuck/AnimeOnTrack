@@ -315,15 +315,29 @@ fn franchise_base(norm: &str) -> String {
     let is_marker = |t: &str| MARKERS.contains(&t);
     let is_int = is_ascii_int;
     let is_ordinal = |t: &str| {
-        t.len() > 2
-            && matches!(&t[t.len() - 2..], "st" | "nd" | "rd" | "th")
-            && t[..t.len() - 2].chars().all(|c| c.is_ascii_digit())
+        // char-boundary safe: use strip_suffix instead of byte indexing.
+        // Titles can contain multi-byte Unicode (roman numerals, Cyrillic,
+        // superscripts, fullwidth, fractions). Byte-slicing panics on non-char
+        // boundaries; in #[tauri::command] paths on the main thread this aborts
+        // the whole process (FAST_FAIL_FATAL_APP_EXIT).
+        let Some(head) = t
+            .strip_suffix("st")
+            .or_else(|| t.strip_suffix("nd"))
+            .or_else(|| t.strip_suffix("rd"))
+            .or_else(|| t.strip_suffix("th"))
+        else {
+            return false;
+        };
+        !head.is_empty() && head.chars().all(|c| c.is_ascii_digit())
     };
     // A trailing 4-digit year (1900–2099) is a re-release tag ("Fruits Basket
     // (2019)", "Hunter x Hunter 2011"), not a distinct work — strip it so year
     // variants reduce to the same base.
     let is_year = |t: &str| {
-        t.len() == 4 && is_int(t) && matches!(&t[..2], "19" | "20")
+        // `starts_with` rather than the byte slice `&t[..2]` this used to do:
+        // the `is_int` guard already made that slice safe, but there is no
+        // reason to leave a second byte-index into a title token in the file.
+        t.len() == 4 && is_int(t) && (t.starts_with("19") || t.starts_with("20"))
     };
     let mut tokens: Vec<&str> = norm.split_whitespace().collect();
     while let Some(&last) = tokens.last() {
@@ -815,6 +829,63 @@ mod tests {
         // Matching must not depend on argument order.
         for (a, b) in SHOULD_MATCH.iter().chain(SHOULD_NOT_MATCH) {
             assert_eq!(same_show(a, b), same_show(b, a), "asymmetric verdict for ({a:?}, {b:?})");
+        }
+    }
+
+    /// Regression guard for the char-boundary panic that aborted the whole
+    /// process. Each title is copied verbatim out of the live `anilist_catalog`
+    /// / `series` tables, and each normalizes to a token whose `len() - 2` byte
+    /// index falls **inside** a multi-byte character — exactly what the old
+    /// `is_ordinal` (`&t[t.len() - 2..]`) sliced on, panicking. Because
+    /// `franchise_base` is reached from synchronous `#[tauri::command]`s, which
+    /// Tauri runs on the main thread from a COM/FFI callback, that panic could
+    /// not unwind and aborted the process (Windows 0xC0000409,
+    /// FAST_FAIL_FATAL_APP_EXIT) — the "app closes when the sync finishes" bug.
+    ///
+    /// The multi-byte char has to be in the **trailing** token: the strip loop
+    /// inspects `tokens.last()` and breaks at the first token that is not a
+    /// marker, so a title like "Episodeⁿ | Kuusou" (multi-byte in a leading
+    /// token) never reached `is_ordinal` and never panicked. A regression test
+    /// built on those would pass just as happily against the buggy code.
+    ///
+    /// The second field is the ASCII core that must survive the reduction, so
+    /// the assertion is specific per title rather than an any-of-these chain
+    /// that a single title could satisfy on behalf of all six.
+    const MULTIBYTE_TITLES: &[(&str, &str)] = &[
+        // Real catalog rows. Ⅱ = U+2161, lowercasing to ⅱ (U+2171): the whole
+        // trailing token is one 3-byte char, so the old `&t[t.len() - 2..]`
+        // sliced straight through the middle of it.
+        ("Long Sword Ⅱ", "longsword"),
+        ("The Morose Mononokean Ⅱ", "mononokean"),
+        ("Zhu Dick: Guguai Dao Da Maoxian Ⅰ", "maoxian"),
+        // Same shape, other scripts present in the catalog, moved into the
+        // trailing position so they actually exercise the loop: fullwidth Ａ
+        // (U+FF21), superscript ⁿ (U+207F), vulgar fraction ⅐ (U+2150).
+        ("Galaxy Angel Ａ", "angel"),
+        ("Kuusou Episodeⁿ", "kuusou"),
+        ("Tom Thumb 00⅐", "thumb"),
+    ];
+
+    #[test]
+    fn multibyte_titles_do_not_panic_in_franchise_dedup_key() {
+        for (title, core) in MULTIBYTE_TITLES {
+            // Not panicking IS the assertion here — the old byte-slicing
+            // version aborted the process on every one of these.
+            let key = franchise_dedup_key(title);
+            assert!(
+                key.contains(core),
+                "expected {core:?} to survive in {title:?} -> {key:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn multibyte_titles_do_not_panic_in_normalize_title() {
+        for (title, _) in MULTIBYTE_TITLES {
+            // normalize_title itself is char-safe, but pin it over these exact
+            // inputs so a regression there (or in anything it calls) is caught.
+            let norm = normalize_title(title);
+            assert!(!norm.is_empty(), "normalize_title reduced {title:?} to empty");
         }
     }
 
