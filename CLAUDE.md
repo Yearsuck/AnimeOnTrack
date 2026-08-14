@@ -8,7 +8,7 @@ AnimeOnTrack: a Windows desktop app (Tauri v2 + Rust backend + React/TS frontend
 
 Public, **GPL-3.0-or-later** (`LICENSE`). First release is tagged `v0.1.0`.
 
-Note on names: `productName`/window title/installer are "AnimeOnTrack", but the Cargo package (and the dev binary) is still `aot-scaffold`, and the Tauri **identifier stays `com.ernes.aot-scaffold`** — deliberately, so the app-data DB path never moves (renaming the product would otherwise orphan every existing user's library). The dev build and the installed release therefore share the same database.
+Note on names: `productName`/window title/installer are "AnimeOnTrack", but the Cargo package (and the dev binary) is still `aot-scaffold`. The Tauri identifier was `com.ernes.aot-scaffold` until 0.5.5, when it became **`com.animeontrack.app`** (dropping the author's personal name ahead of publicising the repo). Because `app_data_dir()` is derived from the identifier, that move strands the old database — `lib.rs`'s `migrate_legacy_app_data` copies it across on first launch (a copy, never a move; see its doc comment). Windows treats the new identifier as a separate app, so the new build installs *alongside* the old one rather than upgrading it. The dev build and the installed release share the same database.
 
 ## Commands
 
@@ -34,7 +34,7 @@ This starts Vite on :1420 and launches the Tauri window via `cargo run`. On Wind
 
 Cargo requires `%USERPROFILE%\.cargo\bin` on `PATH` in a fresh shell (rustup toolchain: `stable-x86_64-pc-windows-msvc`).
 
-The app's SQLite DB lives at `%APPDATA%\com.ernes.aot-scaffold\animeontrack.sqlite` — useful to inspect directly with `sqlite3` when debugging state (mirrors list, cover_url values, followed flags, catalog rows) without going through the UI.
+The app's SQLite DB lives at `%APPDATA%\com.animeontrack.app\animeontrack.sqlite` (pre-0.5.5 installs: `%APPDATA%\com.ernes.aot-scaffold\`) — useful to inspect directly with `sqlite3` when debugging state (mirrors list, cover_url values, followed flags, catalog rows) without going through the UI.
 
 ### CI/CD (GitHub Actions)
 

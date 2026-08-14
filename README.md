@@ -9,9 +9,33 @@
 <img src="https://img.shields.io/badge/i18n-EN%20%C2%B7%20ES-46d19e?style=for-the-badge&labelColor=0b1521" alt="i18n EN/ES" />
 <img src="https://img.shields.io/badge/platform-Windows-e9eff5?style=for-the-badge&logo=windows11&logoColor=0b1521&labelColor=0b1521" alt="Windows" />
 
+<a href="https://github.com/Yearsuck/AnimeOnTrack/releases/latest"><img src="https://img.shields.io/github/v/release/Yearsuck/AnimeOnTrack?style=flat-square&color=4aa8ff&labelColor=0b1521&label=latest" alt="Latest release" /></a>
+<a href="https://github.com/Yearsuck/AnimeOnTrack/releases"><img src="https://img.shields.io/github/downloads/Yearsuck/AnimeOnTrack/total?style=flat-square&color=46d19e&labelColor=0b1521&label=downloads" alt="Downloads" /></a>
+<a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0--or--later-9fd4ff?style=flat-square&labelColor=0b1521" alt="GPL-3.0-or-later" /></a>
+<img src="https://img.shields.io/badge/sites-6%20adapters-9fd4ff?style=flat-square&labelColor=0b1521" alt="6 site adapters" />
+<img src="https://img.shields.io/badge/catalog-~22k%20titles-9fd4ff?style=flat-square&labelColor=0b1521" alt="~22,000 AniList titles mirrored locally" />
+
 <p><em>Tracks currently-airing anime, tells you the moment a new episode drops, and never loses your place — across six streaming sites, in English or Spanish.</em></p>
 
+<p>
+  <a href="https://github.com/Yearsuck/AnimeOnTrack/releases/latest"><b>⬇ Download for Windows</b></a>
+  &nbsp;·&nbsp;
+  <a href="#features">Features</a>
+  &nbsp;·&nbsp;
+  <a href="#why-the-odd-design-choices">How it works</a>
+  &nbsp;·&nbsp;
+  <a href="#getting-started">Build it yourself</a>
+</p>
+
 </div>
+
+---
+
+## Get it
+
+Grab the latest `*_x64-setup.exe` (or the `.msi`) from the [**releases page**](https://github.com/Yearsuck/AnimeOnTrack/releases/latest) and run it. No account, no config file, no telemetry — everything lives in a local SQLite database on your machine.
+
+On first launch, pick a site in **Settings** and let it scan. macOS and Linux builds are published too, but are **not functional yet** — the episode-detection scraper is Windows-only for now (see [`docs/cross-platform-porting.md`](docs/cross-platform-porting.md)).
 
 ---
 
@@ -67,7 +91,7 @@ Adding a seventh is one `SiteInfo` row plus a `SiteAdapter` implementation — n
 | **Pending** | Flat queue of new episodes across everything you follow. Sortable by how many episodes each series still has left to watch. |
 | **Airing** | The live scraped airing schedule — follow a series with one click. Newest-release-first. |
 | **Library** | Followed series grouped by derived status — **Watching** (includes airing shows you're caught up on), **Plan to watch**, **Completed** (finished *and* fully watched). Airing filter, progress bars, keyboard-accessible, one-click reclassify. |
-| **Discover** | A swipe deck (Want / Seen / Discard) drawn from the local catalog, weighted toward your taste. Multi-level undo of your last ~5 cards, plus configurable per-genre and per-type bans. |
+| **Discover** | A swipe deck (Want / Seen / Discard) drawn from the local catalog, weighted toward your taste. Multi-level undo of your last ~5 cards, plus configurable per-genre, per-type, and release-date-range filters (default: everything up to today — set it into the future to include upcoming titles). |
 | **Catalog** | The full AniList catalog, filterable by genre / format / score / length. Multi-select to batch-add many titles to *Want* or *Seen*; ℹ opens the AniList page. |
 | **Stats** | Watch-time and completion tiles, a top-series ranking, an activity timeline, genre/type breakdowns, and an interactive 3D force graph of your library — all computed locally. Long-runners the site splits into per-arc rows (One Piece, Boruto…) roll up into one franchise. |
 | **Backup** | One-click, end-to-end backup of your database to a hidden folder in **your** Google Drive, plus automatic daily backups. Restore onto a fresh machine by connecting the same account. |
@@ -83,6 +107,11 @@ Adding a seventh is one `SiteInfo` row plus a `SiteAdapter` implementation — n
 
 ## What's new
 
+- **v0.5.4** — Faster scraping: up to **4 concurrent** episode-list fetches (was 2), app-wide. Plus a crash fix — catalog linking no longer blocks the site switch that triggers it.
+- **v0.5.3** — Switching to a site now catches it up automatically: shows followed elsewhere get their episode lists fetched and their AniList links resolved in the background, instead of waiting until that site happened to be the one open at startup. Also fixes AnimeLand storing URL slugs (`re-monster`) instead of real titles (`Re Monster`).
+- **v0.5.2** — All six adapters re-validated against the live sites; JKanime's directory-page selector updated after a site redesign that had silently broken its listing.
+- **v0.5.1** — Four fixes: shows that actually finished now get un-marked as airing (via AniList's status), pending episodes sort numerically instead of by scrape order, the Discover deck stops re-offering shows you already decided on another site, and saving deck filters applies immediately instead of after a tab switch.
+- **v0.5.0** — **Release-date range filter** in Discover: pick any window, defaults to *everything up to today*, and can reach into the future for upcoming titles.
 - **v0.4.3** — Real per-episode progress now syncs across sites continuously. Follow the same show on two sites, watch on one, the other updates automatically — no more stale "unwatched" entries when switching sites.
 - **v0.4.2** — **Estadísticas** computed canonically across *every* site you use. Before this, Stats only reflected the active site's slice of your data (e.g. showing 0 "want to watch" when you had hundreds tracked under a different site).
 - **v0.4.1** — Scraper remembers the last working mirror per site and tries it first next time. Cross-site airing entries use the freshest "next episode" timestamp across *all* sites that have the show. Catalog linking falls back to fuzzy title match (season markers, cross-language variants), collapsing duplicate entries into one canonical "En emisión"/library row.
@@ -99,6 +128,7 @@ Adding a seventh is one `SiteInfo` row plus a `SiteAdapter` implementation — n
 - **Covers fetched one at a time, only for followed series.** Requesting ~150 posters at once reads as scraping abuse and gets rate-limited regardless of a valid session. One cover per followed series per refresh, decoded via an offscreen `<canvas>` and stored as a `data:` URI.
 - **Mirror fallback doesn't trust a `200`.** A mirror can return HTTP 200 while rendering a totally different, incompatible site. Fallthrough continues until a mirror actually *parses* into data, not merely until the server answers.
 - **Refresh skips series that can't have changed.** Using the airing schedule's own release metadata, a quiet refresh went from ~510s (scraping every followed series) to ~1.5s (typically one fetch). The skip rule is a pure, unit-tested function — a bug there would silently stop the app from doing its one job.
+- **Concurrency is one app-wide ceiling, not per-command.** Every scraper window — refresh, discover, a one-off detail fetch — draws from a single semaphore (4 permits). Per-caller limits looked fine in isolation and still stacked into stalls and `ExecuteScript` timeouts when two flows ran at once. It's deliberately modest: unnaturally-parallel requests to one site are exactly what bot detection keys on, and the bottleneck is the site, not the PC.
 - **Browsing and swiping never scrape.** The streaming site is hit only for the airing scan and on-demand for a single title (opening its detail, following it, or marking it seen). Discover, the Catalog, and the "Want" swipe stay entirely local against the SQLite catalog.
 - **Backup credentials live in local SQLite, not baked into the build.** A Desktop OAuth client's id and secret are non-confidential by design (which is why the flow uses PKCE), so storing them next to the refresh token adds no exposure — and means no rebuild to set backup up.
 
@@ -141,7 +171,7 @@ npm run build
 ```
 
 On first launch, add a site in **Settings** and let it scan. The app's SQLite database
-lives at `%APPDATA%\com.ernes.aot-scaffold\animeontrack.sqlite`. To enable cloud backup,
+lives at `%APPDATA%\com.animeontrack.app\animeontrack.sqlite`. To enable cloud backup,
 follow [`docs/google-drive-setup.md`](docs/google-drive-setup.md).
 
 ---

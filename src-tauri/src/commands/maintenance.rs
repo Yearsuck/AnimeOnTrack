@@ -13,7 +13,7 @@ use super::*;
 ///
 /// This is deliberately **not** a silent uninstall — it hands off to the
 /// standard uninstaller UI, which by our bundle config keeps the user's data
-/// (`%APPDATA%\com.ernes.aot-scaffold`) in place. The frontend must confirm
+/// (`%APPDATA%\com.animeontrack.app`) in place. The frontend must confirm
 /// with the user before calling this; the command itself performs no prompt.
 ///
 /// Returns an error (without exiting) when no uninstaller is found — the normal

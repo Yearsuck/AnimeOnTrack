@@ -367,7 +367,13 @@ pub async fn backfill_genres(app: AppHandle, state: State<'_, AppState>) -> Resu
 /// Cover images stay strictly one-at-a-time regardless (see the cover-fetch
 /// comment below) — this only parallelizes the plain HTML episode-list
 /// fetch, not the thing CLAUDE.md specifically calls out as abuse-prone.
-const REFRESH_CONCURRENCY: usize = 2;
+///
+/// Kept equal to `scraper_engine::SCRAPE_CONCURRENCY` (raised together to 4
+/// on 2026-08-14): the semaphore there is the real ceiling, so a larger
+/// value here would just queue behind it, and a smaller one would leave
+/// permits unused. The `chunk` match below has one `tokio::join!` arm per
+/// size up to this value — raising it further needs a matching arm.
+const REFRESH_CONCURRENCY: usize = 4;
 
 /// How long a followed series that is *absent* from the airing listing goes
 /// between episode-list rechecks. The spec drafted this as 7 days on the
@@ -677,7 +683,28 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
         // not the image-bulk case CLAUDE.md warns about) — everything after
         // this (DB writes, cover fetch, genre backfill) stays sequential
         // per series below, so cover images never overlap.
+        // `tokio::join!` is fixed-arity, hence one arm per chunk size up to
+        // REFRESH_CONCURRENCY; the trailing arm is the sequential fallback
+        // for a final short chunk (and would also cover a raised ceiling
+        // correctly, just without the parallelism).
         let fetched: Vec<Option<(Vec<Episode>, String, String)>> = match chunk {
+            [s0, s1, s2, s3] => {
+                let (r0, r1, r2, r3) = tokio::join!(
+                    fetch_series_episodes(&app, &mirrors, a.as_ref(), &s0.url),
+                    fetch_series_episodes(&app, &mirrors, a.as_ref(), &s1.url),
+                    fetch_series_episodes(&app, &mirrors, a.as_ref(), &s2.url),
+                    fetch_series_episodes(&app, &mirrors, a.as_ref(), &s3.url),
+                );
+                vec![r0, r1, r2, r3]
+            }
+            [s0, s1, s2] => {
+                let (r0, r1, r2) = tokio::join!(
+                    fetch_series_episodes(&app, &mirrors, a.as_ref(), &s0.url),
+                    fetch_series_episodes(&app, &mirrors, a.as_ref(), &s1.url),
+                    fetch_series_episodes(&app, &mirrors, a.as_ref(), &s2.url),
+                );
+                vec![r0, r1, r2]
+            }
             [s0, s1] => {
                 let (r0, r1) = tokio::join!(
                     fetch_series_episodes(&app, &mirrors, a.as_ref(), &s0.url),
