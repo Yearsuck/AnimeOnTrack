@@ -60,25 +60,85 @@ impl Db {
     /// ever offer titles not already known — see `known_series_urls`), so
     /// this can't silently clobber real scanned data in the normal flow.
     pub fn upsert_series(&self, source_id: i64, s: &crate::models::Series) -> Result<i64> {
+        // A slug is not a stable identity: the scraped site sometimes
+        // restructures a series' URL path (seen on sequels/"2nd Season"
+        // titles in particular). Matching on (source_id, slug) alone then
+        // treats that as a brand new series — a fresh row with no seen
+        // history, while the real history sits orphaned under the old slug.
+        // This is the same class of bug already fixed for episodes (see
+        // `existing_episode_numbers`'s doc comment): identity drifts, so
+        // fall back to the title's canonical normalized form (the same one
+        // `canon_key` uses) to find the row this really is before deciding
+        // it's new.
+        let existing_id: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT id FROM series WHERE source_id=?1 AND slug=?2",
+                (source_id, &s.slug),
+                |r| r.get(0),
+            )
+            .optional()?;
+
+        // Synthetic AniList-placeholder rows (slug `anilist-N`) are
+        // deliberately kept as their own row even when they share a title
+        // with a real scraped row — `merge_series_into` / `relink_series` /
+        // `find_series_id_by_slug` reconcile the two on purpose, later, once
+        // linking actually happens. Folding them together here on title
+        // match alone would short-circuit that whole mechanism, so the
+        // title fallback below only ever applies among "real" (non-
+        // `anilist-`) rows, and only when the incoming row is itself real.
+        let is_synthetic = s.slug.starts_with("anilist-");
+
+        let by_title = if existing_id.is_none() && !is_synthetic {
+            // Scan this source's other non-synthetic rows and compare
+            // normalized titles in Rust (SQLite has no access to
+            // `normalize_title`'s Unicode-aware folding).
+            let norm = crate::matching::normalize_title(&s.title);
+            let mut stmt = self.conn.prepare(
+                "SELECT id, title FROM series WHERE source_id=?1 AND slug NOT LIKE 'anilist-%'",
+            )?;
+            let mut rows = stmt.query([source_id])?;
+            let mut found = None;
+            while let Some(row) = rows.next()? {
+                let id: i64 = row.get(0)?;
+                let title: String = row.get(1)?;
+                if crate::matching::normalize_title(&title) == norm {
+                    found = Some(id);
+                    break;
+                }
+            }
+            found
+        } else {
+            None
+        };
+
+        let target_id = match existing_id.or(by_title) {
+            Some(id) => id,
+            None => {
+                self.conn.execute(
+                    "INSERT INTO series(source_id, slug, title, url, cover_url, is_airing, next_episode_at, site_episode_count)
+                     VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                    (
+                        source_id, &s.slug, &s.title, &s.url,
+                        &s.cover_url, s.is_airing as i64,
+                        s.next_episode_at, s.site_episode_count,
+                    ),
+                )?;
+                return Ok(self.conn.last_insert_rowid());
+            }
+        };
+
         self.conn.execute(
-            "INSERT INTO series(source_id, slug, title, url, cover_url, is_airing, next_episode_at, site_episode_count)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-             ON CONFLICT(source_id, slug) DO UPDATE SET
-                title=excluded.title, url=excluded.url,
-                cover_url=excluded.cover_url, is_airing=excluded.is_airing,
-                next_episode_at=excluded.next_episode_at, site_episode_count=excluded.site_episode_count",
+            "UPDATE series SET slug=?2, title=?3, url=?4, cover_url=?5, is_airing=?6,
+                next_episode_at=?7, site_episode_count=?8
+             WHERE id=?1",
             (
-                source_id, &s.slug, &s.title, &s.url,
+                target_id, &s.slug, &s.title, &s.url,
                 &s.cover_url, s.is_airing as i64,
                 s.next_episode_at, s.site_episode_count,
             ),
         )?;
-        let id: i64 = self.conn.query_row(
-            "SELECT id FROM series WHERE source_id=?1 AND slug=?2",
-            (source_id, &s.slug),
-            |r| r.get(0),
-        )?;
-        Ok(id)
+        Ok(target_id)
     }
 
     pub fn get_series_url(&self, series_id: i64) -> Result<Option<String>> {
@@ -663,6 +723,37 @@ mod tests {
         let got = db.list_airing(src).unwrap().into_iter().find(|r| r.id == sid).unwrap();
         assert_eq!(got.next_episode_at, Some(1_783_954_940));
         assert_eq!(got.site_episode_count, Some(3));
+    }
+
+    #[test]
+    fn upsert_series_slug_change_updates_existing_row_and_keeps_seen_history() {
+        // Reproduces the "Youjo Senki II" bug: the site restructures a
+        // series' slug between scans. A slug-keyed upsert would treat that
+        // as a brand new series, orphaning the seen episodes under the old
+        // id. Matching on normalized title within the same source instead
+        // should update the existing row in place.
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let sid = db.upsert_series(src, &mk_airing("youjo-senki-2", "Youjo Senki II", None)).unwrap();
+        insert_eps_seen_up_to(&db, sid, 5, 5);
+
+        // Site moves the slug (e.g. "-2" -> "-ii") on a later scan; title
+        // (once normalized) is unchanged.
+        let sid2 = db.upsert_series(src, &mk_airing("youjo-senki-ii", "Youjo Senki II", None)).unwrap();
+
+        assert_eq!(sid, sid2, "slug drift on the same source/title must reuse the existing series id");
+        let eps = db.list_series_episodes(sid).unwrap();
+        assert_eq!(eps.len(), 5, "seen episodes must still be reachable under the same series id");
+        assert!(eps.iter().all(|e| e.seen), "seen state must survive the slug change");
+    }
+
+    #[test]
+    fn upsert_series_different_title_creates_new_row() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let sid = db.upsert_series(src, &mk_airing("one-piece", "One Piece", None)).unwrap();
+        let sid2 = db.upsert_series(src, &mk_airing("naruto", "Naruto", None)).unwrap();
+        assert_ne!(sid, sid2, "genuinely different series must not be merged");
     }
 
     #[test]
