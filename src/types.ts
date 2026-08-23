@@ -107,6 +107,11 @@ export interface TitleCount {
   count: number;
 }
 
+export interface BingeRecord {
+  day: string | null;
+  count: number;
+}
+
 export interface WatchInsights {
   estimated_minutes_tracked: number;
   estimated_minutes_external: number;

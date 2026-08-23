@@ -811,6 +811,38 @@ impl Db {
         })
     }
 
+    /// Binge record: the single calendar day with the most episodes marked
+    /// seen, and that count. `seen_at` is stamped UTC (SQLite `datetime('now')`),
+    /// so — exactly like `get_watch_insights`'s day buckets — every row is
+    /// converted to 'localtime' before grouping; otherwise an episode marked
+    /// at 00:30 in Spain lands on the previous calendar day. Returns
+    /// `count: 0, day: None` when nothing has ever been marked seen, rather
+    /// than erroring.
+    pub fn get_binge_record(&self) -> Result<crate::models::BingeRecord> {
+        let mut stmt = self.conn.prepare(
+            "SELECT DATE(e.seen_at, 'localtime') AS d, COUNT(*) AS cnt
+             FROM episodes e
+             WHERE e.seen_at IS NOT NULL
+             GROUP BY d
+             ORDER BY cnt DESC, d DESC
+             LIMIT 1",
+        )?;
+        let row: Option<(String, i64)> = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
+            .next()
+            .transpose()?;
+        match row {
+            Some((day, count)) => Ok(crate::models::BingeRecord {
+                day: Some(day),
+                count,
+            }),
+            None => Ok(crate::models::BingeRecord {
+                day: None,
+                count: 0,
+            }),
+        }
+    }
+
     /// A cheap fingerprint of the data, used to skip a redundant auto-backup
     /// when nothing changed since the last one.
     pub fn signature_counts(&self) -> Result<(i64, i64, i64, Option<String>)> {
@@ -1666,5 +1698,85 @@ mod tests {
         db.set_seen_cascade(series, "1", true).unwrap();
         let after = db.signature_counts().unwrap();
         assert_ne!(before, after);
+    }
+
+    #[test]
+    fn get_binge_record_returns_day_with_highest_count() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let s1 = db.upsert_series(src, &mk_airing("s1", "Show 1", None)).unwrap();
+        let s2 = db.upsert_series(src, &mk_airing("s2", "Show 2", None)).unwrap();
+
+        // Day A (today): 3 episodes from s1 + 2 from s2 = 5 total
+        for i in 1..=3 {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: s1, number: format!("{i}"), title: None,
+                url: format!("https://site/s1-{i}"), released_at: None, seen: false,
+            }).unwrap();
+        }
+        for i in 1..=2 {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: s2, number: format!("{i}"), title: None,
+                url: format!("https://site/s2-{i}"), released_at: None, seen: false,
+            }).unwrap();
+        }
+        db.set_seen_cascade(s1, "3", true).unwrap(); // marks 1,2,3 seen
+        db.set_seen_cascade(s2, "2", true).unwrap(); // marks 1,2 seen
+
+        // Day B (yesterday): 4 episodes from a third series
+        let s3 = db.upsert_series(src, &mk_airing("s3", "Show 3", None)).unwrap();
+        for i in 1..=4 {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: s3, number: format!("{i}"), title: None,
+                url: format!("https://site/s3-{i}"), released_at: None, seen: false,
+            }).unwrap();
+        }
+        db.set_seen_cascade(s3, "4", true).unwrap(); // marks 1,2,3,4 seen
+
+        // Backdate s3's episodes to yesterday so they fall on a different calendar day
+        db.conn.execute(
+            "UPDATE episodes SET seen_at = datetime('now', '-1 day') WHERE series_id = ?1",
+            [s3],
+        ).unwrap();
+
+        // Day A (today) has 5, Day B (yesterday) has 4 -> Day A should win
+        let record = db.get_binge_record().unwrap();
+        let today = chrono::Local::now().date_naive().format("%Y-%m-%d").to_string();
+        assert_eq!(record.count, 5, "Day A has 5 episodes, should be the binge record");
+        assert_eq!(record.day, Some(today), "binge record day should be today (local)");
+
+        // ---- Reverse case: make Day B have more episodes ----
+        // Add 3 more episodes to s3 and mark them seen (still on Day B via the backdated seen_at)
+        for i in 5..=7 {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: s3, number: format!("{i}"), title: None,
+                url: format!("https://site/s3-{i}"), released_at: None, seen: false,
+            }).unwrap();
+        }
+        db.set_seen_cascade(s3, "7", true).unwrap(); // marks 5,6,7 seen (cascade from 4)
+
+        // set_seen_cascade re-stamps seen_at to "now" for every episode in the
+        // cascaded range, including ones already seen — so the second cascade
+        // call above just clobbered episodes 1-4's backdated "yesterday"
+        // timestamp back to today. Re-apply the backdate to all of s3's
+        // episodes so the whole series still lands on "yesterday".
+        db.conn.execute(
+            "UPDATE episodes SET seen_at = datetime('now', '-1 day') WHERE series_id = ?1",
+            [s3],
+        ).unwrap();
+
+        // Now Day B (yesterday) has 7, Day A (today) has 5 -> Day B should win
+        let record = db.get_binge_record().unwrap();
+        let yesterday = chrono::Local::now().date_naive().checked_sub_days(chrono::Days::new(1)).unwrap().format("%Y-%m-%d").to_string();
+        assert_eq!(record.count, 7, "Day B now has 7 episodes, should be the binge record");
+        assert_eq!(record.day, Some(yesterday), "binge record day should be yesterday (local)");
+    }
+
+    #[test]
+    fn get_binge_record_empty_db_returns_zero_and_none() {
+        let db = Db::open(":memory:").unwrap();
+        let record = db.get_binge_record().unwrap();
+        assert_eq!(record.count, 0);
+        assert_eq!(record.day, None);
     }
 }

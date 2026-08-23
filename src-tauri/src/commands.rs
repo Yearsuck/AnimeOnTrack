@@ -4,7 +4,7 @@ use crate::dates::parse_spanish_date;
 use crate::db::Db;
 use crate::diff::new_episodes;
 use crate::models::{
-    AiringItem, BackupStatus, Episode, FinishedCard, GenreAffinity, GenreStat, Series, SeriesDetail,
+    AiringItem, BackupStatus, BingeRecord, Episode, FinishedCard, GenreAffinity, GenreStat, Series, SeriesDetail,
     SeriesGraphNode, TypeStat, WatchInsights, WatchSummary,
 };
 use crate::player::{AppWindowPlayer, EpisodePlayer};

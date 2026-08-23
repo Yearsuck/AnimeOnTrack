@@ -338,4 +338,9 @@ export const ca: Messages = {
   "stats.retry": "Torna-ho a provar",
   "stats.noGenre": "Sense gènere",
   "stats.graphAria": "Graf de relacions: {series} sèries seguides repartides en {genres} gèneres",
+
+// Binge record stat
+"stats.bingeRecord": "Rècord en un dia",
+"stats.bingeRecordValue": "{count} episodis ({day})",
+"stats.bingeRecordEmpty": "Marca alguna cosa com a vista per establir el teu rècord",
 };

@@ -342,4 +342,9 @@ export const es = {
   "stats.retry": "Reintentar",
   "stats.noGenre": "Sin género",
   "stats.graphAria": "Grafo de relaciones: {series} series seguidas repartidas en {genres} géneros",
+
+// Binge record stat
+"stats.bingeRecord": "Récord en un día",
+"stats.bingeRecordValue": "{count} episodios ({day})",
+"stats.bingeRecordEmpty": "Marca algo como visto para establecer tu récord",
 } as const;

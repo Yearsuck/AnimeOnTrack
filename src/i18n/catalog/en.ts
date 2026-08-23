@@ -323,4 +323,9 @@ export const en: Messages = {
   "stats.retry": "Try again",
   "stats.noGenre": "No genre",
   "stats.graphAria": "Relationship graph: {series} followed series across {genres} genres",
+
+// Binge record stat
+"stats.bingeRecord": "Single-day record",
+"stats.bingeRecordValue": "{count} episodes ({day})",
+"stats.bingeRecordEmpty": "Mark something as watched to set your record",
 };
