@@ -338,4 +338,7 @@ export const ca: Messages = {
   "stats.retry": "Torna-ho a provar",
   "stats.noGenre": "Sense gènere",
   "stats.graphAria": "Graf de relacions: {series} sèries seguides repartides en {genres} gèneres",
+  // Dusty watchlist
+  "stats.dustyHeading": "Empolvorades",
+  "stats.dustyLastSeen": "Darrera vegada: {date}",
 };

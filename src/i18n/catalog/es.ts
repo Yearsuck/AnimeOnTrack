@@ -342,4 +342,7 @@ export const es = {
   "stats.retry": "Reintentar",
   "stats.noGenre": "Sin género",
   "stats.graphAria": "Grafo de relaciones: {series} series seguidas repartidas en {genres} géneros",
+  // Dusty watchlist
+  "stats.dustyHeading": "Polvorientas",
+  "stats.dustyLastSeen": "Última vez: {date}",
 } as const;

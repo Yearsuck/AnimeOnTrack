@@ -1793,6 +1793,41 @@ progress.scanbar-track::-webkit-progress-value {
   padding-bottom: 20px;
 }
 
+/* ---------- Dusty watchlist (2026-08-24) ---------- */
+/* Simple list inside a .series-block, rendered when followed series have
+   gone >90 days without a seen mark. Title + last_seen date per row. */
+.dusty-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.dusty-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-4);
+  border-bottom: 1px solid var(--border-soft);
+}
+.dusty-item:last-child {
+  border-bottom: none;
+}
+.dusty-title {
+  font-weight: var(--fw-medium);
+  font-size: var(--fs-base);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dusty-date {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
 /* ---------- Static tag / badge ----------
    A non-interactive category label (genre chips on a detail page), distinct
    from .chip-toggle, which is a real toggle and carries cursor:pointer. */

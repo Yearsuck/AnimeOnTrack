@@ -9,6 +9,7 @@ import type {
   TypeStat,
   WatchSummary,
   WatchInsights,
+  DustyEntry,
   SeriesGraphNode,
   SwipeCard,
   SwipeDecision,
@@ -84,6 +85,8 @@ export const getTypeStats = () => invoke<TypeStat[]>("get_type_stats");
 export const getWatchSummary = () => invoke<WatchSummary>("get_watch_summary");
 
 export const getWatchInsights = () => invoke<WatchInsights>("get_watch_insights");
+
+export const getDustyWatchlist = () => invoke<DustyEntry[]>("get_dusty_watchlist");
 
 export const getStatsGraph = () => invoke<SeriesGraphNode[]>("get_stats_graph");
 
