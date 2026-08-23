@@ -24,6 +24,7 @@ import type {
   SwipeHistoryItem,
   DeckBans,
   BackupStatus,
+  HourCount,
 } from "./types";
 
 export const scanAiring = (baseUrl: string) =>
@@ -86,6 +87,8 @@ export const getWatchSummary = () => invoke<WatchSummary>("get_watch_summary");
 export const getWatchInsights = () => invoke<WatchInsights>("get_watch_insights");
 
 export const getStatsGraph = () => invoke<SeriesGraphNode[]>("get_stats_graph");
+
+export const getHourlyDistribution = () => invoke<HourCount[]>("get_hourly_distribution");
 
 export const backfillGenres = () => invoke<number>("backfill_genres");
 

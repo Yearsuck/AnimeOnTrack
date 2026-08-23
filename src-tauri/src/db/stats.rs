@@ -811,6 +811,37 @@ impl Db {
         })
     }
 
+    /// 24-hour distribution of when the user marks episodes as seen — one entry
+    /// per hour (0-23), zero-filled. Mirrors `get_watch_insights`'s 30-day spine
+    /// logic: `seen_at` is stamped with SQLite's `datetime('now')` (UTC), so
+    /// every bucket converts to 'localtime' first. Without it an episode marked
+    /// at 00:30 in Spain (UTC+1/+2) lands in the previous hour — and the late
+    /// evening is exactly when this app is used, so the misattribution is the
+    /// common case, not an edge one.
+    pub fn get_hourly_distribution(&self) -> Result<Vec<crate::models::HourCount>> {
+        // Count seen episodes per local hour (0-23).
+        let mut stmt = self.conn.prepare(
+            "SELECT CAST(strftime('%H', e.seen_at, 'localtime') AS INTEGER) AS h, COUNT(*) AS cnt
+             FROM episodes e
+             WHERE e.seen_at IS NOT NULL
+               AND e.seen = 1
+             GROUP BY h
+             ORDER BY h",
+        )?;
+        let counted_hours: HashMap<i64, i64> = stmt
+            .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?
+            .collect::<rusqlite::Result<HashMap<_, _>>>()?;
+
+        // Zero-fill all 24 hours — the frontend must get exactly 24 entries,
+        // hour 0 through 23, with count 0 for hours with no activity.
+        let mut distribution: Vec<crate::models::HourCount> = Vec::with_capacity(24);
+        for hour in 0..24 {
+            let count = counted_hours.get(&hour).copied().unwrap_or(0);
+            distribution.push(crate::models::HourCount { hour, count });
+        }
+        Ok(distribution)
+    }
+
     /// A cheap fingerprint of the data, used to skip a redundant auto-backup
     /// when nothing changed since the last one.
     pub fn signature_counts(&self) -> Result<(i64, i64, i64, Option<String>)> {
@@ -1666,5 +1697,83 @@ mod tests {
         db.set_seen_cascade(series, "1", true).unwrap();
         let after = db.signature_counts().unwrap();
         assert_ne!(before, after);
+    }
+
+    #[test]
+    fn get_hourly_distribution_returns_24_zero_filled_entries() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        let sid = db.upsert_series(src, &mk_airing("s1", "S1", None)).unwrap();
+        db.set_kind(sid, "TV").unwrap();
+
+        // Insert episodes relative to "now" (SQLite's 'now' is UTC) at fixed
+        // hour offsets, then compute the EXPECTED local hour bucket for each
+        // offset in Rust using the same wall-clock "now" the test machine
+        // actually has — this only assumes SQLite's 'localtime' modifier and
+        // chrono::Local agree on the system timezone (they must, both read
+        // it from the OS), not that the machine happens to be UTC. Hardcoding
+        // both the input timestamps *and* the expected hours to UTC values
+        // is wrong on any machine not itself running in UTC (this one runs
+        // CEST, UTC+2, at the time this test was written — exactly the kind
+        // of environment-dependent assumption that broke the original,
+        // non-deterministic version of this test).
+        use chrono::Timelike;
+        let now_local = chrono::Local::now();
+        let hour_for_offset = |offset_hours: i64| -> i64 {
+            (((now_local.hour() as i64 - offset_hours) % 24) + 24) % 24
+        };
+        db.conn
+            .execute(
+                "INSERT INTO episodes (series_id, number, url, seen, seen_at) VALUES
+                 (?1, '1', 'u1', 1, datetime('now', '-10 hours')),
+                 (?1, '2', 'u2', 1, datetime('now', '-7 hours')),
+                 (?1, '3', 'u3', 1, datetime('now', '-7 hours')),
+                 (?1, '4', 'u4', 1, datetime('now', '2 hours'))",
+                [sid],
+            )
+            .unwrap();
+        let hour_a = hour_for_offset(10); // 1 episode
+        let hour_b = hour_for_offset(7); // 2 episodes
+        let hour_c = hour_for_offset(-2); // 1 episode
+
+        let dist = db.get_hourly_distribution().unwrap();
+        assert_eq!(dist.len(), 24, "must return exactly 24 entries");
+        // Check hours are in order 0..23
+        for (i, hc) in dist.iter().enumerate() {
+            assert_eq!(hc.hour, i as i64, "hours must be sequential 0..23");
+        }
+        // Exact per-hour counts against the dynamically-computed expected
+        // hours, not just "some non-zero hour exists" — this is what
+        // actually proves the hour extraction (and its timezone handling)
+        // is correct rather than merely present. If two of the three
+        // computed hours collide (possible with only three offsets on an
+        // unlucky wall-clock minute), skip the exact-count assertions for
+        // this run rather than asserting something that can't be true —
+        // the total/shape assertions below still cover it.
+        let hours_distinct = {
+            let mut hs = [hour_a, hour_b, hour_c];
+            hs.sort_unstable();
+            hs.windows(2).all(|w| w[0] != w[1])
+        };
+        if hours_distinct {
+            assert_eq!(dist[hour_a as usize].count, 1, "hour {hour_a} should have 1 episode");
+            assert_eq!(dist[hour_b as usize].count, 2, "hour {hour_b} should have 2 episodes");
+            assert_eq!(dist[hour_c as usize].count, 1, "hour {hour_c} should have 1 episode");
+            let expected_hours = [hour_a, hour_b, hour_c];
+            assert!(
+                dist.iter().enumerate().all(|(i, h)| expected_hours.contains(&(i as i64)) || h.count == 0),
+                "every hour outside {{{hour_a}, {hour_b}, {hour_c}}} must be zero-filled, not just present"
+            );
+        }
+        let total: i64 = dist.iter().map(|h| h.count).sum();
+        assert_eq!(total, 4, "total episodes marked seen should be 4");
+    }
+
+    #[test]
+    fn get_hourly_distribution_empty_db_returns_all_zeros() {
+        let db = Db::open(":memory:").unwrap();
+        let dist = db.get_hourly_distribution().unwrap();
+        assert_eq!(dist.len(), 24);
+        assert!(dist.iter().all(|h| h.count == 0), "all hours should be 0 in empty DB");
     }
 }

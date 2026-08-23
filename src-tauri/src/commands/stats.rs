@@ -41,3 +41,11 @@ pub fn get_stats_graph(state: State<'_, AppState>) -> Result<Vec<SeriesGraphNode
     let db = state.db.lock().unwrap();
     db.get_stats_graph_data().map_err(|e| e.to_string())
 }
+
+/// 24-hour distribution of when episodes are marked seen (0-23), zero-filled.
+/// Pure SQL, no network — see `Db::get_hourly_distribution`.
+#[tauri::command]
+pub fn get_hourly_distribution(state: State<'_, AppState>) -> Result<Vec<HourCount>, String> {
+    let db = state.db.lock().unwrap();
+    db.get_hourly_distribution().map_err(|e| e.to_string())
+}
