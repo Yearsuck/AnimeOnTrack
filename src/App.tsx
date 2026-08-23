@@ -116,6 +116,45 @@ export default function App() {
     if (view === "stats") setStatsVisited(true);
   }, [view]);
 
+  // Every tab besides Stats fully unmounts on switch (see the render below),
+  // which used to reset the page scroll to the top — annoying on long lists
+  // (Library, Catalog) where switching away and back meant scrolling all the
+  // way back down. Remember each tab's own scroll offset and restore it.
+  const scrollPositions = useRef<Partial<Record<View, number>>>({});
+  const viewRef = useRef(view);
+  useEffect(() => {
+    viewRef.current = view;
+  }, [view]);
+  useEffect(() => {
+    const onScroll = () => {
+      scrollPositions.current[viewRef.current] = window.scrollY;
+    };
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
+  useEffect(() => {
+    const target = scrollPositions.current[view];
+    if (target === undefined) return;
+    // The incoming view's data (Pending/Library/Catalog...) often fetches
+    // and renders after this effect first fires, growing the page past what
+    // it was on the previous paint — a one-shot scrollTo here would just get
+    // overwritten once the real rows land. Keep nudging it back across a few
+    // frames until the document height settles instead of assuming layout
+    // is already final.
+    let frame = 0;
+    let lastHeight = -1;
+    let stableFrames = 0;
+    const tick = () => {
+      window.scrollTo(0, target);
+      const h = document.documentElement.scrollHeight;
+      stableFrames = h === lastHeight ? stableFrames + 1 : 0;
+      lastHeight = h;
+      frame++;
+      if (stableFrames < 3 && frame < 90) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }, [view]);
+
   // After Settings.tsx switches the active site (and scans its airing
   // listing), every other view is now showing stale, wrong-site data:
   // - Stats stays mounted once visited (perf cache, see statsVisited's
