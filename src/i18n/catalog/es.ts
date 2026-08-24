@@ -45,6 +45,14 @@ export const es = {
   "airing.filterSeason": "Esta temporada",
   "airing.seasonHint": "Solo se muestran series con fecha de estreno registrada. Se sigan o no, se busca la fecha en el Catálogo sincronizado — si falta, resincronizá el Catálogo desde su pestaña",
 
+  // AiringSpotlight.tsx
+  "spotlight.ariaLabel": "Destacados en emisión",
+  "spotlight.watchBtn": "Ver serie",
+  "spotlight.prevBtn": "Anterior",
+  "spotlight.nextBtn": "Siguiente",
+  "spotlight.dotsAria": "Diapositivas",
+  "spotlight.slideAria": "Diapositiva",
+
   // Pending.tsx
   "pending.episodesToWatch": "{count} episodios por ver",
   "pending.sortLabel": "Ordenar:",

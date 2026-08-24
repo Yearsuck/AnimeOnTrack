@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { listAiringSeason, setFollowed } from "../api";
 import { useT } from "../i18n";
 import type { AiringItem, Series } from "../types";
+import { AiringSpotlight } from "./AiringSpotlight";
 
 // Human label for the next-episode countdown the backend sorting is based
 // on — makes the newest-first ordering legible instead of mysterious.
@@ -124,6 +125,8 @@ export function AiringGrid({
           {t("airing.seasonHint")}
         </p>
       )}
+
+      <AiringSpotlight items={items} onOpenSeries={onOpenSeries} />
 
       {filtered.length === 0 ? (
         <div className="empty">{t("common.noResults")}</div>

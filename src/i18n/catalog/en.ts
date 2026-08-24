@@ -37,6 +37,14 @@ export const en: Messages = {
   "airing.filterSeason": "This season",
   "airing.seasonHint": "Only shows a known premiere date. Followed or not, the date comes from the synced Catálogo — if it's missing, resync the Catálogo from its tab",
 
+  // AiringSpotlight.tsx
+  "spotlight.ariaLabel": "Featured airing",
+  "spotlight.watchBtn": "Watch series",
+  "spotlight.prevBtn": "Previous",
+  "spotlight.nextBtn": "Next",
+  "spotlight.dotsAria": "Slides",
+  "spotlight.slideAria": "Slide",
+
   "pending.episodesToWatch": "{count} episodes to watch",
   "pending.sortLabel": "Sort:",
   "pending.sortFewest": "Fewest episodes",
