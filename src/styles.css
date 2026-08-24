@@ -1955,6 +1955,41 @@ select.lib-filter-select {
   padding: 0 var(--sp-1) var(--sp-3);
 }
 
+/* ---------- Weekly schedule (week mode) ---------- */
+.week-schedule {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-5);
+}
+.week-day {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--sp-4);
+}
+.week-day.today {
+  border-left: 3px solid var(--accent);
+}
+.week-day-header {
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-bold);
+  margin: 0 0 var(--sp-3);
+  color: var(--text);
+}
+.week-day.today .week-day-header {
+  color: var(--accent);
+}
+.week-day-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+}
+@media (max-width: 600px) {
+  .week-day-grid {
+    flex-direction: column;
+  }
+}
+
 /* ---------- Descubrir (view-specific) ---------- */
 .discover-tabs {
   margin-bottom: var(--sp-5);

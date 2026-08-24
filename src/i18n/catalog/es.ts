@@ -43,7 +43,9 @@ export const es = {
   "airing.followBtn": "+ Seguir",
   "airing.filterAll": "Todas",
   "airing.filterSeason": "Esta temporada",
+  "airing.filterWeek": "Esta semana",
   "airing.seasonHint": "Solo se muestran series con fecha de estreno registrada. Se sigan o no, se busca la fecha en el Catálogo sincronizado — si falta, resincronizá el Catálogo desde su pestaña",
+  "airing.weekEmpty": "Nada programado esta semana.",
 
   // Pending.tsx
   "pending.episodesToWatch": "{count} episodios por ver",
