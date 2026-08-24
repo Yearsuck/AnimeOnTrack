@@ -161,6 +161,8 @@ pub fn run() {
             commands::get_dusty_watchlist,
             commands::get_binge_record,
             commands::get_avg_completion_days,
+            commands::get_yearly_activity,
+            commands::get_activity_years,
             commands::get_stats_graph,
             commands::get_hourly_distribution,
             commands::get_popularity_bias,

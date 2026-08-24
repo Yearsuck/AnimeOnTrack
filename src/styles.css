@@ -1929,6 +1929,116 @@ progress.scanbar-track::-webkit-progress-value {
   font-weight: var(--fw-medium);
 }
 
+/* ---------- Stats · full-year activity heatmap (GitHub-style) ---------- */
+.stats-heatmap {
+  padding: var(--sp-4);
+}
+.heatmap-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-4);
+}
+.heatmap-year-label {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  color: var(--muted);
+}
+.heatmap-grid-wrap {
+  overflow-x: auto;
+}
+.heatmap-months {
+  display: grid;
+  grid-template-columns: repeat(54, 1fr); /* 54: max weeks a year can span (leap year starting Sunday) */
+  gap: 2px;
+  margin-bottom: 4px;
+  padding-left: 42px; /* align with day labels */
+}
+.heatmap-month {
+  font-size: var(--fs-xs);
+  color: var(--muted-2);
+  font-weight: var(--fw-medium);
+  white-space: nowrap;
+}
+.heatmap-grid {
+  display: grid;
+  grid-template-columns: 36px repeat(54, 1fr);
+  gap: 2px;
+}
+.heatmap-row {
+  display: contents;
+}
+.heatmap-day-label {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding-right: 6px;
+  font-size: var(--fs-xs);
+  color: var(--muted-2);
+  font-weight: var(--fw-medium);
+  grid-column: 1;
+  height: 12px;
+}
+.heatmap-cell {
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: 2px;
+  transition: transform var(--dur-fast) var(--ease);
+}
+.heatmap-cell:hover {
+  transform: scale(1.3);
+  z-index: 1;
+}
+/* Intensity levels using --accent with increasing opacity */
+.heatmap-cell.level-0 {
+  background: var(--surface-3);
+}
+.heatmap-cell.level-1 {
+  background: var(--accent);
+  opacity: 0.15;
+}
+.heatmap-cell.level-2 {
+  background: var(--accent);
+  opacity: 0.35;
+}
+.heatmap-cell.level-3 {
+  background: var(--accent);
+  opacity: 0.6;
+}
+.heatmap-cell.level-4 {
+  background: var(--accent);
+  opacity: 0.9;
+}
+.heatmap-cell.empty {
+  background: transparent;
+}
+.heatmap-legend {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-top: var(--sp-4);
+  font-size: var(--fs-xs);
+  color: var(--muted-2);
+}
+.heatmap-legend-levels {
+  display: flex;
+  gap: 2px;
+}
+.heatmap-legend-levels .heatmap-cell {
+  width: 12px;
+  height: 12px;
+}
+.heatmap-empty,
+.heatmap-error {
+  padding: var(--sp-6);
+  text-align: center;
+  color: var(--muted);
+  font-size: var(--fs-base);
+}
+.heatmap-error {
+  color: var(--danger);
+}
+
 /* ---------- Static tag / badge ----------
    A non-interactive category label (genre chips on a detail page), distinct
    from .chip-toggle, which is a real toggle and carries cursor:pointer. */

@@ -347,4 +347,22 @@ export const en: Messages = {
   "stats.popularityBiasLow": "Underground",
   "stats.popularityBiasHigh": "Mainstream",
   "stats.popularityBiasHelp": "Average AniList popularity of your followed series (linked to catalog), normalized 0–10. Fewer than 3 series with data = no score. 0 = only hidden gems, 10 = only mainstream hits.",
+
+  // StatsHeatmap.tsx
+  "stats.heatmapHeading": "Yearly activity",
+  "stats.heatmapYear": "Year",
+  "stats.heatmapNoYears": "No years with recorded activity.",
+  "stats.heatmapNoData": "No data for this year.",
+  "stats.heatmapError": "Failed to load heatmap: {msg}",
+  "stats.heatmapAria": "Activity heatmap for {year}",
+  "stats.heatmapLess": "Less",
+  "stats.heatmapMore": "More",
+  "stats.heatmapEpisodes": "episodes",
+  "stats.heatmapMon": "Mon",
+  "stats.heatmapTue": "Tue",
+  "stats.heatmapWed": "Wed",
+  "stats.heatmapThu": "Thu",
+  "stats.heatmapFri": "Fri",
+  "stats.heatmapSat": "Sat",
+  "stats.heatmapSun": "Sun",
 };

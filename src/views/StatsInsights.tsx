@@ -5,6 +5,7 @@ import { BarChart, CategoryBlock, ShapeToggle } from "./StatsRings";
 import { useStatsShape } from "../lib/statsShape";
 import { useFormatNumber } from "../lib/formatNumber";
 import { getDustyWatchlist, getBingeRecord, getHourlyDistribution, getAvgCompletionDays } from "../api";
+import { StatsHeatmap } from "./StatsHeatmap";
 
 // "Resumen" block for Estadísticas — local-only metrics computed by
 // `get_watch_insights` (pure SQL, see src-tauri/src/db.rs). Sits between the
@@ -359,6 +360,14 @@ export function StatsInsights({
           </div>
         </div>
       )}
+
+      {/* Full-year activity heatmap — additive, does not replace the 30-day chart */}
+      <div className="series-block">
+        <div className="series-head">
+          <h3 className="section-title">{t("stats.heatmapHeading")}</h3>
+        </div>
+        <StatsHeatmap />
+      </div>
     </div>
   );
 }

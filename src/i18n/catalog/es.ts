@@ -366,4 +366,22 @@ export const es = {
   "stats.popularityBiasLow": "Underground",
   "stats.popularityBiasHigh": "Mainstream",
   "stats.popularityBiasHelp": "Promedio de popularidad en AniList de tus series seguidas (enlazadas al catálogo), normalizado 0–10. Menos de 3 series con datos = sin puntuación. 0 = solo joyas ocultas, 10 = solo éxitos masivos.",
+
+  // StatsHeatmap.tsx
+  "stats.heatmapHeading": "Actividad anual",
+  "stats.heatmapYear": "Año",
+  "stats.heatmapNoYears": "Sin años con actividad registrada.",
+  "stats.heatmapNoData": "Sin datos para este año.",
+  "stats.heatmapError": "Error al cargar el mapa de calor: {msg}",
+  "stats.heatmapAria": "Mapa de calor de actividad para {year}",
+  "stats.heatmapLess": "Menos",
+  "stats.heatmapMore": "Más",
+  "stats.heatmapEpisodes": "episodios",
+  "stats.heatmapMon": "Lun",
+  "stats.heatmapTue": "Mar",
+  "stats.heatmapWed": "Mié",
+  "stats.heatmapThu": "Jue",
+  "stats.heatmapFri": "Vie",
+  "stats.heatmapSat": "Sáb",
+  "stats.heatmapSun": "Dom",
 } as const;

@@ -154,6 +154,11 @@ export interface PopularityBias {
   normalized_score: number | null;
 }
 
+export interface YearlyActivity {
+  year: number;
+  days: DayCount[];
+}
+
 export interface SwipeCard {
   title: string;
   url: string;

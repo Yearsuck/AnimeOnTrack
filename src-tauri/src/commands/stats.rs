@@ -2,6 +2,7 @@ use super::*;
 use crate::models::DustyEntry;
 use crate::models::PopularityBias;
 use crate::models::GenreCard;
+use crate::models::YearlyActivity;
 
 // Every command below is intentionally **not** scoped to the active site —
 // Estadísticas reflects the whole library across every site you use, not
@@ -63,6 +64,23 @@ pub fn get_binge_record(state: State<'_, AppState>) -> Result<BingeRecord, Strin
 pub fn get_avg_completion_days(state: State<'_, AppState>) -> Result<Option<f64>, String> {
     let db = state.db.lock().unwrap();
     db.get_avg_completion_days().map_err(|e| e.to_string())
+}
+
+/// Full-year activity heatmap for Estadísticas — GitHub-contributions-style
+/// grid with year selector. New additive command; does not touch the existing
+/// 30-day chart.
+#[tauri::command]
+pub async fn get_yearly_activity(state: State<'_, AppState>, year: i32) -> Result<YearlyActivity, String> {
+    let db = state.db.lock().unwrap();
+    db.get_yearly_activity(year).map_err(|e| e.to_string())
+}
+
+/// Distinct years (local time) that have at least one seen episode, descending.
+/// Always includes the current year so the year selector is never empty.
+#[tauri::command]
+pub async fn get_activity_years(state: State<'_, AppState>) -> Result<Vec<i32>, String> {
+    let db = state.db.lock().unwrap();
+    db.get_activity_years().map_err(|e| e.to_string())
 }
 
 /// Followed series with genres/kind/cover, for the 3D relationship graph.

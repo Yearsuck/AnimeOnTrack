@@ -362,4 +362,22 @@ export const ca: Messages = {
   "stats.popularityBiasLow": "Underground",
   "stats.popularityBiasHigh": "Mainstream",
   "stats.popularityBiasHelp": "Mitjana de popularitat a AniList de les teves sèries seguides (enllaçades al catàleg), normalitzada 0–10. menys de 3 sèries amb dades = sense puntuació. 0 = només joves amagades, 10 = només èxits massius.",
+
+  // StatsHeatmap.tsx
+  "stats.heatmapHeading": "Activitat anual",
+  "stats.heatmapYear": "Any",
+  "stats.heatmapNoYears": "Cap any amb activitat registrada.",
+  "stats.heatmapNoData": "Sense dades per a aquest any.",
+  "stats.heatmapError": "Error en carregar el mapa de calor: {msg}",
+  "stats.heatmapAria": "Mapa de calor d'activitat per a {year}",
+  "stats.heatmapLess": "Menys",
+  "stats.heatmapMore": "Més",
+  "stats.heatmapEpisodes": "episodis",
+  "stats.heatmapMon": "Dl",
+  "stats.heatmapTue": "Dt",
+  "stats.heatmapWed": "Dc",
+  "stats.heatmapThu": "Dj",
+  "stats.heatmapFri": "Dv",
+  "stats.heatmapSat": "Ds",
+  "stats.heatmapSun": "Dg",
 };

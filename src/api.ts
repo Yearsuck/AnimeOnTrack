@@ -12,6 +12,7 @@ import type {
   WatchInsights,
   DustyEntry,
   PopularityBias,
+  YearlyActivity,
   SeriesGraphNode,
   SwipeCard,
   SwipeDecision,
@@ -97,6 +98,11 @@ export const getDustyWatchlist = () => invoke<DustyEntry[]>("get_dusty_watchlist
 export const getAvgCompletionDays = () => invoke<number | null>("get_avg_completion_days");
 
 export const getPopularityBias = () => invoke<PopularityBias>("get_popularity_bias");
+
+export const getYearlyActivity = (year: number) =>
+  invoke<YearlyActivity>("get_yearly_activity", { year });
+
+export const getActivityYears = () => invoke<number[]>("get_activity_years");
 
 export const getStatsGraph = () => invoke<SeriesGraphNode[]>("get_stats_graph");
 
