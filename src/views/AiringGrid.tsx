@@ -161,7 +161,9 @@ export function AiringGrid({
         </p>
       )}
 
-      <AiringSpotlight items={items} onOpenSeries={onOpenSeries} />
+      {viewMode !== "week" && (
+        <AiringSpotlight items={items} onOpenSeries={onOpenSeries} />
+      )}
 
       {carouselItems.length > 0 && (
         <AiringCarouselRow

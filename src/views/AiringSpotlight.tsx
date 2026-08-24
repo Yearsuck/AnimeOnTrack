@@ -7,6 +7,20 @@ type AiringSpotlightProps = {
   onOpenSeries: (s: AiringItem["series"]) => void;
 };
 
+// Scraped cover_url carries the site's small grid-thumbnail JetPack/Photon
+// CDN size (e.g. `?resize=247,350`) — fine for a poster card, blurry blown
+// up across the full-width spotlight banner. Dropping the `resize` param
+// makes the same CDN serve its original, larger image.
+function highResCover(url: string): string {
+  try {
+    const u = new URL(url);
+    u.searchParams.delete("resize");
+    return u.toString();
+  } catch {
+    return url;
+  }
+}
+
 export function AiringSpotlight({ items, onOpenSeries }: AiringSpotlightProps) {
   const t = useT();
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -52,14 +66,14 @@ export function AiringSpotlight({ items, onOpenSeries }: AiringSpotlightProps) {
     >
       <div
         className="spotlight-track"
-        style={{ transform: `translateX(-${currentIndex * 100}%)` }}
+        style={{ transform: `translateX(-${currentIndex * (100 / featuredItems.length)}%)` }}
       >
         {featuredItems.map((item) => (
           <div key={item.series.id} className="spotlight-slide">
             {item.series.cover_url && (
               <img
                 className="spotlight-bg"
-                src={item.series.cover_url}
+                src={highResCover(item.series.cover_url)}
                 alt=""
                 aria-hidden="true"
               />
