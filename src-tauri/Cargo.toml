@@ -1,6 +1,6 @@
 [package]
 name = "aot-scaffold"
-version = "0.5.7"
+version = "0.5.8"
 description = "Tracks currently-airing anime across multiple streaming sites and tells you when new episodes drop."
 authors = ["Yearsuck"]
 license = "GPL-3.0-or-later"
