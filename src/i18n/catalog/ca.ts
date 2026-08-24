@@ -38,6 +38,8 @@ export const ca: Messages = {
   "airing.followingBtn": "✓ Seguint",
   "airing.followBtn": "+ Segueix",
   "airing.filterAll": "Totes",
+  "airing.countdownIn": "d'aquí {span}",
+  "airing.countdownAgo": "fa {span}",
   "airing.filterSeason": "Aquesta temporada",
   "airing.filterWeek": "Aquesta setmana",
   "airing.seasonHint": "Només es mostren sèries amb data d'estrena registrada. Es segueixin o no, es busca la data al Catàleg sincronitzat — si falta, resincronitza el Catàleg des de la seva pestanya",
