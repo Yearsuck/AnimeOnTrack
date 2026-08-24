@@ -605,11 +605,13 @@ textarea.input {
   overflow: hidden;
   transition: transform var(--dur) var(--ease-out), border-color var(--dur-fast) var(--ease),
     box-shadow var(--dur) var(--ease-out);
+  content-visibility: auto;
+  contain-intrinsic-size: 150px 300px;
 }
 .card:hover {
-  transform: translateY(-3px);
+  transform: translateY(-5px);
   border-color: var(--surface-3);
-  box-shadow: var(--shadow-md);
+  box-shadow: var(--shadow-md), 0 0 0 1px var(--accent-dim);
 }
 .poster {
   position: relative;
