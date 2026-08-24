@@ -235,6 +235,14 @@ pub struct BingeRecord {
     pub count: i64,
 }
 
+/// One hour's episode-marking count, e.g. `{ hour: 14, count: 42 }` — see
+/// `Db::get_hourly_distribution`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HourCount {
+    pub hour: i64,
+    pub count: i64,
+}
+
 /// Local-only watch metrics for the Estadísticas "Resumen" block — see the
 /// design doc `docs/superpowers/specs/2026-07-13-stats-new-metrics-design.md`.
 /// Computed entirely from SQLite (no network) via `Db::get_watch_insights`.

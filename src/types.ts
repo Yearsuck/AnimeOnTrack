@@ -117,6 +117,11 @@ export interface BingeRecord {
   count: number;
 }
 
+export interface HourCount {
+  hour: number;
+  count: number;
+}
+
 export interface WatchInsights {
   estimated_minutes_tracked: number;
   estimated_minutes_external: number;

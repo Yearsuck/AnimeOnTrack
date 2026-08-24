@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 import { useLang, useT } from "../i18n";
-import type { WatchInsights, WatchSummary, DustyEntry, BingeRecord } from "../types";
+import type { WatchInsights, WatchSummary, DustyEntry, BingeRecord, HourCount } from "../types";
 import { BarChart, CategoryBlock, ShapeToggle } from "./StatsRings";
 import { useStatsShape } from "../lib/statsShape";
 import { useFormatNumber } from "../lib/formatNumber";
-import { getDustyWatchlist, getBingeRecord } from "../api";
+import { getDustyWatchlist, getBingeRecord, getHourlyDistribution } from "../api";
 
 // "Resumen" block for Estadísticas — local-only metrics computed by
 // `get_watch_insights` (pure SQL, see src-tauri/src/db.rs). Sits between the
@@ -91,6 +91,48 @@ function DayActivityChart({
   );
 }
 
+// Hourly distribution chart: 24 small vertical bars (0-23), inline height
+// proportional to count/max. Data-driven inline style is expected here per
+// codebase rule. Shows "daytime watcher" / "night owl" label based on peak hour.
+function HourlyDistributionChart({
+  data,
+  t,
+}: {
+  data: HourCount[];
+  t: ReturnType<typeof useT>;
+}) {
+  const [grown, setGrown] = useState(false);
+  useEffect(() => {
+    const id = requestAnimationFrame(() => setGrown(true));
+    return () => cancelAnimationFrame(id);
+  }, []);
+  const max = Math.max(1, ...data.map((d) => d.count));
+  const peakHour = data.reduce((a, b) => (a.count > b.count ? a : b)).hour;
+  const isDaytime = peakHour >= 6 && peakHour <= 18;
+  const label = isDaytime ? t("stats.hourlyDaytime") : t("stats.hourlyNight");
+
+  return (
+    <div className="hourly-dist">
+      <div className="hourly-dist-bars" role="img" aria-label={`${data.reduce((s, d) => s + d.count, 0)} — ${label}`}>
+        {data.map((d) => {
+          const pct = grown ? (d.count / max) * 100 : 0;
+          return (
+            <div
+              className={`hourly-col${d.count > 0 ? " has" : ""}`}
+              key={d.hour}
+              title={`${d.hour}:00 — ${d.count}`}
+            >
+              <div className="hourly-fill" style={{ height: `${pct}%` }} />
+              <span className="hourly-tick">{d.hour}</span>
+            </div>
+          );
+        })}
+      </div>
+      <div className="hourly-label">{label}</div>
+    </div>
+  );
+}
+
 export function StatsInsights({
   insights,
   summary,
@@ -114,6 +156,12 @@ export function StatsInsights({
     getBingeRecord().then(setBingeRecord).catch(() => setBingeRecord({ day: null, count: 0 }));
   }, []);
 
+  const [hourlyDist, setHourlyDist] = useState<HourCount[]>([]);
+
+  useEffect(() => {
+    getHourlyDistribution().then(setHourlyDist).catch(() => setHourlyDist([]));
+  }, []);
+
   const totalMinutes = insights.estimated_minutes_tracked + insights.estimated_minutes_external;
   const completionPct =
     summary.episodes_total > 0
@@ -132,6 +180,7 @@ export function StatsInsights({
     { name: t("stats.finished"), count: insights.followed_finished },
   ];
   const hasMarks = insights.marks_by_day.some((d) => d.count > 0);
+  const hasHourly = hourlyDist.some((d) => d.count > 0);
 
   return (
     <div className="stats-insights">
@@ -210,6 +259,15 @@ export function StatsInsights({
           />
         </div>
       </div>
+
+      {hasHourly && (
+        <div className="series-block">
+          <div className="series-head">
+            <h3 className="section-title">{t("stats.hourlyHeading")}</h3>
+          </div>
+          <HourlyDistributionChart data={hourlyDist} t={t} />
+        </div>
+      )}
 
       {hasMarks && insights.marks_tracked_since && (
         <div className="series-block">

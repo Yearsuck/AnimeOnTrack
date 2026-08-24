@@ -160,6 +160,7 @@ pub fn run() {
             commands::get_dusty_watchlist,
             commands::get_binge_record,
             commands::get_stats_graph,
+            commands::get_hourly_distribution,
             commands::backfill_genres,
             commands::set_followed,
             commands::refresh,

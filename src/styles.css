@@ -1828,6 +1828,58 @@ progress.scanbar-track::-webkit-progress-value {
   flex-shrink: 0;
 }
 
+/* ---------- Stats · 24-hour distribution chart ---------- */
+/* 24 thin vertical columns (one per hour 0-23) in a single row. */
+.hourly-dist {
+  padding: var(--sp-4);
+}
+.hourly-dist-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 96px;
+}
+.hourly-col {
+  position: relative;
+  flex: 1 1 0;
+  height: 100%;
+  display: flex;
+  align-items: flex-end;
+  background: linear-gradient(var(--surface-2), var(--surface-2)) bottom / 100% 2px no-repeat;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  cursor: default;
+}
+.hourly-fill {
+  width: 100%;
+  min-height: 0;
+  background: var(--surface-3);
+  border-radius: var(--radius-sm) var(--radius-sm) 2px 2px;
+  transition: height var(--dur-slow) var(--ease-out), background var(--dur-fast) var(--ease);
+}
+.hourly-col.has .hourly-fill {
+  background: var(--accent);
+}
+.hourly-col:hover .hourly-fill {
+  background: var(--accent-hover);
+}
+.hourly-tick {
+  position: absolute;
+  bottom: -18px;
+  left: 50%;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  font-size: var(--fs-xs);
+  color: var(--muted-2);
+  font-variant-numeric: tabular-nums;
+}
+.hourly-label {
+  margin-top: var(--sp-3);
+  text-align: center;
+  font-size: var(--fs-sm);
+  color: var(--muted);
+  font-weight: var(--fw-medium);
+}
+
 /* ---------- Static tag / badge ----------
    A non-interactive category label (genre chips on a detail page), distinct
    from .chip-toggle, which is a real toggle and carries cursor:pointer. */
