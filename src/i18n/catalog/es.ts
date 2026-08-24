@@ -345,4 +345,9 @@ export const es = {
   // Dusty watchlist
   "stats.dustyHeading": "Polvorientas",
   "stats.dustyLastSeen": "Última vez: {date}",
+
+  // Binge record stat
+  "stats.bingeRecord": "Récord en un día",
+  "stats.bingeRecordValue": "{count} episodios ({day})",
+  "stats.bingeRecordEmpty": "Marca algo como visto para establecer tu récord",
 } as const;

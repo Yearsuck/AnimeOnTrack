@@ -326,4 +326,9 @@ export const en: Messages = {
   // Dusty watchlist
   "stats.dustyHeading": "Dusty",
   "stats.dustyLastSeen": "Last seen: {date}",
+
+  // Binge record stat
+  "stats.bingeRecord": "Single-day record",
+  "stats.bingeRecordValue": "{count} episodes ({day})",
+  "stats.bingeRecordEmpty": "Mark something as watched to set your record",
 };

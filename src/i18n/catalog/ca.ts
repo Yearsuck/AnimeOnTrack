@@ -341,4 +341,9 @@ export const ca: Messages = {
   // Dusty watchlist
   "stats.dustyHeading": "Empolvorades",
   "stats.dustyLastSeen": "Darrera vegada: {date}",
+
+  // Binge record stat
+  "stats.bingeRecord": "Rècord en un dia",
+  "stats.bingeRecordValue": "{count} episodis ({day})",
+  "stats.bingeRecordEmpty": "Marca alguna cosa com a vista per establir el teu rècord",
 };

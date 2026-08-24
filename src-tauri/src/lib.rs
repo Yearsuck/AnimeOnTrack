@@ -158,6 +158,7 @@ pub fn run() {
             commands::get_watch_summary,
             commands::get_watch_insights,
             commands::get_dusty_watchlist,
+            commands::get_binge_record,
             commands::get_stats_graph,
             commands::backfill_genres,
             commands::set_followed,
