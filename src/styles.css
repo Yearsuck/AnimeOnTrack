@@ -157,21 +157,13 @@ html,
 body,
 #root {
   margin: 0;
-  /* min-height, not height: a fixed height caps #root at one viewport tall,
-     which caps .topbar's sticky containing block there too — past that
-     point the sticky bar scrolls away with the rest of the page instead of
-     staying pinned. */
-  min-height: 100%;
-}
-
-/* The app scrolls at the document level (no dedicated overflow container),
-   so the native scrollbar this hides is the general page one — scrolling
-   itself (wheel/keys/drag) is untouched. */
-html {
-  scrollbar-width: none;
-}
-html::-webkit-scrollbar {
-  display: none;
+  /* Fixed, not min-height: #root is the app shell's flex container now (see
+     .app-shell/.view-stack) — each tab scrolls independently inside its own
+     .view-panel rather than the whole document scrolling, so switching tabs
+     and coming back (or hitting back from a series' detail page) restores
+     exactly where you were for free, via the browser's own DOM — a hidden
+     (not unmounted) element simply keeps its scrollTop. */
+  height: 100%;
 }
 
 body {
@@ -213,6 +205,37 @@ a {
 }
 a:hover {
   color: var(--accent-hover);
+}
+
+/* ---------- App shell ---------- */
+/* The whole app fills the viewport as a fixed-height flex column: topbar +
+   progress bar sit in normal flow (never scroll), and .view-stack takes the
+   remaining height. Each tab is a .view-panel absolutely filling that stack,
+   scrolling independently — see the html/body/#root comment above for why. */
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+.view-stack {
+  position: relative;
+  flex: 1;
+  min-height: 0; /* a flex child's default min-height:auto would refuse to
+                     shrink below its content, defeating overflow entirely */
+  overflow: hidden;
+}
+.view-panel {
+  position: absolute;
+  inset: 0;
+  overflow-y: auto;
+  scrollbar-width: none;
+  /* Opaque: the series-detail overlay is just another .view-panel stacked
+     on top (later in DOM order) of whichever tab is showing underneath —
+     needs a solid ground to actually occlude it, not just position over it. */
+  background: var(--bg);
+}
+.view-panel::-webkit-scrollbar {
+  display: none;
 }
 
 /* ---------- Top bar ---------- */
@@ -848,9 +871,10 @@ textarea.input {
   /* Opaque so scrolled content never shows through the pinned bar. */
   background: var(--overlay-strong);
   backdrop-filter: blur(10px);
-  /* Pin just below the sticky top nav (~56px tall), under it in the stack. */
+  /* Pins to the top of its own .view-panel scroll container — there's no
+     longer a shared document-level topbar/scanbar stack above it to clear. */
   position: sticky;
-  top: 56px;
+  top: 0;
   z-index: 40;
 }
 .card.selected {
@@ -1333,8 +1357,9 @@ progress.scanbar-track::-webkit-progress-value {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: var(--sp-4);
+  /* Pins to the top of its own .view-panel scroll container. */
   position: sticky;
-  top: 72px;
+  top: 0;
 }
 .deck-panel-head {
   display: flex;
