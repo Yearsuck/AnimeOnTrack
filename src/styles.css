@@ -164,6 +164,16 @@ body,
   min-height: 100%;
 }
 
+/* The app scrolls at the document level (no dedicated overflow container),
+   so the native scrollbar this hides is the general page one — scrolling
+   itself (wheel/keys/drag) is untouched. */
+html {
+  scrollbar-width: none;
+}
+html::-webkit-scrollbar {
+  display: none;
+}
+
 body {
   background: var(--bg);
   color: var(--text);
@@ -799,6 +809,7 @@ textarea.input {
 }
 .lib-filter-bar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--sp-2);
   margin-bottom: var(--sp-2);
@@ -1629,6 +1640,11 @@ progress.scanbar-track::-webkit-progress-value {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
   gap: var(--sp-5);
+  /* Grid's default stretch makes the shorter en-emisión/finalizadas block
+     (2 categories) match the height of the funnel block (4 categories),
+     leaving a big empty gap that reads as an oversized card. Size each to
+     its own content instead. */
+  align-items: start;
 }
 .stats-caveat {
   padding: var(--sp-3) var(--sp-4);
@@ -1969,7 +1985,7 @@ progress.scanbar-track::-webkit-progress-value {
 }
 .heatmap-months {
   display: grid;
-  grid-template-columns: repeat(54, 1fr); /* 54: max weeks a year can span (leap year starting Sunday) */
+  grid-template-columns: repeat(54, minmax(0, 1fr)); /* 54: max weeks a year can span (leap year starting Sunday) */
   gap: 2px;
   margin-bottom: 4px;
   padding-left: 42px; /* align with day labels */
@@ -1982,7 +1998,7 @@ progress.scanbar-track::-webkit-progress-value {
 }
 .heatmap-grid {
   display: grid;
-  grid-template-columns: 36px repeat(54, 1fr);
+  grid-template-columns: 36px repeat(54, minmax(0, 1fr));
   gap: 2px;
 }
 .heatmap-row {
@@ -2001,7 +2017,12 @@ progress.scanbar-track::-webkit-progress-value {
 }
 .heatmap-cell {
   width: 100%;
-  aspect-ratio: 1;
+  /* Not aspect-ratio: with a percentage width and no definite height, an
+     aspect-ratio box's intrinsic size is indeterminate, so the 1fr grid
+     tracks fell back to an oversized default instead of shrinking to fill
+     the available width. A fixed height matching .heatmap-day-label (12px)
+     removes that ambiguity — width still fills its 1fr track exactly. */
+  height: 12px;
   border-radius: 2px;
   transition: transform var(--dur-fast) var(--ease);
 }
@@ -2440,9 +2461,19 @@ select.lib-filter-select {
   flex-wrap: wrap;
   gap: var(--sp-3);
 }
+/* .card has no intrinsic width of its own (the normal .grid gives it one via
+   CSS Grid columns) — inside this flex row it would otherwise fall back to
+   content-based (title-length-driven) sizing, so cards come out different
+   widths day to day. Pin it to the same 150px .grid uses. */
+.week-day-grid .card {
+  flex: 0 0 150px;
+}
 @media (max-width: 600px) {
   .week-day-grid {
     flex-direction: column;
+  }
+  .week-day-grid .card {
+    flex-basis: auto;
   }
 }
 
