@@ -44,6 +44,14 @@ export const ca: Messages = {
   "airing.carousel.prev": "Episodis anteriors",
   "airing.carousel.next": "Pròxims episodis",
 
+  // AiringSpotlight.tsx
+  "spotlight.ariaLabel": "Destacats en emissió",
+  "spotlight.watchBtn": "Veure sèrie",
+  "spotlight.prevBtn": "Anterior",
+  "spotlight.nextBtn": "Següent",
+  "spotlight.dotsAria": "Diapositives",
+  "spotlight.slideAria": "Diapositiva",
+
   // Pending.tsx
   "pending.episodesToWatch": "{count} episodis per veure",
   "pending.sortLabel": "Ordena:",

@@ -40,6 +40,14 @@ export const en: Messages = {
   "airing.carousel.prev": "Previous episodes",
   "airing.carousel.next": "Next episodes",
 
+  // AiringSpotlight.tsx
+  "spotlight.ariaLabel": "Featured airing",
+  "spotlight.watchBtn": "Watch series",
+  "spotlight.prevBtn": "Previous",
+  "spotlight.nextBtn": "Next",
+  "spotlight.dotsAria": "Slides",
+  "spotlight.slideAria": "Slide",
+
   "pending.episodesToWatch": "{count} episodes to watch",
   "pending.sortLabel": "Sort:",
   "pending.sortFewest": "Fewest episodes",

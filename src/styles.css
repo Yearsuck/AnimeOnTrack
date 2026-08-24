@@ -2267,6 +2267,132 @@ select.lib-filter-select {
   padding-bottom: var(--sp-2); /* no follow button, tighter */
 }
 
+/* ---------- Spotlight banner (AiringGrid hero carousel) ---------- */
+.spotlight {
+  position: relative;
+  width: 100%;
+  height: 320px;
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  margin-bottom: var(--sp-5);
+  box-shadow: var(--shadow-lg);
+}
+.spotlight-track {
+  display: flex;
+  width: 400%;
+  height: 100%;
+  transition: transform var(--dur-slow) var(--ease-out);
+}
+@media (prefers-reduced-motion: reduce) {
+  .spotlight-track {
+    transition-duration: 0.01ms !important;
+  }
+}
+.spotlight-slide {
+  flex: 0 0 25%;
+  position: relative;
+  height: 100%;
+}
+.spotlight-bg {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.spotlight-scrim {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    180deg,
+    transparent 40%,
+    var(--surface) 85%,
+    var(--surface) 100%
+  );
+  pointer-events: none;
+}
+.spotlight-content {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: var(--sp-6) var(--sp-6) var(--sp-5);
+  z-index: 1;
+}
+.spotlight-title {
+  font-size: var(--fs-2xl);
+  font-weight: var(--fw-bold);
+  line-height: var(--lh-tight);
+  margin: 0 0 var(--sp-3);
+  color: var(--text);
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
+}
+.spotlight-btn {
+  min-height: 40px;
+  padding: 0 var(--sp-5);
+  font-size: var(--fs-md);
+}
+.spotlight-controls {
+  position: absolute;
+  bottom: var(--sp-4);
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  z-index: 10;
+}
+.spotlight-nav {
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-round);
+  border: none;
+  background: var(--overlay-strong);
+  color: var(--text);
+  font-size: var(--fs-xl);
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+  backdrop-filter: blur(4px);
+}
+.spotlight-nav:hover {
+  background: var(--accent-solid);
+  color: var(--on-accent);
+}
+.spotlight-nav:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  box-shadow: var(--focus-ring);
+}
+.spotlight-dots {
+  display: flex;
+  gap: 6px;
+}
+.spotlight-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: var(--radius-round);
+  border: none;
+  background: var(--border);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+}
+.spotlight-dot:hover {
+  background: var(--muted);
+}
+.spotlight-dot.active {
+  background: var(--accent);
+  transform: scale(1.2);
+}
+.spotlight-dot:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 /* ---------- Descubrir (view-specific) ---------- */
 .discover-tabs {
   margin-bottom: var(--sp-5);

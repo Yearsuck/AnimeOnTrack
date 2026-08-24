@@ -48,6 +48,14 @@ export const es = {
   "airing.carousel.prev": "Episodios anteriores",
   "airing.carousel.next": "Próximos episodios",
 
+  // AiringSpotlight.tsx
+  "spotlight.ariaLabel": "Destacados en emisión",
+  "spotlight.watchBtn": "Ver serie",
+  "spotlight.prevBtn": "Anterior",
+  "spotlight.nextBtn": "Siguiente",
+  "spotlight.dotsAria": "Diapositivas",
+  "spotlight.slideAria": "Diapositiva",
+
   // Pending.tsx
   "pending.episodesToWatch": "{count} episodios por ver",
   "pending.sortLabel": "Ordenar:",
