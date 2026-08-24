@@ -294,12 +294,21 @@ impl Db {
     /// `set_seen_cascade(id, watermark, true)`, which marks episodes numbered
     /// <= watermark seen and leaves everything above it — including on a row
     /// that already has MORE progress than the canonical watermark — exactly
-    /// as it was. Never unmarks anything. Scoped to `followed=1`: an
+    /// as it was. Never unmarks anything itself. Scoped to `followed=1`: an
     /// unfollowed or backlog-only twin is not touched. Returns how many
     /// series rows were actually advanced.
+    ///
+    /// A row lagging behind its twin is ambiguous on a live snapshot alone:
+    /// "never caught up here" and "the user just manually un-marked episodes
+    /// on purpose" look identical (both are just a lower `own_watermark`).
+    /// `sync_watermark_applied` remembers what this function itself last
+    /// set/observed for a row — a live watermark that has *dropped* below it
+    /// means something un-marked episodes since, and that reset is respected
+    /// rather than immediately overwritten back up to the twin's watermark.
+    /// Real forward progress past that point resumes normal catch-up.
     pub fn sync_seen_progress_across_sites(&self) -> Result<usize> {
         let mut stmt = self.conn.prepare(
-            "SELECT s.id, s.anilist_id, s.title,
+            "SELECT s.id, s.anilist_id, s.title, s.sync_watermark_applied,
                     COALESCE(MAX(CASE WHEN e.seen=1 THEN CAST(e.number AS INTEGER) END), 0) AS own_watermark
              FROM series s LEFT JOIN episodes e ON e.series_id = s.id
              WHERE s.followed=1
@@ -308,13 +317,19 @@ impl Db {
         struct Row {
             id: i64,
             key: String,
+            applied: Option<i64>,
             own_watermark: i64,
         }
         let rows: Vec<Row> = stmt
             .query_map([], |r| {
                 let anilist_id: Option<i64> = r.get(1)?;
                 let title: String = r.get(2)?;
-                Ok(Row { id: r.get(0)?, key: canon_key(anilist_id, &title), own_watermark: r.get(3)? })
+                Ok(Row {
+                    id: r.get(0)?,
+                    key: canon_key(anilist_id, &title),
+                    applied: r.get(3)?,
+                    own_watermark: r.get(4)?,
+                })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
 
@@ -329,9 +344,23 @@ impl Db {
         let mut advanced = 0usize;
         for row in &rows {
             let ceiling = canonical[&row.key];
-            if ceiling > row.own_watermark {
+            let rolled_back = row.applied.is_some_and(|applied| row.own_watermark < applied);
+            if ceiling > row.own_watermark && !rolled_back {
                 self.set_seen_cascade(row.id, &ceiling.to_string(), true)?;
+                self.conn.execute(
+                    "UPDATE series SET sync_watermark_applied=?2 WHERE id=?1",
+                    (row.id, ceiling),
+                )?;
                 advanced += 1;
+            } else {
+                // Nothing to raise (already at/above the ceiling), or raising
+                // it would override a manual rollback — either way, resync
+                // bookkeeping to the row's real current watermark so a future
+                // refresh judges it against what it actually is now.
+                self.conn.execute(
+                    "UPDATE series SET sync_watermark_applied=?2 WHERE id=?1",
+                    (row.id, row.own_watermark),
+                )?;
             }
         }
         Ok(advanced)
@@ -743,6 +772,42 @@ mod tests {
 
         assert_eq!(db.sync_seen_progress_across_sites().unwrap(), 0);
         assert_eq!(db.list_series_episodes(ob).unwrap().iter().filter(|e| e.seen).count(), 0);
+    }
+
+    #[test]
+    fn sync_seen_progress_does_not_re_raise_a_manually_rolled_back_row() {
+        // The reported bug: followed on two sites, both caught up to 10. The
+        // user un-marks A back down to 3 on purpose (wants to rewatch). The
+        // next refresh's sync saw A(3) behind B's still-10 watermark and
+        // silently raised A right back to 10 — undoing the un-mark every time.
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        let b = db.upsert_source("TioAnime", "b", "tioanime").unwrap();
+        let oa = seed_followed(&db, a, "shared", "Shared Show", None, 10, 10);
+        seed_followed(&db, b, "shared-b", "Shared Show", None, 10, 10);
+
+        // Both already caught up — a first sync just records bookkeeping.
+        assert_eq!(db.sync_seen_progress_across_sites().unwrap(), 0);
+
+        // User manually un-marks A from episode 3 onward (un-marking cascades
+        // to every later episode too, including the one clicked — 1 and 2
+        // stay seen).
+        db.set_seen_cascade(oa, "3", false).unwrap();
+        assert_eq!(db.list_series_episodes(oa).unwrap().iter().filter(|e| e.seen).count(), 2);
+
+        // Refresh (== another sync) must respect the rollback, not re-raise A.
+        assert_eq!(db.sync_seen_progress_across_sites().unwrap(), 0, "must not re-raise a manual rollback");
+        assert_eq!(
+            db.list_series_episodes(oa).unwrap().iter().filter(|e| e.seen).count(),
+            2,
+            "A's manual rollback survives a refresh"
+        );
+
+        // Genuine forward progress past the rollback point still resumes
+        // normal cross-site catch-up.
+        db.set_seen_cascade(oa, "4", true).unwrap();
+        assert_eq!(db.sync_seen_progress_across_sites().unwrap(), 1, "real progress past the rollback resumes catch-up");
+        assert_eq!(db.list_series_episodes(oa).unwrap().iter().filter(|e| e.seen).count(), 10);
     }
 
     #[test]
