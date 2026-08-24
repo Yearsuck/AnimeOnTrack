@@ -1,4 +1,5 @@
 use super::*;
+use crate::models::DustyEntry;
 
 // Every command below is intentionally **not** scoped to the active site —
 // Estadísticas reflects the whole library across every site you use, not
@@ -11,6 +12,12 @@ use super::*;
 pub fn get_genre_stats(state: State<'_, AppState>) -> Result<Vec<GenreStat>, String> {
     let db = state.db.lock().unwrap();
     db.get_genre_stats().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_dusty_watchlist(state: State<'_, AppState>) -> Result<Vec<DustyEntry>, String> {
+    let db = state.db.lock().unwrap();
+    db.get_dusty_watchlist().map_err(|e| e.to_string())
 }
 
 #[tauri::command]

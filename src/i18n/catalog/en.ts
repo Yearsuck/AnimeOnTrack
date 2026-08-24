@@ -323,4 +323,7 @@ export const en: Messages = {
   "stats.retry": "Try again",
   "stats.noGenre": "No genre",
   "stats.graphAria": "Relationship graph: {series} followed series across {genres} genres",
+  // Dusty watchlist
+  "stats.dustyHeading": "Dusty",
+  "stats.dustyLastSeen": "Last seen: {date}",
 };

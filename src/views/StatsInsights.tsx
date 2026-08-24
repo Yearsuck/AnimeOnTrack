@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { useLang, useT } from "../i18n";
-import type { WatchInsights, WatchSummary } from "../types";
+import type { WatchInsights, WatchSummary, DustyEntry } from "../types";
 import { BarChart, CategoryBlock, ShapeToggle } from "./StatsRings";
 import { useStatsShape } from "../lib/statsShape";
 import { useFormatNumber } from "../lib/formatNumber";
+import { getDustyWatchlist } from "../api";
 
 // "Resumen" block for Estadísticas — local-only metrics computed by
 // `get_watch_insights` (pure SQL, see src-tauri/src/db.rs). Sits between the
@@ -101,6 +102,11 @@ export function StatsInsights({
   const n = useFormatNumber();
   const { lang } = useLang();
   const [shape, setShape] = useStatsShape();
+  const [dusty, setDusty] = useState<DustyEntry[]>([]);
+
+  useEffect(() => {
+    getDustyWatchlist().then(setDusty).catch(() => setDusty([]));
+  }, []);
 
   const totalMinutes = insights.estimated_minutes_tracked + insights.estimated_minutes_external;
   const completionPct =
@@ -206,6 +212,24 @@ export function StatsInsights({
           <div className="stats-caveat">
             {t("stats.marksCaveat", { date: insights.marks_tracked_since })}
           </div>
+        </div>
+      )}
+
+      {dusty.length > 0 && (
+        <div className="series-block">
+          <div className="series-head">
+            <h3 className="section-title">{t("stats.dustyHeading")}</h3>
+          </div>
+          <ul className="dusty-list">
+            {dusty.map((entry) => (
+              <li key={entry.title} className="dusty-item">
+                <span className="dusty-title">{entry.title}</span>
+                <span className="dusty-date">
+                  {t("stats.dustyLastSeen", { date: entry.last_seen_at })}
+                </span>
+              </li>
+            ))}
+          </ul>
         </div>
       )}
     </div>

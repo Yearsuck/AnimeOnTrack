@@ -217,6 +217,15 @@ pub struct TitleCount {
     pub count: i64,
 }
 
+/// A followed series that has gone quiet — no episode marked seen in 90+ days.
+/// Returned by `Db::get_dusty_watchlist`. Canonical across sites (deduped via
+/// `canon_key`), so the same show followed on two sites appears once.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DustyEntry {
+    pub title: String,
+    pub last_seen_at: String,
+}
+
 /// Local-only watch metrics for the Estadísticas "Resumen" block — see the
 /// design doc `docs/superpowers/specs/2026-07-13-stats-new-metrics-design.md`.
 /// Computed entirely from SQLite (no network) via `Db::get_watch_insights`.

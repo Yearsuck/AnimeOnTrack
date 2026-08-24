@@ -107,6 +107,11 @@ export interface TitleCount {
   count: number;
 }
 
+export interface DustyEntry {
+  title: string;
+  last_seen_at: string;
+}
+
 export interface WatchInsights {
   estimated_minutes_tracked: number;
   estimated_minutes_external: number;

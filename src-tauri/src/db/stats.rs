@@ -811,6 +811,90 @@ impl Db {
         })
     }
 
+    /// Followed series that have gone quiet — no episode marked seen in 90+ days.
+    /// Canonical across sites (deduped via `canon_key`), so the same show
+    /// followed on two sites appears once. "Never started" (no seen_at at all)
+    /// is excluded — dusty means it was watched, then stopped. Returns at most
+    /// 12 entries, sorted by most stale first (oldest last_seen_at).
+    pub fn get_dusty_watchlist(&self) -> Result<Vec<crate::models::DustyEntry>> {
+        // Get all followed series with their latest seen_at, canonical across sites.
+        // We need: series.id, series.anilist_id, series.title, MAX(episodes.seen_at) as last_seen
+        // Filter: followed=1 AND last_seen IS NOT NULL
+        // Group by canon_key, pick the MOST RECENT (max) last_seen per canon group,
+        // then filter groups older than 90 days, sort by most stale first, limit 12.
+        // IMPORTANT: the 90-day filter runs AFTER cross-site grouping, not before.
+        // If we filtered before grouping, a show followed on two sites where one
+        // site's row is recent (<90 days) and the other is stale (>90 days) would
+        // incorrectly lose the recent row (filtered out) or keep the stale one.
+        // By fetching ALL last_seen dates first, reducing to MAX per canon_key
+        // in Rust, then filtering, we correctly answer "has the user engaged
+        // with this show recently on ANY site".
+        let mut stmt = self.conn.prepare(
+            "SELECT s.id, s.anilist_id, s.title,
+                    MAX(DATE(e.seen_at, 'localtime')) AS last_seen
+             FROM series s
+             JOIN episodes e ON e.series_id = s.id
+             WHERE s.followed=1
+               AND e.seen=1
+               AND e.seen_at IS NOT NULL
+             GROUP BY s.id, s.anilist_id, s.title",
+        )?;
+        #[allow(dead_code)]
+        struct Row {
+            id: i64,
+            anilist_id: Option<i64>,
+            title: String,
+            last_seen: String,
+        }
+        let rows: Vec<Row> = stmt
+            .query_map([], |r| {
+                Ok(Row {
+                    id: r.get(0)?,
+                    anilist_id: r.get(1)?,
+                    title: r.get(2)?,
+                    last_seen: r.get(3)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        // Group by canon_key, keep the MOST RECENT (MAX) last_seen across all sites
+        // for that canonical show. "Dusty" means the user hasn't engaged with
+        // the show on ANY site recently — so if they watched an episode on
+        // site A yesterday, the show is NOT dusty even if site B's row is stale.
+        // We take MAX per canon_key (most recent engagement), then filter
+        // groups older than 90 days.
+        let mut grouped: HashMap<String, (String, String)> = HashMap::new(); // canon_key -> (display_title, last_seen)
+        for row in rows {
+            let key = super::library::canon_key(row.anilist_id, &row.title);
+            let display = crate::db::stats::franchise_display_title(&row.title);
+            let entry = grouped.entry(key).or_insert_with(|| (display.clone(), row.last_seen.clone()));
+            // Keep the MORE RECENT (max) date across sites
+            if row.last_seen > entry.1 {
+                entry.1 = row.last_seen.clone();
+            }
+            // Keep the preferred display title
+            if crate::db::stats::prefer_display_title(&display, &entry.0) {
+                entry.0 = display;
+            }
+        }
+
+        // Now filter: only keep groups where the most recent engagement is >90 days old
+        let cutoff = chrono::Local::now().date_naive() - chrono::Days::new(90);
+        let cutoff_str = cutoff.format("%Y-%m-%d").to_string();
+
+        let mut entries: Vec<crate::models::DustyEntry> = grouped
+            .into_iter()
+            .filter(|(_, (_, last_seen_at))| last_seen_at.as_str() < cutoff_str.as_str())
+            .map(|(_, (title, last_seen_at))| crate::models::DustyEntry { title, last_seen_at })
+            .collect();
+
+        // Sort by most stale first (oldest last_seen_at)
+        entries.sort_by(|a, b| a.last_seen_at.cmp(&b.last_seen_at));
+        // Cap at 12
+        entries.truncate(12);
+        Ok(entries)
+    }
+
     /// A cheap fingerprint of the data, used to skip a redundant auto-backup
     /// when nothing changed since the last one.
     pub fn signature_counts(&self) -> Result<(i64, i64, i64, Option<String>)> {
@@ -1666,5 +1750,92 @@ mod tests {
         db.set_seen_cascade(series, "1", true).unwrap();
         let after = db.signature_counts().unwrap();
         assert_ne!(before, after);
+    }
+
+    #[test]
+    fn get_dusty_watchlist_shows_followed_series_older_than_90_days() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+
+        // Series with an episode seen >90 days ago — should appear
+        let dusty = db.upsert_series(src, &mk_airing("dusty", "Dusty Show", None)).unwrap();
+        db.set_followed(dusty, true).unwrap();
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: dusty, number: "1".into(), title: None,
+            url: "https://site/dusty-1".into(), released_at: None, seen: true,
+        }).unwrap();
+        // Manually backdate seen_at to >90 days ago
+        db.conn.execute(
+            "UPDATE episodes SET seen_at = datetime('now', 'localtime', '-100 days') WHERE series_id=?1",
+            [dusty],
+        ).unwrap();
+
+        // Series with a recent seen_at — should NOT appear
+        let fresh = db.upsert_series(src, &mk_airing("fresh", "Fresh Show", None)).unwrap();
+        db.set_followed(fresh, true).unwrap();
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: fresh, number: "1".into(), title: None,
+            url: "https://site/fresh-1".into(), released_at: None, seen: true,
+        }).unwrap();
+        db.set_seen_cascade(fresh, "1", true).unwrap(); // stamps "now"
+
+        // Followed series with NO seen episodes at all — should NOT appear (never started)
+        let never = db.upsert_series(src, &mk_airing("never", "Never Started", None)).unwrap();
+        db.set_followed(never, true).unwrap();
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: never, number: "1".into(), title: None,
+            url: "https://site/never-1".into(), released_at: None, seen: false,
+        }).unwrap();
+
+        let dusty_list = db.get_dusty_watchlist().unwrap();
+        assert_eq!(dusty_list.len(), 1);
+        assert_eq!(dusty_list[0].title, "Dusty Show");
+        // last_seen_at should be an ISO date string (YYYY-MM-DD)
+        assert!(dusty_list[0].last_seen_at.contains("-"));
+    }
+
+    #[test]
+    fn get_dusty_watchlist_dedups_cross_site_same_show() {
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        let b = db.upsert_source("TioAnime", "b", "tioanime").unwrap();
+
+        // Same show followed on both sites, different seen_at dates
+        // Site A: -100 days (more recent)
+        // Site B: -120 days (older)
+        // The CORRECT behavior: keep the MOST RECENT (MAX) date across sites = -100 days
+        // because "dusty" means no engagement on ANY site recently.
+        let dusty_a = db.upsert_series(a, &mk_airing("dusty", "Dusty Show", None)).unwrap();
+        db.set_followed(dusty_a, true).unwrap();
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: dusty_a, number: "1".into(), title: None,
+            url: "https://site/dusty-1".into(), released_at: None, seen: true,
+        }).unwrap();
+        db.conn.execute(
+            "UPDATE episodes SET seen_at = datetime('now', 'localtime', '-100 days') WHERE series_id=?1",
+            [dusty_a],
+        ).unwrap();
+
+        let dusty_b = db.upsert_series(b, &mk_airing("dusty", "Dusty Show", None)).unwrap();
+        db.set_followed(dusty_b, true).unwrap();
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: dusty_b, number: "1".into(), title: None,
+            url: "https://site/dusty-1".into(), released_at: None, seen: true,
+        }).unwrap();
+        db.conn.execute(
+            "UPDATE episodes SET seen_at = datetime('now', 'localtime', '-120 days') WHERE series_id=?1",
+            [dusty_b],
+        ).unwrap();
+
+        let dusty_list = db.get_dusty_watchlist().unwrap();
+        // Should appear only once (canonical dedup)
+        assert_eq!(dusty_list.len(), 1);
+        assert_eq!(dusty_list[0].title, "Dusty Show");
+
+        // The most recent date across sites (-100 days) should win
+        // Compute expected date same way the implementation does
+        let expected_date = chrono::Local::now().date_naive() - chrono::Days::new(100);
+        let expected_str = expected_date.format("%Y-%m-%d").to_string();
+        assert_eq!(dusty_list[0].last_seen_at, expected_str);
     }
 }
