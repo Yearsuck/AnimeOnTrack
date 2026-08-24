@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { listAiringSeason, setFollowed } from "../api";
 import { useT, useLang } from "../i18n";
-import { AiringCarouselRow } from "./AiringCarouselRow";
 import type { AiringItem, Series } from "../types";
 import { AiringSpotlight } from "./AiringSpotlight";
 
@@ -95,13 +94,15 @@ export function AiringGrid({
 
   const followedCount = items.filter((it) => it.series.followed).length;
 
-  // Carousel: soonest upcoming episodes (non-null next_episode_at), sorted ascending, top 12
-  const carouselItems = useMemo(() => {
-    return items
-      .filter((it) => it.series.next_episode_at != null)
-      .sort((a, b) => (a.series.next_episode_at ?? 0) - (b.series.next_episode_at ?? 0))
-      .slice(0, 12);
-  }, [items]);
+  // Spotlight: in "esta temporada" the banner should only feature season
+  // items, same scope as the grid below it — otherwise it contradicts the
+  // filter the user just picked.
+  const spotlightItems = useMemo(() => {
+    if (viewMode !== "season") return items;
+    return items.filter(
+      (it) => it.first_episode_at != null && isWithinLastThreeMonths(it.first_episode_at)
+    );
+  }, [items, viewMode]);
 
   return (
     <div className="page">
@@ -162,15 +163,7 @@ export function AiringGrid({
       )}
 
       {viewMode !== "week" && (
-        <AiringSpotlight items={items} onOpenSeries={onOpenSeries} />
-      )}
-
-      {carouselItems.length > 0 && (
-        <AiringCarouselRow
-          title={t("airing.carouselTitle")}
-          items={carouselItems}
-          onOpenSeries={onOpenSeries}
-        />
+        <AiringSpotlight items={spotlightItems} onOpenSeries={onOpenSeries} />
       )}
 
       {filtered.length === 0 ? (

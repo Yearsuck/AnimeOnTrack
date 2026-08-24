@@ -45,9 +45,6 @@ export const es = {
   "airing.filterSeason": "Esta temporada",
   "airing.filterWeek": "Esta semana",
   "airing.seasonHint": "Solo se muestran series con fecha de estreno registrada. Se sigan o no, se busca la fecha en el Catálogo sincronizado — si falta, resincronizá el Catálogo desde su pestaña",
-  "airing.carouselTitle": "Próximos episodios",
-  "airing.carousel.prev": "Episodios anteriores",
-  "airing.carousel.next": "Próximos episodios",
   "airing.weekEmpty": "Nada programado esta semana.",
 
   // AiringSpotlight.tsx

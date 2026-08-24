@@ -175,66 +175,58 @@ export function StatsHeatmap() {
       </div>
 
       <div className="heatmap-grid-wrap">
-        {/* Month labels row */}
-        <div className="heatmap-months" role="row" aria-hidden="true">
+        {/* Month labels, positioned by absolute pixel offset — 11px cell +
+            3px gap per week column, matching the CSS below exactly. */}
+        <div className="heatmap-months" aria-hidden="true">
           {monthBounds.map((m) => (
-            <div
-              key={m.month}
-              className="heatmap-month"
-              style={{ gridColumnStart: m.week + 1 }}
-            >
+            <div key={m.month} className="heatmap-month" style={{ left: m.week * 14 }}>
               {m.label}
             </div>
           ))}
         </div>
 
-        {/* Grid: 7 rows (days of week) */}
+        {/* Day-label column + a flex row of week columns (each a flex
+            column of 7 cells) — no CSS Grid auto-placement involved. */}
         <div className="heatmap-grid" role="img" aria-label={t("stats.heatmapAria", { year })}>
-          {cells.map((weekCells, dayOfWeek) => (
-            <div key={dayOfWeek} className="heatmap-row" role="row">
-              <div
-                className="heatmap-day-label"
-                style={{ gridRow: dayOfWeek + 1, gridColumn: 1 }}
-                aria-hidden="true"
-              >
+          <div className="heatmap-daylabels" aria-hidden="true">
+            {dayLabels.map((label, dayOfWeek) => (
+              <div key={dayOfWeek} className="heatmap-day-label">
                 {/* GitHub's own graph only labels every other row (Mon/Wed/Fri) —
                     a label per row is redundant clutter at 11px row height. */}
-                {dayOfWeek % 2 === 0 ? dayLabels[dayOfWeek] : ""}
+                {dayOfWeek % 2 === 0 ? label : ""}
               </div>
-              {weekCells.map((iso, week) => (
-                <div
-                  key={week}
-                  style={{ gridRow: dayOfWeek + 1, gridColumn: week + 2 }}
-                  className={
-                    iso
-                      ? intensityClass(countMap.get(iso) ?? 0)
-                      : "heatmap-cell empty"
-                  }
-                  title={
-                    iso
-                      ? `${new Date(`${iso}T00:00:00`).toLocaleDateString(lang, {
-                          weekday: "long",
-                          year: "numeric",
-                          month: "long",
-                          day: "numeric",
-                        })}: ${countMap.get(iso) ?? 0} ${t("stats.heatmapEpisodes")}`
-                      : ""
-                  }
-                  role="cell"
-                  aria-label={
-                    iso
-                      ? `${new Date(`${iso}T00:00:00`).toLocaleDateString(lang, {
-                          weekday: "long",
-                          year: "numeric",
-                          month: "long",
-                          day: "numeric",
-                        })}: ${countMap.get(iso) ?? 0} ${t("stats.heatmapEpisodes")}`
-                      : ""
-                  }
-                />
-              ))}
-            </div>
-          ))}
+            ))}
+          </div>
+          <div className="heatmap-weeks">
+            {Array.from({ length: weeks }, (_, week) => (
+              <div key={week} className="heatmap-week" role="row">
+                {Array.from({ length: 7 }, (_, dayOfWeek) => {
+                  const iso = cells[dayOfWeek][week];
+                  const label = iso
+                    ? `${new Date(`${iso}T00:00:00`).toLocaleDateString(lang, {
+                        weekday: "long",
+                        year: "numeric",
+                        month: "long",
+                        day: "numeric",
+                      })}: ${countMap.get(iso) ?? 0} ${t("stats.heatmapEpisodes")}`
+                    : "";
+                  return (
+                    <div
+                      key={dayOfWeek}
+                      className={
+                        iso
+                          ? intensityClass(countMap.get(iso) ?? 0)
+                          : "heatmap-cell empty"
+                      }
+                      title={label}
+                      role="cell"
+                      aria-label={label}
+                    />
+                  );
+                })}
+              </div>
+            ))}
+          </div>
         </div>
       </div>
 

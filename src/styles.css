@@ -1983,30 +1983,38 @@ progress.scanbar-track::-webkit-progress-value {
 .heatmap-grid-wrap {
   overflow-x: auto;
 }
-/* Fixed-size cells (GitHub's own contribution graph, not stretched to fill
-   the container) — 54 weeks x 11px + 53 gaps x 3px is ~750px, comfortably
-   under any real window width, so the graph sits left-aligned and never
-   needs the horizontal scroll .heatmap-grid-wrap falls back to. */
+/* Rebuilt on plain flexbox, not CSS Grid — a grid row that uses
+   display:contents to flatten into the parent grid (so each weekday could
+   be its own mapped array) rendered with broken row placement in WebView2.
+   A week is instead its own flex column of 7 cells, and weeks sit in a
+   flex row; day labels are a separate flex column alongside it. No
+   auto-placement, no display:contents, nothing to place ambiguously.
+   Fixed 11px cells + 3px gaps (54 weeks ≈ 750px) sit left-aligned and
+   never need the horizontal scroll .heatmap-grid-wrap falls back to. */
 .heatmap-months {
-  display: grid;
-  grid-template-columns: repeat(54, 11px); /* 54: max weeks a year can span (leap year starting Sunday) */
-  gap: 3px;
+  position: relative;
+  height: 14px;
+  margin-left: 33px; /* 30px day-label column + 3px gap to the first week */
   margin-bottom: 4px;
-  padding-left: 33px; /* align with day labels */
 }
 .heatmap-month {
+  position: absolute;
+  top: 0;
   font-size: var(--fs-xs);
   color: var(--muted-2);
   font-weight: var(--fw-medium);
   white-space: nowrap;
 }
 .heatmap-grid {
-  display: grid;
-  grid-template-columns: 30px repeat(54, 11px);
-  gap: 3px;
+  display: flex;
+  align-items: flex-start;
 }
-.heatmap-row {
-  display: contents;
+.heatmap-daylabels {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 0 0 30px;
+  margin-right: 3px;
 }
 .heatmap-day-label {
   display: flex;
@@ -2016,8 +2024,16 @@ progress.scanbar-track::-webkit-progress-value {
   font-size: var(--fs-xs);
   color: var(--muted-2);
   font-weight: var(--fw-medium);
-  grid-column: 1;
   height: 11px;
+}
+.heatmap-weeks {
+  display: flex;
+  gap: 3px;
+}
+.heatmap-week {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
 }
 .heatmap-cell {
   width: 11px;
@@ -2239,70 +2255,6 @@ select.lib-filter-select {
   margin-top: 0;
   font-size: var(--fs-sm);
   padding: 0 var(--sp-1) var(--sp-3);
-}
-
-/* ---------- Airing Carousel Row ---------- */
-.airing-carousel-row {
-  margin-bottom: var(--sp-6);
-}
-.airing-carousel-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: var(--sp-3);
-}
-.airing-carousel-nav {
-  display: flex;
-  gap: var(--sp-1);
-}
-.carousel-btn {
-  width: 36px;
-  height: 36px;
-  border-radius: var(--radius-round);
-  border: 1px solid var(--border);
-  background: var(--surface);
-  color: var(--text);
-  font-size: var(--fs-xl);
-  line-height: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
-}
-.carousel-btn:hover:not(:disabled) {
-  background: var(--surface-2);
-  border-color: var(--muted-2);
-}
-.carousel-btn:active:not(:disabled) {
-  transform: translateY(1px);
-}
-.carousel-btn:disabled {
-  opacity: 0.35;
-  cursor: not-allowed;
-}
-.airing-carousel-track {
-  display: flex;
-  gap: var(--sp-3);
-  overflow-x: auto;
-  scroll-snap-type: x mandatory;
-  scroll-padding: 0 var(--sp-5);
-  padding-bottom: var(--sp-1); /* space for scrollbar */
-  -webkit-overflow-scrolling: touch;
-}
-.airing-carousel-track::-webkit-scrollbar {
-  height: 8px;
-}
-.airing-carousel-track::-webkit-scrollbar-thumb {
-  background: var(--surface-3);
-  border-radius: 4px;
-}
-.carousel-card {
-  flex: 0 0 150px;
-  scroll-snap-align: start;
-}
-.carousel-card .card-body {
-  padding-bottom: var(--sp-2); /* no follow button, tighter */
 }
 
 /* ---------- Spotlight banner (AiringGrid hero carousel) ---------- */
