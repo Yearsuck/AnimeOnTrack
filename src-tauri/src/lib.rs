@@ -162,6 +162,7 @@ pub fn run() {
             commands::get_avg_completion_days,
             commands::get_stats_graph,
             commands::get_hourly_distribution,
+            commands::get_popularity_bias,
             commands::backfill_genres,
             commands::set_followed,
             commands::refresh,

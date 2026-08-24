@@ -278,6 +278,22 @@ pub struct WatchInsights {
     pub marks_tracked_since: Option<String>,
 }
 
+/// Mainstream vs underground taste score for Estadísticas — average AniList
+/// popularity of followed series linked to the catalog, normalized to 0-10.
+/// Uses cross-site canonical dedup via `canon_key` so the same show followed
+/// on two sites counts once. Returns `None` when fewer than 3 linked followed
+/// series exist (not enough data for a meaningful score).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PopularityBias {
+    /// Average AniList popularity (0-700,000 scale) across canonical followed
+    /// series that have a catalog link and a non-NULL popularity. `None` when
+    /// fewer than 3 such series exist.
+    pub average_popularity: Option<f64>,
+    /// Normalized to 0-10 using ~70,000 as divisor (700,000 / 10). `None`
+    /// mirrors `average_popularity`.
+    pub normalized_score: Option<f64>,
+}
+
 /// Snapshot of cloud-backup state shown in Settings — whether Google
 /// credentials were compiled in, whether the user connected their Drive,
 /// and the last backup's timestamp/size.

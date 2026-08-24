@@ -1,5 +1,6 @@
 use super::*;
 use crate::models::DustyEntry;
+use crate::models::PopularityBias;
 
 // Every command below is intentionally **not** scoped to the active site —
 // Estadísticas reflects the whole library across every site you use, not
@@ -71,4 +72,14 @@ pub fn get_stats_graph(state: State<'_, AppState>) -> Result<Vec<SeriesGraphNode
 pub fn get_hourly_distribution(state: State<'_, AppState>) -> Result<Vec<HourCount>, String> {
     let db = state.db.lock().unwrap();
     db.get_hourly_distribution().map_err(|e| e.to_string())
+}
+
+/// Mainstream vs underground taste score — average AniList popularity of
+/// followed series linked to the catalog, normalized to 0-10. Cross-site
+/// canonical dedup via `canon_key`. Returns `None` fields when fewer than
+/// 3 linked followed series exist.
+#[tauri::command]
+pub fn get_popularity_bias(state: State<'_, AppState>) -> Result<PopularityBias, String> {
+    let db = state.db.lock().unwrap();
+    db.get_popularity_bias().map_err(|e| e.to_string())
 }

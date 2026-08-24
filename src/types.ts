@@ -138,6 +138,11 @@ export interface WatchInsights {
   marks_tracked_since: string | null;
 }
 
+export interface PopularityBias {
+  average_popularity: number | null;
+  normalized_score: number | null;
+}
+
 export interface SwipeCard {
   title: string;
   url: string;

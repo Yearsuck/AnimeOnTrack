@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useLang, useT } from "../i18n";
-import type { WatchInsights, WatchSummary, DustyEntry, BingeRecord, HourCount } from "../types";
+import type { WatchInsights, WatchSummary, DustyEntry, BingeRecord, HourCount, PopularityBias } from "../types";
 import { BarChart, CategoryBlock, ShapeToggle } from "./StatsRings";
 import { useStatsShape } from "../lib/statsShape";
 import { useFormatNumber } from "../lib/formatNumber";
@@ -136,9 +136,11 @@ function HourlyDistributionChart({
 export function StatsInsights({
   insights,
   summary,
+  popularityBias,
 }: {
   insights: WatchInsights;
   summary: WatchSummary;
+  popularityBias: PopularityBias | null;
 }) {
   const t = useT();
   const n = useFormatNumber();
@@ -318,6 +320,43 @@ export function StatsInsights({
               </li>
             ))}
           </ul>
+        </div>
+      )}
+
+      {popularityBias && (
+        <div className="series-block">
+          <div className="series-head">
+            <h3 className="section-title">{t("stats.popularityBiasHeading")}</h3>
+          </div>
+          <div className="popbias">
+            <div className="popbias-labels">
+              <span className="popbias-low">{t("stats.popularityBiasLow")}</span>
+              <span className="popbias-high">{t("stats.popularityBiasHigh")}</span>
+            </div>
+            <div className="popbias-slider-wrap" role="img" aria-label={t("stats.popularityBiasLabel")}>
+              <div
+                className="popbias-track"
+                aria-valuemin={0}
+                aria-valuemax={10}
+                aria-valuenow={Math.round(popularityBias.normalized_score ?? 0)}
+              >
+                <div
+                  className="popbias-fill"
+                  style={{ width: `${Math.min(100, Math.max(0, (popularityBias.normalized_score ?? 0) * 10))}%` }}
+                />
+                <div
+                  className="popbias-thumb"
+                  style={{ left: `${Math.min(100, Math.max(0, (popularityBias.normalized_score ?? 0) * 10))}%` }}
+                />
+              </div>
+            </div>
+            <div className="popbias-value">
+              {popularityBias.normalized_score !== null
+                ? `${t("stats.popularityBiasLabel")}: ${popularityBias.normalized_score.toFixed(1)}/10`
+                : t("stats.ringsEmpty")}
+            </div>
+            <div className="stats-caveat">{t("stats.popularityBiasHelp")}</div>
+          </div>
         </div>
       )}
     </div>

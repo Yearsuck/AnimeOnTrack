@@ -356,4 +356,11 @@ export const es = {
   "stats.bingeRecord": "Récord en un día",
   "stats.bingeRecordValue": "{count} episodios ({day})",
   "stats.bingeRecordEmpty": "Marca algo como visto para establecer tu récord",
+
+  // Popularity Bias
+  "stats.popularityBiasHeading": "Sesgo de popularidad",
+  "stats.popularityBiasLabel": "Promedio vs Underground",
+  "stats.popularityBiasLow": "Underground",
+  "stats.popularityBiasHigh": "Mainstream",
+  "stats.popularityBiasHelp": "Promedio de popularidad en AniList de tus series seguidas (enlazadas al catálogo), normalizado 0–10. Menos de 3 series con datos = sin puntuación. 0 = solo joyas ocultas, 10 = solo éxitos masivos.",
 } as const;

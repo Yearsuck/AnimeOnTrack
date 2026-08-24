@@ -1058,6 +1058,59 @@ impl Db {
             .flatten();
         Ok((series, eps, max_ep, max_seen))
     }
+
+    /// Mainstream vs underground taste score — average AniList popularity of
+    /// followed series linked to the catalog, normalized to 0-10. Cross-site
+    /// canonical dedup via `canon_key` so the same show followed on two sites
+    /// counts once. Returns `None` for both fields when fewer than 3 linked
+    /// followed series exist (not enough data for a meaningful score).
+    pub fn get_popularity_bias(&self) -> Result<crate::models::PopularityBias> {
+        // Get all followed series with their anilist_id and title, then group by canon_key
+        // and pick one representative per canonical show. Then join with anilist_catalog
+        // to get popularity.
+        let mut stmt = self.conn.prepare(
+            "SELECT s.anilist_id, s.title, c.popularity
+             FROM series s
+             LEFT JOIN anilist_catalog c ON c.id = s.anilist_id
+             WHERE s.followed=1 AND s.anilist_id IS NOT NULL AND c.popularity IS NOT NULL",
+        )?;
+        let rows: Vec<(Option<i64>, String, i64)> = stmt
+            .query_map([], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        // Group by canon_key to dedup cross-site
+        let mut grouped: HashMap<String, i64> = HashMap::new();
+        for (anilist_id, title, popularity) in rows {
+            let key = super::library::canon_key(anilist_id, &title);
+            // Keep the first popularity per canon_key (any is fine since they
+            // represent the same show and should have the same AniList ID)
+            grouped.entry(key).or_insert(popularity);
+        }
+
+        let count = grouped.len();
+        if count < 3 {
+            return Ok(crate::models::PopularityBias {
+                average_popularity: None,
+                normalized_score: None,
+            });
+        }
+
+        let sum: i64 = grouped.values().sum();
+        let average = sum as f64 / count as f64;
+        // 70,000 per point is an approximation, not an AniList API contract
+        // (see this task's own spec) — a handful of the most popular shows
+        // on AniList individually clear 700,000, so a followed list skewed
+        // toward those would otherwise push the normalized score past 10 and
+        // break the 0-10 slider. Clamp to the scale's own bounds.
+        let normalized = (average / 70_000.0).min(10.0);
+
+        Ok(crate::models::PopularityBias {
+            average_popularity: Some(average),
+            normalized_score: Some(normalized),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -2340,5 +2393,178 @@ mod tests {
         let avg = db.get_avg_completion_days().unwrap();
         // Merged franchise: first seen 10 days ago, last seen 1 day ago -> span = 9
         assert_eq!(avg, Some(9.0), "cross-site franchise merged, overall span 9 days");
+    }
+
+    // ---- Popularity Bias (2026-08-24) ----
+
+    #[test]
+    fn get_popularity_bias_returns_none_when_fewer_than_3_linked_followed_series() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+
+        // Insert 2 followed series linked to catalog with popularity
+        for (slug, title, pop) in [
+            ("s1", "Show One", 50000),
+            ("s2", "Show Two", 100000),
+        ] {
+            db.upsert_catalog_anime(
+                &crate::anilist::CatalogAnime {
+                    id: pop, title: title.into(), title_romaji: None, title_english: None,
+                    cover_url: None, format: Some("TV".into()), genres: vec![],
+                    episodes: Some(12), average_score: None, popularity: Some(pop),
+                    url: format!("https://anilist.co/anime/{pop}"), status: None, duration: Some(24),
+                    studio: None, start_date: None,
+                },
+                0,
+            ).unwrap();
+            let id = db.upsert_series(src, &mk_airing(slug, title, None)).unwrap();
+            db.set_followed(id, true).unwrap();
+            db.set_anilist_id(id, pop).unwrap();
+        }
+
+        let bias = db.get_popularity_bias().unwrap();
+        assert_eq!(bias.average_popularity, None);
+        assert_eq!(bias.normalized_score, None);
+    }
+
+    #[test]
+    fn get_popularity_bias_returns_none_when_no_catalog_link() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+
+        // 3 followed series but none linked to catalog
+        for (slug, title) in [
+            ("s1", "Show One"),
+            ("s2", "Show Two"),
+            ("s3", "Show Three"),
+        ] {
+            let id = db.upsert_series(src, &mk_airing(slug, title, None)).unwrap();
+            db.set_followed(id, true).unwrap();
+        }
+
+        let bias = db.get_popularity_bias().unwrap();
+        assert_eq!(bias.average_popularity, None);
+        assert_eq!(bias.normalized_score, None);
+    }
+
+    #[test]
+    fn get_popularity_bias_dedups_cross_site_same_show() {
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        let b = db.upsert_source("TioAnime", "b", "tioanime").unwrap();
+
+        // Same show on both sites, linked to same AniList ID
+        db.upsert_catalog_anime(
+            &crate::anilist::CatalogAnime {
+                id: 100, title: "Shared Show".into(), title_romaji: None, title_english: None,
+                cover_url: None, format: Some("TV".into()), genres: vec![],
+                episodes: Some(12), average_score: None, popularity: Some(210000),
+                url: "https://anilist.co/anime/100".into(), status: None, duration: Some(24),
+                studio: None, start_date: None,
+            },
+            0,
+        ).unwrap();
+
+        let id_a = db.upsert_series(a, &mk_airing("shared", "Shared Show", None)).unwrap();
+        db.set_followed(id_a, true).unwrap();
+        db.set_anilist_id(id_a, 100).unwrap();
+
+        let id_b = db.upsert_series(b, &mk_airing("shared", "Shared Show", None)).unwrap();
+        db.set_followed(id_b, true).unwrap();
+        db.set_anilist_id(id_b, 100).unwrap();
+
+        // Two other distinct shows on site A to reach the 3 minimum
+        for (slug, title, pop) in [
+            ("s2", "Show Two", 50000),
+            ("s3", "Show Three", 150000),
+        ] {
+            db.upsert_catalog_anime(
+                &crate::anilist::CatalogAnime {
+                    id: pop, title: title.into(), title_romaji: None, title_english: None,
+                    cover_url: None, format: Some("TV".into()), genres: vec![],
+                    episodes: Some(12), average_score: None, popularity: Some(pop),
+                    url: format!("https://anilist.co/anime/{pop}"), status: None, duration: Some(24),
+                    studio: None, start_date: None,
+                },
+                0,
+            ).unwrap();
+            let id = db.upsert_series(a, &mk_airing(slug, title, None)).unwrap();
+            db.set_followed(id, true).unwrap();
+            db.set_anilist_id(id, pop).unwrap();
+        }
+
+        let bias = db.get_popularity_bias().unwrap();
+        assert!(bias.average_popularity.is_some());
+        // Average = (210000 + 50000 + 150000) / 3 = 410000 / 3 ≈ 136666.67
+        let avg = bias.average_popularity.unwrap();
+        assert!((avg - 136666.67).abs() < 1.0, "average: {avg}");
+        let norm = bias.normalized_score.unwrap();
+        assert!((norm - 1.95238).abs() < 0.01, "normalized: {norm}"); // 136666.67 / 70000
+    }
+
+    #[test]
+    fn get_popularity_bias_normalizes_correctly() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+
+        // 3 shows with popularity summing to 700,000 -> avg = 233,333.33 -> norm ≈ 3.33
+        for (slug, title, pop) in [
+            ("s1", "Low Pop", 10000),
+            ("s2", "Mid Pop", 200000),
+            ("s3", "High Pop", 490000),
+        ] {
+            db.upsert_catalog_anime(
+                &crate::anilist::CatalogAnime {
+                    id: pop, title: title.into(), title_romaji: None, title_english: None,
+                    cover_url: None, format: Some("TV".into()), genres: vec![],
+                    episodes: Some(12), average_score: None, popularity: Some(pop),
+                    url: format!("https://anilist.co/anime/{pop}"), status: None, duration: Some(24),
+                    studio: None, start_date: None,
+                },
+                0,
+            ).unwrap();
+            let id = db.upsert_series(src, &mk_airing(slug, title, None)).unwrap();
+            db.set_followed(id, true).unwrap();
+            db.set_anilist_id(id, pop).unwrap();
+        }
+
+        let bias = db.get_popularity_bias().unwrap();
+        let avg = bias.average_popularity.unwrap();
+        assert!((avg - 233333.33).abs() < 1.0, "average: {avg}");
+        let norm = bias.normalized_score.unwrap();
+        assert!((norm - 3.33333).abs() < 0.01, "normalized: {norm}"); // 233333.33 / 70000
+    }
+
+    #[test]
+    fn get_popularity_bias_clamps_score_at_ten() {
+        // A followed list skewed toward AniList's most popular shows can
+        // individually clear 700,000 popularity — well above the 70,000
+        // divisor's own scale. The normalized score must clamp to 10, not
+        // report an out-of-range value that would break the 0-10 slider.
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+        for (slug, title, pop) in [
+            ("s1", "Mega Hit 1", 900_000),
+            ("s2", "Mega Hit 2", 850_000),
+            ("s3", "Mega Hit 3", 950_000),
+        ] {
+            db.upsert_catalog_anime(
+                &crate::anilist::CatalogAnime {
+                    id: pop, title: title.into(), title_romaji: None, title_english: None,
+                    cover_url: None, format: Some("TV".into()), genres: vec![],
+                    episodes: Some(12), average_score: None, popularity: Some(pop),
+                    url: format!("https://anilist.co/anime/{pop}"), status: None, duration: Some(24),
+                    studio: None, start_date: None,
+                },
+                0,
+            ).unwrap();
+            let id = db.upsert_series(src, &mk_airing(slug, title, None)).unwrap();
+            db.set_followed(id, true).unwrap();
+            db.set_anilist_id(id, pop).unwrap();
+        }
+
+        let bias = db.get_popularity_bias().unwrap();
+        let norm = bias.normalized_score.unwrap();
+        assert_eq!(norm, 10.0, "score must clamp at 10, not exceed it: {norm}");
     }
 }

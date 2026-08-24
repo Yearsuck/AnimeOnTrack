@@ -337,4 +337,11 @@ export const en: Messages = {
   "stats.bingeRecord": "Single-day record",
   "stats.bingeRecordValue": "{count} episodes ({day})",
   "stats.bingeRecordEmpty": "Mark something as watched to set your record",
+
+  // Popularity Bias
+  "stats.popularityBiasHeading": "Popularity Bias",
+  "stats.popularityBiasLabel": "Average vs Underground",
+  "stats.popularityBiasLow": "Underground",
+  "stats.popularityBiasHigh": "Mainstream",
+  "stats.popularityBiasHelp": "Average AniList popularity of your followed series (linked to catalog), normalized 0–10. Fewer than 3 series with data = no score. 0 = only hidden gems, 10 = only mainstream hits.",
 };
