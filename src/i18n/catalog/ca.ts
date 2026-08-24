@@ -162,7 +162,11 @@ export const ca: Messages = {
   "library.typeAll": "Tots",
   "library.typeOther": "Altres",
   "library.filterGenre": "Gènere",
-  "library.genreAll": "Tots",
+  "library.genreChipAria": "Filtre de gènere {genre}, estat: {state}",
+  "library.genreState.neutral": "sense filtre",
+  "library.genreState.include": "incloure",
+  "library.genreState.exclude": "excloure",
+  "library.clearGenreFilters": "Neteja filtres de gènere",
   "library.filterStudio": "Estudi",
   "library.studioAll": "Tots",
 
