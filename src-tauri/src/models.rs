@@ -176,6 +176,19 @@ pub struct GenreStat {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GenreCardSeries {
+    pub title: String,
+    pub cover_url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GenreCard {
+    pub genre: String,
+    pub count: i64,
+    pub top_series: Vec<GenreCardSeries>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TypeStat {
     pub kind: String,
     pub count: i64,

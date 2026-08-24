@@ -24,6 +24,7 @@ import type {
   SwipeHistoryItem,
   DeckBans,
   BackupStatus,
+  GenreCard,
 } from "./types";
 
 export const scanAiring = (baseUrl: string) =>
@@ -78,6 +79,8 @@ export const setActiveSite = (siteId: string) =>
 export const listLibrary = () => invoke<LibraryItem[]>("list_library");
 
 export const getGenreStats = () => invoke<GenreStat[]>("get_genre_stats");
+
+export const getGenreCards = () => invoke<GenreCard[]>("get_genre_cards");
 
 export const getTypeStats = () => invoke<TypeStat[]>("get_type_stats");
 

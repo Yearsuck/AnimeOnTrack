@@ -308,6 +308,9 @@ export const ca: Messages = {
   "stats.shapeRings": "Cercles",
   "stats.shapeBars": "Barres",
   "stats.shapeToggleAria": "Forma del gràfic",
+  "stats.episodeSingular": "episodi",
+  "stats.episodePlural": "episodis",
+  "stats.genreCardThumbsAria": "{genre} - series destacades",
 
   // StatsGraph.tsx
   "stats.graphEmpty": "Encara no segueixes cap sèrie.",

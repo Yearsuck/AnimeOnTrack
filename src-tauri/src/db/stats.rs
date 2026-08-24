@@ -335,6 +335,98 @@ impl Db {
         Ok(rows)
     }
 
+    /// Genre cards: per-genre stats plus top 4 representative series with
+    /// cover_url, for the ranked "genre cards" UI in Estadísticas.
+    /// Canonical across sites (one show followed on multiple sites contributes
+    /// once, genres unioned). Within each genre, pick the 4 series with the
+    /// most watched episodes (real seen + catalog estimate for watched_externally).
+    pub fn get_genre_cards(&self) -> Result<Vec<crate::models::GenreCard>> {
+        // First, get all canonical followed shows with their watch evidence
+        // and genres — this is the same canonical grouping as get_genre_stats
+        let groups = self.group_followed_canonically()?;
+
+        // Build a map: genre -> list of (title, cover_url, watched_episodes)
+        let mut genre_series: HashMap<String, Vec<(String, Option<String>, i64)>> = HashMap::new();
+
+        for g in &groups {
+            let mut genres: HashSet<String> = HashSet::new();
+            for &id in &g.member_ids {
+                genres.extend(self.list_series_genres(id)?);
+            }
+
+            // Calculate watched episodes for this canonical show
+            // Sum real seen episodes across all member rows
+            let real_seen: i64 = g
+                .member_ids
+                .iter()
+                .filter_map(|&id| {
+                    self.conn
+                        .query_row(
+                            "SELECT COUNT(*) FROM episodes WHERE series_id=?1 AND seen=1",
+                            [id],
+                            |r| r.get::<_, i64>(0),
+                        )
+                        .ok()
+                })
+                .sum();
+
+            // For watched_externally series, get catalog episode count if available
+            let external_episodes: i64 = g
+                .member_ids
+                .iter()
+                .filter_map(|&id| {
+                    self.conn
+                        .query_row(
+                            "SELECT c.episodes FROM series s LEFT JOIN anilist_catalog c ON c.id = s.anilist_id WHERE s.id=?1 AND s.watched_externally=1",
+                            [id],
+                            |r| r.get::<_, Option<i64>>(0),
+                        )
+                        .ok()
+                })
+                .flatten()
+                .max()
+                .unwrap_or(0);
+
+            let watched_episodes = real_seen.max(external_episodes);
+
+            // Add this show to each of its genres
+            let title = g.display_title.clone();
+            let cover_url = g.cover_url.clone();
+            for genre in genres {
+                genre_series
+                    .entry(genre)
+                    .or_default()
+                    .push((title.clone(), cover_url.clone(), watched_episodes));
+            }
+        }
+
+        // Build GenreCard for each genre, taking top 4 by watched_episodes
+        let mut cards: Vec<crate::models::GenreCard> = genre_series
+            .into_iter()
+            .map(|(genre, mut series_list)| {
+                series_list.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.cmp(&b.0)));
+                // count = total episodes watched across every show in this
+                // genre, not the number of shows — the card displays it with
+                // an "N episodes" label.
+                let count: i64 = series_list.iter().map(|(_, _, ep)| ep).sum();
+                let top_series: Vec<crate::models::GenreCardSeries> = series_list
+                    .into_iter()
+                    .take(4)
+                    .map(|(title, cover_url, _)| crate::models::GenreCardSeries { title, cover_url })
+                    .collect();
+                crate::models::GenreCard {
+                    genre,
+                    count,
+                    top_series,
+                }
+            })
+            .collect();
+
+        // Sort by count descending, then genre name
+        cards.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.genre.cmp(&b.genre)));
+        Ok(cards)
+    }
+
     /// Followed-show count per `kind` ("TV"/"OVA"/...), descending, canonical
     /// across sites (one show followed on two sites counts once, under
     /// whichever site's `kind` is set first). Shows with no `kind` on any
@@ -1666,5 +1758,63 @@ mod tests {
         db.set_seen_cascade(series, "1", true).unwrap();
         let after = db.signature_counts().unwrap();
         assert_ne!(before, after);
+    }
+
+    #[test]
+    fn get_genre_cards_counts_episodes_not_shows_and_sorts_by_them() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+
+        // Action: 2 shows, 3 + 2 seen episodes = 5 episodes total.
+        let a1 = db.upsert_series(src, &mk_airing("a1", "Action Show 1", None)).unwrap();
+        db.set_followed(a1, true).unwrap();
+        db.insert_series_genres(a1, &["Action".into()]).unwrap();
+        insert_eps_seen_up_to(&db, a1, 3, 3);
+
+        let a2 = db.upsert_series(src, &mk_airing("a2", "Action Show 2", None)).unwrap();
+        db.set_followed(a2, true).unwrap();
+        db.insert_series_genres(a2, &["Action".into()]).unwrap();
+        insert_eps_seen_up_to(&db, a2, 2, 2);
+
+        // Comedy: 1 show, 10 seen episodes — fewer shows but more episodes
+        // than Action, so a shows-count sort would rank it below Action
+        // while an episode-count sort ranks it above.
+        let c1 = db.upsert_series(src, &mk_airing("c1", "Comedy Show", None)).unwrap();
+        db.set_followed(c1, true).unwrap();
+        db.insert_series_genres(c1, &["Comedy".into()]).unwrap();
+        insert_eps_seen_up_to(&db, c1, 10, 10);
+
+        let cards = db.get_genre_cards().unwrap();
+        assert_eq!(cards.len(), 2);
+        assert_eq!(cards[0].genre, "Comedy", "10 episodes beats Action's 5");
+        assert_eq!(cards[0].count, 10);
+        assert_eq!(cards[0].top_series.len(), 1);
+        assert_eq!(cards[1].genre, "Action");
+        assert_eq!(cards[1].count, 5, "sum of both Action shows' episodes, not the show count (2)");
+        assert_eq!(cards[1].top_series.len(), 2);
+    }
+
+    #[test]
+    fn get_genre_cards_caps_thumbnails_at_four_but_counts_all_episodes() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+
+        for (slug, title, eps) in [
+            ("d1", "Drama 1", 1),
+            ("d2", "Drama 2", 1),
+            ("d3", "Drama 3", 1),
+            ("d4", "Drama 4", 1),
+            ("d5", "Drama 5", 1),
+        ] {
+            let id = db.upsert_series(src, &mk_airing(slug, title, None)).unwrap();
+            db.set_followed(id, true).unwrap();
+            db.insert_series_genres(id, &["Drama".into()]).unwrap();
+            insert_eps_seen_up_to(&db, id, eps, eps);
+        }
+
+        let cards = db.get_genre_cards().unwrap();
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].top_series.len(), 4, "thumbnails capped at 4");
+        assert_eq!(cards[0].count, 5, "but the episode count reflects all 5 shows");
     }
 }

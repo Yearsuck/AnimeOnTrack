@@ -312,6 +312,9 @@ export const es = {
   "stats.shapeRings": "Círculos",
   "stats.shapeBars": "Barras",
   "stats.shapeToggleAria": "Forma del gráfico",
+  "stats.episodeSingular": "episodio",
+  "stats.episodePlural": "episodios",
+  "stats.genreCardThumbsAria": "{genre} - series destacadas",
 
   // StatsGraph.tsx
   "stats.graphEmpty": "Sin series seguidas todavía.",

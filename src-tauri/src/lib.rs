@@ -154,6 +154,7 @@ pub fn run() {
             commands::list_airing_season,
             commands::list_library,
             commands::get_genre_stats,
+            commands::get_genre_cards,
             commands::get_type_stats,
             commands::get_watch_summary,
             commands::get_watch_insights,

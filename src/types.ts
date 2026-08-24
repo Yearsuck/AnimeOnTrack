@@ -73,6 +73,17 @@ export interface GenreStat {
   count: number;
 }
 
+export interface GenreCardSeries {
+  title: string;
+  cover_url: string | null;
+}
+
+export interface GenreCard {
+  genre: string;
+  count: number;
+  top_series: GenreCardSeries[];
+}
+
 export interface TypeStat {
   kind: string;
   count: number;
