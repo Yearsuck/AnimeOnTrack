@@ -342,4 +342,22 @@ export const es = {
   "stats.retry": "Reintentar",
   "stats.noGenre": "Sin género",
   "stats.graphAria": "Grafo de relaciones: {series} series seguidas repartidas en {genres} géneros",
+
+  // StatsHeatmap.tsx
+  "stats.heatmapHeading": "Actividad anual",
+  "stats.heatmapYear": "Año",
+  "stats.heatmapNoYears": "Sin años con actividad registrada.",
+  "stats.heatmapNoData": "Sin datos para este año.",
+  "stats.heatmapError": "Error al cargar el mapa de calor: {msg}",
+  "stats.heatmapAria": "Mapa de calor de actividad para {year}",
+  "stats.heatmapLess": "Menos",
+  "stats.heatmapMore": "Más",
+  "stats.heatmapEpisodes": "episodios",
+  "stats.heatmapMon": "Lun",
+  "stats.heatmapTue": "Mar",
+  "stats.heatmapWed": "Mié",
+  "stats.heatmapThu": "Jue",
+  "stats.heatmapFri": "Vie",
+  "stats.heatmapSat": "Sáb",
+  "stats.heatmapSun": "Dom",
 } as const;

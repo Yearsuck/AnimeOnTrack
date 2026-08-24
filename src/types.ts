@@ -123,6 +123,11 @@ export interface WatchInsights {
   marks_tracked_since: string | null;
 }
 
+export interface YearlyActivity {
+  year: number;
+  days: DayCount[];
+}
+
 export interface SwipeCard {
   title: string;
   url: string;

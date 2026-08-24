@@ -9,6 +9,7 @@ import type {
   TypeStat,
   WatchSummary,
   WatchInsights,
+  YearlyActivity,
   SeriesGraphNode,
   SwipeCard,
   SwipeDecision,
@@ -84,6 +85,11 @@ export const getTypeStats = () => invoke<TypeStat[]>("get_type_stats");
 export const getWatchSummary = () => invoke<WatchSummary>("get_watch_summary");
 
 export const getWatchInsights = () => invoke<WatchInsights>("get_watch_insights");
+
+export const getYearlyActivity = (year: number) =>
+  invoke<YearlyActivity>("get_yearly_activity", { year });
+
+export const getActivityYears = () => invoke<number[]>("get_activity_years");
 
 export const getStatsGraph = () => invoke<SeriesGraphNode[]>("get_stats_graph");
 

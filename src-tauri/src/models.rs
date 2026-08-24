@@ -217,6 +217,15 @@ pub struct TitleCount {
     pub count: i64,
 }
 
+/// One full calendar year of daily episode-mark counts — the GitHub-style
+/// heatmap for Estadísticas. Mirrors the zero-fill principle of
+/// `WatchInsights.marks_by_day` but across 365/366 days.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct YearlyActivity {
+    pub year: i32,
+    pub days: Vec<DayCount>,
+}
+
 /// Local-only watch metrics for the Estadísticas "Resumen" block — see the
 /// design doc `docs/superpowers/specs/2026-07-13-stats-new-metrics-design.md`.
 /// Computed entirely from SQLite (no network) via `Db::get_watch_insights`.

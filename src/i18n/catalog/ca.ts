@@ -338,4 +338,22 @@ export const ca: Messages = {
   "stats.retry": "Torna-ho a provar",
   "stats.noGenre": "Sense gènere",
   "stats.graphAria": "Graf de relacions: {series} sèries seguides repartides en {genres} gèneres",
+
+  // StatsHeatmap.tsx
+  "stats.heatmapHeading": "Activitat anual",
+  "stats.heatmapYear": "Any",
+  "stats.heatmapNoYears": "Cap any amb activitat registrada.",
+  "stats.heatmapNoData": "Sense dades per a aquest any.",
+  "stats.heatmapError": "Error en carregar el mapa de calor: {msg}",
+  "stats.heatmapAria": "Mapa de calor d'activitat per a {year}",
+  "stats.heatmapLess": "Menys",
+  "stats.heatmapMore": "Més",
+  "stats.heatmapEpisodes": "episodis",
+  "stats.heatmapMon": "Dl",
+  "stats.heatmapTue": "Dt",
+  "stats.heatmapWed": "Dc",
+  "stats.heatmapThu": "Dj",
+  "stats.heatmapFri": "Dv",
+  "stats.heatmapSat": "Ds",
+  "stats.heatmapSun": "Dg",
 };

@@ -1,5 +1,6 @@
 use super::*;
 use std::collections::{HashMap, HashSet};
+use chrono::Datelike;
 
 /// Collapse a series title to a season/part-agnostic "franchise key" so
 /// multiple seasons (or arcs) of the same show count as one anime in the
@@ -823,6 +824,69 @@ impl Db {
             .optional()?
             .flatten();
         Ok((series, eps, max_ep, max_seen))
+    }
+
+    /// Distinct years (local time) that have at least one seen episode,
+    /// descending. Always includes the current year even if it has no marks yet,
+    /// so a brand-new user still gets this year's empty grid instead of an empty
+    /// year list.
+    pub fn get_activity_years(&self) -> Result<Vec<i32>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT CAST(strftime('%Y', DATE(e.seen_at, 'localtime')) AS INTEGER) AS y
+             FROM episodes e
+             WHERE e.seen_at IS NOT NULL
+             ORDER BY y DESC",
+        )?;
+        let mut years: Vec<i32> = stmt
+            .query_map([], |r| r.get(0))?
+            .collect::<rusqlite::Result<Vec<i32>>>()?;
+
+        // Always include the current year (local time) so the year selector is
+        // never empty — mirrors the `marks_tracked_since` grace handling.
+        let this_year = chrono::Local::now().date_naive().year();
+        if !years.contains(&this_year) {
+            years.insert(0, this_year);
+        }
+
+        Ok(years)
+    }
+
+    /// Full-year activity heatmap: one entry per day of the given calendar year
+    /// (Jan 1 to Dec 31), zero-filled like `WatchInsights.marks_by_day` but
+    /// across 365/366 days. Uses the same `DATE(e.seen_at, 'localtime')`
+    /// conversion as the 30-day spine so an episode marked at 00:30 in Spain
+    /// (UTC+1/+2) lands on the correct local calendar day.
+    pub fn get_yearly_activity(&self, year: i32) -> Result<crate::models::YearlyActivity> {
+        // Determine if the target year is a leap year using chrono (already a
+        // dependency) so we generate the correct number of days.
+        let is_leap = chrono::NaiveDate::from_ymd_opt(year, 2, 29).is_some();
+        let days_in_year = if is_leap { 366 } else { 365 };
+
+        // Count seen episodes per day within the given year (local time).
+        let mut stmt = self.conn.prepare(
+            "SELECT DATE(e.seen_at, 'localtime') AS d, COUNT(*) AS cnt
+             FROM episodes e
+             WHERE e.seen_at IS NOT NULL
+               AND CAST(strftime('%Y', DATE(e.seen_at, 'localtime')) AS INTEGER) = ?1
+             GROUP BY d
+             ORDER BY d",
+        )?;
+        let counted_days: HashMap<String, i64> = stmt
+            .query_map([year], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
+            .collect::<rusqlite::Result<HashMap<_, _>>>()?;
+
+        // Zero-filled spine for the entire year.
+        let start_date = chrono::NaiveDate::from_ymd_opt(year, 1, 1).unwrap();
+        let days: Vec<crate::models::DayCount> = (0..days_in_year)
+            .filter_map(|offset| start_date.checked_add_days(chrono::Days::new(offset)))
+            .map(|date| {
+                let day = date.format("%Y-%m-%d").to_string();
+                let count = counted_days.get(&day).copied().unwrap_or(0);
+                crate::models::DayCount { day, count }
+            })
+            .collect();
+
+        Ok(crate::models::YearlyActivity { year, days })
     }
 }
 
@@ -1666,5 +1730,89 @@ mod tests {
         db.set_seen_cascade(series, "1", true).unwrap();
         let after = db.signature_counts().unwrap();
         assert_ne!(before, after);
+    }
+
+    // ---- Yearly activity heatmap (2026-08-24) ----
+
+    #[test]
+    fn get_yearly_activity_returns_full_year_zero_filled() {
+        // Use 2025 (non-leap) to avoid the Feb 29 edge case.
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+        let series = db.upsert_series(src, &mk_airing("x", "X", None)).unwrap();
+
+        // Seed three marks on specific dates within 2025, and one in 2024 to
+        // prove year-filtering works. Use mid-day times (12:00:00) so the
+        // UTC→localtime conversion in the query never crosses a day boundary
+        // regardless of the test machine's timezone.
+        let eps = [
+            ("1", "2025-01-15 12:00:00"),
+            ("2", "2025-01-15 12:00:00"),
+            ("3", "2025-06-20 12:00:00"),
+            ("4", "2024-12-31 12:00:00"), // different year, must not appear
+        ];
+        for (num, seen_at) in eps {
+            let ep = db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: series, number: num.into(), title: None,
+                url: format!("https://site/x-{num}/"), released_at: None, seen: true,
+            }).unwrap();
+            // Overwrite seen_at to the exact timestamp we want (local time stored
+            // as UTC in the DB; we rely on the query's 'localtime' conversion).
+            db.conn
+                .execute("UPDATE episodes SET seen_at = ?1 WHERE id = ?2", [seen_at, ep.to_string().as_str()])
+                .unwrap();
+        }
+
+        let activity = db.get_yearly_activity(2025).unwrap();
+        assert_eq!(activity.year, 2025);
+        assert_eq!(activity.days.len(), 365, "non-leap year has 365 days");
+
+        // Jan 15 should have 2 marks.
+        let jan15 = activity.days.iter().find(|d| d.day == "2025-01-15").unwrap();
+        assert_eq!(jan15.count, 2);
+
+        // Jun 20 should have 1 mark.
+        let jun20 = activity.days.iter().find(|d| d.day == "2025-06-20").unwrap();
+        assert_eq!(jun20.count, 1);
+
+        // Dec 31 2024 must not be counted (year filter).
+        let dec31_2024 = activity.days.iter().find(|d| d.day == "2024-12-31");
+        assert!(dec31_2024.is_none() || dec31_2024.unwrap().count == 0);
+
+        // All other days must be zero.
+        let nonzero = activity.days.iter().filter(|d| d.count > 0).count();
+        assert_eq!(nonzero, 2, "only Jan 15 and Jun 20 have marks");
+    }
+
+    #[test]
+    fn get_activity_years_includes_current_year_even_when_empty() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+
+        // No episodes at all — should still get the current year.
+        let years = db.get_activity_years().unwrap();
+        let this_year = chrono::Local::now().date_naive().year();
+        assert!(years.contains(&this_year), "current year present even with no data: {years:?}");
+        assert!(years.iter().all(|&y| y <= this_year), "no future years: {years:?}");
+        assert!(years.windows(2).all(|w| w[0] > w[1]), "descending order: {years:?}");
+
+        // Add a mark in a past year — both should appear.
+        let series = db.upsert_series(src, &mk_airing("x", "X", None)).unwrap();
+        let ep = db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: series, number: "1".into(), title: None,
+            url: "https://site/x-1/".into(), released_at: None, seen: true,
+        }).unwrap();
+        let past_year = this_year - 1;
+        db.conn
+            .execute(
+                "UPDATE episodes SET seen_at = ?1 WHERE id = ?2",
+                [format!("{past_year}-07-15 12:00:00"), ep.to_string()],
+            )
+            .unwrap();
+
+        let years = db.get_activity_years().unwrap();
+        assert!(years.contains(&this_year), "current year still present: {years:?}");
+        assert!(years.contains(&past_year), "past year with data present: {years:?}");
+        assert!(years[0] == this_year, "current year first (descending): {years:?}");
     }
 }

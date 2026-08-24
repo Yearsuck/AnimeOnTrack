@@ -323,4 +323,22 @@ export const en: Messages = {
   "stats.retry": "Try again",
   "stats.noGenre": "No genre",
   "stats.graphAria": "Relationship graph: {series} followed series across {genres} genres",
+
+  // StatsHeatmap.tsx
+  "stats.heatmapHeading": "Yearly activity",
+  "stats.heatmapYear": "Year",
+  "stats.heatmapNoYears": "No years with recorded activity.",
+  "stats.heatmapNoData": "No data for this year.",
+  "stats.heatmapError": "Failed to load heatmap: {msg}",
+  "stats.heatmapAria": "Activity heatmap for {year}",
+  "stats.heatmapLess": "Less",
+  "stats.heatmapMore": "More",
+  "stats.heatmapEpisodes": "episodes",
+  "stats.heatmapMon": "Mon",
+  "stats.heatmapTue": "Tue",
+  "stats.heatmapWed": "Wed",
+  "stats.heatmapThu": "Thu",
+  "stats.heatmapFri": "Fri",
+  "stats.heatmapSat": "Sat",
+  "stats.heatmapSun": "Sun",
 };
