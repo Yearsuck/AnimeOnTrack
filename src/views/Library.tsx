@@ -85,12 +85,18 @@ function LibraryCard({
   showMenu,
   onOpenSeries,
   onChanged,
+  selectMode,
+  selected,
+  onToggleSelect,
 }: {
   item: LibraryItem;
   showAction: boolean;
   showMenu: boolean;
   onOpenSeries: (s: Series) => void;
   onChanged: () => void;
+  selectMode: boolean;
+  selected: Set<number>;
+  onToggleSelect: (id: number) => void;
 }) {
   const t = useT();
   // cover_url is a data: URI only for followed series whose cover was
@@ -143,7 +149,11 @@ function LibraryCard({
   function handleKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
-      onOpenSeries(item.series);
+      if (selectMode) {
+        onToggleSelect(item.series.id);
+      } else {
+        onOpenSeries(item.series);
+      }
     }
   }
 
@@ -164,16 +174,22 @@ function LibraryCard({
   // derived state — so it always gets a (single-item) menu regardless of
   // the section's showMenu prop.
   const effectiveShowMenu = showMenu || item.watched_externally;
+  const isSelected = selected.has(item.series.id);
 
   return (
     <div
-      className="card lib-card"
+      className={`card lib-card${selectMode ? " card-selectable" : ""}${isSelected ? " selected" : ""}`}
       role="button"
       tabIndex={0}
-      onClick={() => onOpenSeries(item.series)}
+      onClick={() => selectMode ? onToggleSelect(item.series.id) : onOpenSeries(item.series)}
       onKeyDown={handleKeyDown}
       title={item.series.title}
     >
+      {selectMode && isSelected && (
+        <span className="card-select-check" aria-hidden="true">
+          ✓
+        </span>
+      )}
       <div className="poster">
         {effectiveShowMenu && (
           <div className="card-menu-wrap" ref={menuRef}>
@@ -270,6 +286,9 @@ function LibrarySection({
   showMenu,
   onOpenSeries,
   onChanged,
+  selectMode,
+  selected,
+  onToggleSelect,
 }: {
   title: string;
   items: LibraryItem[];
@@ -278,6 +297,9 @@ function LibrarySection({
   showMenu: boolean;
   onOpenSeries: (s: Series) => void;
   onChanged: () => void;
+  selectMode: boolean;
+  selected: Set<number>;
+  onToggleSelect: (id: number) => void;
 }) {
   // An empty section (nothing in this status, or nothing left after the
   // search filter) is omitted entirely rather than rendered with a
@@ -299,6 +321,9 @@ function LibrarySection({
             showMenu={showMenu}
             onOpenSeries={onOpenSeries}
             onChanged={onChanged}
+            selectMode={selectMode}
+            selected={selected}
+            onToggleSelect={onToggleSelect}
           />
         ))}
       </div>
@@ -315,6 +340,63 @@ export function Library({ onOpenSeries }: { onOpenSeries: (s: Series) => void })
   const [typeFilter, setTypeFilter] = useState<string>("all");
   const [genreFilter, setGenreFilter] = useState<string>("all");
   const [studioFilter, setStudioFilter] = useState<string>("all");
+  const [selectMode, setSelectMode] = useState(false);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [batching, setBatching] = useState(false);
+
+  function toggleSelect(id: number) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  // "watching"/"completed" are derived from real seen-episode progress
+  // (see statusOf() above) — there is no single backend command that sets
+  // them directly, only reclassify_series ("None"/"Want"/etc). "plan" is
+  // the one Status value with a real 1:1 command: the existing per-item
+  // "move to want to watch" action already calls reclassifySeries(id,
+  // "Want") (see moveToWant above), so that's the only bulk status action
+  // this can honestly offer without a new bulk-marking-episodes-seen
+  // feature that's out of scope here.
+  async function bulkMoveToPlan() {
+    if (selected.size === 0) return;
+    setBatching(true);
+    try {
+      const ids = [...selected];
+      for (const id of ids) {
+        await reclassifySeries(id, "Want");
+      }
+      setSelected(new Set());
+      setSelectMode(false);
+      load();
+    } catch (e) {
+      console.error("Bulk status change failed:", e);
+    } finally {
+      setBatching(false);
+    }
+  }
+
+  async function bulkRemove() {
+    if (selected.size === 0) return;
+    if (!window.confirm(t("library.bulkRemoveConfirm", { count: selected.size }))) return;
+    setBatching(true);
+    try {
+      const ids = [...selected];
+      for (const id of ids) {
+        await reclassifySeries(id, "None");
+      }
+      setSelected(new Set());
+      setSelectMode(false);
+      load();
+    } catch (e) {
+      console.error("Bulk remove failed:", e);
+    } finally {
+      setBatching(false);
+    }
+  }
 
   const load = useCallback(() => {
     listLibrary().then(setItems);
@@ -422,6 +504,27 @@ export function Library({ onOpenSeries }: { onOpenSeries: (s: Series) => void })
         <span className="muted">
           {t("common.seriesCount", { count: items.length === 0 ? 0 : visibleCount })}
         </span>
+        {!selectMode && items.length > 0 && (
+          <button
+            type="button"
+            className="btn btn-ghost"
+            onClick={() => setSelectMode(true)}
+          >
+            {t("library.selectMode")}
+          </button>
+        )}
+        {selectMode && (
+          <button
+            type="button"
+            className="btn btn-ghost"
+            onClick={() => {
+              setSelectMode(false);
+              setSelected(new Set());
+            }}
+          >
+            {t("library.cancelSelect")}
+          </button>
+        )}
       </div>
 
       {items.length === 0 ? (
@@ -528,6 +631,39 @@ export function Library({ onOpenSeries }: { onOpenSeries: (s: Series) => void })
             <div className="empty">{t("common.noResults")}</div>
           ) : (
             <>
+              {selected.size > 0 && (
+                <div className="batch-bar">
+                  <span className="muted">{t("library.selectedCount", { count: selected.size })}</span>
+                  <div className="spacer" />
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    onClick={bulkMoveToPlan}
+                    disabled={batching}
+                  >
+                    {t("library.moveToWant")}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-danger"
+                    onClick={bulkRemove}
+                    disabled={batching}
+                  >
+                    {t("library.bulkRemove")}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    onClick={() => {
+                      setSelected(new Set());
+                      setSelectMode(false);
+                    }}
+                    disabled={batching}
+                  >
+                    {t("library.deselectAll")}
+                  </button>
+                </div>
+              )}
               {showWatching && watchingAll.length > 0 && (
                 <div className="lib-filter-bar">
                   <span className="muted text-sm">
@@ -565,6 +701,9 @@ export function Library({ onOpenSeries }: { onOpenSeries: (s: Series) => void })
                     showMenu
                     onOpenSeries={onOpenSeries}
                     onChanged={load}
+                    selectMode={selectMode}
+                    selected={selected}
+                    onToggleSelect={toggleSelect}
                   />
                 ))}
               {showPlan && (
@@ -576,6 +715,9 @@ export function Library({ onOpenSeries }: { onOpenSeries: (s: Series) => void })
                   showMenu={false}
                   onOpenSeries={onOpenSeries}
                   onChanged={load}
+                  selectMode={selectMode}
+                  selected={selected}
+                  onToggleSelect={toggleSelect}
                 />
               )}
               {showCompleted && (
@@ -587,6 +729,9 @@ export function Library({ onOpenSeries }: { onOpenSeries: (s: Series) => void })
                   showMenu={false}
                   onOpenSeries={onOpenSeries}
                   onChanged={load}
+                  selectMode={selectMode}
+                  selected={selected}
+                  onToggleSelect={toggleSelect}
                 />
               )}
             </>

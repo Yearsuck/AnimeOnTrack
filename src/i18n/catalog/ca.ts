@@ -152,6 +152,12 @@ export const ca: Messages = {
   "library.genreAll": "Tots",
   "library.filterStudio": "Estudi",
   "library.studioAll": "Tots",
+  "library.selectMode": "Seleccionar",
+  "library.cancelSelect": "Cancel·la",
+  "library.selectedCount": "{count} seleccionats",
+  "library.bulkRemove": "Deixa de seguir selecció",
+  "library.bulkRemoveConfirm": "Deixar de seguir {count} sèries? Es perdre el progrés de visionament.",
+  "library.deselectAll": "Desseleccionar-ho tot",
 
   // SeriesDetail.tsx
   "seriesDetail.unfollow": "Deixa de seguir",

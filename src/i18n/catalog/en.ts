@@ -144,6 +144,12 @@ export const en: Messages = {
   "library.genreAll": "All",
   "library.filterStudio": "Studio",
   "library.studioAll": "All",
+  "library.selectMode": "Select",
+  "library.cancelSelect": "Cancel",
+  "library.selectedCount": "{count} selected",
+  "library.bulkRemove": "Unfollow selected",
+  "library.bulkRemoveConfirm": "Unfollow {count} series? Watch progress will be lost.",
+  "library.deselectAll": "Deselect all",
 
   "seriesDetail.unfollow": "Unfollow",
   "seriesDetail.openPage": "View on AniList ↗",
