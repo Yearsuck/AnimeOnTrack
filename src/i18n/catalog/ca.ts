@@ -44,6 +44,13 @@ export const ca: Messages = {
   "airing.filterWeek": "Aquesta setmana",
   "airing.seasonHint": "Només es mostren sèries amb data d'estrena registrada. Es segueixin o no, es busca la data al Catàleg sincronitzat — si falta, resincronitza el Catàleg des de la seva pestanya",
   "airing.weekEmpty": "No hi ha res programat aquesta setmana.",
+  "airing.dayMon": "Dl",
+  "airing.dayTue": "Dt",
+  "airing.dayWed": "Dc",
+  "airing.dayThu": "Dj",
+  "airing.dayFri": "Dv",
+  "airing.daySat": "Ds",
+  "airing.daySun": "Dg",
 
   // AiringSpotlight.tsx
   "spotlight.ariaLabel": "Destacats en emissió",

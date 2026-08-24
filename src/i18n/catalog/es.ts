@@ -48,6 +48,13 @@ export const es = {
   "airing.filterWeek": "Esta semana",
   "airing.seasonHint": "Solo se muestran series con fecha de estreno registrada. Se sigan o no, se busca la fecha en el Catálogo sincronizado — si falta, resincronizá el Catálogo desde su pestaña",
   "airing.weekEmpty": "Nada programado esta semana.",
+  "airing.dayMon": "Lun",
+  "airing.dayTue": "Mar",
+  "airing.dayWed": "Mié",
+  "airing.dayThu": "Jue",
+  "airing.dayFri": "Vie",
+  "airing.daySat": "Sáb",
+  "airing.daySun": "Dom",
 
   // AiringSpotlight.tsx
   "spotlight.ariaLabel": "Destacados en emisión",

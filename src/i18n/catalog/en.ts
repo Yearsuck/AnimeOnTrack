@@ -40,6 +40,13 @@ export const en: Messages = {
   "airing.filterWeek": "This week",
   "airing.seasonHint": "Only shows a known premiere date. Followed or not, the date comes from the synced Catálogo — if it's missing, resync the Catálogo from its tab",
   "airing.weekEmpty": "Nothing scheduled this week.",
+  "airing.dayMon": "Mon",
+  "airing.dayTue": "Tue",
+  "airing.dayWed": "Wed",
+  "airing.dayThu": "Thu",
+  "airing.dayFri": "Fri",
+  "airing.daySat": "Sat",
+  "airing.daySun": "Sun",
 
   // AiringSpotlight.tsx
   "spotlight.ariaLabel": "Featured airing",
