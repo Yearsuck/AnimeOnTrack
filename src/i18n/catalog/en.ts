@@ -323,4 +323,10 @@ export const en: Messages = {
   "stats.retry": "Try again",
   "stats.noGenre": "No genre",
   "stats.graphAria": "Relationship graph: {series} followed series across {genres} genres",
+  // Popularity Bias
+  "stats.popularityBiasHeading": "Popularity Bias",
+  "stats.popularityBiasLabel": "Average vs Underground",
+  "stats.popularityBiasLow": "Underground",
+  "stats.popularityBiasHigh": "Mainstream",
+  "stats.popularityBiasHelp": "Average AniList popularity of your followed series (linked to catalog), normalized 0–10. Fewer than 3 series with data = no score. 0 = only hidden gems, 10 = only mainstream hits.",
 };

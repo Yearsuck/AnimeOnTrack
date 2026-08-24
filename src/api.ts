@@ -9,6 +9,7 @@ import type {
   TypeStat,
   WatchSummary,
   WatchInsights,
+  PopularityBias,
   SeriesGraphNode,
   SwipeCard,
   SwipeDecision,
@@ -84,6 +85,8 @@ export const getTypeStats = () => invoke<TypeStat[]>("get_type_stats");
 export const getWatchSummary = () => invoke<WatchSummary>("get_watch_summary");
 
 export const getWatchInsights = () => invoke<WatchInsights>("get_watch_insights");
+
+export const getPopularityBias = () => invoke<PopularityBias>("get_popularity_bias");
 
 export const getStatsGraph = () => invoke<SeriesGraphNode[]>("get_stats_graph");
 

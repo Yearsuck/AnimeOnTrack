@@ -338,4 +338,10 @@ export const ca: Messages = {
   "stats.retry": "Torna-ho a provar",
   "stats.noGenre": "Sense gènere",
   "stats.graphAria": "Graf de relacions: {series} sèries seguides repartides en {genres} gèneres",
+  // Popularity Bias
+  "stats.popularityBiasHeading": "Biaix de popularitat",
+  "stats.popularityBiasLabel": "Mitjana vs Underground",
+  "stats.popularityBiasLow": "Underground",
+  "stats.popularityBiasHigh": "Mainstream",
+  "stats.popularityBiasHelp": "Mitjana de popularitat a AniList de les teves sèries seguides (enllaçades al catàleg), normalitzada 0–10. menys de 3 sèries amb dades = sense puntuació. 0 = només joves amagades, 10 = només èxits massius.",
 };

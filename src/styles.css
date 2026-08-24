@@ -1662,6 +1662,55 @@ progress.scanbar-track::-webkit-progress-value {
   background-repeat: no-repeat, no-repeat, no-repeat, repeat, repeat, repeat;
 }
 
+/* ---------- Stats · popularity bias slider ---------- */
+.popbias {
+  padding: var(--sp-4);
+}
+.popbias-labels {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: var(--sp-2);
+  font-size: var(--fs-sm);
+  color: var(--muted);
+}
+.popbias-slider-wrap {
+  position: relative;
+  height: 16px;
+  margin-bottom: var(--sp-3);
+}
+.popbias-track {
+  position: absolute;
+  inset: 0;
+  background: var(--surface-3);
+  border-radius: var(--radius-round);
+  overflow: hidden;
+}
+.popbias-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent-solid), var(--accent));
+  border-radius: inherit;
+  transition: width var(--dur-slow) var(--ease-out);
+}
+.popbias-thumb {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 20px;
+  height: 20px;
+  background: var(--on-accent);
+  border: 2px solid var(--accent-solid);
+  border-radius: var(--radius-round);
+  box-shadow: var(--shadow-md);
+  pointer-events: none;
+  transition: left var(--dur-slow) var(--ease-out);
+}
+.popbias-value {
+  text-align: center;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
+}
+
 /* ---------- Shared page patterns (2026-07-23 UI pass) ---------- */
 
 /* Dashboard tile grid. Wider minimum than the poster `.grid` — a number and

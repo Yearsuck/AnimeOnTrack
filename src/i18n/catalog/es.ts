@@ -342,4 +342,10 @@ export const es = {
   "stats.retry": "Reintentar",
   "stats.noGenre": "Sin género",
   "stats.graphAria": "Grafo de relaciones: {series} series seguidas repartidas en {genres} géneros",
+  // Popularity Bias
+  "stats.popularityBiasHeading": "Sesgo de popularidad",
+  "stats.popularityBiasLabel": "Promedio vs Underground",
+  "stats.popularityBiasLow": "Underground",
+  "stats.popularityBiasHigh": "Mainstream",
+  "stats.popularityBiasHelp": "Promedio de popularidad en AniList de tus series seguidas (enlazadas al catálogo), normalizado 0–10. Menos de 3 series con datos = sin puntuación. 0 = solo joyas ocultas, 10 = solo éxitos masivos.",
 } as const;
