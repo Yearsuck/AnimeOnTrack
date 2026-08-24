@@ -6,10 +6,13 @@ import { AiringSpotlight } from "./AiringSpotlight";
 
 // Human label for the next-episode countdown the backend sorting is based
 // on — makes the newest-first ordering legible instead of mysterious.
-// Computed once per render (no ticking timer): "en 2 h" / "en 3 d" for a
-// future release, "hace 5 h" for one that already aired but whose card
+// Computed once per render (no ticking timer): "in 2h" / "in 3d" for a
+// future release, "5h ago" for one that already aired but whose card
 // hasn't rolled over yet. Null when the series carries no countdown.
-export function countdownLabel(nextEpisodeAt: number | null): string | null {
+export function countdownLabel(
+  nextEpisodeAt: number | null,
+  t: ReturnType<typeof useT>
+): string | null {
   if (nextEpisodeAt == null) return null;
   const diffMs = nextEpisodeAt * 1000 - Date.now();
   const absHours = Math.abs(diffMs) / 3_600_000;
@@ -19,7 +22,7 @@ export function countdownLabel(nextEpisodeAt: number | null): string | null {
       : absHours >= 1
         ? `${Math.round(absHours)} h`
         : `${Math.max(1, Math.round(Math.abs(diffMs) / 60_000))} min`;
-  return diffMs >= 0 ? `en ${span}` : `hace ${span}`;
+  return diffMs >= 0 ? t("airing.countdownIn", { span }) : t("airing.countdownAgo", { span });
 }
 
 // "Esta temporada" cutoff: the series' first scraped episode aired within
@@ -190,8 +193,8 @@ export function AiringGrid({
                       <div key={s.id} className="card" onClick={() => onOpenSeries(s)}>
                         <div className="poster">
                           {s.followed && <span className="chip">{t("airing.followingChip")}</span>}
-                          {countdownLabel(s.next_episode_at) && (
-                            <span className="chip chip-countdown">{countdownLabel(s.next_episode_at)}</span>
+                          {countdownLabel(s.next_episode_at, t) && (
+                            <span className="chip chip-countdown">{countdownLabel(s.next_episode_at, t)}</span>
                           )}
                           {s.cover_url ? (
                             <img src={s.cover_url} alt={s.title} loading="lazy" />
@@ -220,8 +223,8 @@ export function AiringGrid({
             <div key={s.id} className="card" onClick={() => onOpenSeries(s)}>
               <div className="poster">
                 {s.followed && <span className="chip">{t("airing.followingChip")}</span>}
-                {countdownLabel(s.next_episode_at) && (
-                  <span className="chip chip-countdown">{countdownLabel(s.next_episode_at)}</span>
+                {countdownLabel(s.next_episode_at, t) && (
+                  <span className="chip chip-countdown">{countdownLabel(s.next_episode_at, t)}</span>
                 )}
                 {s.cover_url ? (
                   <img src={s.cover_url} alt={s.title} loading="lazy" />
