@@ -108,7 +108,7 @@ export default function App() {
     } finally {
       setRefreshing(false);
       await refreshBadge();
-      if (view !== "airing") setView("pending");
+      if (view !== "airing") navigate("pending");
     }
   }
 
@@ -119,19 +119,21 @@ export default function App() {
   // Every tab besides Stats fully unmounts on switch (see the render below),
   // which used to reset the page scroll to the top — annoying on long lists
   // (Library, Catalog) where switching away and back meant scrolling all the
-  // way back down. Remember each tab's own scroll offset and restore it.
+  // way back down. Remember each view's own scroll offset and restore it.
+  //
+  // Captured synchronously in `navigate()` at the moment of leaving a view,
+  // not via a continuous scroll listener: a listener keyed off a ref that
+  // updates in its own effect races the very re-render that unmounts the
+  // outgoing view (e.g. opening SeriesDetail from a long scrolled-down
+  // Library list also clamps window.scrollY as the shorter detail page
+  // mounts) — the ref could still read the *old* view when that clamp event
+  // fired, silently overwriting the real saved offset with ~0. Reading
+  // `view` from the closure at the exact call site has nothing to race.
   const scrollPositions = useRef<Partial<Record<View, number>>>({});
-  const viewRef = useRef(view);
-  useEffect(() => {
-    viewRef.current = view;
-  }, [view]);
-  useEffect(() => {
-    const onScroll = () => {
-      scrollPositions.current[viewRef.current] = window.scrollY;
-    };
-    window.addEventListener("scroll", onScroll, { passive: true });
-    return () => window.removeEventListener("scroll", onScroll);
-  }, []);
+  function navigate(next: View) {
+    scrollPositions.current[view] = window.scrollY;
+    setView(next);
+  }
   useEffect(() => {
     const target = scrollPositions.current[view];
     if (target === undefined) return;
@@ -169,13 +171,13 @@ export default function App() {
     setStatsVisited(false);
     setAiringRefreshSignal((n) => n + 1);
     await refreshBadge();
-    setView("airing");
+    navigate("airing");
   }
 
   function openSeries(s: Series) {
     setCameFrom(view === "detail" ? cameFrom : view);
     setSelected(s);
-    setView("detail");
+    navigate("detail");
   }
 
   // Frameless window: every screen needs *some* draggable strip with the
@@ -212,7 +214,7 @@ export default function App() {
   const Tab = ({ id, label }: { id: View; label: string }) => (
     <button
       className={`tab ${view === id ? "active" : ""}`}
-      onClick={() => setView(id)}
+      onClick={() => navigate(id)}
     >
       {label}
       {id === "pending" && pending > 0 && <span className="badge">{pending}</span>}
@@ -264,7 +266,7 @@ export default function App() {
       {view === "detail" && selected && (
         <SeriesDetail
           series={selected}
-          onBack={() => setView(cameFrom)}
+          onBack={() => navigate(cameFrom)}
           onChanged={refreshBadge}
         />
       )}
