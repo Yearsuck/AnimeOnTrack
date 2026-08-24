@@ -1983,12 +1983,16 @@ progress.scanbar-track::-webkit-progress-value {
 .heatmap-grid-wrap {
   overflow-x: auto;
 }
+/* Fixed-size cells (GitHub's own contribution graph, not stretched to fill
+   the container) — 54 weeks x 11px + 53 gaps x 3px is ~750px, comfortably
+   under any real window width, so the graph sits left-aligned and never
+   needs the horizontal scroll .heatmap-grid-wrap falls back to. */
 .heatmap-months {
   display: grid;
-  grid-template-columns: repeat(54, minmax(0, 1fr)); /* 54: max weeks a year can span (leap year starting Sunday) */
-  gap: 2px;
+  grid-template-columns: repeat(54, 11px); /* 54: max weeks a year can span (leap year starting Sunday) */
+  gap: 3px;
   margin-bottom: 4px;
-  padding-left: 42px; /* align with day labels */
+  padding-left: 33px; /* align with day labels */
 }
 .heatmap-month {
   font-size: var(--fs-xs);
@@ -1998,8 +2002,8 @@ progress.scanbar-track::-webkit-progress-value {
 }
 .heatmap-grid {
   display: grid;
-  grid-template-columns: 36px repeat(54, minmax(0, 1fr));
-  gap: 2px;
+  grid-template-columns: 30px repeat(54, 11px);
+  gap: 3px;
 }
 .heatmap-row {
   display: contents;
@@ -2013,16 +2017,11 @@ progress.scanbar-track::-webkit-progress-value {
   color: var(--muted-2);
   font-weight: var(--fw-medium);
   grid-column: 1;
-  height: 12px;
+  height: 11px;
 }
 .heatmap-cell {
-  width: 100%;
-  /* Not aspect-ratio: with a percentage width and no definite height, an
-     aspect-ratio box's intrinsic size is indeterminate, so the 1fr grid
-     tracks fell back to an oversized default instead of shrinking to fill
-     the available width. A fixed height matching .heatmap-day-label (12px)
-     removes that ambiguity — width still fills its 1fr track exactly. */
-  height: 12px;
+  width: 11px;
+  height: 11px;
   border-radius: 2px;
   transition: transform var(--dur-fast) var(--ease);
 }

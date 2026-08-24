@@ -193,7 +193,9 @@ export function StatsHeatmap() {
           {cells.map((weekCells, dayOfWeek) => (
             <div key={dayOfWeek} className="heatmap-row" role="row">
               <div className="heatmap-day-label" aria-hidden="true">
-                {dayLabels[dayOfWeek]}
+                {/* GitHub's own graph only labels every other row (Mon/Wed/Fri) —
+                    a label per row is redundant clutter at 11px row height. */}
+                {dayOfWeek % 2 === 0 ? dayLabels[dayOfWeek] : ""}
               </div>
               {weekCells.map((iso, week) => (
                 <div
