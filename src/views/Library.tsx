@@ -313,7 +313,8 @@ export function Library({ onOpenSeries }: { onOpenSeries: (s: Series) => void })
   const [airingFilter, setAiringFilter] = useState<AiringFilter>("all");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [typeFilter, setTypeFilter] = useState<string>("all");
-  const [genreFilter, setGenreFilter] = useState<string>("all");
+  const [includedGenres, setIncludedGenres] = useState<Set<string>>(new Set());
+  const [excludedGenres, setExcludedGenres] = useState<Set<string>>(new Set());
   const [studioFilter, setStudioFilter] = useState<string>("all");
 
   const load = useCallback(() => {
@@ -357,13 +358,14 @@ export function Library({ onOpenSeries }: { onOpenSeries: (s: Series) => void })
     return items.filter((it) => {
       if (q && !it.series.title.toLowerCase().includes(q)) return false;
       if (typeFilter !== "all" && normalizeKind(it.kind) !== typeFilter) return false;
-      if (genreFilter !== "all" && !it.genres.includes(genreFilter)) return false;
+      if (includedGenres.size > 0 && ![...includedGenres].every((g) => it.genres.includes(g))) return false;
+      if (excludedGenres.size > 0 && [...excludedGenres].some((g) => it.genres.includes(g))) return false;
       // "all" never hides unlinked (studio: null) rows — only an explicit
       // studio selection filters them out.
       if (studioFilter !== "all" && it.studio !== studioFilter) return false;
       return true;
     });
-  }, [items, query, typeFilter, genreFilter, studioFilter]);
+  }, [items, query, typeFilter, includedGenres, excludedGenres, studioFilter]);
 
   // All "watching" items (before the airing filter) — drives whether the
   // filter control is shown at all.
@@ -398,6 +400,39 @@ export function Library({ onOpenSeries }: { onOpenSeries: (s: Series) => void })
     (showWatching ? watching.length : 0) +
     (showPlan ? plan.length : 0) +
     (showCompleted ? completed.length : 0);
+
+  function getGenreState(genre: string): "neutral" | "include" | "exclude" {
+    if (includedGenres.has(genre)) return "include";
+    if (excludedGenres.has(genre)) return "exclude";
+    return "neutral";
+  }
+
+  // Cycle neutral -> include -> exclude -> neutral. Reads the current
+  // (closed-over) state to decide the transition, then applies it via
+  // functional setState so React's batching stays safe.
+  function toggleGenre(genre: string) {
+    if (includedGenres.has(genre)) {
+      setIncludedGenres((prev) => {
+        const next = new Set(prev);
+        next.delete(genre);
+        return next;
+      });
+      setExcludedGenres((prev) => new Set(prev).add(genre));
+    } else if (excludedGenres.has(genre)) {
+      setExcludedGenres((prev) => {
+        const next = new Set(prev);
+        next.delete(genre);
+        return next;
+      });
+    } else {
+      setIncludedGenres((prev) => new Set(prev).add(genre));
+    }
+  }
+
+  function clearGenreFilters() {
+    setIncludedGenres(new Set());
+    setExcludedGenres(new Set());
+  }
 
   return (
     <div className="page">
@@ -477,25 +512,34 @@ export function Library({ onOpenSeries }: { onOpenSeries: (s: Series) => void })
 
             {genreOptions.length > 0 && (
               <>
-                <label className="sr-only" htmlFor="lib-genre-select">
-                  {t("library.filterGenre")}
-                </label>
+                <label className="sr-only">{t("library.filterGenre")}</label>
                 <span className="muted text-sm">
                   {t("library.filterGenre")}
                 </span>
-                <select
-                  id="lib-genre-select"
-                  className="input lib-filter-select"
-                  value={genreFilter}
-                  onChange={(e) => setGenreFilter(e.target.value)}
-                >
-                  <option value="all">{t("library.genreAll")}</option>
-                  {genreOptions.map((g) => (
-                    <option key={g} value={g}>
-                      {g}
-                    </option>
-                  ))}
-                </select>
+                <div className="chip-row" role="group" aria-label={t("library.filterGenre")}>
+                  {genreOptions.map((g) => {
+                    const state = getGenreState(g);
+                    return (
+                      <button
+                        key={g}
+                        type="button"
+                        className={`chip-toggle${state !== "neutral" ? " active" : ""}${state === "include" ? " chip-include" : ""}${state === "exclude" ? " chip-exclude" : ""}`}
+                        onClick={() => toggleGenre(g)}
+                        aria-pressed={state !== "neutral"}
+                        aria-label={t("library.genreChipAria", { genre: g, state: t(`library.genreState.${state}`) })}
+                      >
+                        {state === "include" && <span className="chip-state" aria-hidden="true">+</span>}
+                        {state === "exclude" && <span className="chip-state" aria-hidden="true">−</span>}
+                        {g}
+                      </button>
+                    );
+                  })}
+                </div>
+                {(includedGenres.size > 0 || excludedGenres.size > 0) && (
+                  <button type="button" className="btn btn-sm btn-ghost" onClick={clearGenreFilters}>
+                    {t("library.clearGenreFilters")}
+                  </button>
+                )}
               </>
             )}
 

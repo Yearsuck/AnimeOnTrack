@@ -153,7 +153,11 @@ export const es = {
   "library.typeAll": "Todos",
   "library.typeOther": "Otros",
   "library.filterGenre": "Género",
-  "library.genreAll": "Todos",
+  "library.genreChipAria": "Filtro de género {genre}, estado: {state}",
+  "library.genreState.neutral": "sin filtro",
+  "library.genreState.include": "incluir",
+  "library.genreState.exclude": "excluir",
+  "library.clearGenreFilters": "Limpiar filtros de género",
   "library.filterStudio": "Estudio",
   "library.studioAll": "Todos",
 

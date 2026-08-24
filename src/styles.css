@@ -464,6 +464,9 @@ textarea.input {
   font-size: var(--fs-sm);
   font-weight: var(--fw-semibold);
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
   transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 .chip-toggle:hover {
@@ -474,6 +477,21 @@ textarea.input {
   color: var(--accent);
   border-color: var(--accent);
   background: var(--accent-dim);
+}
+.chip-toggle.chip-include.active {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+.chip-toggle.chip-exclude.active {
+  color: var(--danger);
+  border-color: var(--danger);
+  background: var(--danger-dim);
+}
+.chip-state {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
+  line-height: 1;
 }
 
 /* ---------- Layout ---------- */

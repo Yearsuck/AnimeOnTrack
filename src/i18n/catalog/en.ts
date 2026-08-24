@@ -141,7 +141,11 @@ export const en: Messages = {
   "library.typeAll": "All",
   "library.typeOther": "Other",
   "library.filterGenre": "Genre",
-  "library.genreAll": "All",
+  "library.genreChipAria": "Genre filter {genre}, state: {state}",
+  "library.genreState.neutral": "no filter",
+  "library.genreState.include": "include",
+  "library.genreState.exclude": "exclude",
+  "library.clearGenreFilters": "Clear genre filters",
   "library.filterStudio": "Studio",
   "library.studioAll": "All",
 
