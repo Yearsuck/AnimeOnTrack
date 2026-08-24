@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from "react";
 import { listPending, openEpisode, setSeenCascade } from "../api";
 import { useT } from "../i18n";
 import type { PendingItem, Series } from "../types";
+import { countdownLabel } from "./AiringGrid";
+import { parseReleasedAtToUnixSeconds } from "../lib/parseReleasedAt";
 
 const REMOVE_MS = 220;
 type PendingSort = "remaining_asc" | "remaining_desc";
@@ -106,7 +108,12 @@ export function Pending({
                       {it.episode.title ?? t("common.episodeNumber", { number: it.episode.number })}
                     </div>
                     {it.episode.released_at && (
-                      <div className="ep-date">{it.episode.released_at}</div>
+                      <div className="ep-date">
+                        {(() => {
+                          const ts = parseReleasedAtToUnixSeconds(it.episode.released_at);
+                          return ts != null ? countdownLabel(ts, t) : it.episode.released_at;
+                        })()}
+                      </div>
                     )}
                   </div>
                   <div className="ep-actions">

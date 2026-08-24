@@ -9,6 +9,8 @@ import {
 } from "../api";
 import { useT } from "../i18n";
 import { isUnlinkedCatalogRow } from "../lib/catalogLink";
+import { parseReleasedAtToUnixSeconds } from "../lib/parseReleasedAt";
+import { countdownLabel } from "./AiringGrid";
 import type { CatalogAnime, Episode, Series } from "../types";
 
 // Mirrors the backend's parse_ep_number (src-tauri/src/db.rs): leading
@@ -228,7 +230,14 @@ export function SeriesDetail({
                 <div className="ep-title" onClick={() => openEpisode(ep.url)}>
                   {ep.title ?? t("common.episodeNumber", { number: ep.number })}
                 </div>
-                {ep.released_at && <div className="ep-date">{ep.released_at}</div>}
+                {ep.released_at && (
+                  <div className="ep-date">
+                    {(() => {
+                      const ts = parseReleasedAtToUnixSeconds(ep.released_at);
+                      return ts != null ? countdownLabel(ts, t) : ep.released_at;
+                    })()}
+                  </div>
+                )}
               </div>
               <div className="ep-actions">
                 <button className="btn" onClick={() => openEpisode(ep.url)}>
