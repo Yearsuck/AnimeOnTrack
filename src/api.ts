@@ -90,6 +90,8 @@ export const getWatchInsights = () => invoke<WatchInsights>("get_watch_insights"
 
 export const getDustyWatchlist = () => invoke<DustyEntry[]>("get_dusty_watchlist");
 
+export const getAvgCompletionDays = () => invoke<number | null>("get_avg_completion_days");
+
 export const getStatsGraph = () => invoke<SeriesGraphNode[]>("get_stats_graph");
 
 export const getBingeRecord = () => invoke<BingeRecord>("get_binge_record");

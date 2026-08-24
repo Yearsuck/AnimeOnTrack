@@ -958,6 +958,93 @@ impl Db {
         Ok(distribution)
     }
 
+    /// Average days to finish a franchise across all finished franchises with
+    /// real seen episodes (not just "Ya lo vi" estimates). Returns `None` when
+    /// no qualifying franchises exist (all airing, no data, etc.) — a
+    /// meaningful distinction from `0.0` (which would imply instant completion).
+    ///
+    /// A franchise is "finished" when ALL its member series have `is_airing=0`.
+    /// Only franchises with at least one real `episodes.seen_at` timestamp
+    /// count (the first/last seen date is needed to compute the span).
+    /// Cross-site member series are merged via `franchise_key` (same logic as
+    /// `franchise_rollups` and `get_watch_insights`).
+    pub fn get_avg_completion_days(&self) -> Result<Option<f64>> {
+        // franchise_key() is a Rust function (see its definition above), not
+        // a SQLite one — every other place in this file that groups by
+        // franchise (franchise_rollups, get_dusty_watchlist) fetches flat
+        // per-series rows via plain SQL and does the franchise_key grouping
+        // in Rust; this follows the same pattern rather than trying to call
+        // franchise_key() from inside a CTE.
+        let mut stmt = self.conn.prepare(
+            "SELECT s.title, s.is_airing,
+                    MIN(DATE(e.seen_at, 'localtime')) AS first_seen,
+                    MAX(DATE(e.seen_at, 'localtime')) AS last_seen
+             FROM series s
+             JOIN episodes e ON e.series_id = s.id
+             WHERE e.seen = 1
+               AND e.seen_at IS NOT NULL
+             GROUP BY s.id",
+        )?;
+        struct SeriesSpan {
+            title: String,
+            is_airing: bool,
+            first_seen: String,
+            last_seen: String,
+        }
+        let rows: Vec<SeriesSpan> = stmt
+            .query_map([], |r| {
+                Ok(SeriesSpan {
+                    title: r.get(0)?,
+                    is_airing: r.get::<_, i64>(1)? != 0,
+                    first_seen: r.get(2)?,
+                    last_seen: r.get(3)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        // Roll up to franchise level: any airing member disqualifies the
+        // whole franchise (not "finished" yet), and the span is the earliest
+        // first_seen to the latest last_seen across every member series —
+        // same reasoning as franchise_rollups, a long-runner's arcs are one
+        // show, not several.
+        struct FranchiseSpan {
+            any_airing: bool,
+            first_seen: String,
+            last_seen: String,
+        }
+        let mut grouped: HashMap<String, FranchiseSpan> = HashMap::new();
+        for row in rows {
+            let key = franchise_key(&row.title);
+            let entry = grouped.entry(key).or_insert_with(|| FranchiseSpan {
+                any_airing: false,
+                first_seen: row.first_seen.clone(),
+                last_seen: row.last_seen.clone(),
+            });
+            entry.any_airing |= row.is_airing;
+            if row.first_seen < entry.first_seen {
+                entry.first_seen = row.first_seen;
+            }
+            if row.last_seen > entry.last_seen {
+                entry.last_seen = row.last_seen;
+            }
+        }
+
+        let spans_days: Vec<f64> = grouped
+            .values()
+            .filter(|f| !f.any_airing)
+            .filter_map(|f| {
+                let first = chrono::NaiveDate::parse_from_str(&f.first_seen, "%Y-%m-%d").ok()?;
+                let last = chrono::NaiveDate::parse_from_str(&f.last_seen, "%Y-%m-%d").ok()?;
+                Some((last - first).num_days() as f64)
+            })
+            .collect();
+
+        if spans_days.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(spans_days.iter().sum::<f64>() / spans_days.len() as f64))
+    }
+
     /// A cheap fingerprint of the data, used to skip a redundant auto-backup
     /// when nothing changed since the last one.
     pub fn signature_counts(&self) -> Result<(i64, i64, i64, Option<String>)> {
@@ -2058,5 +2145,200 @@ mod tests {
         let dist = db.get_hourly_distribution().unwrap();
         assert_eq!(dist.len(), 24);
         assert!(dist.iter().all(|h| h.count == 0), "all hours should be 0 in empty DB");
+    }
+
+    /// Seed helper: insert a finished series with episodes spanning a known
+    /// number of days by backdating `seen_at` via raw SQL (normal insert uses
+    /// `datetime('now')` which we can't control in tests).
+    fn seed_finished_series(
+        db: &Db,
+        src: i64,
+        title: &str,
+        first_seen_days_ago: i64,
+        last_seen_days_ago: i64,
+    ) -> i64 {
+        let id = db.upsert_series(src, &mk_airing(title, title, None)).unwrap();
+        db.set_followed(id, true).unwrap();
+        db.set_kind(id, "TV").unwrap();
+        // Not airing = finished
+        db.conn
+            .execute("UPDATE series SET is_airing=0 WHERE id=?1", [id])
+            .unwrap();
+        // Insert 2 episodes and mark both seen, then backdate seen_at
+        for n in 1..=2 {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: id, number: n.to_string(), title: None,
+                url: format!("https://site/{}-capitulo-{}/", title, n),
+                released_at: None, seen: true,
+            }).unwrap();
+        }
+        // Backdate first episode
+        db.conn
+            .execute(
+                "UPDATE episodes SET seen_at=datetime('now', ?1) WHERE series_id=?2 AND number='1'",
+                [format!("-{} days", first_seen_days_ago), id.to_string()],
+            )
+            .unwrap();
+        // Backdate last episode
+        db.conn
+            .execute(
+                "UPDATE episodes SET seen_at=datetime('now', ?1) WHERE series_id=?2 AND number='2'",
+                [format!("-{} days", last_seen_days_ago), id.to_string()],
+            )
+            .unwrap();
+        id
+    }
+
+    #[test]
+    fn get_avg_completion_days_empty_db_returns_none() {
+        let db = Db::open(":memory:").unwrap();
+        let avg = db.get_avg_completion_days().unwrap();
+        assert_eq!(avg, None, "empty DB -> no qualifying franchises -> None");
+    }
+
+    #[test]
+    fn get_avg_completion_days_all_airing_returns_none() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+
+        // Finished series with no seen episodes = not qualified
+        let mut s = mk_airing("s1", "Show 1", None);
+        s.is_airing = false;
+        let id = db.upsert_series(src, &s).unwrap();
+        db.set_followed(id, true).unwrap();
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: id, number: "1".into(), title: None,
+            url: "https://site/s1-1/".into(), released_at: None, seen: false,
+        }).unwrap();
+
+        let avg = db.get_avg_completion_days().unwrap();
+        assert_eq!(avg, None, "no real seen_at data -> None");
+    }
+
+    #[test]
+    fn get_avg_completion_days_single_franchise_known_span() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+
+        // Finished franchise, episodes seen 10 days ago and 2 days ago -> span = 8 days
+        seed_finished_series(&db, src, "Show A", 10, 2);
+
+        let avg = db.get_avg_completion_days().unwrap();
+        assert_eq!(avg, Some(8.0), "single franchise with 8-day span -> 8.0");
+    }
+
+    #[test]
+    fn get_avg_completion_days_two_franchises_average_of_spans() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+
+        // Franchise 1: 10-day span
+        seed_finished_series(&db, src, "Show A", 10, 0);
+        // Franchise 2: 4-day span
+        seed_finished_series(&db, src, "Show B", 4, 0);
+
+        let avg = db.get_avg_completion_days().unwrap();
+        // Average of 10 and 4 = 7
+        assert!((avg.unwrap() - 7.0).abs() < 0.01, "average of 10 and 4 = 7.0, got {}", avg.unwrap());
+    }
+
+    #[test]
+    fn get_avg_completion_days_airing_franchise_excluded() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+
+        // Finished franchise with 8-day span
+        seed_finished_series(&db, src, "Show A", 10, 2);
+        // Airing franchise with 8-day span -> should be excluded
+        let airing_id = db.upsert_series(src, &mk_airing("Show B", "Show B", None)).unwrap();
+        db.set_followed(airing_id, true).unwrap();
+        db.set_kind(airing_id, "TV").unwrap();
+        // is_airing defaults to true in mk_airing
+        for n in 1..=2 {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: airing_id, number: n.to_string(), title: None,
+                url: format!("https://site/showb-{}/", n), released_at: None, seen: true,
+            }).unwrap();
+        }
+        db.conn
+            .execute(
+                "UPDATE episodes SET seen_at=datetime('now', '-10 days') WHERE series_id=?1 AND number='1'",
+                [airing_id.to_string()],
+            )
+            .unwrap();
+        db.conn
+            .execute(
+                "UPDATE episodes SET seen_at=datetime('now', '-2 days') WHERE series_id=?1 AND number='2'",
+                [airing_id.to_string()],
+            )
+            .unwrap();
+
+        let avg = db.get_avg_completion_days().unwrap();
+        // Only the finished franchise counts -> 8.0
+        assert_eq!(avg, Some(8.0), "airing franchise excluded, only finished counted");
+    }
+
+    #[test]
+    fn get_avg_completion_days_cross_site_franchise_merged() {
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        let b = db.upsert_source("TioAnime", "b", "tioanime").unwrap();
+
+        // Same franchise on two sites, both finished
+        // Site A: episodes seen 10 days ago and 2 days ago -> span = 8
+        let mut s1 = mk_airing("shared", "Shared Show", None);
+        s1.is_airing = false;
+        let id_a = db.upsert_series(a, &s1).unwrap();
+        db.set_followed(id_a, true).unwrap();
+        db.set_kind(id_a, "TV").unwrap();
+        for n in 1..=2 {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: id_a, number: n.to_string(), title: None,
+                url: format!("https://site/a-{}/", n), released_at: None, seen: true,
+            }).unwrap();
+        }
+        db.conn
+            .execute(
+                "UPDATE episodes SET seen_at=datetime('now', ?1) WHERE series_id=?2 AND number='1'",
+                ("-10 days", id_a),
+            )
+            .unwrap();
+        db.conn
+            .execute(
+                "UPDATE episodes SET seen_at=datetime('now', ?1) WHERE series_id=?2 AND number='2'",
+                ("-2 days", id_a),
+            )
+            .unwrap();
+
+        // Site B: episodes seen 8 days ago and 1 day ago -> span = 7
+        // But since they merge into one franchise, the overall span is
+        // min(10,8)=10 days ago to max(2,1)=1 day ago = 9 days
+        let mut s2 = mk_airing("shared", "Shared Show", None);
+        s2.is_airing = false;
+        let id_b = db.upsert_series(b, &s2).unwrap();
+        db.set_followed(id_b, true).unwrap();
+        db.set_kind(id_b, "TV").unwrap();
+        for n in 1..=2 {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: id_b, number: n.to_string(), title: None,
+                url: format!("https://site/b-{}/", n), released_at: None, seen: true,
+            }).unwrap();
+        }
+        db.conn
+            .execute(
+                "UPDATE episodes SET seen_at=datetime('now', ?1) WHERE series_id=?2 AND number='1'",
+                ("-8 days", id_b),
+            )
+            .unwrap();
+        db.conn
+            .execute(
+                "UPDATE episodes SET seen_at=datetime('now', ?1) WHERE series_id=?2 AND number='2'",
+                ("-1 days", id_b),
+            )
+            .unwrap();
+
+        let avg = db.get_avg_completion_days().unwrap();
+        // Merged franchise: first seen 10 days ago, last seen 1 day ago -> span = 9
+        assert_eq!(avg, Some(9.0), "cross-site franchise merged, overall span 9 days");
     }
 }

@@ -159,6 +159,7 @@ pub fn run() {
             commands::get_watch_insights,
             commands::get_dusty_watchlist,
             commands::get_binge_record,
+            commands::get_avg_completion_days,
             commands::get_stats_graph,
             commands::get_hourly_distribution,
             commands::backfill_genres,

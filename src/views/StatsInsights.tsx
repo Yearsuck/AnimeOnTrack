@@ -4,7 +4,7 @@ import type { WatchInsights, WatchSummary, DustyEntry, BingeRecord, HourCount } 
 import { BarChart, CategoryBlock, ShapeToggle } from "./StatsRings";
 import { useStatsShape } from "../lib/statsShape";
 import { useFormatNumber } from "../lib/formatNumber";
-import { getDustyWatchlist, getBingeRecord, getHourlyDistribution } from "../api";
+import { getDustyWatchlist, getBingeRecord, getHourlyDistribution, getAvgCompletionDays } from "../api";
 
 // "Resumen" block for Estadísticas — local-only metrics computed by
 // `get_watch_insights` (pure SQL, see src-tauri/src/db.rs). Sits between the
@@ -162,6 +162,12 @@ export function StatsInsights({
     getHourlyDistribution().then(setHourlyDist).catch(() => setHourlyDist([]));
   }, []);
 
+  const [avgDays, setAvgDays] = useState<number | null>(null);
+
+  useEffect(() => {
+    getAvgCompletionDays().then(setAvgDays).catch(() => setAvgDays(null));
+  }, []);
+
   const totalMinutes = insights.estimated_minutes_tracked + insights.estimated_minutes_external;
   const completionPct =
     summary.episodes_total > 0
@@ -223,6 +229,16 @@ export function StatsInsights({
             {bingeRecord && bingeRecord.day
               ? t("stats.bingeRecordValue", { count: n(bingeRecord.count), day: axisDay(bingeRecord.day, lang) })
               : t("stats.bingeRecordEmpty")}
+          </div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">{t("stats.completionSpeed")}</div>
+          <div className="stat-value">
+            {avgDays !== null ? (
+              t("stats.completionSpeedValue", { days: avgDays.toFixed(1) })
+            ) : (
+              t("stats.completionSpeedEmpty")
+            )}
           </div>
         </div>
       </div>

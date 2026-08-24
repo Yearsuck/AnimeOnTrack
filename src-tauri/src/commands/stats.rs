@@ -49,6 +49,14 @@ pub fn get_binge_record(state: State<'_, AppState>) -> Result<BingeRecord, Strin
     db.get_binge_record().map_err(|e| e.to_string())
 }
 
+/// Average days to finish a franchise across finished franchises with real seen episodes.
+/// Returns null when no qualifying franchises exist.
+#[tauri::command]
+pub fn get_avg_completion_days(state: State<'_, AppState>) -> Result<Option<f64>, String> {
+    let db = state.db.lock().unwrap();
+    db.get_avg_completion_days().map_err(|e| e.to_string())
+}
+
 /// Followed series with genres/kind/cover, for the 3D relationship graph.
 /// The frontend builds the root/hub/link structure from this flat list.
 #[tauri::command]
