@@ -192,7 +192,11 @@ export function StatsHeatmap() {
         <div className="heatmap-grid" role="img" aria-label={t("stats.heatmapAria", { year })}>
           {cells.map((weekCells, dayOfWeek) => (
             <div key={dayOfWeek} className="heatmap-row" role="row">
-              <div className="heatmap-day-label" aria-hidden="true">
+              <div
+                className="heatmap-day-label"
+                style={{ gridRow: dayOfWeek + 1, gridColumn: 1 }}
+                aria-hidden="true"
+              >
                 {/* GitHub's own graph only labels every other row (Mon/Wed/Fri) —
                     a label per row is redundant clutter at 11px row height. */}
                 {dayOfWeek % 2 === 0 ? dayLabels[dayOfWeek] : ""}
@@ -200,6 +204,7 @@ export function StatsHeatmap() {
               {weekCells.map((iso, week) => (
                 <div
                   key={week}
+                  style={{ gridRow: dayOfWeek + 1, gridColumn: week + 2 }}
                   className={
                     iso
                       ? intensityClass(countMap.get(iso) ?? 0)
