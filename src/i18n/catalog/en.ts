@@ -36,6 +36,9 @@ export const en: Messages = {
   "airing.filterAll": "All",
   "airing.filterSeason": "This season",
   "airing.seasonHint": "Only shows a known premiere date. Followed or not, the date comes from the synced Catálogo — if it's missing, resync the Catálogo from its tab",
+  "airing.carouselTitle": "Upcoming episodes",
+  "airing.carousel.prev": "Previous episodes",
+  "airing.carousel.next": "Next episodes",
 
   "pending.episodesToWatch": "{count} episodes to watch",
   "pending.sortLabel": "Sort:",

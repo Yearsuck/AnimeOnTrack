@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { listAiringSeason, setFollowed } from "../api";
 import { useT } from "../i18n";
+import { AiringCarouselRow } from "./AiringCarouselRow";
 import type { AiringItem, Series } from "../types";
 
 // Human label for the next-episode countdown the backend sorting is based
@@ -8,7 +9,7 @@ import type { AiringItem, Series } from "../types";
 // Computed once per render (no ticking timer): "en 2 h" / "en 3 d" for a
 // future release, "hace 5 h" for one that already aired but whose card
 // hasn't rolled over yet. Null when the series carries no countdown.
-function countdownLabel(nextEpisodeAt: number | null): string | null {
+export function countdownLabel(nextEpisodeAt: number | null): string | null {
   if (nextEpisodeAt == null) return null;
   const diffMs = nextEpisodeAt * 1000 - Date.now();
   const absHours = Math.abs(diffMs) / 3_600_000;
@@ -76,6 +77,14 @@ export function AiringGrid({
 
   const followedCount = items.filter((it) => it.series.followed).length;
 
+  // Carousel: soonest upcoming episodes (non-null next_episode_at), sorted ascending, top 12
+  const carouselItems = useMemo(() => {
+    return items
+      .filter((it) => it.series.next_episode_at != null)
+      .sort((a, b) => (a.series.next_episode_at ?? 0) - (b.series.next_episode_at ?? 0))
+      .slice(0, 12);
+  }, [items]);
+
   return (
     <div className="page">
       <div className="page-head">
@@ -123,6 +132,14 @@ export function AiringGrid({
         <p className="muted airing-note">
           {t("airing.seasonHint")}
         </p>
+      )}
+
+      {carouselItems.length > 0 && (
+        <AiringCarouselRow
+          title={t("airing.carouselTitle")}
+          items={carouselItems}
+          onOpenSeries={onOpenSeries}
+        />
       )}
 
       {filtered.length === 0 ? (

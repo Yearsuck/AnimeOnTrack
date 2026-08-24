@@ -44,6 +44,9 @@ export const es = {
   "airing.filterAll": "Todas",
   "airing.filterSeason": "Esta temporada",
   "airing.seasonHint": "Solo se muestran series con fecha de estreno registrada. Se sigan o no, se busca la fecha en el Catálogo sincronizado — si falta, resincronizá el Catálogo desde su pestaña",
+  "airing.carouselTitle": "Próximos episodios",
+  "airing.carousel.prev": "Episodios anteriores",
+  "airing.carousel.next": "Próximos episodios",
 
   // Pending.tsx
   "pending.episodesToWatch": "{count} episodios por ver",

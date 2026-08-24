@@ -2203,6 +2203,70 @@ select.lib-filter-select {
   padding: 0 var(--sp-1) var(--sp-3);
 }
 
+/* ---------- Airing Carousel Row ---------- */
+.airing-carousel-row {
+  margin-bottom: var(--sp-6);
+}
+.airing-carousel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--sp-3);
+}
+.airing-carousel-nav {
+  display: flex;
+  gap: var(--sp-1);
+}
+.carousel-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-round);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-size: var(--fs-xl);
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.carousel-btn:hover:not(:disabled) {
+  background: var(--surface-2);
+  border-color: var(--muted-2);
+}
+.carousel-btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+.carousel-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.airing-carousel-track {
+  display: flex;
+  gap: var(--sp-3);
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
+  scroll-padding: 0 var(--sp-5);
+  padding-bottom: var(--sp-1); /* space for scrollbar */
+  -webkit-overflow-scrolling: touch;
+}
+.airing-carousel-track::-webkit-scrollbar {
+  height: 8px;
+}
+.airing-carousel-track::-webkit-scrollbar-thumb {
+  background: var(--surface-3);
+  border-radius: 4px;
+}
+.carousel-card {
+  flex: 0 0 150px;
+  scroll-snap-align: start;
+}
+.carousel-card .card-body {
+  padding-bottom: var(--sp-2); /* no follow button, tighter */
+}
+
 /* ---------- Descubrir (view-specific) ---------- */
 .discover-tabs {
   margin-bottom: var(--sp-5);
