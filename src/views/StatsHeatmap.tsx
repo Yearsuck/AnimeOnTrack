@@ -59,6 +59,14 @@ export function StatsHeatmap() {
     };
   }, [selectedYear]);
 
+  if (error) {
+    return (
+      <div className="heatmap-error">
+        {t("stats.heatmapError", { msg: error })}
+      </div>
+    );
+  }
+
   if (years.length === 0) {
     return (
       <div className="heatmap-empty">
@@ -71,14 +79,6 @@ export function StatsHeatmap() {
     return (
       <div className="heatmap-empty">
         {loading ? t("common.loading") : t("stats.heatmapNoData")}
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="heatmap-error">
-        {t("stats.heatmapError", { msg: error })}
       </div>
     );
   }

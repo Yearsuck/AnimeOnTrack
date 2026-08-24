@@ -1813,7 +1813,7 @@ progress.scanbar-track::-webkit-progress-value {
 }
 .heatmap-months {
   display: grid;
-  grid-template-columns: repeat(53, 1fr);
+  grid-template-columns: repeat(54, 1fr); /* 54: max weeks a year can span (leap year starting Sunday) */
   gap: 2px;
   margin-bottom: 4px;
   padding-left: 42px; /* align with day labels */
@@ -1826,7 +1826,7 @@ progress.scanbar-track::-webkit-progress-value {
 }
 .heatmap-grid {
   display: grid;
-  grid-template-columns: 36px repeat(53, 1fr);
+  grid-template-columns: 36px repeat(54, 1fr);
   gap: 2px;
 }
 .heatmap-row {
