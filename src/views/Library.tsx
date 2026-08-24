@@ -306,15 +306,30 @@ function LibrarySection({
   );
 }
 
+// Module-level cache survives unmount/remount of this view (tab switch in App.tsx)
+let libraryFilterCache: {
+  query: string;
+  airingFilter: AiringFilter;
+  statusFilter: StatusFilter;
+  typeFilter: string;
+  genreFilter: string;
+  studioFilter: string;
+} | null = null;
+
 export function Library({ onOpenSeries }: { onOpenSeries: (s: Series) => void }) {
   const t = useT();
   const [items, setItems] = useState<LibraryItem[]>([]);
-  const [query, setQuery] = useState("");
-  const [airingFilter, setAiringFilter] = useState<AiringFilter>("all");
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
-  const [typeFilter, setTypeFilter] = useState<string>("all");
-  const [genreFilter, setGenreFilter] = useState<string>("all");
-  const [studioFilter, setStudioFilter] = useState<string>("all");
+  const [query, setQuery] = useState(() => libraryFilterCache?.query ?? "");
+  const [airingFilter, setAiringFilter] = useState<AiringFilter>(() => libraryFilterCache?.airingFilter ?? "all");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>(() => libraryFilterCache?.statusFilter ?? "all");
+  const [typeFilter, setTypeFilter] = useState<string>(() => libraryFilterCache?.typeFilter ?? "all");
+  const [genreFilter, setGenreFilter] = useState<string>(() => libraryFilterCache?.genreFilter ?? "all");
+  const [studioFilter, setStudioFilter] = useState<string>(() => libraryFilterCache?.studioFilter ?? "all");
+
+  // Persist filter state to module-level cache on every change
+  useEffect(() => {
+    libraryFilterCache = { query, airingFilter, statusFilter, typeFilter, genreFilter, studioFilter };
+  }, [query, airingFilter, statusFilter, typeFilter, genreFilter, studioFilter]);
 
   const load = useCallback(() => {
     listLibrary().then(setItems);
