@@ -208,6 +208,18 @@ impl Db {
             "CREATE INDEX IF NOT EXISTS idx_catalog_popularity ON anilist_catalog(popularity DESC);
              CREATE INDEX IF NOT EXISTS idx_catalog_genre ON anilist_catalog_genres(genre);",
         )?;
+        // series.completion_reconciled: apply-once guard for
+        // `reconcile_completion_across_sites`'s airing-zero-progress branch.
+        // Before this column existed, "0 episodes seen on this row" was the
+        // only signal it used to decide "never watched here, auto-catch-up" —
+        // indistinguishable from a user who deliberately un-marked every
+        // episode back to zero on purpose. Every refresh() re-ran the
+        // reconcile, so a manual reset kept getting silently re-completed on
+        // the very next refresh. Now the reconcile only ever acts on a row
+        // once (whichever way it resolves — auto-caught-up, real progress
+        // left alone, or flagged watched_externally), then never touches it
+        // again regardless of what the user does to it afterwards.
+        ensure_column(&self.conn, "series", "completion_reconciled", "INTEGER NOT NULL DEFAULT 0")?;
 
         // Site-agnostic library (docs/cross-site-library-investigation.md,
         // option C). Identity is canonical (AniList id, else normalized title),

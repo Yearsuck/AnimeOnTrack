@@ -191,7 +191,7 @@ impl Db {
                     COUNT(e.id) AS total,
                     SUM(CASE WHEN e.seen=1 THEN 1 ELSE 0 END) AS seen
              FROM series s LEFT JOIN episodes e ON e.series_id = s.id
-             WHERE s.watched_externally=0
+             WHERE s.watched_externally=0 AND s.completion_reconciled=0
              GROUP BY s.id",
         )?;
         struct Cand { id: i64, key: String, is_airing: bool, total: i64, seen: i64 }
@@ -216,9 +216,16 @@ impl Db {
             if !c.is_airing {
                 // Finished show completed elsewhere → flag it completed. A flag
                 // only; episode seen-state is never mutated (non-destructive).
+                // Self-exempting from now on via watched_externally=1 alone,
+                // but completion_reconciled is set below too for uniformity.
                 tx.execute("UPDATE series SET watched_externally=1 WHERE id=?1", [c.id])?;
                 changed += 1;
-            } else if c.seen == 0 && c.total > 0 {
+            } else if c.total == 0 {
+                // No episodes scraped in for this row yet — nothing to decide.
+                // Leave it un-reconciled so a future refresh (once episodes
+                // exist) still gets a first chance to catch it up.
+                continue;
+            } else if c.seen == 0 {
                 // Airing show you watched elsewhere but never here (0 progress):
                 // mark the episodes aired so far seen, so it shows in the airing
                 // grid as caught-up instead of a false pending pile. We do NOT
@@ -233,6 +240,14 @@ impl Db {
             }
             // Airing with real partial/full progress (e.g. One Piece 1079/1171)
             // is left completely alone — that progress is authoritative.
+            //
+            // Either way this row's completion state is now decided for good
+            // (auto-caught-up, real progress respected, or flagged
+            // completed) — mark it reconciled so it's never revisited. Without
+            // this, a user who later un-marks episodes back down to 0 on
+            // purpose looked identical to "never watched here" on the next
+            // refresh and got silently re-completed.
+            tx.execute("UPDATE series SET completion_reconciled=1 WHERE id=?1", [c.id])?;
         }
         tx.commit()?;
         Ok(changed)
@@ -541,6 +556,38 @@ mod tests {
         let airing = db.list_airing(b).unwrap();
         assert!(airing.iter().any(|s| s.id == ob), "still in the airing grid");
         assert!(db.list_pending(b, crate::db::PendingSort::RemainingAsc).unwrap().is_empty());
+    }
+
+    #[test]
+    fn reconcile_does_not_re_complete_a_row_the_user_manually_reset_to_zero() {
+        // The reported bug: refresh() auto-catches-up an airing twin with 0
+        // progress (correct, once). The user then deliberately un-marks every
+        // episode back to 0 (wants to rewatch from scratch). Before
+        // completion_reconciled existed, the next refresh saw seen==0 again —
+        // indistinguishable from "never watched here" — and silently
+        // re-completed it, undoing the user's un-mark every single time.
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        let b = db.upsert_source("TioAnime", "b", "tioanime").unwrap();
+        let base = db.upsert_series(a, &mk_airing("tanya", "Saga of Tanya S2", None)).unwrap();
+        db.set_anilist_id(base, 135865).unwrap();
+        db.set_watched_externally(base, true).unwrap();
+        let ob = seed_followed(&db, b, "youjo-senki-ii", "Youjo Senki II", Some(135865), 0, 3);
+
+        // First refresh: legitimate auto-catch-up.
+        assert_eq!(db.reconcile_completion_across_sites().unwrap(), 1);
+        assert!(db.list_series_episodes(ob).unwrap().iter().all(|e| e.seen));
+
+        // User manually resets every episode back to unseen.
+        db.set_seen_cascade(ob, "1", false).unwrap();
+        assert!(db.list_series_episodes(ob).unwrap().iter().all(|e| !e.seen));
+
+        // Second refresh must leave the manual reset alone.
+        assert_eq!(db.reconcile_completion_across_sites().unwrap(), 0, "already reconciled once — must not re-fire");
+        assert!(
+            db.list_series_episodes(ob).unwrap().iter().all(|e| !e.seen),
+            "manual reset to zero must survive a refresh"
+        );
     }
 
     #[test]
