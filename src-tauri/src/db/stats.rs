@@ -247,6 +247,7 @@ struct SeriesWatchRow {
     title: String,
     kind: Option<String>,
     watched_externally: bool,
+    source_id: i64,
     seen_count: i64,
     catalog_episodes: Option<i64>,
     catalog_format: Option<String>,
@@ -611,7 +612,7 @@ impl Db {
     /// regress the arc-collapsing case whenever only *some* arcs are linked).
     pub(crate) fn franchise_rollups(&self) -> Result<Vec<FranchiseRollup>> {
         let mut stmt = self.conn.prepare(
-            "SELECT s.title, s.kind, s.watched_externally,
+            "SELECT s.title, s.kind, s.watched_externally, s.source_id,
                     (SELECT COUNT(*) FROM episodes e WHERE e.series_id=s.id AND e.seen=1) AS seen_cnt,
                     c.episodes, c.format, c.duration
              FROM series s
@@ -625,10 +626,11 @@ impl Db {
                     title: r.get(0)?,
                     kind: r.get(1)?,
                     watched_externally: r.get::<_, i64>(2)? != 0,
-                    seen_count: r.get(3)?,
-                    catalog_episodes: r.get(4)?,
-                    catalog_format: r.get(5)?,
-                    catalog_duration: r.get(6)?,
+                    source_id: r.get(3)?,
+                    seen_count: r.get(4)?,
+                    catalog_episodes: r.get(5)?,
+                    catalog_format: r.get(6)?,
+                    catalog_duration: r.get(7)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -637,13 +639,23 @@ impl Db {
         // Candidate parent per group, recorded while grouping and applied only
         // afterwards, once every key present in this user's data is known.
         let mut parent_of: HashMap<String, String> = HashMap::new();
+        // Real seen episodes, bucketed by (franchise_key, source_id) before
+        // being folded into `real_seen` below. Summing within one site is
+        // correct (that site's own arc-split rows are genuinely different
+        // episodes), but two *different* sites both scraping the same
+        // complete show are mirrors of the same episodes, not additional
+        // ones — e.g. a user following One Piece on two sites had ~1170
+        // real marks on each site's own full-series row, and summing those
+        // (2340+) on top of the site that splits it into arcs (~250 more)
+        // reported ~2600 "real" episodes for a ~1170-episode show.
+        let mut per_site: HashMap<String, HashMap<i64, (i64, i64)>> = HashMap::new();
         for row in rows {
             let key = franchise_key(&row.title);
             let display = franchise_display_title(&row.title);
             if let Some(parent) = franchise_parent_key(&row.title) {
                 parent_of.entry(key.clone()).or_insert(parent);
             }
-            let entry = grouped.entry(key).or_insert_with(|| FranchiseRollup {
+            let entry = grouped.entry(key.clone()).or_insert_with(|| FranchiseRollup {
                 display_title: display.clone(),
                 real_seen: 0,
                 real_minutes: 0,
@@ -661,8 +673,9 @@ impl Db {
             let per_episode = row.catalog_duration.unwrap_or_else(|| {
                 minutes_per_episode(row.kind.as_deref().or(row.catalog_format.as_deref()))
             });
-            entry.real_seen += row.seen_count;
-            entry.real_minutes += row.seen_count * per_episode;
+            let bucket = per_site.entry(key).or_default().entry(row.source_id).or_insert((0, 0));
+            bucket.0 += row.seen_count;
+            bucket.1 += row.seen_count * per_episode;
 
             // A "Ya lo vi" row contributes its catalog total regardless of
             // whether that same row also has real marks. Gating this on the
@@ -679,6 +692,18 @@ impl Db {
                         entry.external_minutes = episodes * per_episode;
                     }
                 }
+            }
+        }
+        // Credit each franchise with its best single site's real progress —
+        // never the sum of what multiple sites separately claim about the
+        // same underlying episodes (same "biggest single signal, never add
+        // signals" rule `episodes()` already applies to real vs. external).
+        for (key, entry) in grouped.iter_mut() {
+            if let Some(best) = per_site.get(key).and_then(|sites| {
+                sites.values().max_by_key(|&&(seen, _)| seen)
+            }) {
+                entry.real_seen = best.0;
+                entry.real_minutes = best.1;
             }
         }
         Ok(merge_into_parent_franchises(grouped, &parent_of))
@@ -2064,6 +2089,55 @@ mod tests {
         let insights = db.get_watch_insights().unwrap();
         assert_eq!(insights.followed_airing, 1, "followed+airing on both sites is still one show");
         assert_eq!(insights.discarded, 1, "a site-B-only discard is not lost");
+    }
+
+    #[test]
+    fn get_watch_insights_top_series_credits_best_site_not_sum_across_sites() {
+        // The real bug this guards: a user following One Piece on two sites
+        // had ~1170 real marks on each site's own full-series row. Franchise
+        // rollup used to sum real_seen across every member row regardless of
+        // site, reporting ~2600 "episodes" for a ~1170-episode show. Summing
+        // is still correct *within* one site (that site's own arc-split
+        // rows are genuinely different episodes) — only cross-site should
+        // take the best single signal.
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        let b = db.upsert_source("TioAnime", "b", "tioanime").unwrap();
+
+        let op_a = db.upsert_series(a, &mk_airing("op", "One Piece", None)).unwrap();
+        db.set_followed(op_a, true).unwrap();
+        insert_eps_seen_up_to(&db, op_a, 50, 50);
+        let op_b = db.upsert_series(b, &mk_airing("op", "One Piece", None)).unwrap();
+        db.set_followed(op_b, true).unwrap();
+        insert_eps_seen_up_to(&db, op_b, 40, 40);
+
+        let insights = db.get_watch_insights().unwrap();
+        let op = insights.top_series.iter().find(|t| t.title == "One Piece").unwrap();
+        assert_eq!(op.count, 50, "credits the better site's real progress, not the 90-episode sum of both sites");
+    }
+
+    #[test]
+    fn get_watch_insights_top_series_sums_arcs_within_one_site() {
+        // Same site splitting a long-runner into arc rows is genuinely
+        // additive — those are different episodes, not mirrors of the same
+        // ones, so this must keep summing.
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+
+        // A colon-suffixed arc only merges into its base when that base is
+        // independently present in the user's own data — same rule
+        // `arc_rows_only_merge_when_the_base_show_is_in_the_users_own_data`
+        // covers — so a bare "One Piece" row must exist alongside the arc.
+        let base = db.upsert_series(a, &mk_airing("op0", "One Piece", None)).unwrap();
+        db.set_followed(base, true).unwrap();
+        insert_eps_seen_up_to(&db, base, 20, 20);
+        let arc = db.upsert_series(a, &mk_airing("op1", "One Piece: Wano", None)).unwrap();
+        db.set_followed(arc, true).unwrap();
+        insert_eps_seen_up_to(&db, arc, 15, 15);
+
+        let insights = db.get_watch_insights().unwrap();
+        let op = insights.top_series.iter().find(|t| t.title == "One Piece").unwrap();
+        assert_eq!(op.count, 35, "same-site arc rows still sum — they're different episodes");
     }
 
     #[test]
