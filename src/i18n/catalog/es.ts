@@ -173,6 +173,12 @@ export const es = {
   "library.clearGenreFilters": "Limpiar filtros de género",
   "library.filterStudio": "Estudio",
   "library.studioAll": "Todos",
+  "library.selectMode": "Seleccionar",
+  "library.cancelSelect": "Cancelar",
+  "library.selectedCount": "{count} seleccionados",
+  "library.bulkRemove": "Dejar de seguir selección",
+  "library.bulkRemoveConfirm": "¿Dejar de seguir {count} series? Se perderá el progreso de visionado.",
+  "library.deselectAll": "Deseleccionar todo",
 
   // SeriesDetail.tsx
   "seriesDetail.unfollow": "Dejar de seguir",
