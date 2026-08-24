@@ -159,6 +159,8 @@ export const en: Messages = {
   "library.genreState.include": "include",
   "library.genreState.exclude": "exclude",
   "library.clearGenreFilters": "Clear genre filters",
+  "library.showMoreGenres": "{count} more",
+  "library.showLessGenres": "Show less",
   "library.filterStudio": "Studio",
   "library.studioAll": "All",
   "library.selectMode": "Select",

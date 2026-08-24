@@ -167,6 +167,8 @@ export const ca: Messages = {
   "library.genreState.include": "incloure",
   "library.genreState.exclude": "excloure",
   "library.clearGenreFilters": "Neteja filtres de gènere",
+  "library.showMoreGenres": "{count} més",
+  "library.showLessGenres": "Mostra menys",
   "library.filterStudio": "Estudi",
   "library.studioAll": "Tots",
   "library.selectMode": "Seleccionar",

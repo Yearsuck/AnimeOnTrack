@@ -171,6 +171,8 @@ export const es = {
   "library.genreState.include": "incluir",
   "library.genreState.exclude": "excluir",
   "library.clearGenreFilters": "Limpiar filtros de género",
+  "library.showMoreGenres": "{count} más",
+  "library.showLessGenres": "Mostrar menos",
   "library.filterStudio": "Estudio",
   "library.studioAll": "Todos",
   "library.selectMode": "Seleccionar",

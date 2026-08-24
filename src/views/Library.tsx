@@ -352,6 +352,9 @@ export function Library({ onOpenSeries }: { onOpenSeries: (s: Series) => void })
   const [includedGenres, setIncludedGenres] = useState<Set<string>>(() => libraryFilterCache?.includedGenres ?? new Set());
   const [excludedGenres, setExcludedGenres] = useState<Set<string>>(() => libraryFilterCache?.excludedGenres ?? new Set());
   const [studioFilter, setStudioFilter] = useState<string>(() => libraryFilterCache?.studioFilter ?? "all");
+  // Purely a display cap, not persisted: the catalog carries dozens of
+  // genres and showing them all ate the whole filter bar's screen space.
+  const [showAllGenres, setShowAllGenres] = useState(false);
 
   // Persist filter state to module-level cache on every change
   useEffect(() => {
@@ -439,6 +442,18 @@ export function Library({ onOpenSeries }: { onOpenSeries: (s: Series) => void })
     for (const it of items) for (const g of it.genres) present.add(g);
     return [...present].sort((a, b) => a.localeCompare(b));
   }, [items]);
+
+  // Cap the chip row so dozens of genres don't dominate the filter bar; a
+  // genre already filtered on stays visible even past the cap, so toggling
+  // it off is never hidden behind "show more".
+  const GENRE_VISIBLE_CAP = 12;
+  const visibleGenreOptions = useMemo(() => {
+    if (showAllGenres || genreOptions.length <= GENRE_VISIBLE_CAP) return genreOptions;
+    const active = genreOptions.filter((g) => includedGenres.has(g) || excludedGenres.has(g));
+    const rest = genreOptions.filter((g) => !includedGenres.has(g) && !excludedGenres.has(g));
+    return [...active, ...rest].slice(0, Math.max(GENRE_VISIBLE_CAP, active.length));
+  }, [genreOptions, showAllGenres, includedGenres, excludedGenres]);
+  const hiddenGenreCount = genreOptions.length - visibleGenreOptions.length;
 
   // Derived client-side (not a backend facets call, unlike Catálogo's studio
   // select) — Library's full item list is already loaded client-side, same
@@ -637,7 +652,7 @@ export function Library({ onOpenSeries }: { onOpenSeries: (s: Series) => void })
                   {t("library.filterGenre")}
                 </span>
                 <div className="chip-row" role="group" aria-label={t("library.filterGenre")}>
-                  {genreOptions.map((g) => {
+                  {visibleGenreOptions.map((g) => {
                     const state = getGenreState(g);
                     return (
                       <button
@@ -655,6 +670,16 @@ export function Library({ onOpenSeries }: { onOpenSeries: (s: Series) => void })
                     );
                   })}
                 </div>
+                {hiddenGenreCount > 0 && (
+                  <button type="button" className="btn btn-sm btn-ghost" onClick={() => setShowAllGenres(true)}>
+                    {t("library.showMoreGenres", { count: hiddenGenreCount })}
+                  </button>
+                )}
+                {showAllGenres && genreOptions.length > GENRE_VISIBLE_CAP && (
+                  <button type="button" className="btn btn-sm btn-ghost" onClick={() => setShowAllGenres(false)}>
+                    {t("library.showLessGenres")}
+                  </button>
+                )}
                 {(includedGenres.size > 0 || excludedGenres.size > 0) && (
                   <button type="button" className="btn btn-sm btn-ghost" onClick={clearGenreFilters}>
                     {t("library.clearGenreFilters")}
