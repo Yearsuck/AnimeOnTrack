@@ -4,6 +4,7 @@ import type { WatchInsights, WatchSummary } from "../types";
 import { BarChart, CategoryBlock, ShapeToggle } from "./StatsRings";
 import { useStatsShape } from "../lib/statsShape";
 import { useFormatNumber } from "../lib/formatNumber";
+import { getAvgCompletionDays } from "../api";
 
 // "Resumen" block for Estadísticas — local-only metrics computed by
 // `get_watch_insights` (pure SQL, see src-tauri/src/db.rs). Sits between the
@@ -101,6 +102,11 @@ export function StatsInsights({
   const n = useFormatNumber();
   const { lang } = useLang();
   const [shape, setShape] = useStatsShape();
+  const [avgDays, setAvgDays] = useState<number | null>(null);
+
+  useEffect(() => {
+    getAvgCompletionDays().then(setAvgDays).catch(() => setAvgDays(null));
+  }, []);
 
   const totalMinutes = insights.estimated_minutes_tracked + insights.estimated_minutes_external;
   const completionPct =
@@ -155,6 +161,16 @@ export function StatsInsights({
         <div className="stat-card">
           <div className="stat-label">{t("stats.avgEpisodes")}</div>
           <div className="stat-value">{insights.avg_episodes_per_series.toFixed(1)}</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">{t("stats.completionSpeed")}</div>
+          <div className="stat-value">
+            {avgDays !== null ? (
+              t("stats.completionSpeedValue", { days: avgDays.toFixed(1) })
+            ) : (
+              t("stats.completionSpeedEmpty")
+            )}
+          </div>
         </div>
       </div>
 

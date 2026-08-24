@@ -85,6 +85,8 @@ export const getWatchSummary = () => invoke<WatchSummary>("get_watch_summary");
 
 export const getWatchInsights = () => invoke<WatchInsights>("get_watch_insights");
 
+export const getAvgCompletionDays = () => invoke<number | null>("get_avg_completion_days");
+
 export const getStatsGraph = () => invoke<SeriesGraphNode[]>("get_stats_graph");
 
 export const backfillGenres = () => invoke<number>("backfill_genres");

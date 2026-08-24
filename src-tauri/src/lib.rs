@@ -157,6 +157,7 @@ pub fn run() {
             commands::get_type_stats,
             commands::get_watch_summary,
             commands::get_watch_insights,
+            commands::get_avg_completion_days,
             commands::get_stats_graph,
             commands::backfill_genres,
             commands::set_followed,
