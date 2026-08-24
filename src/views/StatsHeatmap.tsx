@@ -185,48 +185,56 @@ export function StatsHeatmap() {
           ))}
         </div>
 
-        {/* Day-label column + a flex row of week columns (each a flex
-            column of 7 cells) — no CSS Grid auto-placement involved. */}
-        <div className="heatmap-grid" role="img" aria-label={t("stats.heatmapAria", { year })}>
-          <div className="heatmap-daylabels" aria-hidden="true">
-            {dayLabels.map((label, dayOfWeek) => (
-              <div key={dayOfWeek} className="heatmap-day-label">
-                {/* GitHub's own graph only labels every other row (Mon/Wed/Fri) —
-                    a label per row is redundant clutter at 11px row height. */}
-                {dayOfWeek % 2 === 0 ? label : ""}
-              </div>
-            ))}
-          </div>
-          <div className="heatmap-weeks">
-            {Array.from({ length: weeks }, (_, week) => (
-              <div key={week} className="heatmap-week" role="row">
-                {Array.from({ length: 7 }, (_, dayOfWeek) => {
-                  const iso = cells[dayOfWeek][week];
-                  const label = iso
-                    ? `${new Date(`${iso}T00:00:00`).toLocaleDateString(lang, {
-                        weekday: "long",
-                        year: "numeric",
-                        month: "long",
-                        day: "numeric",
-                      })}: ${countMap.get(iso) ?? 0} ${t("stats.heatmapEpisodes")}`
-                    : "";
-                  return (
-                    <div
-                      key={dayOfWeek}
-                      className={
-                        iso
-                          ? intensityClass(countMap.get(iso) ?? 0)
-                          : "heatmap-cell empty"
-                      }
-                      title={label}
-                      role="cell"
-                      aria-label={label}
-                    />
-                  );
-                })}
-              </div>
-            ))}
-          </div>
+        {/* Every label and cell is absolutely positioned by pixel math
+            inside this one relative box — the same mechanism the month
+            labels above already use correctly. Two nested flex levels
+            (a flex row of per-week flex columns) turned out to detach a
+            column from the row in WebView2; explicit left/top per cell
+            leaves nothing for a browser layout quirk to get wrong. */}
+        <div
+          className="heatmap-grid"
+          role="img"
+          aria-label={t("stats.heatmapAria", { year })}
+          style={{ width: 33 + weeks * 14 - 3, height: 7 * 14 - 3 }}
+        >
+          {dayLabels.map(
+            (label, dayOfWeek) =>
+              dayOfWeek % 2 === 0 && (
+                // GitHub's own graph only labels every other row (Mon/Wed/Fri).
+                <div
+                  key={dayOfWeek}
+                  className="heatmap-day-label"
+                  style={{ top: dayOfWeek * 14 }}
+                  aria-hidden="true"
+                >
+                  {label}
+                </div>
+              )
+          )}
+          {cells.flatMap((weekCells, dayOfWeek) =>
+            weekCells.map((iso, week) => {
+              const label = iso
+                ? `${new Date(`${iso}T00:00:00`).toLocaleDateString(lang, {
+                    weekday: "long",
+                    year: "numeric",
+                    month: "long",
+                    day: "numeric",
+                  })}: ${countMap.get(iso) ?? 0} ${t("stats.heatmapEpisodes")}`
+                : "";
+              return (
+                <div
+                  key={`${dayOfWeek}-${week}`}
+                  style={{ left: 33 + week * 14, top: dayOfWeek * 14 }}
+                  className={
+                    iso ? intensityClass(countMap.get(iso) ?? 0) : "heatmap-cell empty"
+                  }
+                  title={label}
+                  role="cell"
+                  aria-label={label}
+                />
+              );
+            })
+          )}
         </div>
       </div>
 

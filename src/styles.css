@@ -1983,14 +1983,16 @@ progress.scanbar-track::-webkit-progress-value {
 .heatmap-grid-wrap {
   overflow-x: auto;
 }
-/* Rebuilt on plain flexbox, not CSS Grid — a grid row that uses
-   display:contents to flatten into the parent grid (so each weekday could
-   be its own mapped array) rendered with broken row placement in WebView2.
-   A week is instead its own flex column of 7 cells, and weeks sit in a
-   flex row; day labels are a separate flex column alongside it. No
-   auto-placement, no display:contents, nothing to place ambiguously.
-   Fixed 11px cells + 3px gaps (54 weeks ≈ 750px) sit left-aligned and
-   never need the horizontal scroll .heatmap-grid-wrap falls back to. */
+/* Rebuilt a second time — the flexbox version (a flex row of per-week
+   flex columns) still detached one column from the row in WebView2,
+   confirmed via devtools (a mid-sequence .heatmap-week rendered outside
+   the flex row entirely). Every label and cell is now absolutely
+   positioned by pixel math inside one relative box instead — the same
+   technique the month labels already used successfully. Nothing is
+   flexed, grid-placed, or auto-anything; a browser layout algorithm has
+   nothing left to get wrong. Fixed 11px cells + 3px gaps (54 weeks ≈
+   750px) sit left-aligned and never need the horizontal scroll
+   .heatmap-grid-wrap falls back to. */
 .heatmap-months {
   position: relative;
   height: 14px;
@@ -2006,17 +2008,13 @@ progress.scanbar-track::-webkit-progress-value {
   white-space: nowrap;
 }
 .heatmap-grid {
-  display: flex;
-  align-items: flex-start;
-}
-.heatmap-daylabels {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  flex: 0 0 30px;
-  margin-right: 3px;
+  position: relative;
 }
 .heatmap-day-label {
+  position: absolute;
+  left: 0;
+  width: 30px;
+  height: 11px;
   display: flex;
   align-items: center;
   justify-content: flex-end;
@@ -2024,18 +2022,9 @@ progress.scanbar-track::-webkit-progress-value {
   font-size: var(--fs-xs);
   color: var(--muted-2);
   font-weight: var(--fw-medium);
-  height: 11px;
-}
-.heatmap-weeks {
-  display: flex;
-  gap: 3px;
-}
-.heatmap-week {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
 }
 .heatmap-cell {
+  position: absolute;
   width: 11px;
   height: 11px;
   border-radius: 2px;
@@ -2081,6 +2070,10 @@ progress.scanbar-track::-webkit-progress-value {
   gap: 2px;
 }
 .heatmap-legend-levels .heatmap-cell {
+  /* .heatmap-cell is absolutely positioned for the grid proper — these
+     legend swatches reuse its color/level classes only, laid out inline
+     by the flex row they actually sit in. */
+  position: static;
   width: 12px;
   height: 12px;
 }
