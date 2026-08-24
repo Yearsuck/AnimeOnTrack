@@ -157,11 +157,13 @@ html,
 body,
 #root {
   margin: 0;
-  /* min-height, not height: a fixed height caps #root at one viewport tall,
-     which caps .topbar's sticky containing block there too — past that
-     point the sticky bar scrolls away with the rest of the page instead of
-     staying pinned. */
-  min-height: 100%;
+  /* Fixed, not min-height: #root is the app shell's flex container now (see
+     .app-shell/.view-stack) — each tab scrolls independently inside its own
+     .view-panel rather than the whole document scrolling, so switching tabs
+     and coming back (or hitting back from a series' detail page) restores
+     exactly where you were for free, via the browser's own DOM — a hidden
+     (not unmounted) element simply keeps its scrollTop. */
+  height: 100%;
 }
 
 body {
@@ -203,6 +205,37 @@ a {
 }
 a:hover {
   color: var(--accent-hover);
+}
+
+/* ---------- App shell ---------- */
+/* The whole app fills the viewport as a fixed-height flex column: topbar +
+   progress bar sit in normal flow (never scroll), and .view-stack takes the
+   remaining height. Each tab is a .view-panel absolutely filling that stack,
+   scrolling independently — see the html/body/#root comment above for why. */
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+.view-stack {
+  position: relative;
+  flex: 1;
+  min-height: 0; /* a flex child's default min-height:auto would refuse to
+                     shrink below its content, defeating overflow entirely */
+  overflow: hidden;
+}
+.view-panel {
+  position: absolute;
+  inset: 0;
+  overflow-y: auto;
+  scrollbar-width: none;
+  /* Opaque: the series-detail overlay is just another .view-panel stacked
+     on top (later in DOM order) of whichever tab is showing underneath —
+     needs a solid ground to actually occlude it, not just position over it. */
+  background: var(--bg);
+}
+.view-panel::-webkit-scrollbar {
+  display: none;
 }
 
 /* ---------- Top bar ---------- */
@@ -464,6 +497,9 @@ textarea.input {
   font-size: var(--fs-sm);
   font-weight: var(--fw-semibold);
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
   transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 .chip-toggle:hover {
@@ -474,6 +510,21 @@ textarea.input {
   color: var(--accent);
   border-color: var(--accent);
   background: var(--accent-dim);
+}
+.chip-toggle.chip-include.active {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+.chip-toggle.chip-exclude.active {
+  color: var(--danger);
+  border-color: var(--danger);
+  background: var(--danger-dim);
+}
+.chip-state {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
+  line-height: 1;
 }
 
 /* ---------- Layout ---------- */
@@ -605,11 +656,13 @@ textarea.input {
   overflow: hidden;
   transition: transform var(--dur) var(--ease-out), border-color var(--dur-fast) var(--ease),
     box-shadow var(--dur) var(--ease-out);
+  content-visibility: auto;
+  contain-intrinsic-size: 150px 300px;
 }
 .card:hover {
-  transform: translateY(-3px);
+  transform: translateY(-5px);
   border-color: var(--surface-3);
-  box-shadow: var(--shadow-md);
+  box-shadow: var(--shadow-md), 0 0 0 1px var(--accent-dim);
 }
 .poster {
   position: relative;
@@ -779,6 +832,7 @@ textarea.input {
 }
 .lib-filter-bar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--sp-2);
   margin-bottom: var(--sp-2);
@@ -817,9 +871,10 @@ textarea.input {
   /* Opaque so scrolled content never shows through the pinned bar. */
   background: var(--overlay-strong);
   backdrop-filter: blur(10px);
-  /* Pin just below the sticky top nav (~56px tall), under it in the stack. */
+  /* Pins to the top of its own .view-panel scroll container — there's no
+     longer a shared document-level topbar/scanbar stack above it to clear. */
   position: sticky;
-  top: 56px;
+  top: 0;
   z-index: 40;
 }
 .card.selected {
@@ -1302,8 +1357,9 @@ progress.scanbar-track::-webkit-progress-value {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: var(--sp-4);
+  /* Pins to the top of its own .view-panel scroll container. */
   position: sticky;
-  top: 72px;
+  top: 0;
 }
 .deck-panel-head {
   display: flex;
@@ -1609,6 +1665,11 @@ progress.scanbar-track::-webkit-progress-value {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
   gap: var(--sp-5);
+  /* Grid's default stretch makes the shorter en-emisión/finalizadas block
+     (2 categories) match the height of the funnel block (4 categories),
+     leaving a big empty gap that reads as an oversized card. Size each to
+     its own content instead. */
+  align-items: start;
 }
 .stats-caveat {
   padding: var(--sp-3) var(--sp-4);
@@ -1660,6 +1721,55 @@ progress.scanbar-track::-webkit-progress-value {
   background-size:
     100% 100%, 100% 100%, 100% 100%, 73px 73px, 111px 111px, 149px 149px;
   background-repeat: no-repeat, no-repeat, no-repeat, repeat, repeat, repeat;
+}
+
+/* ---------- Stats · popularity bias slider ---------- */
+.popbias {
+  padding: var(--sp-4);
+}
+.popbias-labels {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: var(--sp-2);
+  font-size: var(--fs-sm);
+  color: var(--muted);
+}
+.popbias-slider-wrap {
+  position: relative;
+  height: 16px;
+  margin-bottom: var(--sp-3);
+}
+.popbias-track {
+  position: absolute;
+  inset: 0;
+  background: var(--surface-3);
+  border-radius: var(--radius-round);
+  overflow: hidden;
+}
+.popbias-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent-solid), var(--accent));
+  border-radius: inherit;
+  transition: width var(--dur-slow) var(--ease-out);
+}
+.popbias-thumb {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 20px;
+  height: 20px;
+  background: var(--on-accent);
+  border: 2px solid var(--accent-solid);
+  border-radius: var(--radius-round);
+  box-shadow: var(--shadow-md);
+  pointer-events: none;
+  transition: left var(--dur-slow) var(--ease-out);
+}
+.popbias-value {
+  text-align: center;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
 }
 
 /* ---------- Shared page patterns (2026-07-23 UI pass) ---------- */
@@ -1791,6 +1901,216 @@ progress.scanbar-track::-webkit-progress-value {
 /* Room for the tick labels that hang below the bars. */
 .dayact {
   padding-bottom: 20px;
+}
+
+/* ---------- Dusty watchlist (2026-08-24) ---------- */
+/* Simple list inside a .series-block, rendered when followed series have
+   gone >90 days without a seen mark. Title + last_seen date per row. */
+.dusty-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.dusty-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-4);
+  border-bottom: 1px solid var(--border-soft);
+}
+.dusty-item:last-child {
+  border-bottom: none;
+}
+.dusty-title {
+  font-weight: var(--fw-medium);
+  font-size: var(--fs-base);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dusty-date {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+/* ---------- Stats · 24-hour distribution chart ---------- */
+/* 24 thin vertical columns (one per hour 0-23) in a single row. */
+.hourly-dist {
+  padding: var(--sp-4);
+}
+.hourly-dist-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 96px;
+}
+.hourly-col {
+  position: relative;
+  flex: 1 1 0;
+  height: 100%;
+  display: flex;
+  align-items: flex-end;
+  background: linear-gradient(var(--surface-2), var(--surface-2)) bottom / 100% 2px no-repeat;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  cursor: default;
+}
+.hourly-fill {
+  width: 100%;
+  min-height: 0;
+  background: var(--surface-3);
+  border-radius: var(--radius-sm) var(--radius-sm) 2px 2px;
+  transition: height var(--dur-slow) var(--ease-out), background var(--dur-fast) var(--ease);
+}
+.hourly-col.has .hourly-fill {
+  background: var(--accent);
+}
+.hourly-col:hover .hourly-fill {
+  background: var(--accent-hover);
+}
+.hourly-tick {
+  position: absolute;
+  bottom: -18px;
+  left: 50%;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  font-size: var(--fs-xs);
+  color: var(--muted-2);
+  font-variant-numeric: tabular-nums;
+}
+.hourly-label {
+  margin-top: var(--sp-3);
+  text-align: center;
+  font-size: var(--fs-sm);
+  color: var(--muted);
+  font-weight: var(--fw-medium);
+}
+
+/* ---------- Stats · full-year activity heatmap (GitHub-style) ---------- */
+.stats-heatmap {
+  padding: var(--sp-4);
+}
+.heatmap-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-4);
+}
+.heatmap-year-label {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  color: var(--muted);
+}
+.heatmap-grid-wrap {
+  overflow-x: auto;
+}
+/* Rebuilt a second time — the flexbox version (a flex row of per-week
+   flex columns) still detached one column from the row in WebView2,
+   confirmed via devtools (a mid-sequence .heatmap-week rendered outside
+   the flex row entirely). Every label and cell is now absolutely
+   positioned by pixel math inside one relative box instead — the same
+   technique the month labels already used successfully. Nothing is
+   flexed, grid-placed, or auto-anything; a browser layout algorithm has
+   nothing left to get wrong. Fixed 11px cells + 3px gaps (54 weeks ≈
+   750px) sit left-aligned and never need the horizontal scroll
+   .heatmap-grid-wrap falls back to. */
+.heatmap-months {
+  position: relative;
+  height: 14px;
+  margin-left: 33px; /* 30px day-label column + 3px gap to the first week */
+  margin-bottom: 4px;
+}
+.heatmap-month {
+  position: absolute;
+  top: 0;
+  font-size: var(--fs-xs);
+  color: var(--muted-2);
+  font-weight: var(--fw-medium);
+  white-space: nowrap;
+}
+.heatmap-grid {
+  position: relative;
+}
+.heatmap-day-label {
+  position: absolute;
+  left: 0;
+  width: 30px;
+  height: 11px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding-right: 6px;
+  font-size: var(--fs-xs);
+  color: var(--muted-2);
+  font-weight: var(--fw-medium);
+}
+.heatmap-cell {
+  position: absolute;
+  width: 11px;
+  height: 11px;
+  border-radius: 2px;
+  transition: transform var(--dur-fast) var(--ease);
+}
+.heatmap-cell:hover {
+  transform: scale(1.3);
+  z-index: 1;
+}
+/* Intensity levels using --accent with increasing opacity */
+.heatmap-cell.level-0 {
+  background: var(--surface-3);
+}
+.heatmap-cell.level-1 {
+  background: var(--accent);
+  opacity: 0.15;
+}
+.heatmap-cell.level-2 {
+  background: var(--accent);
+  opacity: 0.35;
+}
+.heatmap-cell.level-3 {
+  background: var(--accent);
+  opacity: 0.6;
+}
+.heatmap-cell.level-4 {
+  background: var(--accent);
+  opacity: 0.9;
+}
+.heatmap-cell.empty {
+  background: transparent;
+}
+.heatmap-legend {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-top: var(--sp-4);
+  font-size: var(--fs-xs);
+  color: var(--muted-2);
+}
+.heatmap-legend-levels {
+  display: flex;
+  gap: 2px;
+}
+.heatmap-legend-levels .heatmap-cell {
+  /* .heatmap-cell is absolutely positioned for the grid proper — these
+     legend swatches reuse its color/level classes only, laid out inline
+     by the flex row they actually sit in. */
+  position: static;
+  width: 12px;
+  height: 12px;
+}
+.heatmap-empty,
+.heatmap-error {
+  padding: var(--sp-6);
+  text-align: center;
+  color: var(--muted);
+  font-size: var(--fs-base);
+}
+.heatmap-error {
+  color: var(--danger);
 }
 
 /* ---------- Static tag / badge ----------
@@ -1955,6 +2275,177 @@ select.lib-filter-select {
   padding: 0 var(--sp-1) var(--sp-3);
 }
 
+/* ---------- Spotlight banner (AiringGrid hero carousel) ---------- */
+.spotlight {
+  position: relative;
+  width: 100%;
+  height: 320px;
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  margin-bottom: var(--sp-5);
+  box-shadow: var(--shadow-lg);
+}
+.spotlight-track {
+  display: flex;
+  width: 400%;
+  height: 100%;
+  transition: transform var(--dur-slow) var(--ease-out);
+}
+@media (prefers-reduced-motion: reduce) {
+  .spotlight-track {
+    transition-duration: 0.01ms !important;
+  }
+}
+.spotlight-slide {
+  flex: 0 0 25%;
+  position: relative;
+  height: 100%;
+}
+.spotlight-bg {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.spotlight-scrim {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    180deg,
+    transparent 40%,
+    var(--surface) 85%,
+    var(--surface) 100%
+  );
+  pointer-events: none;
+}
+.spotlight-content {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: var(--sp-6) var(--sp-6) var(--sp-5);
+  z-index: 1;
+}
+.spotlight-title {
+  font-size: var(--fs-2xl);
+  font-weight: var(--fw-bold);
+  line-height: var(--lh-tight);
+  margin: 0 0 var(--sp-3);
+  color: var(--text);
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
+}
+.spotlight-btn {
+  min-height: 40px;
+  padding: 0 var(--sp-5);
+  font-size: var(--fs-md);
+}
+.spotlight-controls {
+  position: absolute;
+  bottom: var(--sp-4);
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  z-index: 10;
+}
+.spotlight-nav {
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-round);
+  border: none;
+  background: var(--overlay-strong);
+  color: var(--text);
+  font-size: var(--fs-xl);
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+  backdrop-filter: blur(4px);
+}
+.spotlight-nav:hover {
+  background: var(--accent-solid);
+  color: var(--on-accent);
+}
+.spotlight-nav:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  box-shadow: var(--focus-ring);
+}
+.spotlight-dots {
+  display: flex;
+  gap: 6px;
+}
+.spotlight-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: var(--radius-round);
+  border: none;
+  background: var(--border);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+}
+.spotlight-dot:hover {
+  background: var(--muted);
+}
+.spotlight-dot.active {
+  background: var(--accent);
+  transform: scale(1.2);
+}
+.spotlight-dot:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ---------- Weekly schedule (week mode) ---------- */
+.week-schedule {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-5);
+}
+.week-day {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--sp-4);
+}
+.week-day.today {
+  border-left: 3px solid var(--accent);
+}
+.week-day-header {
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-bold);
+  margin: 0 0 var(--sp-3);
+  color: var(--text);
+}
+.week-day.today .week-day-header {
+  color: var(--accent);
+}
+.week-day-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+}
+/* .card has no intrinsic width of its own (the normal .grid gives it one via
+   CSS Grid columns) — inside this flex row it would otherwise fall back to
+   content-based (title-length-driven) sizing, so cards come out different
+   widths day to day. Pin it to the same 150px .grid uses. */
+.week-day-grid .card {
+  flex: 0 0 150px;
+}
+@media (max-width: 600px) {
+  .week-day-grid {
+    flex-direction: column;
+  }
+  .week-day-grid .card {
+    flex-basis: auto;
+  }
+}
+
 /* ---------- Descubrir (view-specific) ---------- */
 .discover-tabs {
   margin-bottom: var(--sp-5);
@@ -2089,4 +2580,122 @@ select.lib-filter-select {
   background: var(--overlay-bg);
   backdrop-filter: blur(14px) saturate(140%);
   border-bottom: 1px solid var(--border-soft);
+}
+
+/* ---------- Stats · genre cards ---------- */
+/* Ranked genre cards with thumbnails. Reuses tokens and patterns from
+   the rest of the design system — no new colors, no inline styles. */
+.genrecards-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: var(--sp-4);
+  padding: var(--sp-3) var(--sp-1);
+}
+.genrecard {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+}
+.genrecard:hover {
+  border-color: var(--surface-3);
+  box-shadow: var(--shadow-md);
+}
+.genrecard-rank {
+  width: 48px;
+  height: 100%;
+  min-height: 80px;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: var(--fs-2xl);
+  font-weight: var(--fw-bold);
+  font-variant-numeric: tabular-nums;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-right: 1px solid var(--border);
+}
+.genrecard-body {
+  padding: var(--sp-3) var(--sp-4);
+  min-height: 80px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+.genrecard-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-2);
+}
+.genrecard-genre {
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-bold);
+  letter-spacing: -0.01em;
+  margin: 0;
+}
+.genrecard-count {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.genrecard-thumbs {
+  display: flex;
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
+}
+.genrecard-thumb {
+  position: relative;
+  width: 40px;
+  height: 56px;
+  flex-shrink: 0;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--surface-2);
+}
+.genrecard-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.genrecard-thumb-fallback {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--on-accent);
+  font-weight: var(--fw-bold);
+  font-size: var(--fs-base);
+  letter-spacing: 0.5px;
+}
+
+/* Responsive: stack on narrow screens */
+@media (max-width: 600px) {
+  .genrecards-grid {
+    grid-template-columns: 1fr;
+  }
+  .genrecard {
+    display: flex;
+    flex-direction: column;
+  }
+  .genrecard-rank {
+    width: 100%;
+    height: 40px;
+    min-height: 40px;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    font-size: var(--fs-xl);
+  }
+  .genrecard-body {
+    padding: var(--sp-3);
+    min-height: auto;
+  }
+  .genrecard-thumbs {
+    justify-content: flex-start;
+  }
 }

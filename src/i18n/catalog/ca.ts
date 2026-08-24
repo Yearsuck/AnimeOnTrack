@@ -39,7 +39,17 @@ export const ca: Messages = {
   "airing.followBtn": "+ Segueix",
   "airing.filterAll": "Totes",
   "airing.filterSeason": "Aquesta temporada",
+  "airing.filterWeek": "Aquesta setmana",
   "airing.seasonHint": "Només es mostren sèries amb data d'estrena registrada. Es segueixin o no, es busca la data al Catàleg sincronitzat — si falta, resincronitza el Catàleg des de la seva pestanya",
+  "airing.weekEmpty": "No hi ha res programat aquesta setmana.",
+
+  // AiringSpotlight.tsx
+  "spotlight.ariaLabel": "Destacats en emissió",
+  "spotlight.watchBtn": "Veure sèrie",
+  "spotlight.prevBtn": "Anterior",
+  "spotlight.nextBtn": "Següent",
+  "spotlight.dotsAria": "Diapositives",
+  "spotlight.slideAria": "Diapositiva",
 
   // Pending.tsx
   "pending.episodesToWatch": "{count} episodis per veure",
@@ -149,9 +159,21 @@ export const ca: Messages = {
   "library.typeAll": "Tots",
   "library.typeOther": "Altres",
   "library.filterGenre": "Gènere",
-  "library.genreAll": "Tots",
+  "library.genreChipAria": "Filtre de gènere {genre}, estat: {state}",
+  "library.genreState.neutral": "sense filtre",
+  "library.genreState.include": "incloure",
+  "library.genreState.exclude": "excloure",
+  "library.clearGenreFilters": "Neteja filtres de gènere",
+  "library.showMoreGenres": "{count} més",
+  "library.showLessGenres": "Mostra menys",
   "library.filterStudio": "Estudi",
   "library.studioAll": "Tots",
+  "library.selectMode": "Seleccionar",
+  "library.cancelSelect": "Cancel·la",
+  "library.selectedCount": "{count} seleccionats",
+  "library.bulkRemove": "Deixa de seguir selecció",
+  "library.bulkRemoveConfirm": "Deixar de seguir {count} sèries? Es perdre el progrés de visionament.",
+  "library.deselectAll": "Desseleccionar-ho tot",
 
   // SeriesDetail.tsx
   "seriesDetail.unfollow": "Deixa de seguir",
@@ -308,6 +330,9 @@ export const ca: Messages = {
   "stats.shapeRings": "Cercles",
   "stats.shapeBars": "Barres",
   "stats.shapeToggleAria": "Forma del gràfic",
+  "stats.episodeSingular": "episodi",
+  "stats.episodePlural": "episodis",
+  "stats.genreCardThumbsAria": "{genre} - series destacades",
 
   // StatsGraph.tsx
   "stats.graphEmpty": "Encara no segueixes cap sèrie.",
@@ -319,6 +344,9 @@ export const ca: Messages = {
   "stats.timeWatchedHelp": "estimació: 24 min/episodi (100 pel·lícules) · {done} de {total} «Ja vistes» amb dades",
   "stats.completion": "Progrés global",
   "stats.avgEpisodes": "Mitjana d'episodis per sèrie",
+  "stats.completionSpeed": "Velocitat mitjana de finalització",
+  "stats.completionSpeedValue": "{days} dies",
+  "stats.completionSpeedEmpty": "Acaba alguna sèrie per veure-ho",
   "stats.topSeries": "Top sèries",
   "stats.funnelHeading": "El teu embut de Descobreix",
   "stats.funnelWant": "Vull veure",
@@ -330,6 +358,9 @@ export const ca: Messages = {
   "stats.finished": "Finalitzades",
   "stats.marksHeading": "Episodis marcats per dia (últims 30 dies)",
   "stats.marksCaveat": "Compta quan vas marcar l'episodi, no quan el vas veure; marcar una sèrie sencera marca de cop tots els seus episodis anteriors. Dades des de {date}.",
+  "stats.hourlyHeading": "Episodis marcats per hora (24h)",
+  "stats.hourlyDaytime": "🌅 Espectador diürn",
+  "stats.hourlyNight": "🦉 Mussol nocturn",
   "stats.minutesUnit": "{minutes} min",
   "stats.hoursUnit": "{hours}h",
   "stats.daysUnit": "{days}d {hours}h",
@@ -338,4 +369,37 @@ export const ca: Messages = {
   "stats.retry": "Torna-ho a provar",
   "stats.noGenre": "Sense gènere",
   "stats.graphAria": "Graf de relacions: {series} sèries seguides repartides en {genres} gèneres",
+  // Dusty watchlist
+  "stats.dustyHeading": "Empolvorades",
+  "stats.dustyLastSeen": "Darrera vegada: {date}",
+
+  // Binge record stat
+  "stats.bingeRecord": "Rècord en un dia",
+  "stats.bingeRecordValue": "{count} episodis ({day})",
+  "stats.bingeRecordEmpty": "Marca alguna cosa com a vista per establir el teu rècord",
+
+  // Popularity Bias
+  "stats.popularityBiasHeading": "Biaix de popularitat",
+  "stats.popularityBiasLabel": "Mitjana vs Underground",
+  "stats.popularityBiasLow": "Underground",
+  "stats.popularityBiasHigh": "Mainstream",
+  "stats.popularityBiasHelp": "Mitjana de popularitat a AniList de les teves sèries seguides (enllaçades al catàleg), normalitzada 0–10. menys de 3 sèries amb dades = sense puntuació. 0 = només joves amagades, 10 = només èxits massius.",
+
+  // StatsHeatmap.tsx
+  "stats.heatmapHeading": "Activitat anual",
+  "stats.heatmapYear": "Any",
+  "stats.heatmapNoYears": "Cap any amb activitat registrada.",
+  "stats.heatmapNoData": "Sense dades per a aquest any.",
+  "stats.heatmapError": "Error en carregar el mapa de calor: {msg}",
+  "stats.heatmapAria": "Mapa de calor d'activitat per a {year}",
+  "stats.heatmapLess": "Menys",
+  "stats.heatmapMore": "Més",
+  "stats.heatmapEpisodes": "episodis",
+  "stats.heatmapMon": "Dl",
+  "stats.heatmapTue": "Dt",
+  "stats.heatmapWed": "Dc",
+  "stats.heatmapThu": "Dj",
+  "stats.heatmapFri": "Dv",
+  "stats.heatmapSat": "Ds",
+  "stats.heatmapSun": "Dg",
 };

@@ -4,8 +4,8 @@ use crate::dates::parse_spanish_date;
 use crate::db::Db;
 use crate::diff::new_episodes;
 use crate::models::{
-    AiringItem, BackupStatus, Episode, FinishedCard, GenreAffinity, GenreStat, Series, SeriesDetail,
-    SeriesGraphNode, TypeStat, WatchInsights, WatchSummary,
+    AiringItem, BackupStatus, BingeRecord, Episode, FinishedCard, GenreAffinity, GenreStat, HourCount,
+    Series, SeriesDetail, SeriesGraphNode, TypeStat, WatchInsights, WatchSummary,
 };
 use crate::player::{AppWindowPlayer, EpisodePlayer};
 use crate::scraper_engine::{fetch_cover_image, fetch_html_with_script, ScrapeResult};

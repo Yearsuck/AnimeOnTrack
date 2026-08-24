@@ -1,16 +1,17 @@
 import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
-  getGenreStats,
+  getGenreCards,
   getTypeStats,
   getWatchSummary,
   getWatchInsights,
+  getPopularityBias,
   getStatsGraph,
   backfillGenres,
 } from "../api";
 import { useT } from "../i18n";
 import { useFormatNumber } from "../lib/formatNumber";
-import type { GenreStat, TypeStat, WatchSummary, WatchInsights, SeriesGraphNode } from "../types";
+import type { TypeStat, WatchSummary, WatchInsights, PopularityBias, SeriesGraphNode, GenreCard } from "../types";
 import { StatsGraph } from "./StatsGraph";
 import { StatsRings } from "./StatsRings";
 import { StatsInsights } from "./StatsInsights";
@@ -22,7 +23,8 @@ export function Stats({ active }: { active: boolean }) {
   const n = useFormatNumber();
   const [summary, setSummary] = useState<WatchSummary | null>(null);
   const [insights, setInsights] = useState<WatchInsights | null>(null);
-  const [genres, setGenres] = useState<GenreStat[]>([]);
+  const [popularityBias, setPopularityBias] = useState<PopularityBias | null>(null);
+  const [genres, setGenres] = useState<GenreCard[]>([]);
   const [types, setTypes] = useState<TypeStat[]>([]);
   const [graph, setGraph] = useState<SeriesGraphNode[]>([]);
   const [view, setView] = useState<StatsView>("grafo");
@@ -53,16 +55,18 @@ export function Stats({ active }: { active: boolean }) {
   async function load() {
     const seq = ++loadSeq.current;
     try {
-      const [s, i, g, t, gr] = await Promise.all([
+      const [s, i, p, g, t, gr] = await Promise.all([
         getWatchSummary(),
         getWatchInsights(),
-        getGenreStats(),
+        getPopularityBias(),
+        getGenreCards(),
         getTypeStats(),
         getStatsGraph(),
       ]);
       if (seq !== loadSeq.current) return;
       setSummary(s);
       setInsights(i);
+      setPopularityBias(p);
       setGenres(g);
       setTypes(t);
       setGraph(gr);
@@ -180,7 +184,7 @@ export function Stats({ active }: { active: boolean }) {
         </div>
       )}
 
-      {summary && insights && <StatsInsights insights={insights} summary={summary} />}
+      {summary && insights && <StatsInsights insights={insights} summary={summary} popularityBias={popularityBias} />}
 
       {/* Gated on `loaded`: `graph`/`genres`/`types` start out as empty arrays,
           and rendering them before the first load resolves flashes an

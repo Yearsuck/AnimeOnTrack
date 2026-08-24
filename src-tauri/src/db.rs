@@ -208,6 +208,31 @@ impl Db {
             "CREATE INDEX IF NOT EXISTS idx_catalog_popularity ON anilist_catalog(popularity DESC);
              CREATE INDEX IF NOT EXISTS idx_catalog_genre ON anilist_catalog_genres(genre);",
         )?;
+        // series.completion_reconciled: apply-once guard for
+        // `reconcile_completion_across_sites`'s airing-zero-progress branch.
+        // Before this column existed, "0 episodes seen on this row" was the
+        // only signal it used to decide "never watched here, auto-catch-up" —
+        // indistinguishable from a user who deliberately un-marked every
+        // episode back to zero on purpose. Every refresh() re-ran the
+        // reconcile, so a manual reset kept getting silently re-completed on
+        // the very next refresh. Now the reconcile only ever acts on a row
+        // once (whichever way it resolves — auto-caught-up, real progress
+        // left alone, or flagged watched_externally), then never touches it
+        // again regardless of what the user does to it afterwards.
+        ensure_column(&self.conn, "series", "completion_reconciled", "INTEGER NOT NULL DEFAULT 0")?;
+        // series.sync_watermark_applied: the same apply-once problem as
+        // completion_reconciled, for `sync_seen_progress_across_sites`. That
+        // sync raises a followed row's watermark to match its highest-watermark
+        // canonical twin on every refresh — a live snapshot comparison with no
+        // memory, so a row the user just manually walked back down (a genuine
+        // un-mark) looked identical to "never caught up" and got silently
+        // re-raised back to the twin's watermark on the very next refresh.
+        // This remembers the watermark the sync itself last set/observed for a
+        // row: a live watermark that dropped *below* it means something rolled
+        // it back on purpose since, and the sync leaves it alone instead of
+        // re-raising — while still resuming normal catch-up once the user
+        // shows real forward progress past that point again.
+        ensure_column(&self.conn, "series", "sync_watermark_applied", "INTEGER")?;
 
         // Site-agnostic library (docs/cross-site-library-investigation.md,
         // option C). Identity is canonical (AniList id, else normalized title),

@@ -73,6 +73,17 @@ export interface GenreStat {
   count: number;
 }
 
+export interface GenreCardSeries {
+  title: string;
+  cover_url: string | null;
+}
+
+export interface GenreCard {
+  genre: string;
+  count: number;
+  top_series: GenreCardSeries[];
+}
+
 export interface TypeStat {
   kind: string;
   count: number;
@@ -107,6 +118,21 @@ export interface TitleCount {
   count: number;
 }
 
+export interface DustyEntry {
+  title: string;
+  last_seen_at: string;
+}
+
+export interface BingeRecord {
+  day: string | null;
+  count: number;
+}
+
+export interface HourCount {
+  hour: number;
+  count: number;
+}
+
 export interface WatchInsights {
   estimated_minutes_tracked: number;
   estimated_minutes_external: number;
@@ -121,6 +147,16 @@ export interface WatchInsights {
   top_series: TitleCount[];
   marks_by_day: DayCount[];
   marks_tracked_since: string | null;
+}
+
+export interface PopularityBias {
+  average_popularity: number | null;
+  normalized_score: number | null;
+}
+
+export interface YearlyActivity {
+  year: number;
+  days: DayCount[];
 }
 
 export interface SwipeCard {

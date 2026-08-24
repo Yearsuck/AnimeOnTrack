@@ -176,6 +176,19 @@ pub struct GenreStat {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GenreCardSeries {
+    pub title: String,
+    pub cover_url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GenreCard {
+    pub genre: String,
+    pub count: i64,
+    pub top_series: Vec<GenreCardSeries>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TypeStat {
     pub kind: String,
     pub count: i64,
@@ -217,6 +230,41 @@ pub struct TitleCount {
     pub count: i64,
 }
 
+/// A followed series that has gone quiet — no episode marked seen in 90+ days.
+/// Returned by `Db::get_dusty_watchlist`. Canonical across sites (deduped via
+/// `canon_key`), so the same show followed on two sites appears once.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DustyEntry {
+    pub title: String,
+    pub last_seen_at: String,
+}
+
+/// One day's binge record: the calendar day with the highest episode-marking
+/// count and that count. Mirrors the day-bucket query in `get_watch_insights`
+/// (localtime conversion, see that function's comment for why).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BingeRecord {
+    pub day: Option<String>,
+    pub count: i64,
+}
+
+/// One hour's episode-marking count, e.g. `{ hour: 14, count: 42 }` — see
+/// `Db::get_hourly_distribution`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HourCount {
+    pub hour: i64,
+    pub count: i64,
+}
+
+/// One full calendar year of daily episode-mark counts — the GitHub-style
+/// heatmap for Estadísticas. Mirrors the zero-fill principle of
+/// `WatchInsights.marks_by_day` but across 365/366 days.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct YearlyActivity {
+    pub year: i32,
+    pub days: Vec<DayCount>,
+}
+
 /// Local-only watch metrics for the Estadísticas "Resumen" block — see the
 /// design doc `docs/superpowers/specs/2026-07-13-stats-new-metrics-design.md`.
 /// Computed entirely from SQLite (no network) via `Db::get_watch_insights`.
@@ -250,6 +298,22 @@ pub struct WatchInsights {
     /// "marked seen" data goes back to, for the UI's honesty disclaimer.
     /// `None` when no episode has ever been marked seen.
     pub marks_tracked_since: Option<String>,
+}
+
+/// Mainstream vs underground taste score for Estadísticas — average AniList
+/// popularity of followed series linked to the catalog, normalized to 0-10.
+/// Uses cross-site canonical dedup via `canon_key` so the same show followed
+/// on two sites counts once. Returns `None` when fewer than 3 linked followed
+/// series exist (not enough data for a meaningful score).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PopularityBias {
+    /// Average AniList popularity (0-700,000 scale) across canonical followed
+    /// series that have a catalog link and a non-NULL popularity. `None` when
+    /// fewer than 3 such series exist.
+    pub average_popularity: Option<f64>,
+    /// Normalized to 0-10 using ~70,000 as divisor (700,000 / 10). `None`
+    /// mirrors `average_popularity`.
+    pub normalized_score: Option<f64>,
 }
 
 /// Snapshot of cloud-backup state shown in Settings — whether Google

@@ -28,6 +28,18 @@ function decideArgs(a: CatalogAnime, decision: "Want" | "Seen") {
 
 const EMPTY_FACETS: CatalogFacets = { genres: [], formats: [], studios: [] };
 
+// Module-level cache survives unmount/remount of this view (tab switch in App.tsx)
+let catalogFilterCache: {
+  searchInput: string;
+  search: string;
+  selectedGenres: string[];
+  format: string;
+  minScore: string;
+  episodes: string;
+  studio: string;
+  page: number;
+} | null = null;
+
 export function Catalog() {
   const t = useT();
   const SCORE_OPTIONS: { value: string; label: string }[] = useMemo(
@@ -52,7 +64,7 @@ export function Catalog() {
     [t]
   );
   const [items, setItems] = useState<CatalogAnime[]>([]);
-  const [page, setPage] = useState(1);
+  const [page, setPage] = useState(() => catalogFilterCache?.page ?? 1);
   const [hasNextPage, setHasNextPage] = useState(true);
   const [totalSynced, setTotalSynced] = useState<number | null>(null);
   const [totalMatching, setTotalMatching] = useState<number | null>(null);
@@ -63,13 +75,18 @@ export function Catalog() {
   const syncingRef = useRef(false);
 
   const [facets, setFacets] = useState<CatalogFacets>(EMPTY_FACETS);
-  const [searchInput, setSearchInput] = useState("");
-  const [search, setSearch] = useState("");
-  const [selectedGenres, setSelectedGenres] = useState<string[]>([]);
-  const [format, setFormat] = useState("");
-  const [minScore, setMinScore] = useState("");
-  const [episodes, setEpisodes] = useState("");
-  const [studio, setStudio] = useState("");
+  const [searchInput, setSearchInput] = useState(() => catalogFilterCache?.searchInput ?? "");
+  const [search, setSearch] = useState(() => catalogFilterCache?.search ?? "");
+  const [selectedGenres, setSelectedGenres] = useState<string[]>(() => catalogFilterCache?.selectedGenres ?? []);
+  const [format, setFormat] = useState(() => catalogFilterCache?.format ?? "");
+  const [minScore, setMinScore] = useState(() => catalogFilterCache?.minScore ?? "");
+  const [episodes, setEpisodes] = useState(() => catalogFilterCache?.episodes ?? "");
+  const [studio, setStudio] = useState(() => catalogFilterCache?.studio ?? "");
+
+  // Persist filter state to module-level cache on every change
+  useEffect(() => {
+    catalogFilterCache = { searchInput, search, selectedGenres, format, minScore, episodes, studio, page };
+  }, [searchInput, search, selectedGenres, format, minScore, episodes, studio, page]);
 
   // Multi-select + batch actions. The selected map holds the full card object
   // (not just the id) so a selection survives pagination / scroll-out.

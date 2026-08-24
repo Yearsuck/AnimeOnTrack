@@ -85,12 +85,18 @@ function LibraryCard({
   showMenu,
   onOpenSeries,
   onChanged,
+  selectMode,
+  selected,
+  onToggleSelect,
 }: {
   item: LibraryItem;
   showAction: boolean;
   showMenu: boolean;
   onOpenSeries: (s: Series) => void;
   onChanged: () => void;
+  selectMode: boolean;
+  selected: Set<number>;
+  onToggleSelect: (id: number) => void;
 }) {
   const t = useT();
   // cover_url is a data: URI only for followed series whose cover was
@@ -143,7 +149,11 @@ function LibraryCard({
   function handleKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
-      onOpenSeries(item.series);
+      if (selectMode) {
+        onToggleSelect(item.series.id);
+      } else {
+        onOpenSeries(item.series);
+      }
     }
   }
 
@@ -164,16 +174,22 @@ function LibraryCard({
   // derived state — so it always gets a (single-item) menu regardless of
   // the section's showMenu prop.
   const effectiveShowMenu = showMenu || item.watched_externally;
+  const isSelected = selected.has(item.series.id);
 
   return (
     <div
-      className="card lib-card"
+      className={`card lib-card${selectMode ? " card-selectable" : ""}${isSelected ? " selected" : ""}`}
       role="button"
       tabIndex={0}
-      onClick={() => onOpenSeries(item.series)}
+      onClick={() => selectMode ? onToggleSelect(item.series.id) : onOpenSeries(item.series)}
       onKeyDown={handleKeyDown}
       title={item.series.title}
     >
+      {selectMode && isSelected && (
+        <span className="card-select-check" aria-hidden="true">
+          ✓
+        </span>
+      )}
       <div className="poster">
         {effectiveShowMenu && (
           <div className="card-menu-wrap" ref={menuRef}>
@@ -270,6 +286,9 @@ function LibrarySection({
   showMenu,
   onOpenSeries,
   onChanged,
+  selectMode,
+  selected,
+  onToggleSelect,
 }: {
   title: string;
   items: LibraryItem[];
@@ -278,6 +297,9 @@ function LibrarySection({
   showMenu: boolean;
   onOpenSeries: (s: Series) => void;
   onChanged: () => void;
+  selectMode: boolean;
+  selected: Set<number>;
+  onToggleSelect: (id: number) => void;
 }) {
   // An empty section (nothing in this status, or nothing left after the
   // search filter) is omitted entirely rather than rendered with a
@@ -299,6 +321,9 @@ function LibrarySection({
             showMenu={showMenu}
             onOpenSeries={onOpenSeries}
             onChanged={onChanged}
+            selectMode={selectMode}
+            selected={selected}
+            onToggleSelect={onToggleSelect}
           />
         ))}
       </div>
@@ -306,15 +331,93 @@ function LibrarySection({
   );
 }
 
+// Module-level cache survives unmount/remount of this view (tab switch in App.tsx)
+let libraryFilterCache: {
+  query: string;
+  airingFilter: AiringFilter;
+  statusFilter: StatusFilter;
+  typeFilter: string;
+  includedGenres: Set<string>;
+  excludedGenres: Set<string>;
+  studioFilter: string;
+} | null = null;
+
 export function Library({ onOpenSeries }: { onOpenSeries: (s: Series) => void }) {
   const t = useT();
   const [items, setItems] = useState<LibraryItem[]>([]);
-  const [query, setQuery] = useState("");
-  const [airingFilter, setAiringFilter] = useState<AiringFilter>("all");
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
-  const [typeFilter, setTypeFilter] = useState<string>("all");
-  const [genreFilter, setGenreFilter] = useState<string>("all");
-  const [studioFilter, setStudioFilter] = useState<string>("all");
+  const [query, setQuery] = useState(() => libraryFilterCache?.query ?? "");
+  const [airingFilter, setAiringFilter] = useState<AiringFilter>(() => libraryFilterCache?.airingFilter ?? "all");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>(() => libraryFilterCache?.statusFilter ?? "all");
+  const [typeFilter, setTypeFilter] = useState<string>(() => libraryFilterCache?.typeFilter ?? "all");
+  const [includedGenres, setIncludedGenres] = useState<Set<string>>(() => libraryFilterCache?.includedGenres ?? new Set());
+  const [excludedGenres, setExcludedGenres] = useState<Set<string>>(() => libraryFilterCache?.excludedGenres ?? new Set());
+  const [studioFilter, setStudioFilter] = useState<string>(() => libraryFilterCache?.studioFilter ?? "all");
+  // Purely a display cap, not persisted: the catalog carries dozens of
+  // genres and showing them all ate the whole filter bar's screen space.
+  const [showAllGenres, setShowAllGenres] = useState(false);
+
+  // Persist filter state to module-level cache on every change
+  useEffect(() => {
+    libraryFilterCache = { query, airingFilter, statusFilter, typeFilter, includedGenres, excludedGenres, studioFilter };
+  }, [query, airingFilter, statusFilter, typeFilter, includedGenres, excludedGenres, studioFilter]);
+
+  const [selectMode, setSelectMode] = useState(false);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [batching, setBatching] = useState(false);
+
+  function toggleSelect(id: number) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  // "watching"/"completed" are derived from real seen-episode progress
+  // (see statusOf() above) — there is no single backend command that sets
+  // them directly, only reclassify_series ("None"/"Want"/etc). "plan" is
+  // the one Status value with a real 1:1 command: the existing per-item
+  // "move to want to watch" action already calls reclassifySeries(id,
+  // "Want") (see moveToWant above), so that's the only bulk status action
+  // this can honestly offer without a new bulk-marking-episodes-seen
+  // feature that's out of scope here.
+  async function bulkMoveToPlan() {
+    if (selected.size === 0) return;
+    setBatching(true);
+    try {
+      const ids = [...selected];
+      for (const id of ids) {
+        await reclassifySeries(id, "Want");
+      }
+      setSelected(new Set());
+      setSelectMode(false);
+      load();
+    } catch (e) {
+      console.error("Bulk status change failed:", e);
+    } finally {
+      setBatching(false);
+    }
+  }
+
+  async function bulkRemove() {
+    if (selected.size === 0) return;
+    if (!window.confirm(t("library.bulkRemoveConfirm", { count: selected.size }))) return;
+    setBatching(true);
+    try {
+      const ids = [...selected];
+      for (const id of ids) {
+        await reclassifySeries(id, "None");
+      }
+      setSelected(new Set());
+      setSelectMode(false);
+      load();
+    } catch (e) {
+      console.error("Bulk remove failed:", e);
+    } finally {
+      setBatching(false);
+    }
+  }
 
   const load = useCallback(() => {
     listLibrary().then(setItems);
@@ -340,6 +443,18 @@ export function Library({ onOpenSeries }: { onOpenSeries: (s: Series) => void })
     return [...present].sort((a, b) => a.localeCompare(b));
   }, [items]);
 
+  // Cap the chip row so dozens of genres don't dominate the filter bar; a
+  // genre already filtered on stays visible even past the cap, so toggling
+  // it off is never hidden behind "show more".
+  const GENRE_VISIBLE_CAP = 12;
+  const visibleGenreOptions = useMemo(() => {
+    if (showAllGenres || genreOptions.length <= GENRE_VISIBLE_CAP) return genreOptions;
+    const active = genreOptions.filter((g) => includedGenres.has(g) || excludedGenres.has(g));
+    const rest = genreOptions.filter((g) => !includedGenres.has(g) && !excludedGenres.has(g));
+    return [...active, ...rest].slice(0, Math.max(GENRE_VISIBLE_CAP, active.length));
+  }, [genreOptions, showAllGenres, includedGenres, excludedGenres]);
+  const hiddenGenreCount = genreOptions.length - visibleGenreOptions.length;
+
   // Derived client-side (not a backend facets call, unlike Catálogo's studio
   // select) — Library's full item list is already loaded client-side, same
   // reasoning as genreOptions above. Most rows will have studio: null
@@ -357,13 +472,14 @@ export function Library({ onOpenSeries }: { onOpenSeries: (s: Series) => void })
     return items.filter((it) => {
       if (q && !it.series.title.toLowerCase().includes(q)) return false;
       if (typeFilter !== "all" && normalizeKind(it.kind) !== typeFilter) return false;
-      if (genreFilter !== "all" && !it.genres.includes(genreFilter)) return false;
+      if (includedGenres.size > 0 && ![...includedGenres].every((g) => it.genres.includes(g))) return false;
+      if (excludedGenres.size > 0 && [...excludedGenres].some((g) => it.genres.includes(g))) return false;
       // "all" never hides unlinked (studio: null) rows — only an explicit
       // studio selection filters them out.
       if (studioFilter !== "all" && it.studio !== studioFilter) return false;
       return true;
     });
-  }, [items, query, typeFilter, genreFilter, studioFilter]);
+  }, [items, query, typeFilter, includedGenres, excludedGenres, studioFilter]);
 
   // All "watching" items (before the airing filter) — drives whether the
   // filter control is shown at all.
@@ -399,6 +515,39 @@ export function Library({ onOpenSeries }: { onOpenSeries: (s: Series) => void })
     (showPlan ? plan.length : 0) +
     (showCompleted ? completed.length : 0);
 
+  function getGenreState(genre: string): "neutral" | "include" | "exclude" {
+    if (includedGenres.has(genre)) return "include";
+    if (excludedGenres.has(genre)) return "exclude";
+    return "neutral";
+  }
+
+  // Cycle neutral -> include -> exclude -> neutral. Reads the current
+  // (closed-over) state to decide the transition, then applies it via
+  // functional setState so React's batching stays safe.
+  function toggleGenre(genre: string) {
+    if (includedGenres.has(genre)) {
+      setIncludedGenres((prev) => {
+        const next = new Set(prev);
+        next.delete(genre);
+        return next;
+      });
+      setExcludedGenres((prev) => new Set(prev).add(genre));
+    } else if (excludedGenres.has(genre)) {
+      setExcludedGenres((prev) => {
+        const next = new Set(prev);
+        next.delete(genre);
+        return next;
+      });
+    } else {
+      setIncludedGenres((prev) => new Set(prev).add(genre));
+    }
+  }
+
+  function clearGenreFilters() {
+    setIncludedGenres(new Set());
+    setExcludedGenres(new Set());
+  }
+
   return (
     <div className="page">
       <div className="page-head">
@@ -422,6 +571,27 @@ export function Library({ onOpenSeries }: { onOpenSeries: (s: Series) => void })
         <span className="muted">
           {t("common.seriesCount", { count: items.length === 0 ? 0 : visibleCount })}
         </span>
+        {!selectMode && items.length > 0 && (
+          <button
+            type="button"
+            className="btn btn-ghost"
+            onClick={() => setSelectMode(true)}
+          >
+            {t("library.selectMode")}
+          </button>
+        )}
+        {selectMode && (
+          <button
+            type="button"
+            className="btn btn-ghost"
+            onClick={() => {
+              setSelectMode(false);
+              setSelected(new Set());
+            }}
+          >
+            {t("library.cancelSelect")}
+          </button>
+        )}
       </div>
 
       {items.length === 0 ? (
@@ -477,25 +647,44 @@ export function Library({ onOpenSeries }: { onOpenSeries: (s: Series) => void })
 
             {genreOptions.length > 0 && (
               <>
-                <label className="sr-only" htmlFor="lib-genre-select">
-                  {t("library.filterGenre")}
-                </label>
+                <label className="sr-only">{t("library.filterGenre")}</label>
                 <span className="muted text-sm">
                   {t("library.filterGenre")}
                 </span>
-                <select
-                  id="lib-genre-select"
-                  className="input lib-filter-select"
-                  value={genreFilter}
-                  onChange={(e) => setGenreFilter(e.target.value)}
-                >
-                  <option value="all">{t("library.genreAll")}</option>
-                  {genreOptions.map((g) => (
-                    <option key={g} value={g}>
-                      {g}
-                    </option>
-                  ))}
-                </select>
+                <div className="chip-row" role="group" aria-label={t("library.filterGenre")}>
+                  {visibleGenreOptions.map((g) => {
+                    const state = getGenreState(g);
+                    return (
+                      <button
+                        key={g}
+                        type="button"
+                        className={`chip-toggle${state !== "neutral" ? " active" : ""}${state === "include" ? " chip-include" : ""}${state === "exclude" ? " chip-exclude" : ""}`}
+                        onClick={() => toggleGenre(g)}
+                        aria-pressed={state !== "neutral"}
+                        aria-label={t("library.genreChipAria", { genre: g, state: t(`library.genreState.${state}`) })}
+                      >
+                        {state === "include" && <span className="chip-state" aria-hidden="true">+</span>}
+                        {state === "exclude" && <span className="chip-state" aria-hidden="true">−</span>}
+                        {g}
+                      </button>
+                    );
+                  })}
+                </div>
+                {hiddenGenreCount > 0 && (
+                  <button type="button" className="btn btn-sm btn-ghost" onClick={() => setShowAllGenres(true)}>
+                    {t("library.showMoreGenres", { count: hiddenGenreCount })}
+                  </button>
+                )}
+                {showAllGenres && genreOptions.length > GENRE_VISIBLE_CAP && (
+                  <button type="button" className="btn btn-sm btn-ghost" onClick={() => setShowAllGenres(false)}>
+                    {t("library.showLessGenres")}
+                  </button>
+                )}
+                {(includedGenres.size > 0 || excludedGenres.size > 0) && (
+                  <button type="button" className="btn btn-sm btn-ghost" onClick={clearGenreFilters}>
+                    {t("library.clearGenreFilters")}
+                  </button>
+                )}
               </>
             )}
 
@@ -528,6 +717,39 @@ export function Library({ onOpenSeries }: { onOpenSeries: (s: Series) => void })
             <div className="empty">{t("common.noResults")}</div>
           ) : (
             <>
+              {selected.size > 0 && (
+                <div className="batch-bar">
+                  <span className="muted">{t("library.selectedCount", { count: selected.size })}</span>
+                  <div className="spacer" />
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    onClick={bulkMoveToPlan}
+                    disabled={batching}
+                  >
+                    {t("library.moveToWant")}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-danger"
+                    onClick={bulkRemove}
+                    disabled={batching}
+                  >
+                    {t("library.bulkRemove")}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    onClick={() => {
+                      setSelected(new Set());
+                      setSelectMode(false);
+                    }}
+                    disabled={batching}
+                  >
+                    {t("library.deselectAll")}
+                  </button>
+                </div>
+              )}
               {showWatching && watchingAll.length > 0 && (
                 <div className="lib-filter-bar">
                   <span className="muted text-sm">
@@ -565,6 +787,9 @@ export function Library({ onOpenSeries }: { onOpenSeries: (s: Series) => void })
                     showMenu
                     onOpenSeries={onOpenSeries}
                     onChanged={load}
+                    selectMode={selectMode}
+                    selected={selected}
+                    onToggleSelect={toggleSelect}
                   />
                 ))}
               {showPlan && (
@@ -576,6 +801,9 @@ export function Library({ onOpenSeries }: { onOpenSeries: (s: Series) => void })
                   showMenu={false}
                   onOpenSeries={onOpenSeries}
                   onChanged={load}
+                  selectMode={selectMode}
+                  selected={selected}
+                  onToggleSelect={toggleSelect}
                 />
               )}
               {showCompleted && (
@@ -587,6 +815,9 @@ export function Library({ onOpenSeries }: { onOpenSeries: (s: Series) => void })
                   showMenu={false}
                   onOpenSeries={onOpenSeries}
                   onChanged={load}
+                  selectMode={selectMode}
+                  selected={selected}
+                  onToggleSelect={toggleSelect}
                 />
               )}
             </>

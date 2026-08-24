@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
 import { useLang, useT } from "../i18n";
-import type { WatchInsights, WatchSummary } from "../types";
+import type { WatchInsights, WatchSummary, DustyEntry, BingeRecord, HourCount, PopularityBias } from "../types";
 import { BarChart, CategoryBlock, ShapeToggle } from "./StatsRings";
 import { useStatsShape } from "../lib/statsShape";
 import { useFormatNumber } from "../lib/formatNumber";
+import { getDustyWatchlist, getBingeRecord, getHourlyDistribution, getAvgCompletionDays } from "../api";
+import { StatsHeatmap } from "./StatsHeatmap";
 
 // "Resumen" block for Estadísticas — local-only metrics computed by
 // `get_watch_insights` (pure SQL, see src-tauri/src/db.rs). Sits between the
@@ -90,17 +92,84 @@ function DayActivityChart({
   );
 }
 
+// Hourly distribution chart: 24 small vertical bars (0-23), inline height
+// proportional to count/max. Data-driven inline style is expected here per
+// codebase rule. Shows "daytime watcher" / "night owl" label based on peak hour.
+function HourlyDistributionChart({
+  data,
+  t,
+}: {
+  data: HourCount[];
+  t: ReturnType<typeof useT>;
+}) {
+  const [grown, setGrown] = useState(false);
+  useEffect(() => {
+    const id = requestAnimationFrame(() => setGrown(true));
+    return () => cancelAnimationFrame(id);
+  }, []);
+  const max = Math.max(1, ...data.map((d) => d.count));
+  const peakHour = data.reduce((a, b) => (a.count > b.count ? a : b)).hour;
+  const isDaytime = peakHour >= 6 && peakHour <= 18;
+  const label = isDaytime ? t("stats.hourlyDaytime") : t("stats.hourlyNight");
+
+  return (
+    <div className="hourly-dist">
+      <div className="hourly-dist-bars" role="img" aria-label={`${data.reduce((s, d) => s + d.count, 0)} — ${label}`}>
+        {data.map((d) => {
+          const pct = grown ? (d.count / max) * 100 : 0;
+          return (
+            <div
+              className={`hourly-col${d.count > 0 ? " has" : ""}`}
+              key={d.hour}
+              title={`${d.hour}:00 — ${d.count}`}
+            >
+              <div className="hourly-fill" style={{ height: `${pct}%` }} />
+              <span className="hourly-tick">{d.hour}</span>
+            </div>
+          );
+        })}
+      </div>
+      <div className="hourly-label">{label}</div>
+    </div>
+  );
+}
+
 export function StatsInsights({
   insights,
   summary,
+  popularityBias,
 }: {
   insights: WatchInsights;
   summary: WatchSummary;
+  popularityBias: PopularityBias | null;
 }) {
   const t = useT();
   const n = useFormatNumber();
   const { lang } = useLang();
   const [shape, setShape] = useStatsShape();
+  const [dusty, setDusty] = useState<DustyEntry[]>([]);
+
+  useEffect(() => {
+    getDustyWatchlist().then(setDusty).catch(() => setDusty([]));
+  }, []);
+
+  const [bingeRecord, setBingeRecord] = useState<BingeRecord | null>(null);
+
+  useEffect(() => {
+    getBingeRecord().then(setBingeRecord).catch(() => setBingeRecord({ day: null, count: 0 }));
+  }, []);
+
+  const [hourlyDist, setHourlyDist] = useState<HourCount[]>([]);
+
+  useEffect(() => {
+    getHourlyDistribution().then(setHourlyDist).catch(() => setHourlyDist([]));
+  }, []);
+
+  const [avgDays, setAvgDays] = useState<number | null>(null);
+
+  useEffect(() => {
+    getAvgCompletionDays().then(setAvgDays).catch(() => setAvgDays(null));
+  }, []);
 
   const totalMinutes = insights.estimated_minutes_tracked + insights.estimated_minutes_external;
   const completionPct =
@@ -120,6 +189,7 @@ export function StatsInsights({
     { name: t("stats.finished"), count: insights.followed_finished },
   ];
   const hasMarks = insights.marks_by_day.some((d) => d.count > 0);
+  const hasHourly = hourlyDist.some((d) => d.count > 0);
 
   return (
     <div className="stats-insights">
@@ -156,6 +226,24 @@ export function StatsInsights({
           <div className="stat-label">{t("stats.avgEpisodes")}</div>
           <div className="stat-value">{insights.avg_episodes_per_series.toFixed(1)}</div>
         </div>
+        <div className="stat-card">
+          <div className="stat-label">{t("stats.bingeRecord")}</div>
+          <div className="stat-value">
+            {bingeRecord && bingeRecord.day
+              ? t("stats.bingeRecordValue", { count: n(bingeRecord.count), day: axisDay(bingeRecord.day, lang) })
+              : t("stats.bingeRecordEmpty")}
+          </div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">{t("stats.completionSpeed")}</div>
+          <div className="stat-value">
+            {avgDays !== null ? (
+              t("stats.completionSpeedValue", { days: avgDays.toFixed(1) })
+            ) : (
+              t("stats.completionSpeedEmpty")
+            )}
+          </div>
+        </div>
       </div>
 
       {topSeriesData.length > 0 && (
@@ -191,6 +279,15 @@ export function StatsInsights({
         </div>
       </div>
 
+      {hasHourly && (
+        <div className="series-block">
+          <div className="series-head">
+            <h3 className="section-title">{t("stats.hourlyHeading")}</h3>
+          </div>
+          <HourlyDistributionChart data={hourlyDist} t={t} />
+        </div>
+      )}
+
       {hasMarks && insights.marks_tracked_since && (
         <div className="series-block">
           <div className="series-head">
@@ -208,6 +305,69 @@ export function StatsInsights({
           </div>
         </div>
       )}
+
+      {dusty.length > 0 && (
+        <div className="series-block">
+          <div className="series-head">
+            <h3 className="section-title">{t("stats.dustyHeading")}</h3>
+          </div>
+          <ul className="dusty-list">
+            {dusty.map((entry) => (
+              <li key={entry.title} className="dusty-item">
+                <span className="dusty-title">{entry.title}</span>
+                <span className="dusty-date">
+                  {t("stats.dustyLastSeen", { date: entry.last_seen_at })}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {popularityBias && (
+        <div className="series-block">
+          <div className="series-head">
+            <h3 className="section-title">{t("stats.popularityBiasHeading")}</h3>
+          </div>
+          <div className="popbias">
+            <div className="popbias-labels">
+              <span className="popbias-low">{t("stats.popularityBiasLow")}</span>
+              <span className="popbias-high">{t("stats.popularityBiasHigh")}</span>
+            </div>
+            <div className="popbias-slider-wrap" role="img" aria-label={t("stats.popularityBiasLabel")}>
+              <div
+                className="popbias-track"
+                aria-valuemin={0}
+                aria-valuemax={10}
+                aria-valuenow={Math.round(popularityBias.normalized_score ?? 0)}
+              >
+                <div
+                  className="popbias-fill"
+                  style={{ width: `${Math.min(100, Math.max(0, (popularityBias.normalized_score ?? 0) * 10))}%` }}
+                />
+                <div
+                  className="popbias-thumb"
+                  style={{ left: `${Math.min(100, Math.max(0, (popularityBias.normalized_score ?? 0) * 10))}%` }}
+                />
+              </div>
+            </div>
+            <div className="popbias-value">
+              {popularityBias.normalized_score !== null
+                ? `${t("stats.popularityBiasLabel")}: ${popularityBias.normalized_score.toFixed(1)}/10`
+                : t("stats.ringsEmpty")}
+            </div>
+            <div className="stats-caveat">{t("stats.popularityBiasHelp")}</div>
+          </div>
+        </div>
+      )}
+
+      {/* Full-year activity heatmap — additive, does not replace the 30-day chart */}
+      <div className="series-block">
+        <div className="series-head">
+          <h3 className="section-title">{t("stats.heatmapHeading")}</h3>
+        </div>
+        <StatsHeatmap />
+      </div>
     </div>
   );
 }

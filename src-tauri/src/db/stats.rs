@@ -1,5 +1,6 @@
 use super::*;
 use std::collections::{HashMap, HashSet};
+use chrono::Datelike;
 
 /// Collapse a series title to a season/part-agnostic "franchise key" so
 /// multiple seasons (or arcs) of the same show count as one anime in the
@@ -246,6 +247,7 @@ struct SeriesWatchRow {
     title: String,
     kind: Option<String>,
     watched_externally: bool,
+    source_id: i64,
     seen_count: i64,
     catalog_episodes: Option<i64>,
     catalog_format: Option<String>,
@@ -333,6 +335,98 @@ impl Db {
             .collect();
         rows.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.genre.cmp(&b.genre)));
         Ok(rows)
+    }
+
+    /// Genre cards: per-genre stats plus top 4 representative series with
+    /// cover_url, for the ranked "genre cards" UI in Estadísticas.
+    /// Canonical across sites (one show followed on multiple sites contributes
+    /// once, genres unioned). Within each genre, pick the 4 series with the
+    /// most watched episodes (real seen + catalog estimate for watched_externally).
+    pub fn get_genre_cards(&self) -> Result<Vec<crate::models::GenreCard>> {
+        // First, get all canonical followed shows with their watch evidence
+        // and genres — this is the same canonical grouping as get_genre_stats
+        let groups = self.group_followed_canonically()?;
+
+        // Build a map: genre -> list of (title, cover_url, watched_episodes)
+        let mut genre_series: HashMap<String, Vec<(String, Option<String>, i64)>> = HashMap::new();
+
+        for g in &groups {
+            let mut genres: HashSet<String> = HashSet::new();
+            for &id in &g.member_ids {
+                genres.extend(self.list_series_genres(id)?);
+            }
+
+            // Calculate watched episodes for this canonical show
+            // Sum real seen episodes across all member rows
+            let real_seen: i64 = g
+                .member_ids
+                .iter()
+                .filter_map(|&id| {
+                    self.conn
+                        .query_row(
+                            "SELECT COUNT(*) FROM episodes WHERE series_id=?1 AND seen=1",
+                            [id],
+                            |r| r.get::<_, i64>(0),
+                        )
+                        .ok()
+                })
+                .sum();
+
+            // For watched_externally series, get catalog episode count if available
+            let external_episodes: i64 = g
+                .member_ids
+                .iter()
+                .filter_map(|&id| {
+                    self.conn
+                        .query_row(
+                            "SELECT c.episodes FROM series s LEFT JOIN anilist_catalog c ON c.id = s.anilist_id WHERE s.id=?1 AND s.watched_externally=1",
+                            [id],
+                            |r| r.get::<_, Option<i64>>(0),
+                        )
+                        .ok()
+                })
+                .flatten()
+                .max()
+                .unwrap_or(0);
+
+            let watched_episodes = real_seen.max(external_episodes);
+
+            // Add this show to each of its genres
+            let title = g.display_title.clone();
+            let cover_url = g.cover_url.clone();
+            for genre in genres {
+                genre_series
+                    .entry(genre)
+                    .or_default()
+                    .push((title.clone(), cover_url.clone(), watched_episodes));
+            }
+        }
+
+        // Build GenreCard for each genre, taking top 4 by watched_episodes
+        let mut cards: Vec<crate::models::GenreCard> = genre_series
+            .into_iter()
+            .map(|(genre, mut series_list)| {
+                series_list.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.cmp(&b.0)));
+                // count = total episodes watched across every show in this
+                // genre, not the number of shows — the card displays it with
+                // an "N episodes" label.
+                let count: i64 = series_list.iter().map(|(_, _, ep)| ep).sum();
+                let top_series: Vec<crate::models::GenreCardSeries> = series_list
+                    .into_iter()
+                    .take(4)
+                    .map(|(title, cover_url, _)| crate::models::GenreCardSeries { title, cover_url })
+                    .collect();
+                crate::models::GenreCard {
+                    genre,
+                    count,
+                    top_series,
+                }
+            })
+            .collect();
+
+        // Sort by count descending, then genre name
+        cards.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.genre.cmp(&b.genre)));
+        Ok(cards)
     }
 
     /// Followed-show count per `kind` ("TV"/"OVA"/...), descending, canonical
@@ -518,7 +612,7 @@ impl Db {
     /// regress the arc-collapsing case whenever only *some* arcs are linked).
     pub(crate) fn franchise_rollups(&self) -> Result<Vec<FranchiseRollup>> {
         let mut stmt = self.conn.prepare(
-            "SELECT s.title, s.kind, s.watched_externally,
+            "SELECT s.title, s.kind, s.watched_externally, s.source_id,
                     (SELECT COUNT(*) FROM episodes e WHERE e.series_id=s.id AND e.seen=1) AS seen_cnt,
                     c.episodes, c.format, c.duration
              FROM series s
@@ -532,10 +626,11 @@ impl Db {
                     title: r.get(0)?,
                     kind: r.get(1)?,
                     watched_externally: r.get::<_, i64>(2)? != 0,
-                    seen_count: r.get(3)?,
-                    catalog_episodes: r.get(4)?,
-                    catalog_format: r.get(5)?,
-                    catalog_duration: r.get(6)?,
+                    source_id: r.get(3)?,
+                    seen_count: r.get(4)?,
+                    catalog_episodes: r.get(5)?,
+                    catalog_format: r.get(6)?,
+                    catalog_duration: r.get(7)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -544,13 +639,23 @@ impl Db {
         // Candidate parent per group, recorded while grouping and applied only
         // afterwards, once every key present in this user's data is known.
         let mut parent_of: HashMap<String, String> = HashMap::new();
+        // Real seen episodes, bucketed by (franchise_key, source_id) before
+        // being folded into `real_seen` below. Summing within one site is
+        // correct (that site's own arc-split rows are genuinely different
+        // episodes), but two *different* sites both scraping the same
+        // complete show are mirrors of the same episodes, not additional
+        // ones — e.g. a user following One Piece on two sites had ~1170
+        // real marks on each site's own full-series row, and summing those
+        // (2340+) on top of the site that splits it into arcs (~250 more)
+        // reported ~2600 "real" episodes for a ~1170-episode show.
+        let mut per_site: HashMap<String, HashMap<i64, (i64, i64)>> = HashMap::new();
         for row in rows {
             let key = franchise_key(&row.title);
             let display = franchise_display_title(&row.title);
             if let Some(parent) = franchise_parent_key(&row.title) {
                 parent_of.entry(key.clone()).or_insert(parent);
             }
-            let entry = grouped.entry(key).or_insert_with(|| FranchiseRollup {
+            let entry = grouped.entry(key.clone()).or_insert_with(|| FranchiseRollup {
                 display_title: display.clone(),
                 real_seen: 0,
                 real_minutes: 0,
@@ -568,8 +673,9 @@ impl Db {
             let per_episode = row.catalog_duration.unwrap_or_else(|| {
                 minutes_per_episode(row.kind.as_deref().or(row.catalog_format.as_deref()))
             });
-            entry.real_seen += row.seen_count;
-            entry.real_minutes += row.seen_count * per_episode;
+            let bucket = per_site.entry(key).or_default().entry(row.source_id).or_insert((0, 0));
+            bucket.0 += row.seen_count;
+            bucket.1 += row.seen_count * per_episode;
 
             // A "Ya lo vi" row contributes its catalog total regardless of
             // whether that same row also has real marks. Gating this on the
@@ -586,6 +692,18 @@ impl Db {
                         entry.external_minutes = episodes * per_episode;
                     }
                 }
+            }
+        }
+        // Credit each franchise with its best single site's real progress —
+        // never the sum of what multiple sites separately claim about the
+        // same underlying episodes (same "biggest single signal, never add
+        // signals" rule `episodes()` already applies to real vs. external).
+        for (key, entry) in grouped.iter_mut() {
+            if let Some(best) = per_site.get(key).and_then(|sites| {
+                sites.values().max_by_key(|&&(seen, _)| seen)
+            }) {
+                entry.real_seen = best.0;
+                entry.real_minutes = best.1;
             }
         }
         Ok(merge_into_parent_franchises(grouped, &parent_of))
@@ -811,6 +929,240 @@ impl Db {
         })
     }
 
+    /// Followed series that have gone quiet — no episode marked seen in 90+ days.
+    /// Canonical across sites (deduped via `canon_key`), so the same show
+    /// followed on two sites appears once. "Never started" (no seen_at at all)
+    /// is excluded — dusty means it was watched, then stopped. Returns at most
+    /// 12 entries, sorted by most stale first (oldest last_seen_at).
+    pub fn get_dusty_watchlist(&self) -> Result<Vec<crate::models::DustyEntry>> {
+        // Get all followed series with their latest seen_at, canonical across sites.
+        // We need: series.id, series.anilist_id, series.title, MAX(episodes.seen_at) as last_seen
+        // Filter: followed=1 AND last_seen IS NOT NULL
+        // Group by canon_key, pick the MOST RECENT (max) last_seen per canon group,
+        // then filter groups older than 90 days, sort by most stale first, limit 12.
+        // IMPORTANT: the 90-day filter runs AFTER cross-site grouping, not before.
+        // If we filtered before grouping, a show followed on two sites where one
+        // site's row is recent (<90 days) and the other is stale (>90 days) would
+        // incorrectly lose the recent row (filtered out) or keep the stale one.
+        // By fetching ALL last_seen dates first, reducing to MAX per canon_key
+        // in Rust, then filtering, we correctly answer "has the user engaged
+        // with this show recently on ANY site".
+        let mut stmt = self.conn.prepare(
+            "SELECT s.id, s.anilist_id, s.title,
+                    MAX(DATE(e.seen_at, 'localtime')) AS last_seen
+             FROM series s
+             JOIN episodes e ON e.series_id = s.id
+             WHERE s.followed=1
+               AND e.seen=1
+               AND e.seen_at IS NOT NULL
+             GROUP BY s.id, s.anilist_id, s.title",
+        )?;
+        #[allow(dead_code)]
+        struct Row {
+            id: i64,
+            anilist_id: Option<i64>,
+            title: String,
+            last_seen: String,
+        }
+        let rows: Vec<Row> = stmt
+            .query_map([], |r| {
+                Ok(Row {
+                    id: r.get(0)?,
+                    anilist_id: r.get(1)?,
+                    title: r.get(2)?,
+                    last_seen: r.get(3)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        // Group by canon_key, keep the MOST RECENT (MAX) last_seen across all sites
+        // for that canonical show. "Dusty" means the user hasn't engaged with
+        // the show on ANY site recently — so if they watched an episode on
+        // site A yesterday, the show is NOT dusty even if site B's row is stale.
+        // We take MAX per canon_key (most recent engagement), then filter
+        // groups older than 90 days.
+        let mut grouped: HashMap<String, (String, String)> = HashMap::new(); // canon_key -> (display_title, last_seen)
+        for row in rows {
+            let key = super::library::canon_key(row.anilist_id, &row.title);
+            let display = crate::db::stats::franchise_display_title(&row.title);
+            let entry = grouped.entry(key).or_insert_with(|| (display.clone(), row.last_seen.clone()));
+            // Keep the MORE RECENT (max) date across sites
+            if row.last_seen > entry.1 {
+                entry.1 = row.last_seen.clone();
+            }
+            // Keep the preferred display title
+            if crate::db::stats::prefer_display_title(&display, &entry.0) {
+                entry.0 = display;
+            }
+        }
+
+        // Now filter: only keep groups where the most recent engagement is >90 days old
+        let cutoff = chrono::Local::now().date_naive() - chrono::Days::new(90);
+        let cutoff_str = cutoff.format("%Y-%m-%d").to_string();
+
+        let mut entries: Vec<crate::models::DustyEntry> = grouped
+            .into_iter()
+            .filter(|(_, (_, last_seen_at))| last_seen_at.as_str() < cutoff_str.as_str())
+            .map(|(_, (title, last_seen_at))| crate::models::DustyEntry { title, last_seen_at })
+            .collect();
+
+        // Sort by most stale first (oldest last_seen_at)
+        entries.sort_by(|a, b| a.last_seen_at.cmp(&b.last_seen_at));
+        // Cap at 12
+        entries.truncate(12);
+        Ok(entries)
+    }
+
+    /// Binge record: the single calendar day with the most episodes marked
+    /// seen, and that count. `seen_at` is stamped UTC (SQLite `datetime('now')`),
+    /// so — exactly like `get_watch_insights`'s day buckets — every row is
+    /// converted to 'localtime' before grouping; otherwise an episode marked
+    /// at 00:30 in Spain lands on the previous calendar day. Returns
+    /// `count: 0, day: None` when nothing has ever been marked seen, rather
+    /// than erroring.
+    pub fn get_binge_record(&self) -> Result<crate::models::BingeRecord> {
+        let mut stmt = self.conn.prepare(
+            "SELECT DATE(e.seen_at, 'localtime') AS d, COUNT(*) AS cnt
+             FROM episodes e
+             WHERE e.seen_at IS NOT NULL
+             GROUP BY d
+             ORDER BY cnt DESC, d DESC
+             LIMIT 1",
+        )?;
+        let row: Option<(String, i64)> = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
+            .next()
+            .transpose()?;
+        match row {
+            Some((day, count)) => Ok(crate::models::BingeRecord {
+                day: Some(day),
+                count,
+            }),
+            None => Ok(crate::models::BingeRecord {
+                day: None,
+                count: 0,
+            }),
+        }
+    }
+
+    /// 24-hour distribution of when the user marks episodes as seen — one entry
+    /// per hour (0-23), zero-filled. Mirrors `get_watch_insights`'s 30-day spine
+    /// logic: `seen_at` is stamped with SQLite's `datetime('now')` (UTC), so
+    /// every bucket converts to 'localtime' first. Without it an episode marked
+    /// at 00:30 in Spain (UTC+1/+2) lands in the previous hour — and the late
+    /// evening is exactly when this app is used, so the misattribution is the
+    /// common case, not an edge one.
+    pub fn get_hourly_distribution(&self) -> Result<Vec<crate::models::HourCount>> {
+        // Count seen episodes per local hour (0-23).
+        let mut stmt = self.conn.prepare(
+            "SELECT CAST(strftime('%H', e.seen_at, 'localtime') AS INTEGER) AS h, COUNT(*) AS cnt
+             FROM episodes e
+             WHERE e.seen_at IS NOT NULL
+               AND e.seen = 1
+             GROUP BY h
+             ORDER BY h",
+        )?;
+        let counted_hours: HashMap<i64, i64> = stmt
+            .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?
+            .collect::<rusqlite::Result<HashMap<_, _>>>()?;
+
+        // Zero-fill all 24 hours — the frontend must get exactly 24 entries,
+        // hour 0 through 23, with count 0 for hours with no activity.
+        let mut distribution: Vec<crate::models::HourCount> = Vec::with_capacity(24);
+        for hour in 0..24 {
+            let count = counted_hours.get(&hour).copied().unwrap_or(0);
+            distribution.push(crate::models::HourCount { hour, count });
+        }
+        Ok(distribution)
+    }
+
+    /// Average days to finish a franchise across all finished franchises with
+    /// real seen episodes (not just "Ya lo vi" estimates). Returns `None` when
+    /// no qualifying franchises exist (all airing, no data, etc.) — a
+    /// meaningful distinction from `0.0` (which would imply instant completion).
+    ///
+    /// A franchise is "finished" when ALL its member series have `is_airing=0`.
+    /// Only franchises with at least one real `episodes.seen_at` timestamp
+    /// count (the first/last seen date is needed to compute the span).
+    /// Cross-site member series are merged via `franchise_key` (same logic as
+    /// `franchise_rollups` and `get_watch_insights`).
+    pub fn get_avg_completion_days(&self) -> Result<Option<f64>> {
+        // franchise_key() is a Rust function (see its definition above), not
+        // a SQLite one — every other place in this file that groups by
+        // franchise (franchise_rollups, get_dusty_watchlist) fetches flat
+        // per-series rows via plain SQL and does the franchise_key grouping
+        // in Rust; this follows the same pattern rather than trying to call
+        // franchise_key() from inside a CTE.
+        let mut stmt = self.conn.prepare(
+            "SELECT s.title, s.is_airing,
+                    MIN(DATE(e.seen_at, 'localtime')) AS first_seen,
+                    MAX(DATE(e.seen_at, 'localtime')) AS last_seen
+             FROM series s
+             JOIN episodes e ON e.series_id = s.id
+             WHERE e.seen = 1
+               AND e.seen_at IS NOT NULL
+             GROUP BY s.id",
+        )?;
+        struct SeriesSpan {
+            title: String,
+            is_airing: bool,
+            first_seen: String,
+            last_seen: String,
+        }
+        let rows: Vec<SeriesSpan> = stmt
+            .query_map([], |r| {
+                Ok(SeriesSpan {
+                    title: r.get(0)?,
+                    is_airing: r.get::<_, i64>(1)? != 0,
+                    first_seen: r.get(2)?,
+                    last_seen: r.get(3)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        // Roll up to franchise level: any airing member disqualifies the
+        // whole franchise (not "finished" yet), and the span is the earliest
+        // first_seen to the latest last_seen across every member series —
+        // same reasoning as franchise_rollups, a long-runner's arcs are one
+        // show, not several.
+        struct FranchiseSpan {
+            any_airing: bool,
+            first_seen: String,
+            last_seen: String,
+        }
+        let mut grouped: HashMap<String, FranchiseSpan> = HashMap::new();
+        for row in rows {
+            let key = franchise_key(&row.title);
+            let entry = grouped.entry(key).or_insert_with(|| FranchiseSpan {
+                any_airing: false,
+                first_seen: row.first_seen.clone(),
+                last_seen: row.last_seen.clone(),
+            });
+            entry.any_airing |= row.is_airing;
+            if row.first_seen < entry.first_seen {
+                entry.first_seen = row.first_seen;
+            }
+            if row.last_seen > entry.last_seen {
+                entry.last_seen = row.last_seen;
+            }
+        }
+
+        let spans_days: Vec<f64> = grouped
+            .values()
+            .filter(|f| !f.any_airing)
+            .filter_map(|f| {
+                let first = chrono::NaiveDate::parse_from_str(&f.first_seen, "%Y-%m-%d").ok()?;
+                let last = chrono::NaiveDate::parse_from_str(&f.last_seen, "%Y-%m-%d").ok()?;
+                Some((last - first).num_days() as f64)
+            })
+            .collect();
+
+        if spans_days.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(spans_days.iter().sum::<f64>() / spans_days.len() as f64))
+    }
+
     /// A cheap fingerprint of the data, used to skip a redundant auto-backup
     /// when nothing changed since the last one.
     pub fn signature_counts(&self) -> Result<(i64, i64, i64, Option<String>)> {
@@ -823,6 +1175,122 @@ impl Db {
             .optional()?
             .flatten();
         Ok((series, eps, max_ep, max_seen))
+    }
+
+    /// Mainstream vs underground taste score — average AniList popularity of
+    /// followed series linked to the catalog, normalized to 0-10. Cross-site
+    /// canonical dedup via `canon_key` so the same show followed on two sites
+    /// counts once. Returns `None` for both fields when fewer than 3 linked
+    /// followed series exist (not enough data for a meaningful score).
+    pub fn get_popularity_bias(&self) -> Result<crate::models::PopularityBias> {
+        // Get all followed series with their anilist_id and title, then group by canon_key
+        // and pick one representative per canonical show. Then join with anilist_catalog
+        // to get popularity.
+        let mut stmt = self.conn.prepare(
+            "SELECT s.anilist_id, s.title, c.popularity
+             FROM series s
+             LEFT JOIN anilist_catalog c ON c.id = s.anilist_id
+             WHERE s.followed=1 AND s.anilist_id IS NOT NULL AND c.popularity IS NOT NULL",
+        )?;
+        let rows: Vec<(Option<i64>, String, i64)> = stmt
+            .query_map([], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        // Group by canon_key to dedup cross-site
+        let mut grouped: HashMap<String, i64> = HashMap::new();
+        for (anilist_id, title, popularity) in rows {
+            let key = super::library::canon_key(anilist_id, &title);
+            // Keep the first popularity per canon_key (any is fine since they
+            // represent the same show and should have the same AniList ID)
+            grouped.entry(key).or_insert(popularity);
+        }
+
+        let count = grouped.len();
+        if count < 3 {
+            return Ok(crate::models::PopularityBias {
+                average_popularity: None,
+                normalized_score: None,
+            });
+        }
+
+        let sum: i64 = grouped.values().sum();
+        let average = sum as f64 / count as f64;
+        // 70,000 per point is an approximation, not an AniList API contract
+        // (see this task's own spec) — a handful of the most popular shows
+        // on AniList individually clear 700,000, so a followed list skewed
+        // toward those would otherwise push the normalized score past 10 and
+        // break the 0-10 slider. Clamp to the scale's own bounds.
+        let normalized = (average / 70_000.0).min(10.0);
+
+        Ok(crate::models::PopularityBias {
+            average_popularity: Some(average),
+            normalized_score: Some(normalized),
+        })
+    }
+
+    /// Distinct years (local time) that have at least one seen episode,
+    /// descending. Always includes the current year even if it has no marks yet,
+    /// so a brand-new user still gets this year's empty grid instead of an empty
+    /// year list.
+    pub fn get_activity_years(&self) -> Result<Vec<i32>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT CAST(strftime('%Y', DATE(e.seen_at, 'localtime')) AS INTEGER) AS y
+             FROM episodes e
+             WHERE e.seen_at IS NOT NULL
+             ORDER BY y DESC",
+        )?;
+        let mut years: Vec<i32> = stmt
+            .query_map([], |r| r.get(0))?
+            .collect::<rusqlite::Result<Vec<i32>>>()?;
+
+        // Always include the current year (local time) so the year selector is
+        // never empty — mirrors the `marks_tracked_since` grace handling.
+        let this_year = chrono::Local::now().date_naive().year();
+        if !years.contains(&this_year) {
+            years.insert(0, this_year);
+        }
+
+        Ok(years)
+    }
+
+    /// Full-year activity heatmap: one entry per day of the given calendar year
+    /// (Jan 1 to Dec 31), zero-filled like `WatchInsights.marks_by_day` but
+    /// across 365/366 days. Uses the same `DATE(e.seen_at, 'localtime')`
+    /// conversion as the 30-day spine so an episode marked at 00:30 in Spain
+    /// (UTC+1/+2) lands on the correct local calendar day.
+    pub fn get_yearly_activity(&self, year: i32) -> Result<crate::models::YearlyActivity> {
+        // Determine if the target year is a leap year using chrono (already a
+        // dependency) so we generate the correct number of days.
+        let is_leap = chrono::NaiveDate::from_ymd_opt(year, 2, 29).is_some();
+        let days_in_year = if is_leap { 366 } else { 365 };
+
+        // Count seen episodes per day within the given year (local time).
+        let mut stmt = self.conn.prepare(
+            "SELECT DATE(e.seen_at, 'localtime') AS d, COUNT(*) AS cnt
+             FROM episodes e
+             WHERE e.seen_at IS NOT NULL
+               AND CAST(strftime('%Y', DATE(e.seen_at, 'localtime')) AS INTEGER) = ?1
+             GROUP BY d
+             ORDER BY d",
+        )?;
+        let counted_days: HashMap<String, i64> = stmt
+            .query_map([year], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
+            .collect::<rusqlite::Result<HashMap<_, _>>>()?;
+
+        // Zero-filled spine for the entire year.
+        let start_date = chrono::NaiveDate::from_ymd_opt(year, 1, 1).unwrap();
+        let days: Vec<crate::models::DayCount> = (0..days_in_year)
+            .filter_map(|offset| start_date.checked_add_days(chrono::Days::new(offset)))
+            .map(|date| {
+                let day = date.format("%Y-%m-%d").to_string();
+                let count = counted_days.get(&day).copied().unwrap_or(0);
+                crate::models::DayCount { day, count }
+            })
+            .collect();
+
+        Ok(crate::models::YearlyActivity { year, days })
     }
 }
 
@@ -1624,6 +2092,55 @@ mod tests {
     }
 
     #[test]
+    fn get_watch_insights_top_series_credits_best_site_not_sum_across_sites() {
+        // The real bug this guards: a user following One Piece on two sites
+        // had ~1170 real marks on each site's own full-series row. Franchise
+        // rollup used to sum real_seen across every member row regardless of
+        // site, reporting ~2600 "episodes" for a ~1170-episode show. Summing
+        // is still correct *within* one site (that site's own arc-split
+        // rows are genuinely different episodes) — only cross-site should
+        // take the best single signal.
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        let b = db.upsert_source("TioAnime", "b", "tioanime").unwrap();
+
+        let op_a = db.upsert_series(a, &mk_airing("op", "One Piece", None)).unwrap();
+        db.set_followed(op_a, true).unwrap();
+        insert_eps_seen_up_to(&db, op_a, 50, 50);
+        let op_b = db.upsert_series(b, &mk_airing("op", "One Piece", None)).unwrap();
+        db.set_followed(op_b, true).unwrap();
+        insert_eps_seen_up_to(&db, op_b, 40, 40);
+
+        let insights = db.get_watch_insights().unwrap();
+        let op = insights.top_series.iter().find(|t| t.title == "One Piece").unwrap();
+        assert_eq!(op.count, 50, "credits the better site's real progress, not the 90-episode sum of both sites");
+    }
+
+    #[test]
+    fn get_watch_insights_top_series_sums_arcs_within_one_site() {
+        // Same site splitting a long-runner into arc rows is genuinely
+        // additive — those are different episodes, not mirrors of the same
+        // ones, so this must keep summing.
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+
+        // A colon-suffixed arc only merges into its base when that base is
+        // independently present in the user's own data — same rule
+        // `arc_rows_only_merge_when_the_base_show_is_in_the_users_own_data`
+        // covers — so a bare "One Piece" row must exist alongside the arc.
+        let base = db.upsert_series(a, &mk_airing("op0", "One Piece", None)).unwrap();
+        db.set_followed(base, true).unwrap();
+        insert_eps_seen_up_to(&db, base, 20, 20);
+        let arc = db.upsert_series(a, &mk_airing("op1", "One Piece: Wano", None)).unwrap();
+        db.set_followed(arc, true).unwrap();
+        insert_eps_seen_up_to(&db, arc, 15, 15);
+
+        let insights = db.get_watch_insights().unwrap();
+        let op = insights.top_series.iter().find(|t| t.title == "One Piece").unwrap();
+        assert_eq!(op.count, 35, "same-site arc rows still sum — they're different episodes");
+    }
+
+    #[test]
     fn get_genre_and_type_stats_dedup_a_cross_site_show_and_union_its_genres() {
         let db = Db::open(":memory:").unwrap();
         let a = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
@@ -1666,5 +2183,760 @@ mod tests {
         db.set_seen_cascade(series, "1", true).unwrap();
         let after = db.signature_counts().unwrap();
         assert_ne!(before, after);
+    }
+
+    #[test]
+    fn get_dusty_watchlist_shows_followed_series_older_than_90_days() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+
+        // Series with an episode seen >90 days ago — should appear
+        let dusty = db.upsert_series(src, &mk_airing("dusty", "Dusty Show", None)).unwrap();
+        db.set_followed(dusty, true).unwrap();
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: dusty, number: "1".into(), title: None,
+            url: "https://site/dusty-1".into(), released_at: None, seen: true,
+        }).unwrap();
+        // Manually backdate seen_at to >90 days ago
+        db.conn.execute(
+            "UPDATE episodes SET seen_at = datetime('now', 'localtime', '-100 days') WHERE series_id=?1",
+            [dusty],
+        ).unwrap();
+
+        // Series with a recent seen_at — should NOT appear
+        let fresh = db.upsert_series(src, &mk_airing("fresh", "Fresh Show", None)).unwrap();
+        db.set_followed(fresh, true).unwrap();
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: fresh, number: "1".into(), title: None,
+            url: "https://site/fresh-1".into(), released_at: None, seen: true,
+        }).unwrap();
+        db.set_seen_cascade(fresh, "1", true).unwrap(); // stamps "now"
+
+        // Followed series with NO seen episodes at all — should NOT appear (never started)
+        let never = db.upsert_series(src, &mk_airing("never", "Never Started", None)).unwrap();
+        db.set_followed(never, true).unwrap();
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: never, number: "1".into(), title: None,
+            url: "https://site/never-1".into(), released_at: None, seen: false,
+        }).unwrap();
+
+        let dusty_list = db.get_dusty_watchlist().unwrap();
+        assert_eq!(dusty_list.len(), 1);
+        assert_eq!(dusty_list[0].title, "Dusty Show");
+        // last_seen_at should be an ISO date string (YYYY-MM-DD)
+        assert!(dusty_list[0].last_seen_at.contains("-"));
+    }
+
+    #[test]
+    fn get_dusty_watchlist_dedups_cross_site_same_show() {
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        let b = db.upsert_source("TioAnime", "b", "tioanime").unwrap();
+
+        // Same show followed on both sites, different seen_at dates
+        // Site A: -100 days (more recent)
+        // Site B: -120 days (older)
+        // The CORRECT behavior: keep the MOST RECENT (MAX) date across sites = -100 days
+        // because "dusty" means no engagement on ANY site recently.
+        let dusty_a = db.upsert_series(a, &mk_airing("dusty", "Dusty Show", None)).unwrap();
+        db.set_followed(dusty_a, true).unwrap();
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: dusty_a, number: "1".into(), title: None,
+            url: "https://site/dusty-1".into(), released_at: None, seen: true,
+        }).unwrap();
+        db.conn.execute(
+            "UPDATE episodes SET seen_at = datetime('now', 'localtime', '-100 days') WHERE series_id=?1",
+            [dusty_a],
+        ).unwrap();
+
+        let dusty_b = db.upsert_series(b, &mk_airing("dusty", "Dusty Show", None)).unwrap();
+        db.set_followed(dusty_b, true).unwrap();
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: dusty_b, number: "1".into(), title: None,
+            url: "https://site/dusty-1".into(), released_at: None, seen: true,
+        }).unwrap();
+        db.conn.execute(
+            "UPDATE episodes SET seen_at = datetime('now', 'localtime', '-120 days') WHERE series_id=?1",
+            [dusty_b],
+        ).unwrap();
+
+        let dusty_list = db.get_dusty_watchlist().unwrap();
+        // Should appear only once (canonical dedup)
+        assert_eq!(dusty_list.len(), 1);
+        assert_eq!(dusty_list[0].title, "Dusty Show");
+
+        // The most recent date across sites (-100 days) should win
+        // Compute expected date same way the implementation does
+        let expected_date = chrono::Local::now().date_naive() - chrono::Days::new(100);
+        let expected_str = expected_date.format("%Y-%m-%d").to_string();
+        assert_eq!(dusty_list[0].last_seen_at, expected_str);
+    }
+
+    #[test]
+    fn get_binge_record_returns_day_with_highest_count() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let s1 = db.upsert_series(src, &mk_airing("s1", "Show 1", None)).unwrap();
+        let s2 = db.upsert_series(src, &mk_airing("s2", "Show 2", None)).unwrap();
+
+        // Day A (today): 3 episodes from s1 + 2 from s2 = 5 total
+        for i in 1..=3 {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: s1, number: format!("{i}"), title: None,
+                url: format!("https://site/s1-{i}"), released_at: None, seen: false,
+            }).unwrap();
+        }
+        for i in 1..=2 {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: s2, number: format!("{i}"), title: None,
+                url: format!("https://site/s2-{i}"), released_at: None, seen: false,
+            }).unwrap();
+        }
+        db.set_seen_cascade(s1, "3", true).unwrap(); // marks 1,2,3 seen
+        db.set_seen_cascade(s2, "2", true).unwrap(); // marks 1,2 seen
+
+        // Day B (yesterday): 4 episodes from a third series
+        let s3 = db.upsert_series(src, &mk_airing("s3", "Show 3", None)).unwrap();
+        for i in 1..=4 {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: s3, number: format!("{i}"), title: None,
+                url: format!("https://site/s3-{i}"), released_at: None, seen: false,
+            }).unwrap();
+        }
+        db.set_seen_cascade(s3, "4", true).unwrap(); // marks 1,2,3,4 seen
+
+        // Backdate s3's episodes to yesterday so they fall on a different calendar day
+        db.conn.execute(
+            "UPDATE episodes SET seen_at = datetime('now', '-1 day') WHERE series_id = ?1",
+            [s3],
+        ).unwrap();
+
+        // Day A (today) has 5, Day B (yesterday) has 4 -> Day A should win
+        let record = db.get_binge_record().unwrap();
+        let today = chrono::Local::now().date_naive().format("%Y-%m-%d").to_string();
+        assert_eq!(record.count, 5, "Day A has 5 episodes, should be the binge record");
+        assert_eq!(record.day, Some(today), "binge record day should be today (local)");
+
+        // ---- Reverse case: make Day B have more episodes ----
+        // Add 3 more episodes to s3 and mark them seen (still on Day B via the backdated seen_at)
+        for i in 5..=7 {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: s3, number: format!("{i}"), title: None,
+                url: format!("https://site/s3-{i}"), released_at: None, seen: false,
+            }).unwrap();
+        }
+        db.set_seen_cascade(s3, "7", true).unwrap(); // marks 5,6,7 seen (cascade from 4)
+
+        // set_seen_cascade re-stamps seen_at to "now" for every episode in the
+        // cascaded range, including ones already seen — so the second cascade
+        // call above just clobbered episodes 1-4's backdated "yesterday"
+        // timestamp back to today. Re-apply the backdate to all of s3's
+        // episodes so the whole series still lands on "yesterday".
+        db.conn.execute(
+            "UPDATE episodes SET seen_at = datetime('now', '-1 day') WHERE series_id = ?1",
+            [s3],
+        ).unwrap();
+
+        // Now Day B (yesterday) has 7, Day A (today) has 5 -> Day B should win
+        let record = db.get_binge_record().unwrap();
+        let yesterday = chrono::Local::now().date_naive().checked_sub_days(chrono::Days::new(1)).unwrap().format("%Y-%m-%d").to_string();
+        assert_eq!(record.count, 7, "Day B now has 7 episodes, should be the binge record");
+        assert_eq!(record.day, Some(yesterday), "binge record day should be yesterday (local)");
+    }
+
+    #[test]
+    fn get_binge_record_empty_db_returns_zero_and_none() {
+        let db = Db::open(":memory:").unwrap();
+        let record = db.get_binge_record().unwrap();
+        assert_eq!(record.count, 0);
+        assert_eq!(record.day, None);
+    }
+
+    #[test]
+    fn get_hourly_distribution_returns_24_zero_filled_entries() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        let sid = db.upsert_series(src, &mk_airing("s1", "S1", None)).unwrap();
+        db.set_kind(sid, "TV").unwrap();
+
+        // Insert episodes relative to "now" (SQLite's 'now' is UTC) at fixed
+        // hour offsets, then compute the EXPECTED local hour bucket for each
+        // offset in Rust using the same wall-clock "now" the test machine
+        // actually has — this only assumes SQLite's 'localtime' modifier and
+        // chrono::Local agree on the system timezone (they must, both read
+        // it from the OS), not that the machine happens to be UTC. Hardcoding
+        // both the input timestamps *and* the expected hours to UTC values
+        // is wrong on any machine not itself running in UTC (this one runs
+        // CEST, UTC+2, at the time this test was written — exactly the kind
+        // of environment-dependent assumption that broke the original,
+        // non-deterministic version of this test).
+        use chrono::Timelike;
+        let now_local = chrono::Local::now();
+        let hour_for_offset = |offset_hours: i64| -> i64 {
+            (((now_local.hour() as i64 - offset_hours) % 24) + 24) % 24
+        };
+        db.conn
+            .execute(
+                "INSERT INTO episodes (series_id, number, url, seen, seen_at) VALUES
+                 (?1, '1', 'u1', 1, datetime('now', '-10 hours')),
+                 (?1, '2', 'u2', 1, datetime('now', '-7 hours')),
+                 (?1, '3', 'u3', 1, datetime('now', '-7 hours')),
+                 (?1, '4', 'u4', 1, datetime('now', '2 hours'))",
+                [sid],
+            )
+            .unwrap();
+        let hour_a = hour_for_offset(10); // 1 episode
+        let hour_b = hour_for_offset(7); // 2 episodes
+        let hour_c = hour_for_offset(-2); // 1 episode
+
+        let dist = db.get_hourly_distribution().unwrap();
+        assert_eq!(dist.len(), 24, "must return exactly 24 entries");
+        // Check hours are in order 0..23
+        for (i, hc) in dist.iter().enumerate() {
+            assert_eq!(hc.hour, i as i64, "hours must be sequential 0..23");
+        }
+        // Exact per-hour counts against the dynamically-computed expected
+        // hours, not just "some non-zero hour exists" — this is what
+        // actually proves the hour extraction (and its timezone handling)
+        // is correct rather than merely present. If two of the three
+        // computed hours collide (possible with only three offsets on an
+        // unlucky wall-clock minute), skip the exact-count assertions for
+        // this run rather than asserting something that can't be true —
+        // the total/shape assertions below still cover it.
+        let hours_distinct = {
+            let mut hs = [hour_a, hour_b, hour_c];
+            hs.sort_unstable();
+            hs.windows(2).all(|w| w[0] != w[1])
+        };
+        if hours_distinct {
+            assert_eq!(dist[hour_a as usize].count, 1, "hour {hour_a} should have 1 episode");
+            assert_eq!(dist[hour_b as usize].count, 2, "hour {hour_b} should have 2 episodes");
+            assert_eq!(dist[hour_c as usize].count, 1, "hour {hour_c} should have 1 episode");
+            let expected_hours = [hour_a, hour_b, hour_c];
+            assert!(
+                dist.iter().enumerate().all(|(i, h)| expected_hours.contains(&(i as i64)) || h.count == 0),
+                "every hour outside {{{hour_a}, {hour_b}, {hour_c}}} must be zero-filled, not just present"
+            );
+        }
+        let total: i64 = dist.iter().map(|h| h.count).sum();
+        assert_eq!(total, 4, "total episodes marked seen should be 4");
+    }
+
+    #[test]
+    fn get_hourly_distribution_empty_db_returns_all_zeros() {
+        let db = Db::open(":memory:").unwrap();
+        let dist = db.get_hourly_distribution().unwrap();
+        assert_eq!(dist.len(), 24);
+        assert!(dist.iter().all(|h| h.count == 0), "all hours should be 0 in empty DB");
+    }
+
+    /// Seed helper: insert a finished series with episodes spanning a known
+    /// number of days by backdating `seen_at` via raw SQL (normal insert uses
+    /// `datetime('now')` which we can't control in tests).
+    fn seed_finished_series(
+        db: &Db,
+        src: i64,
+        title: &str,
+        first_seen_days_ago: i64,
+        last_seen_days_ago: i64,
+    ) -> i64 {
+        let id = db.upsert_series(src, &mk_airing(title, title, None)).unwrap();
+        db.set_followed(id, true).unwrap();
+        db.set_kind(id, "TV").unwrap();
+        // Not airing = finished
+        db.conn
+            .execute("UPDATE series SET is_airing=0 WHERE id=?1", [id])
+            .unwrap();
+        // Insert 2 episodes and mark both seen, then backdate seen_at
+        for n in 1..=2 {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: id, number: n.to_string(), title: None,
+                url: format!("https://site/{}-capitulo-{}/", title, n),
+                released_at: None, seen: true,
+            }).unwrap();
+        }
+        // Backdate first episode
+        db.conn
+            .execute(
+                "UPDATE episodes SET seen_at=datetime('now', ?1) WHERE series_id=?2 AND number='1'",
+                [format!("-{} days", first_seen_days_ago), id.to_string()],
+            )
+            .unwrap();
+        // Backdate last episode
+        db.conn
+            .execute(
+                "UPDATE episodes SET seen_at=datetime('now', ?1) WHERE series_id=?2 AND number='2'",
+                [format!("-{} days", last_seen_days_ago), id.to_string()],
+            )
+            .unwrap();
+        id
+    }
+
+    #[test]
+    fn get_avg_completion_days_empty_db_returns_none() {
+        let db = Db::open(":memory:").unwrap();
+        let avg = db.get_avg_completion_days().unwrap();
+        assert_eq!(avg, None, "empty DB -> no qualifying franchises -> None");
+    }
+
+    #[test]
+    fn get_avg_completion_days_all_airing_returns_none() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+
+        // Finished series with no seen episodes = not qualified
+        let mut s = mk_airing("s1", "Show 1", None);
+        s.is_airing = false;
+        let id = db.upsert_series(src, &s).unwrap();
+        db.set_followed(id, true).unwrap();
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: id, number: "1".into(), title: None,
+            url: "https://site/s1-1/".into(), released_at: None, seen: false,
+        }).unwrap();
+
+        let avg = db.get_avg_completion_days().unwrap();
+        assert_eq!(avg, None, "no real seen_at data -> None");
+    }
+
+    #[test]
+    fn get_avg_completion_days_single_franchise_known_span() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+
+        // Finished franchise, episodes seen 10 days ago and 2 days ago -> span = 8 days
+        seed_finished_series(&db, src, "Show A", 10, 2);
+
+        let avg = db.get_avg_completion_days().unwrap();
+        assert_eq!(avg, Some(8.0), "single franchise with 8-day span -> 8.0");
+    }
+
+    #[test]
+    fn get_avg_completion_days_two_franchises_average_of_spans() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+
+        // Franchise 1: 10-day span
+        seed_finished_series(&db, src, "Show A", 10, 0);
+        // Franchise 2: 4-day span
+        seed_finished_series(&db, src, "Show B", 4, 0);
+
+        let avg = db.get_avg_completion_days().unwrap();
+        // Average of 10 and 4 = 7
+        assert!((avg.unwrap() - 7.0).abs() < 0.01, "average of 10 and 4 = 7.0, got {}", avg.unwrap());
+    }
+
+    #[test]
+    fn get_avg_completion_days_airing_franchise_excluded() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+
+        // Finished franchise with 8-day span
+        seed_finished_series(&db, src, "Show A", 10, 2);
+        // Airing franchise with 8-day span -> should be excluded
+        let airing_id = db.upsert_series(src, &mk_airing("Show B", "Show B", None)).unwrap();
+        db.set_followed(airing_id, true).unwrap();
+        db.set_kind(airing_id, "TV").unwrap();
+        // is_airing defaults to true in mk_airing
+        for n in 1..=2 {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: airing_id, number: n.to_string(), title: None,
+                url: format!("https://site/showb-{}/", n), released_at: None, seen: true,
+            }).unwrap();
+        }
+        db.conn
+            .execute(
+                "UPDATE episodes SET seen_at=datetime('now', '-10 days') WHERE series_id=?1 AND number='1'",
+                [airing_id.to_string()],
+            )
+            .unwrap();
+        db.conn
+            .execute(
+                "UPDATE episodes SET seen_at=datetime('now', '-2 days') WHERE series_id=?1 AND number='2'",
+                [airing_id.to_string()],
+            )
+            .unwrap();
+
+        let avg = db.get_avg_completion_days().unwrap();
+        // Only the finished franchise counts -> 8.0
+        assert_eq!(avg, Some(8.0), "airing franchise excluded, only finished counted");
+    }
+
+    #[test]
+    fn get_avg_completion_days_cross_site_franchise_merged() {
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        let b = db.upsert_source("TioAnime", "b", "tioanime").unwrap();
+
+        // Same franchise on two sites, both finished
+        // Site A: episodes seen 10 days ago and 2 days ago -> span = 8
+        let mut s1 = mk_airing("shared", "Shared Show", None);
+        s1.is_airing = false;
+        let id_a = db.upsert_series(a, &s1).unwrap();
+        db.set_followed(id_a, true).unwrap();
+        db.set_kind(id_a, "TV").unwrap();
+        for n in 1..=2 {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: id_a, number: n.to_string(), title: None,
+                url: format!("https://site/a-{}/", n), released_at: None, seen: true,
+            }).unwrap();
+        }
+        db.conn
+            .execute(
+                "UPDATE episodes SET seen_at=datetime('now', ?1) WHERE series_id=?2 AND number='1'",
+                ("-10 days", id_a),
+            )
+            .unwrap();
+        db.conn
+            .execute(
+                "UPDATE episodes SET seen_at=datetime('now', ?1) WHERE series_id=?2 AND number='2'",
+                ("-2 days", id_a),
+            )
+            .unwrap();
+
+        // Site B: episodes seen 8 days ago and 1 day ago -> span = 7
+        // But since they merge into one franchise, the overall span is
+        // min(10,8)=10 days ago to max(2,1)=1 day ago = 9 days
+        let mut s2 = mk_airing("shared", "Shared Show", None);
+        s2.is_airing = false;
+        let id_b = db.upsert_series(b, &s2).unwrap();
+        db.set_followed(id_b, true).unwrap();
+        db.set_kind(id_b, "TV").unwrap();
+        for n in 1..=2 {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: id_b, number: n.to_string(), title: None,
+                url: format!("https://site/b-{}/", n), released_at: None, seen: true,
+            }).unwrap();
+        }
+        db.conn
+            .execute(
+                "UPDATE episodes SET seen_at=datetime('now', ?1) WHERE series_id=?2 AND number='1'",
+                ("-8 days", id_b),
+            )
+            .unwrap();
+        db.conn
+            .execute(
+                "UPDATE episodes SET seen_at=datetime('now', ?1) WHERE series_id=?2 AND number='2'",
+                ("-1 days", id_b),
+            )
+            .unwrap();
+
+        let avg = db.get_avg_completion_days().unwrap();
+        // Merged franchise: first seen 10 days ago, last seen 1 day ago -> span = 9
+        assert_eq!(avg, Some(9.0), "cross-site franchise merged, overall span 9 days");
+    }
+
+    // ---- Popularity Bias (2026-08-24) ----
+
+    #[test]
+    fn get_popularity_bias_returns_none_when_fewer_than_3_linked_followed_series() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+
+        // Insert 2 followed series linked to catalog with popularity
+        for (slug, title, pop) in [
+            ("s1", "Show One", 50000),
+            ("s2", "Show Two", 100000),
+        ] {
+            db.upsert_catalog_anime(
+                &crate::anilist::CatalogAnime {
+                    id: pop, title: title.into(), title_romaji: None, title_english: None,
+                    cover_url: None, format: Some("TV".into()), genres: vec![],
+                    episodes: Some(12), average_score: None, popularity: Some(pop),
+                    url: format!("https://anilist.co/anime/{pop}"), status: None, duration: Some(24),
+                    studio: None, start_date: None,
+                },
+                0,
+            ).unwrap();
+            let id = db.upsert_series(src, &mk_airing(slug, title, None)).unwrap();
+            db.set_followed(id, true).unwrap();
+            db.set_anilist_id(id, pop).unwrap();
+        }
+
+        let bias = db.get_popularity_bias().unwrap();
+        assert_eq!(bias.average_popularity, None);
+        assert_eq!(bias.normalized_score, None);
+    }
+
+    #[test]
+    fn get_popularity_bias_returns_none_when_no_catalog_link() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+
+        // 3 followed series but none linked to catalog
+        for (slug, title) in [
+            ("s1", "Show One"),
+            ("s2", "Show Two"),
+            ("s3", "Show Three"),
+        ] {
+            let id = db.upsert_series(src, &mk_airing(slug, title, None)).unwrap();
+            db.set_followed(id, true).unwrap();
+        }
+
+        let bias = db.get_popularity_bias().unwrap();
+        assert_eq!(bias.average_popularity, None);
+        assert_eq!(bias.normalized_score, None);
+    }
+
+    #[test]
+    fn get_popularity_bias_dedups_cross_site_same_show() {
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        let b = db.upsert_source("TioAnime", "b", "tioanime").unwrap();
+
+        // Same show on both sites, linked to same AniList ID
+        db.upsert_catalog_anime(
+            &crate::anilist::CatalogAnime {
+                id: 100, title: "Shared Show".into(), title_romaji: None, title_english: None,
+                cover_url: None, format: Some("TV".into()), genres: vec![],
+                episodes: Some(12), average_score: None, popularity: Some(210000),
+                url: "https://anilist.co/anime/100".into(), status: None, duration: Some(24),
+                studio: None, start_date: None,
+            },
+            0,
+        ).unwrap();
+
+        let id_a = db.upsert_series(a, &mk_airing("shared", "Shared Show", None)).unwrap();
+        db.set_followed(id_a, true).unwrap();
+        db.set_anilist_id(id_a, 100).unwrap();
+
+        let id_b = db.upsert_series(b, &mk_airing("shared", "Shared Show", None)).unwrap();
+        db.set_followed(id_b, true).unwrap();
+        db.set_anilist_id(id_b, 100).unwrap();
+
+        // Two other distinct shows on site A to reach the 3 minimum
+        for (slug, title, pop) in [
+            ("s2", "Show Two", 50000),
+            ("s3", "Show Three", 150000),
+        ] {
+            db.upsert_catalog_anime(
+                &crate::anilist::CatalogAnime {
+                    id: pop, title: title.into(), title_romaji: None, title_english: None,
+                    cover_url: None, format: Some("TV".into()), genres: vec![],
+                    episodes: Some(12), average_score: None, popularity: Some(pop),
+                    url: format!("https://anilist.co/anime/{pop}"), status: None, duration: Some(24),
+                    studio: None, start_date: None,
+                },
+                0,
+            ).unwrap();
+            let id = db.upsert_series(a, &mk_airing(slug, title, None)).unwrap();
+            db.set_followed(id, true).unwrap();
+            db.set_anilist_id(id, pop).unwrap();
+        }
+
+        let bias = db.get_popularity_bias().unwrap();
+        assert!(bias.average_popularity.is_some());
+        // Average = (210000 + 50000 + 150000) / 3 = 410000 / 3 ≈ 136666.67
+        let avg = bias.average_popularity.unwrap();
+        assert!((avg - 136666.67).abs() < 1.0, "average: {avg}");
+        let norm = bias.normalized_score.unwrap();
+        assert!((norm - 1.95238).abs() < 0.01, "normalized: {norm}"); // 136666.67 / 70000
+    }
+
+    #[test]
+    fn get_popularity_bias_normalizes_correctly() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+
+        // 3 shows with popularity summing to 700,000 -> avg = 233,333.33 -> norm ≈ 3.33
+        for (slug, title, pop) in [
+            ("s1", "Low Pop", 10000),
+            ("s2", "Mid Pop", 200000),
+            ("s3", "High Pop", 490000),
+        ] {
+            db.upsert_catalog_anime(
+                &crate::anilist::CatalogAnime {
+                    id: pop, title: title.into(), title_romaji: None, title_english: None,
+                    cover_url: None, format: Some("TV".into()), genres: vec![],
+                    episodes: Some(12), average_score: None, popularity: Some(pop),
+                    url: format!("https://anilist.co/anime/{pop}"), status: None, duration: Some(24),
+                    studio: None, start_date: None,
+                },
+                0,
+            ).unwrap();
+            let id = db.upsert_series(src, &mk_airing(slug, title, None)).unwrap();
+            db.set_followed(id, true).unwrap();
+            db.set_anilist_id(id, pop).unwrap();
+        }
+
+        let bias = db.get_popularity_bias().unwrap();
+        let avg = bias.average_popularity.unwrap();
+        assert!((avg - 233333.33).abs() < 1.0, "average: {avg}");
+        let norm = bias.normalized_score.unwrap();
+        assert!((norm - 3.33333).abs() < 0.01, "normalized: {norm}"); // 233333.33 / 70000
+    }
+
+    #[test]
+    fn get_popularity_bias_clamps_score_at_ten() {
+        // A followed list skewed toward AniList's most popular shows can
+        // individually clear 700,000 popularity — well above the 70,000
+        // divisor's own scale. The normalized score must clamp to 10, not
+        // report an out-of-range value that would break the 0-10 slider.
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+        for (slug, title, pop) in [
+            ("s1", "Mega Hit 1", 900_000),
+            ("s2", "Mega Hit 2", 850_000),
+            ("s3", "Mega Hit 3", 950_000),
+        ] {
+            db.upsert_catalog_anime(
+                &crate::anilist::CatalogAnime {
+                    id: pop, title: title.into(), title_romaji: None, title_english: None,
+                    cover_url: None, format: Some("TV".into()), genres: vec![],
+                    episodes: Some(12), average_score: None, popularity: Some(pop),
+                    url: format!("https://anilist.co/anime/{pop}"), status: None, duration: Some(24),
+                    studio: None, start_date: None,
+                },
+                0,
+            ).unwrap();
+            let id = db.upsert_series(src, &mk_airing(slug, title, None)).unwrap();
+            db.set_followed(id, true).unwrap();
+            db.set_anilist_id(id, pop).unwrap();
+        }
+
+        let bias = db.get_popularity_bias().unwrap();
+        let norm = bias.normalized_score.unwrap();
+        assert_eq!(norm, 10.0, "score must clamp at 10, not exceed it: {norm}");
+    }
+
+    #[test]
+    fn get_genre_cards_counts_episodes_not_shows_and_sorts_by_them() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+
+        // Action: 2 shows, 3 + 2 seen episodes = 5 episodes total.
+        let a1 = db.upsert_series(src, &mk_airing("a1", "Action Show 1", None)).unwrap();
+        db.set_followed(a1, true).unwrap();
+        db.insert_series_genres(a1, &["Action".into()]).unwrap();
+        insert_eps_seen_up_to(&db, a1, 3, 3);
+
+        let a2 = db.upsert_series(src, &mk_airing("a2", "Action Show 2", None)).unwrap();
+        db.set_followed(a2, true).unwrap();
+        db.insert_series_genres(a2, &["Action".into()]).unwrap();
+        insert_eps_seen_up_to(&db, a2, 2, 2);
+
+        // Comedy: 1 show, 10 seen episodes — fewer shows but more episodes
+        // than Action, so a shows-count sort would rank it below Action
+        // while an episode-count sort ranks it above.
+        let c1 = db.upsert_series(src, &mk_airing("c1", "Comedy Show", None)).unwrap();
+        db.set_followed(c1, true).unwrap();
+        db.insert_series_genres(c1, &["Comedy".into()]).unwrap();
+        insert_eps_seen_up_to(&db, c1, 10, 10);
+
+        let cards = db.get_genre_cards().unwrap();
+        assert_eq!(cards.len(), 2);
+        assert_eq!(cards[0].genre, "Comedy", "10 episodes beats Action's 5");
+        assert_eq!(cards[0].count, 10);
+        assert_eq!(cards[0].top_series.len(), 1);
+        assert_eq!(cards[1].genre, "Action");
+        assert_eq!(cards[1].count, 5, "sum of both Action shows' episodes, not the show count (2)");
+        assert_eq!(cards[1].top_series.len(), 2);
+    }
+
+    #[test]
+    fn get_genre_cards_caps_thumbnails_at_four_but_counts_all_episodes() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+
+        for (slug, title, eps) in [
+            ("d1", "Drama 1", 1),
+            ("d2", "Drama 2", 1),
+            ("d3", "Drama 3", 1),
+            ("d4", "Drama 4", 1),
+            ("d5", "Drama 5", 1),
+        ] {
+            let id = db.upsert_series(src, &mk_airing(slug, title, None)).unwrap();
+            db.set_followed(id, true).unwrap();
+            db.insert_series_genres(id, &["Drama".into()]).unwrap();
+            insert_eps_seen_up_to(&db, id, eps, eps);
+        }
+
+        let cards = db.get_genre_cards().unwrap();
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].top_series.len(), 4, "thumbnails capped at 4");
+        assert_eq!(cards[0].count, 5, "but the episode count reflects all 5 shows");
+    }
+
+    // ---- Yearly activity heatmap (2026-08-24) ----
+
+    #[test]
+    fn get_yearly_activity_returns_full_year_zero_filled() {
+        // Use 2025 (non-leap) to avoid the Feb 29 edge case.
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+        let series = db.upsert_series(src, &mk_airing("x", "X", None)).unwrap();
+
+        // Seed three marks on specific dates within 2025, and one in 2024 to
+        // prove year-filtering works. Use mid-day times (12:00:00) so the
+        // UTC→localtime conversion in the query never crosses a day boundary
+        // regardless of the test machine's timezone.
+        let eps = [
+            ("1", "2025-01-15 12:00:00"),
+            ("2", "2025-01-15 12:00:00"),
+            ("3", "2025-06-20 12:00:00"),
+            ("4", "2024-12-31 12:00:00"), // different year, must not appear
+        ];
+        for (num, seen_at) in eps {
+            let ep = db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: series, number: num.into(), title: None,
+                url: format!("https://site/x-{num}/"), released_at: None, seen: true,
+            }).unwrap();
+            // Overwrite seen_at to the exact timestamp we want (local time stored
+            // as UTC in the DB; we rely on the query's 'localtime' conversion).
+            db.conn
+                .execute("UPDATE episodes SET seen_at = ?1 WHERE id = ?2", [seen_at, ep.to_string().as_str()])
+                .unwrap();
+        }
+
+        let activity = db.get_yearly_activity(2025).unwrap();
+        assert_eq!(activity.year, 2025);
+        assert_eq!(activity.days.len(), 365, "non-leap year has 365 days");
+
+        // Jan 15 should have 2 marks.
+        let jan15 = activity.days.iter().find(|d| d.day == "2025-01-15").unwrap();
+        assert_eq!(jan15.count, 2);
+
+        // Jun 20 should have 1 mark.
+        let jun20 = activity.days.iter().find(|d| d.day == "2025-06-20").unwrap();
+        assert_eq!(jun20.count, 1);
+
+        // Dec 31 2024 must not be counted (year filter).
+        let dec31_2024 = activity.days.iter().find(|d| d.day == "2024-12-31");
+        assert!(dec31_2024.is_none() || dec31_2024.unwrap().count == 0);
+
+        // All other days must be zero.
+        let nonzero = activity.days.iter().filter(|d| d.count > 0).count();
+        assert_eq!(nonzero, 2, "only Jan 15 and Jun 20 have marks");
+    }
+
+    #[test]
+    fn get_activity_years_includes_current_year_even_when_empty() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+
+        // No episodes at all — should still get the current year.
+        let years = db.get_activity_years().unwrap();
+        let this_year = chrono::Local::now().date_naive().year();
+        assert!(years.contains(&this_year), "current year present even with no data: {years:?}");
+        assert!(years.iter().all(|&y| y <= this_year), "no future years: {years:?}");
+        assert!(years.windows(2).all(|w| w[0] > w[1]), "descending order: {years:?}");
+
+        // Add a mark in a past year — both should appear.
+        let series = db.upsert_series(src, &mk_airing("x", "X", None)).unwrap();
+        let ep = db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: series, number: "1".into(), title: None,
+            url: "https://site/x-1/".into(), released_at: None, seen: true,
+        }).unwrap();
+        let past_year = this_year - 1;
+        db.conn
+            .execute(
+                "UPDATE episodes SET seen_at = ?1 WHERE id = ?2",
+                [format!("{past_year}-07-15 12:00:00"), ep.to_string()],
+            )
+            .unwrap();
+
+        let years = db.get_activity_years().unwrap();
+        assert!(years.contains(&this_year), "current year still present: {years:?}");
+        assert!(years.contains(&past_year), "past year with data present: {years:?}");
+        assert!(years[0] == this_year, "current year first (descending): {years:?}");
     }
 }

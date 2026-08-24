@@ -43,7 +43,17 @@ export const es = {
   "airing.followBtn": "+ Seguir",
   "airing.filterAll": "Todas",
   "airing.filterSeason": "Esta temporada",
+  "airing.filterWeek": "Esta semana",
   "airing.seasonHint": "Solo se muestran series con fecha de estreno registrada. Se sigan o no, se busca la fecha en el Catálogo sincronizado — si falta, resincronizá el Catálogo desde su pestaña",
+  "airing.weekEmpty": "Nada programado esta semana.",
+
+  // AiringSpotlight.tsx
+  "spotlight.ariaLabel": "Destacados en emisión",
+  "spotlight.watchBtn": "Ver serie",
+  "spotlight.prevBtn": "Anterior",
+  "spotlight.nextBtn": "Siguiente",
+  "spotlight.dotsAria": "Diapositivas",
+  "spotlight.slideAria": "Diapositiva",
 
   // Pending.tsx
   "pending.episodesToWatch": "{count} episodios por ver",
@@ -153,9 +163,21 @@ export const es = {
   "library.typeAll": "Todos",
   "library.typeOther": "Otros",
   "library.filterGenre": "Género",
-  "library.genreAll": "Todos",
+  "library.genreChipAria": "Filtro de género {genre}, estado: {state}",
+  "library.genreState.neutral": "sin filtro",
+  "library.genreState.include": "incluir",
+  "library.genreState.exclude": "excluir",
+  "library.clearGenreFilters": "Limpiar filtros de género",
+  "library.showMoreGenres": "{count} más",
+  "library.showLessGenres": "Mostrar menos",
   "library.filterStudio": "Estudio",
   "library.studioAll": "Todos",
+  "library.selectMode": "Seleccionar",
+  "library.cancelSelect": "Cancelar",
+  "library.selectedCount": "{count} seleccionados",
+  "library.bulkRemove": "Dejar de seguir selección",
+  "library.bulkRemoveConfirm": "¿Dejar de seguir {count} series? Se perderá el progreso de visionado.",
+  "library.deselectAll": "Deseleccionar todo",
 
   // SeriesDetail.tsx
   "seriesDetail.unfollow": "Dejar de seguir",
@@ -312,6 +334,9 @@ export const es = {
   "stats.shapeRings": "Círculos",
   "stats.shapeBars": "Barras",
   "stats.shapeToggleAria": "Forma del gráfico",
+  "stats.episodeSingular": "episodio",
+  "stats.episodePlural": "episodios",
+  "stats.genreCardThumbsAria": "{genre} - series destacadas",
 
   // StatsGraph.tsx
   "stats.graphEmpty": "Sin series seguidas todavía.",
@@ -323,6 +348,9 @@ export const es = {
   "stats.timeWatchedHelp": "estimación: 24 min/episodio (100 películas) · {done} de {total} «Ya vistas» con datos",
   "stats.completion": "Progreso global",
   "stats.avgEpisodes": "Media de episodios por serie",
+  "stats.completionSpeed": "Velocidad media de finalización",
+  "stats.completionSpeedValue": "{days} días",
+  "stats.completionSpeedEmpty": "Termina alguna serie para ver esto",
   "stats.topSeries": "Top series",
   "stats.funnelHeading": "Tu embudo de Descubrir",
   "stats.funnelWant": "Quiero ver",
@@ -334,6 +362,9 @@ export const es = {
   "stats.finished": "Finalizadas",
   "stats.marksHeading": "Episodios marcados por día (últimos 30 días)",
   "stats.marksCaveat": "Cuenta cuándo marcaste el episodio, no cuándo lo viste; marcar una serie entera marca de golpe todos sus episodios anteriores. Datos desde {date}.",
+  "stats.hourlyHeading": "Episodios marcados por hora (24h)",
+  "stats.hourlyDaytime": "🌅 Espectador diurno",
+  "stats.hourlyNight": "🦉 Búho nocturno",
   "stats.minutesUnit": "{minutes} min",
   "stats.hoursUnit": "{hours}h",
   "stats.daysUnit": "{days}d {hours}h",
@@ -342,4 +373,37 @@ export const es = {
   "stats.retry": "Reintentar",
   "stats.noGenre": "Sin género",
   "stats.graphAria": "Grafo de relaciones: {series} series seguidas repartidas en {genres} géneros",
+  // Dusty watchlist
+  "stats.dustyHeading": "Polvorientas",
+  "stats.dustyLastSeen": "Última vez: {date}",
+
+  // Binge record stat
+  "stats.bingeRecord": "Récord en un día",
+  "stats.bingeRecordValue": "{count} episodios ({day})",
+  "stats.bingeRecordEmpty": "Marca algo como visto para establecer tu récord",
+
+  // Popularity Bias
+  "stats.popularityBiasHeading": "Sesgo de popularidad",
+  "stats.popularityBiasLabel": "Promedio vs Underground",
+  "stats.popularityBiasLow": "Underground",
+  "stats.popularityBiasHigh": "Mainstream",
+  "stats.popularityBiasHelp": "Promedio de popularidad en AniList de tus series seguidas (enlazadas al catálogo), normalizado 0–10. Menos de 3 series con datos = sin puntuación. 0 = solo joyas ocultas, 10 = solo éxitos masivos.",
+
+  // StatsHeatmap.tsx
+  "stats.heatmapHeading": "Actividad anual",
+  "stats.heatmapYear": "Año",
+  "stats.heatmapNoYears": "Sin años con actividad registrada.",
+  "stats.heatmapNoData": "Sin datos para este año.",
+  "stats.heatmapError": "Error al cargar el mapa de calor: {msg}",
+  "stats.heatmapAria": "Mapa de calor de actividad para {year}",
+  "stats.heatmapLess": "Menos",
+  "stats.heatmapMore": "Más",
+  "stats.heatmapEpisodes": "episodios",
+  "stats.heatmapMon": "Lun",
+  "stats.heatmapTue": "Mar",
+  "stats.heatmapWed": "Mié",
+  "stats.heatmapThu": "Jue",
+  "stats.heatmapFri": "Vie",
+  "stats.heatmapSat": "Sáb",
+  "stats.heatmapSun": "Dom",
 } as const;

@@ -31,14 +31,17 @@ type View =
   | "stats"
   | "descubrir"
   | "catalog"
-  | "settings"
-  | "detail";
+  | "settings";
 
 export default function App() {
   const t = useT();
   const [view, setView] = useState<View>("loading");
+  // A series' detail page is an overlay on top of the current tab, not a
+  // tab of its own — see the render below. Opening/closing it never
+  // touches `view`, so whichever tab was showing underneath is never
+  // unmounted and its scroll position needs no restoring at all: it was
+  // simply never disturbed.
   const [selected, setSelected] = useState<Series | null>(null);
-  const [cameFrom, setCameFrom] = useState<View>("airing");
   const [pending, setPending] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
   const [airingRefreshSignal, setAiringRefreshSignal] = useState(0);
@@ -108,7 +111,7 @@ export default function App() {
     } finally {
       setRefreshing(false);
       await refreshBadge();
-      if (view !== "airing") setView("pending");
+      if (view !== "airing") navigate("pending");
     }
   }
 
@@ -117,40 +120,38 @@ export default function App() {
   }, [view]);
 
   // Every tab besides Stats fully unmounts on switch (see the render below),
-  // which used to reset the page scroll to the top — annoying on long lists
+  // which used to reset its scroll to the top — annoying on long lists
   // (Library, Catalog) where switching away and back meant scrolling all the
-  // way back down. Remember each tab's own scroll offset and restore it.
+  // way back down. Remember each tab's own scroll offset (inside its
+  // .view-panel, which now owns its own scroll — see the app-shell layout
+  // in styles.css) and restore it.
   const scrollPositions = useRef<Partial<Record<View, number>>>({});
-  const viewRef = useRef(view);
-  useEffect(() => {
-    viewRef.current = view;
-  }, [view]);
-  useEffect(() => {
-    const onScroll = () => {
-      scrollPositions.current[viewRef.current] = window.scrollY;
-    };
-    window.addEventListener("scroll", onScroll, { passive: true });
-    return () => window.removeEventListener("scroll", onScroll);
-  }, []);
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  function navigate(next: View) {
+    if (panelRef.current) scrollPositions.current[view] = panelRef.current.scrollTop;
+    setView(next);
+  }
   useEffect(() => {
     const target = scrollPositions.current[view];
     if (target === undefined) return;
-    // The incoming view's data (Pending/Library/Catalog...) often fetches
-    // and renders after this effect first fires, growing the page past what
-    // it was on the previous paint — a one-shot scrollTo here would just get
-    // overwritten once the real rows land. Keep nudging it back across a few
-    // frames until the document height settles instead of assuming layout
-    // is already final.
-    let frame = 0;
+    // The incoming tab's data (Pending/Library/Catalog...) often fetches and
+    // renders after this effect first fires, growing the panel past what it
+    // was on the previous paint — a one-shot scroll here would just get
+    // overwritten once the real rows land. Keep nudging it back until the
+    // panel's height settles, budgeted by wall-clock time rather than a
+    // frame count: a Tauri IPC round-trip for a long list can easily take
+    // longer than a handful of animation frames.
+    const deadline = performance.now() + 5000;
     let lastHeight = -1;
     let stableFrames = 0;
     const tick = () => {
-      window.scrollTo(0, target);
-      const h = document.documentElement.scrollHeight;
+      const el = panelRef.current;
+      if (!el) return;
+      el.scrollTop = target;
+      const h = el.scrollHeight;
       stableFrames = h === lastHeight ? stableFrames + 1 : 0;
       lastHeight = h;
-      frame++;
-      if (stableFrames < 3 && frame < 90) requestAnimationFrame(tick);
+      if (stableFrames < 6 && performance.now() < deadline) requestAnimationFrame(tick);
     };
     requestAnimationFrame(tick);
   }, [view]);
@@ -169,13 +170,7 @@ export default function App() {
     setStatsVisited(false);
     setAiringRefreshSignal((n) => n + 1);
     await refreshBadge();
-    setView("airing");
-  }
-
-  function openSeries(s: Series) {
-    setCameFrom(view === "detail" ? cameFrom : view);
-    setSelected(s);
-    setView("detail");
+    navigate("airing");
   }
 
   // Frameless window: every screen needs *some* draggable strip with the
@@ -212,7 +207,7 @@ export default function App() {
   const Tab = ({ id, label }: { id: View; label: string }) => (
     <button
       className={`tab ${view === id ? "active" : ""}`}
-      onClick={() => setView(id)}
+      onClick={() => navigate(id)}
     >
       {label}
       {id === "pending" && pending > 0 && <span className="badge">{pending}</span>}
@@ -220,7 +215,7 @@ export default function App() {
   );
 
   return (
-    <>
+    <div className="app-shell">
       {/* Frameless window: the topbar IS the title bar. `data-tauri-drag-region`
           on the bar and the non-interactive areas (brand, spacer) lets the user
           drag the window; double-clicking them maximizes, same as a native bar.
@@ -248,26 +243,53 @@ export default function App() {
       </div>
       <ProgressBar />
 
-      {view === "pending" && <Pending onOpenSeries={openSeries} onChanged={refreshBadge} />}
-      {view === "airing" && (
-        <AiringGrid onOpenSeries={openSeries} refreshSignal={airingRefreshSignal} />
-      )}
-      {view === "library" && <Library onOpenSeries={openSeries} />}
-      {view === "descubrir" && <Descubrir onOpenSeries={openSeries} />}
-      {view === "catalog" && <Catalog />}
-      {statsVisited && (
-        <div hidden={view !== "stats"}>
-          <Stats active={view === "stats"} />
-        </div>
-      )}
-      {view === "settings" && <Settings onSiteChanged={onSiteChanged} />}
-      {view === "detail" && selected && (
-        <SeriesDetail
-          series={selected}
-          onBack={() => setView(cameFrom)}
-          onChanged={refreshBadge}
-        />
-      )}
-    </>
+      <div className="view-stack">
+        {view === "pending" && (
+          <div className="view-panel" ref={panelRef}>
+            <Pending onOpenSeries={setSelected} onChanged={refreshBadge} />
+          </div>
+        )}
+        {view === "airing" && (
+          <div className="view-panel" ref={panelRef}>
+            <AiringGrid onOpenSeries={setSelected} refreshSignal={airingRefreshSignal} />
+          </div>
+        )}
+        {view === "library" && (
+          <div className="view-panel" ref={panelRef}>
+            <Library onOpenSeries={setSelected} />
+          </div>
+        )}
+        {view === "descubrir" && (
+          <div className="view-panel" ref={panelRef}>
+            <Descubrir onOpenSeries={setSelected} />
+          </div>
+        )}
+        {view === "catalog" && (
+          <div className="view-panel" ref={panelRef}>
+            <Catalog />
+          </div>
+        )}
+        {statsVisited && (
+          <div className="view-panel" hidden={view !== "stats"}>
+            <Stats active={view === "stats"} />
+          </div>
+        )}
+        {view === "settings" && (
+          <div className="view-panel" ref={panelRef}>
+            <Settings onSiteChanged={onSiteChanged} />
+          </div>
+        )}
+
+        {selected && (
+          <div className="view-panel">
+            <SeriesDetail
+              series={selected}
+              onBack={() => setSelected(null)}
+              onChanged={refreshBadge}
+            />
+          </div>
+        )}
+      </div>
+    </div>
   );
 }

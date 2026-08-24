@@ -191,7 +191,7 @@ impl Db {
                     COUNT(e.id) AS total,
                     SUM(CASE WHEN e.seen=1 THEN 1 ELSE 0 END) AS seen
              FROM series s LEFT JOIN episodes e ON e.series_id = s.id
-             WHERE s.watched_externally=0
+             WHERE s.watched_externally=0 AND s.completion_reconciled=0
              GROUP BY s.id",
         )?;
         struct Cand { id: i64, key: String, is_airing: bool, total: i64, seen: i64 }
@@ -216,9 +216,16 @@ impl Db {
             if !c.is_airing {
                 // Finished show completed elsewhere → flag it completed. A flag
                 // only; episode seen-state is never mutated (non-destructive).
+                // Self-exempting from now on via watched_externally=1 alone,
+                // but completion_reconciled is set below too for uniformity.
                 tx.execute("UPDATE series SET watched_externally=1 WHERE id=?1", [c.id])?;
                 changed += 1;
-            } else if c.seen == 0 && c.total > 0 {
+            } else if c.total == 0 {
+                // No episodes scraped in for this row yet — nothing to decide.
+                // Leave it un-reconciled so a future refresh (once episodes
+                // exist) still gets a first chance to catch it up.
+                continue;
+            } else if c.seen == 0 {
                 // Airing show you watched elsewhere but never here (0 progress):
                 // mark the episodes aired so far seen, so it shows in the airing
                 // grid as caught-up instead of a false pending pile. We do NOT
@@ -233,6 +240,14 @@ impl Db {
             }
             // Airing with real partial/full progress (e.g. One Piece 1079/1171)
             // is left completely alone — that progress is authoritative.
+            //
+            // Either way this row's completion state is now decided for good
+            // (auto-caught-up, real progress respected, or flagged
+            // completed) — mark it reconciled so it's never revisited. Without
+            // this, a user who later un-marks episodes back down to 0 on
+            // purpose looked identical to "never watched here" on the next
+            // refresh and got silently re-completed.
+            tx.execute("UPDATE series SET completion_reconciled=1 WHERE id=?1", [c.id])?;
         }
         tx.commit()?;
         Ok(changed)
@@ -279,12 +294,21 @@ impl Db {
     /// `set_seen_cascade(id, watermark, true)`, which marks episodes numbered
     /// <= watermark seen and leaves everything above it — including on a row
     /// that already has MORE progress than the canonical watermark — exactly
-    /// as it was. Never unmarks anything. Scoped to `followed=1`: an
+    /// as it was. Never unmarks anything itself. Scoped to `followed=1`: an
     /// unfollowed or backlog-only twin is not touched. Returns how many
     /// series rows were actually advanced.
+    ///
+    /// A row lagging behind its twin is ambiguous on a live snapshot alone:
+    /// "never caught up here" and "the user just manually un-marked episodes
+    /// on purpose" look identical (both are just a lower `own_watermark`).
+    /// `sync_watermark_applied` remembers what this function itself last
+    /// set/observed for a row — a live watermark that has *dropped* below it
+    /// means something un-marked episodes since, and that reset is respected
+    /// rather than immediately overwritten back up to the twin's watermark.
+    /// Real forward progress past that point resumes normal catch-up.
     pub fn sync_seen_progress_across_sites(&self) -> Result<usize> {
         let mut stmt = self.conn.prepare(
-            "SELECT s.id, s.anilist_id, s.title,
+            "SELECT s.id, s.anilist_id, s.title, s.sync_watermark_applied,
                     COALESCE(MAX(CASE WHEN e.seen=1 THEN CAST(e.number AS INTEGER) END), 0) AS own_watermark
              FROM series s LEFT JOIN episodes e ON e.series_id = s.id
              WHERE s.followed=1
@@ -293,13 +317,19 @@ impl Db {
         struct Row {
             id: i64,
             key: String,
+            applied: Option<i64>,
             own_watermark: i64,
         }
         let rows: Vec<Row> = stmt
             .query_map([], |r| {
                 let anilist_id: Option<i64> = r.get(1)?;
                 let title: String = r.get(2)?;
-                Ok(Row { id: r.get(0)?, key: canon_key(anilist_id, &title), own_watermark: r.get(3)? })
+                Ok(Row {
+                    id: r.get(0)?,
+                    key: canon_key(anilist_id, &title),
+                    applied: r.get(3)?,
+                    own_watermark: r.get(4)?,
+                })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
 
@@ -314,9 +344,23 @@ impl Db {
         let mut advanced = 0usize;
         for row in &rows {
             let ceiling = canonical[&row.key];
-            if ceiling > row.own_watermark {
+            let rolled_back = row.applied.is_some_and(|applied| row.own_watermark < applied);
+            if ceiling > row.own_watermark && !rolled_back {
                 self.set_seen_cascade(row.id, &ceiling.to_string(), true)?;
+                self.conn.execute(
+                    "UPDATE series SET sync_watermark_applied=?2 WHERE id=?1",
+                    (row.id, ceiling),
+                )?;
                 advanced += 1;
+            } else {
+                // Nothing to raise (already at/above the ceiling), or raising
+                // it would override a manual rollback — either way, resync
+                // bookkeeping to the row's real current watermark so a future
+                // refresh judges it against what it actually is now.
+                self.conn.execute(
+                    "UPDATE series SET sync_watermark_applied=?2 WHERE id=?1",
+                    (row.id, row.own_watermark),
+                )?;
             }
         }
         Ok(advanced)
@@ -544,6 +588,38 @@ mod tests {
     }
 
     #[test]
+    fn reconcile_does_not_re_complete_a_row_the_user_manually_reset_to_zero() {
+        // The reported bug: refresh() auto-catches-up an airing twin with 0
+        // progress (correct, once). The user then deliberately un-marks every
+        // episode back to 0 (wants to rewatch from scratch). Before
+        // completion_reconciled existed, the next refresh saw seen==0 again —
+        // indistinguishable from "never watched here" — and silently
+        // re-completed it, undoing the user's un-mark every single time.
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        let b = db.upsert_source("TioAnime", "b", "tioanime").unwrap();
+        let base = db.upsert_series(a, &mk_airing("tanya", "Saga of Tanya S2", None)).unwrap();
+        db.set_anilist_id(base, 135865).unwrap();
+        db.set_watched_externally(base, true).unwrap();
+        let ob = seed_followed(&db, b, "youjo-senki-ii", "Youjo Senki II", Some(135865), 0, 3);
+
+        // First refresh: legitimate auto-catch-up.
+        assert_eq!(db.reconcile_completion_across_sites().unwrap(), 1);
+        assert!(db.list_series_episodes(ob).unwrap().iter().all(|e| e.seen));
+
+        // User manually resets every episode back to unseen.
+        db.set_seen_cascade(ob, "1", false).unwrap();
+        assert!(db.list_series_episodes(ob).unwrap().iter().all(|e| !e.seen));
+
+        // Second refresh must leave the manual reset alone.
+        assert_eq!(db.reconcile_completion_across_sites().unwrap(), 0, "already reconciled once — must not re-fire");
+        assert!(
+            db.list_series_episodes(ob).unwrap().iter().all(|e| !e.seen),
+            "manual reset to zero must survive a refresh"
+        );
+    }
+
+    #[test]
     fn reconcile_leaves_unrelated_shows_untouched() {
         let db = Db::open(":memory:").unwrap();
         let a = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
@@ -696,6 +772,42 @@ mod tests {
 
         assert_eq!(db.sync_seen_progress_across_sites().unwrap(), 0);
         assert_eq!(db.list_series_episodes(ob).unwrap().iter().filter(|e| e.seen).count(), 0);
+    }
+
+    #[test]
+    fn sync_seen_progress_does_not_re_raise_a_manually_rolled_back_row() {
+        // The reported bug: followed on two sites, both caught up to 10. The
+        // user un-marks A back down to 3 on purpose (wants to rewatch). The
+        // next refresh's sync saw A(3) behind B's still-10 watermark and
+        // silently raised A right back to 10 — undoing the un-mark every time.
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        let b = db.upsert_source("TioAnime", "b", "tioanime").unwrap();
+        let oa = seed_followed(&db, a, "shared", "Shared Show", None, 10, 10);
+        seed_followed(&db, b, "shared-b", "Shared Show", None, 10, 10);
+
+        // Both already caught up — a first sync just records bookkeeping.
+        assert_eq!(db.sync_seen_progress_across_sites().unwrap(), 0);
+
+        // User manually un-marks A from episode 3 onward (un-marking cascades
+        // to every later episode too, including the one clicked — 1 and 2
+        // stay seen).
+        db.set_seen_cascade(oa, "3", false).unwrap();
+        assert_eq!(db.list_series_episodes(oa).unwrap().iter().filter(|e| e.seen).count(), 2);
+
+        // Refresh (== another sync) must respect the rollback, not re-raise A.
+        assert_eq!(db.sync_seen_progress_across_sites().unwrap(), 0, "must not re-raise a manual rollback");
+        assert_eq!(
+            db.list_series_episodes(oa).unwrap().iter().filter(|e| e.seen).count(),
+            2,
+            "A's manual rollback survives a refresh"
+        );
+
+        // Genuine forward progress past the rollback point still resumes
+        // normal cross-site catch-up.
+        db.set_seen_cascade(oa, "4", true).unwrap();
+        assert_eq!(db.sync_seen_progress_across_sites().unwrap(), 1, "real progress past the rollback resumes catch-up");
+        assert_eq!(db.list_series_episodes(oa).unwrap().iter().filter(|e| e.seen).count(), 10);
     }
 
     #[test]

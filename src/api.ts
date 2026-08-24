@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   Series,
   AiringItem,
+  BingeRecord,
   Episode,
   PendingItem,
   LibraryItem,
@@ -9,6 +10,9 @@ import type {
   TypeStat,
   WatchSummary,
   WatchInsights,
+  DustyEntry,
+  PopularityBias,
+  YearlyActivity,
   SeriesGraphNode,
   SwipeCard,
   SwipeDecision,
@@ -24,6 +28,8 @@ import type {
   SwipeHistoryItem,
   DeckBans,
   BackupStatus,
+  HourCount,
+  GenreCard,
 } from "./types";
 
 export const scanAiring = (baseUrl: string) =>
@@ -79,13 +85,30 @@ export const listLibrary = () => invoke<LibraryItem[]>("list_library");
 
 export const getGenreStats = () => invoke<GenreStat[]>("get_genre_stats");
 
+export const getGenreCards = () => invoke<GenreCard[]>("get_genre_cards");
+
 export const getTypeStats = () => invoke<TypeStat[]>("get_type_stats");
 
 export const getWatchSummary = () => invoke<WatchSummary>("get_watch_summary");
 
 export const getWatchInsights = () => invoke<WatchInsights>("get_watch_insights");
 
+export const getDustyWatchlist = () => invoke<DustyEntry[]>("get_dusty_watchlist");
+
+export const getAvgCompletionDays = () => invoke<number | null>("get_avg_completion_days");
+
+export const getPopularityBias = () => invoke<PopularityBias>("get_popularity_bias");
+
+export const getYearlyActivity = (year: number) =>
+  invoke<YearlyActivity>("get_yearly_activity", { year });
+
+export const getActivityYears = () => invoke<number[]>("get_activity_years");
+
 export const getStatsGraph = () => invoke<SeriesGraphNode[]>("get_stats_graph");
+
+export const getBingeRecord = () => invoke<BingeRecord>("get_binge_record");
+
+export const getHourlyDistribution = () => invoke<HourCount[]>("get_hourly_distribution");
 
 export const backfillGenres = () => invoke<number>("backfill_genres");
 
