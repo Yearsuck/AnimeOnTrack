@@ -39,10 +39,12 @@ export const ca: Messages = {
   "airing.followBtn": "+ Segueix",
   "airing.filterAll": "Totes",
   "airing.filterSeason": "Aquesta temporada",
+  "airing.filterWeek": "Aquesta setmana",
   "airing.seasonHint": "Només es mostren sèries amb data d'estrena registrada. Es segueixin o no, es busca la data al Catàleg sincronitzat — si falta, resincronitza el Catàleg des de la seva pestanya",
   "airing.carouselTitle": "Pròxims episodis",
   "airing.carousel.prev": "Episodis anteriors",
   "airing.carousel.next": "Pròxims episodis",
+  "airing.weekEmpty": "No hi ha res programat aquesta setmana.",
 
   // AiringSpotlight.tsx
   "spotlight.ariaLabel": "Destacats en emissió",

@@ -35,10 +35,12 @@ export const en: Messages = {
   "airing.followBtn": "+ Follow",
   "airing.filterAll": "All",
   "airing.filterSeason": "This season",
+  "airing.filterWeek": "This week",
   "airing.seasonHint": "Only shows a known premiere date. Followed or not, the date comes from the synced Catálogo — if it's missing, resync the Catálogo from its tab",
   "airing.carouselTitle": "Upcoming episodes",
   "airing.carousel.prev": "Previous episodes",
   "airing.carousel.next": "Next episodes",
+  "airing.weekEmpty": "Nothing scheduled this week.",
 
   // AiringSpotlight.tsx
   "spotlight.ariaLabel": "Featured airing",
