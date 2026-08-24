@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { useT } from "../i18n";
 import { categoryColor } from "../lib/categoryColor";
 import { useStatsShape, type Shape } from "../lib/statsShape";
+import type { GenreCard, GenreCardSeries } from "../types";
+import { useFormatNumber } from "../lib/formatNumber";
 
 export type Datum = { name: string; count: number };
 
@@ -160,17 +162,98 @@ export function ShapeToggle({ shape, onChange }: { shape: Shape; onChange: (s: S
   );
 }
 
+// ---- Genre Cards ----------------------------------------------------------
+// Ranked genre cards with top series thumbnails. Inspired by dango's Insights
+// page. Each card shows: rank number, genre name, episode count, and up to 4
+// mini poster thumbnails of the top shows in that genre sorted by episodes
+// watched. Reuses the existing cover image loading pattern from Library.tsx.
+function GenreCardComponent({
+  rank,
+  card,
+}: {
+  rank: number;
+  card: GenreCard;
+}) {
+  const t = useT();
+  const n = useFormatNumber();
+  const epLabel = card.count === 1 ? t("stats.episodeSingular") : t("stats.episodePlural");
+  return (
+    <article className="genrecard">
+      <div className="genrecard-rank">{rank}</div>
+      <div className="genrecard-body">
+        <div className="genrecard-header">
+          <h4 className="genrecard-genre">{card.genre}</h4>
+          <span className="genrecard-count">{n(card.count)} {epLabel}</span>
+        </div>
+        {card.top_series.length > 0 && (
+          <div className="genrecard-thumbs" role="list" aria-label={t("stats.genreCardThumbsAria", { genre: card.genre })}>
+            {card.top_series.slice(0, 4).map((series: GenreCardSeries) => (
+              <div key={series.title} className="genrecard-thumb" role="listitem">
+                {series.cover_url ? (
+                  <img
+                    src={series.cover_url}
+                    alt=""
+                    loading="lazy"
+                    onError={(e) => {
+                      const target = e.currentTarget as HTMLImageElement;
+                      target.style.display = "none";
+                      const fallback = target.nextElementSibling as HTMLElement;
+                      if (fallback) fallback.style.display = "flex";
+                    }}
+                  />
+                ) : null}
+                <div
+                  className="genrecard-thumb-fallback"
+                  style={{
+                    display: series.cover_url ? "none" : "flex",
+                    background: categoryColor(card.genre),
+                  }}
+                >
+                  {series.title
+                    .split(" ")
+                    .map((w) => w[0])
+                    .slice(0, 2)
+                    .join("")
+                    .toUpperCase()}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </article>
+  );
+}
+
+export function GenreCards({
+  genres,
+}: {
+  genres: GenreCard[];
+}) {
+  if (genres.length === 0) {
+    const t = useT();
+    return <div className="empty">{t("stats.ringsEmpty")}</div>;
+  }
+
+  return (
+    <div className="genrecards-grid">
+      {genres.map((card, idx) => (
+        <GenreCardComponent key={card.genre} rank={idx + 1} card={card} />
+      ))}
+    </div>
+  );
+}
+
 export function StatsRings({
   genres,
   types,
 }: {
-  genres: { genre: string; count: number }[];
+  genres: GenreCard[];
   types: { kind: string; count: number }[];
 }) {
   const t = useT();
   const [shape, setShape] = useStatsShape();
 
-  const genreData = toData(genres, "genre");
   const typeData = toData(types, "kind");
 
   return (
@@ -183,7 +266,7 @@ export function StatsRings({
         <div className="series-head">
           <h3 className="section-title">{t("stats.byGenre")}</h3>
         </div>
-        <CategoryBlock data={genreData} shape={shape} emptyMessage={t("stats.ringsEmpty")} />
+        <GenreCards genres={genres} />
       </div>
 
       <div className="series-block">

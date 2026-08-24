@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
-  getGenreStats,
+  getGenreCards,
   getTypeStats,
   getWatchSummary,
   getWatchInsights,
@@ -11,7 +11,7 @@ import {
 } from "../api";
 import { useT } from "../i18n";
 import { useFormatNumber } from "../lib/formatNumber";
-import type { GenreStat, TypeStat, WatchSummary, WatchInsights, PopularityBias, SeriesGraphNode } from "../types";
+import type { TypeStat, WatchSummary, WatchInsights, PopularityBias, SeriesGraphNode, GenreCard } from "../types";
 import { StatsGraph } from "./StatsGraph";
 import { StatsRings } from "./StatsRings";
 import { StatsInsights } from "./StatsInsights";
@@ -24,7 +24,7 @@ export function Stats({ active }: { active: boolean }) {
   const [summary, setSummary] = useState<WatchSummary | null>(null);
   const [insights, setInsights] = useState<WatchInsights | null>(null);
   const [popularityBias, setPopularityBias] = useState<PopularityBias | null>(null);
-  const [genres, setGenres] = useState<GenreStat[]>([]);
+  const [genres, setGenres] = useState<GenreCard[]>([]);
   const [types, setTypes] = useState<TypeStat[]>([]);
   const [graph, setGraph] = useState<SeriesGraphNode[]>([]);
   const [view, setView] = useState<StatsView>("grafo");
@@ -59,7 +59,7 @@ export function Stats({ active }: { active: boolean }) {
         getWatchSummary(),
         getWatchInsights(),
         getPopularityBias(),
-        getGenreStats(),
+        getGenreCards(),
         getTypeStats(),
         getStatsGraph(),
       ]);

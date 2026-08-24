@@ -294,6 +294,9 @@ export const en: Messages = {
   "stats.shapeRings": "Circles",
   "stats.shapeBars": "Bars",
   "stats.shapeToggleAria": "Chart shape",
+  "stats.episodeSingular": "episode",
+  "stats.episodePlural": "episodes",
+  "stats.genreCardThumbsAria": "{genre} - featured series",
 
   "stats.graphEmpty": "No followed series yet.",
   "stats.graphRootLabel": "Followed",

@@ -2226,3 +2226,121 @@ select.lib-filter-select {
   backdrop-filter: blur(14px) saturate(140%);
   border-bottom: 1px solid var(--border-soft);
 }
+
+/* ---------- Stats · genre cards ---------- */
+/* Ranked genre cards with thumbnails. Reuses tokens and patterns from
+   the rest of the design system — no new colors, no inline styles. */
+.genrecards-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: var(--sp-4);
+  padding: var(--sp-3) var(--sp-1);
+}
+.genrecard {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+}
+.genrecard:hover {
+  border-color: var(--surface-3);
+  box-shadow: var(--shadow-md);
+}
+.genrecard-rank {
+  width: 48px;
+  height: 100%;
+  min-height: 80px;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: var(--fs-2xl);
+  font-weight: var(--fw-bold);
+  font-variant-numeric: tabular-nums;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-right: 1px solid var(--border);
+}
+.genrecard-body {
+  padding: var(--sp-3) var(--sp-4);
+  min-height: 80px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+.genrecard-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-2);
+}
+.genrecard-genre {
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-bold);
+  letter-spacing: -0.01em;
+  margin: 0;
+}
+.genrecard-count {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.genrecard-thumbs {
+  display: flex;
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
+}
+.genrecard-thumb {
+  position: relative;
+  width: 40px;
+  height: 56px;
+  flex-shrink: 0;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--surface-2);
+}
+.genrecard-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.genrecard-thumb-fallback {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--on-accent);
+  font-weight: var(--fw-bold);
+  font-size: var(--fs-base);
+  letter-spacing: 0.5px;
+}
+
+/* Responsive: stack on narrow screens */
+@media (max-width: 600px) {
+  .genrecards-grid {
+    grid-template-columns: 1fr;
+  }
+  .genrecard {
+    display: flex;
+    flex-direction: column;
+  }
+  .genrecard-rank {
+    width: 100%;
+    height: 40px;
+    min-height: 40px;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    font-size: var(--fs-xl);
+  }
+  .genrecard-body {
+    padding: var(--sp-3);
+    min-height: auto;
+  }
+  .genrecard-thumbs {
+    justify-content: flex-start;
+  }
+}
