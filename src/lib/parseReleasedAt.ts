@@ -43,8 +43,11 @@ const RELATIVE_UNIT_MS: Record<string, number> = {
 export function parseReleasedAtToUnixSeconds(raw: string): number | null {
   const s = raw.trim().toLowerCase();
 
-  // "hace 52 minutos" / "hace 2 dias" / "hace 1 hora"
-  const rel = s.match(/^hace\s+(\d+)\s+(segundo|minuto|hora|d[ií]a|semana|mes|a[ñn]o)s?$/);
+  // "hace 52 minutos" / "hace 2 dias" / "hace 1 hora" / "hace 3 meses" — every
+  // unit pluralizes with a plain trailing "s" except "mes", whose real plural
+  // is the irregular "meses" (+"es", not +"s"); `(?:s|es)?` covers both
+  // shapes instead of just the regular one.
+  const rel = s.match(/^hace\s+(\d+)\s+(segundo|minuto|hora|d[ií]a|semana|mes|a[ñn]o)(?:s|es)?$/);
   if (rel) {
     const n = parseInt(rel[1], 10);
     const unitMs = RELATIVE_UNIT_MS[rel[2].replace("n", "ñ")] ?? RELATIVE_UNIT_MS[rel[2]];
