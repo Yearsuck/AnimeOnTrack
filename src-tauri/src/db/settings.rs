@@ -116,6 +116,11 @@ impl Db {
     /// Seconds since the last recorded episode-list fetch, or `None` if the
     /// series has never had one recorded. Computed in SQL so the stored ISO
     /// 8601 text never needs parsing in Rust.
+    // Kept as a public single-series lookup even though `refresh()` now uses
+    // the batched `last_checked_ages_for_source` instead (see its doc
+    // comment) — a real, useful primitive on its own, exercised directly by
+    // the tests below.
+    #[allow(dead_code)]
     pub fn last_checked_age_secs(&self, series_id: i64) -> Result<Option<i64>> {
         Ok(self.conn.query_row(
             "SELECT strftime('%s','now') - strftime('%s', last_checked_at)
@@ -123,6 +128,27 @@ impl Db {
             [series_id],
             |r| r.get(0),
         )?)
+    }
+
+    /// Batched form of `last_checked_age_secs` for every followed series of
+    /// `source_id` — see `Db::max_episode_numbers_for_source`'s doc comment
+    /// for why `refresh()`'s per-series query pair was worth batching. A
+    /// series missing from the map has no rows in `series` for this source
+    /// at all (shouldn't happen for an id drawn from `list_followed`, but
+    /// callers should still treat a missing key the same as `None` rather
+    /// than panicking).
+    pub fn last_checked_ages_for_source(
+        &self,
+        source_id: i64,
+    ) -> Result<std::collections::HashMap<i64, Option<i64>>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, strftime('%s','now') - strftime('%s', last_checked_at)
+             FROM series WHERE source_id=?1 AND followed=1",
+        )?;
+        let rows = stmt
+            .query_map([source_id], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<i64>>(1)?)))?
+            .collect::<rusqlite::Result<std::collections::HashMap<i64, Option<i64>>>>()?;
+        Ok(rows)
     }
 }
 
@@ -140,6 +166,32 @@ mod tests {
         db.set_last_checked_at(sid).unwrap();
         let age = db.last_checked_age_secs(sid).unwrap().expect("age after set");
         assert!((0..60).contains(&age), "freshly-set age should be ~0s, got {age}");
+    }
+
+    #[test]
+    fn last_checked_ages_for_source_matches_the_per_series_version_and_scopes_correctly() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let other_src = db.upsert_source("TioAnime", "t", "tioanime").unwrap();
+
+        let sid_checked = db.upsert_series(src, &mk_airing("a", "A", None)).unwrap();
+        db.set_followed(sid_checked, true).unwrap();
+        db.set_last_checked_at(sid_checked).unwrap();
+
+        let sid_never = db.upsert_series(src, &mk_airing("b", "B", None)).unwrap();
+        db.set_followed(sid_never, true).unwrap();
+
+        let sid_unfollowed = db.upsert_series(src, &mk_airing("c", "C", None)).unwrap();
+        db.set_last_checked_at(sid_unfollowed).unwrap();
+
+        let sid_other = db.upsert_series(other_src, &mk_airing("d", "D", None)).unwrap();
+        db.set_followed(sid_other, true).unwrap();
+
+        let map = db.last_checked_ages_for_source(src).unwrap();
+        assert!(map.get(&sid_checked).copied().flatten().is_some());
+        assert_eq!(map.get(&sid_never).copied().flatten(), None);
+        assert!(!map.contains_key(&sid_unfollowed), "not followed -> excluded");
+        assert!(!map.contains_key(&sid_other), "different source -> excluded");
     }
 
     #[test]

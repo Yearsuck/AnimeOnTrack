@@ -48,6 +48,13 @@ export const es = {
   "airing.filterWeek": "Esta semana",
   "airing.seasonHint": "Solo se muestran series con fecha de estreno registrada. Se sigan o no, se busca la fecha en el Catálogo sincronizado — si falta, resincronizá el Catálogo desde su pestaña",
   "airing.weekEmpty": "Nada programado esta semana.",
+  "airing.dayMon": "Lun",
+  "airing.dayTue": "Mar",
+  "airing.dayWed": "Mié",
+  "airing.dayThu": "Jue",
+  "airing.dayFri": "Vie",
+  "airing.daySat": "Sáb",
+  "airing.daySun": "Dom",
 
   // AiringSpotlight.tsx
   "spotlight.ariaLabel": "Destacados en emisión",
@@ -135,6 +142,7 @@ export const es = {
   "settings.backupRestoreConfirm": "Esto reemplazará tus datos actuales con la copia de la nube y reiniciará la app. ¿Continuar?",
   "settings.backupRestoring": "Descargando y restaurando…",
   "settings.backupLast": "Última copia: {when}",
+  "settings.backupLastError": "La última copia falló: {error}",
   "settings.backupNever": "Aún no hay ninguna copia.",
   "settings.backupSize": "Tamaño: {size}",
   "settings.backupIntro": "Guarda una copia de tus datos en una carpeta privada de tu Google Drive y restáurala en otro equipo.",

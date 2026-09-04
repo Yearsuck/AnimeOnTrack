@@ -40,10 +40,14 @@ chrono = "0.4"
 sha2 = "0.10"
 base64 = "0.22"
 urlencoding = "2"
+# OS-backed CSPRNG for the OAuth PKCE verifier / state nonce (see
+# backup/oauth.rs) — replaces a hand-rolled, clock-seeded PRNG that was not
+# cryptographically secure.
+getrandom = "0.3"
 
 # Windows-only: drive WebView2 ExecuteScript host-side to extract rendered HTML
 # from external (Cloudflare-protected) pages without exposing app IPC to them.
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.38"
-windows = { version = "0.61", features = ["Win32_Foundation"] }
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
 

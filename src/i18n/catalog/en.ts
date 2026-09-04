@@ -40,6 +40,13 @@ export const en: Messages = {
   "airing.filterWeek": "This week",
   "airing.seasonHint": "Only shows a known premiere date. Followed or not, the date comes from the synced Catálogo — if it's missing, resync the Catálogo from its tab",
   "airing.weekEmpty": "Nothing scheduled this week.",
+  "airing.dayMon": "Mon",
+  "airing.dayTue": "Tue",
+  "airing.dayWed": "Wed",
+  "airing.dayThu": "Thu",
+  "airing.dayFri": "Fri",
+  "airing.daySat": "Sat",
+  "airing.daySun": "Sun",
 
   // AiringSpotlight.tsx
   "spotlight.ariaLabel": "Featured airing",
@@ -124,6 +131,7 @@ export const en: Messages = {
   "settings.backupRestoreConfirm": "This will replace your current data with the cloud copy and restart the app. Continue?",
   "settings.backupRestoring": "Downloading and restoring…",
   "settings.backupLast": "Last backup: {when}",
+  "settings.backupLastError": "Last backup failed: {error}",
   "settings.backupNever": "No backup yet.",
   "settings.backupSize": "Size: {size}",
   "settings.backupIntro": "Keep a copy of your data in a private folder on your Google Drive and restore it on another machine.",

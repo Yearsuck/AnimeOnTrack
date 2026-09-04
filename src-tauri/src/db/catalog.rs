@@ -78,6 +78,27 @@ impl Db {
         Ok(())
     }
 
+    /// Same writes as `upsert_catalog_anime`, batched under one transaction —
+    /// for the full/incremental catalog sync and the metadata backfill, which
+    /// otherwise call it once per row (up to ~22,000 times for a full sync),
+    /// each paying for its own implicit transaction/fsync. Call once per
+    /// network-response page/batch rather than per row. `unchecked_transaction`
+    /// borrows `&self.conn` immutably (rusqlite's usual interior-mutability
+    /// pattern), so reusing `upsert_catalog_anime` — itself `&self` — for each
+    /// row here is fine: every one of its statements runs inside this same
+    /// open transaction rather than its own implicit one.
+    pub fn upsert_catalog_anime_batch(
+        &self,
+        items: &[(&crate::anilist::CatalogAnime, i64)],
+    ) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        for (anime, sort_order) in items {
+            self.upsert_catalog_anime(anime, *sort_order)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Every catalog row's title variants, for building a
     /// `matching::CatalogIndex`. All three stored spellings are returned
     /// because the scraped site lists some shows under their romaji title and

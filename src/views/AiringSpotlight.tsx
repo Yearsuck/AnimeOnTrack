@@ -44,6 +44,17 @@ export function AiringSpotlight({ items, onOpenSeries }: AiringSpotlightProps) {
   const goPrev = useCallback(() => goTo(currentIndex - 1), [currentIndex, goTo]);
   const goNext = useCallback(() => goTo(currentIndex + 1), [currentIndex, goTo]);
 
+  // `currentIndex` persists across renders of this same mounted instance;
+  // `featuredItems` can shrink out from under it (e.g. AiringGrid switching
+  // from "Todas" to "Esta temporada" without remounting the spotlight) —
+  // without this clamp the transform below computes a translateX beyond
+  // -100%, rendering a blank banner until the next auto-advance/click.
+  useEffect(() => {
+    if (currentIndex >= featuredItems.length && featuredItems.length > 0) {
+      setCurrentIndex(0);
+    }
+  }, [featuredItems.length, currentIndex]);
+
   useEffect(() => {
     if (isHovering || featuredItems.length === 0) return;
     const id = setInterval(() => goNext(), 6000);

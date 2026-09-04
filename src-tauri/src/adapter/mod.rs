@@ -140,6 +140,72 @@ pub trait SiteAdapter: Send + Sync {
     }
 }
 
+// --- Shared parsing helpers ---------------------------------------------
+//
+// `slug_from_url`, `text_of` and `digits_in` used to be copy-pasted
+// near-verbatim into every one of the six adapter files. That duplication is
+// exactly what let the `digits_in` bug below (see its own doc comment) go
+// unfixed in three places at once, and is the same root cause the
+// URL-staleness bug in `commands::scan::rebase_to_mirror`'s doc comment
+// describes for `abs()`. One copy here, used by every adapter via
+// `use super::{digits_in, slug_from_url, text_of};`.
+
+/// The last path segment of a URL, with any trailing slash removed — the
+/// site's own slug for a series/episode.
+pub(crate) fn slug_from_url(url: &str) -> String {
+    url.trim_end_matches('/').rsplit('/').next().unwrap_or("").to_string()
+}
+
+/// First element matching `sel` under `el`, as trimmed text — `None` if
+/// absent or empty after trimming.
+pub(crate) fn text_of(el: scraper::ElementRef, sel: &scraper::Selector) -> Option<String> {
+    el.select(sel)
+        .next()
+        .map(|n| n.text().collect::<String>().trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// The first maximal run of ASCII digits in `s`, e.g. "Episodio 12" -> "12".
+/// Falls back to the whole trimmed string if there are no digits at all
+/// (never panics, never produces an empty episode number silently).
+///
+/// Deliberately the *first contiguous run*, not every digit character in the
+/// string concatenated together: the latter turned "Episode 12 (1080p)" into
+/// "121080" and "1x12" into "112" — real-looking labels this could plausibly
+/// see from a markup change — instead of the actual episode number.
+pub(crate) fn digits_in(s: &str) -> String {
+    let mut run = String::new();
+    for c in s.chars() {
+        if c.is_ascii_digit() {
+            run.push(c);
+        } else if !run.is_empty() {
+            break;
+        }
+    }
+    if run.is_empty() {
+        s.trim().to_string()
+    } else {
+        run
+    }
+}
+
+#[cfg(test)]
+mod helper_tests {
+    use super::*;
+
+    #[test]
+    fn digits_in_takes_the_first_run_not_every_digit_concatenated() {
+        assert_eq!(digits_in("Episodio 12"), "12");
+        assert_eq!(digits_in("Episode 12 (1080p)"), "12");
+        assert_eq!(digits_in("1x12"), "1");
+    }
+
+    #[test]
+    fn digits_in_falls_back_to_trimmed_input_with_no_digits() {
+        assert_eq!(digits_in("  Especial  "), "Especial");
+    }
+}
+
 // The five genre-archive methods above (`genre_list_url`, `parse_genre_list`,
 // `genre_page_url`, `parse_finished_page`, `parse_pagination_last_page`)
 // exist because AnimeYT has genre archives with a `.status.Completed`

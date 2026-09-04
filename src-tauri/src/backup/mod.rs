@@ -1,6 +1,7 @@
 pub mod credentials;
 pub mod drive;
 pub mod oauth;
+pub mod secure_store;
 
 use crate::db::Db;
 use rusqlite::Connection;
@@ -92,7 +93,10 @@ pub async fn access_token(
 pub fn configured_client(db: &Db) -> Option<(String, String)> {
     credentials::resolve(
         db.get_setting("google_client_id").ok().flatten(),
-        db.get_setting("google_client_secret").ok().flatten(),
+        db.get_setting("google_client_secret")
+            .ok()
+            .flatten()
+            .map(|s| secure_store::unprotect(&s)),
     )
 }
 
@@ -106,20 +110,28 @@ pub fn stage_restore(bytes: &[u8], dir: &std::path::Path) -> Result<(), String> 
 }
 
 /// Called from `.setup` BEFORE `Db::open`. If a validated staged restore is
-/// pending, swap it over the live file. Never leaves the app unopenable: on
-/// any inconsistency it clears the marker and returns without swapping.
+/// pending, swap it over the live file. Never leaves the app unopenable: the
+/// live file is never removed except by `rename` itself replacing it, so a
+/// failed swap leaves the existing DB completely untouched and the marker in
+/// place for a retry on the next startup — it is only cleared once the swap
+/// has actually succeeded.
+///
+/// `rename` (not remove-then-copy) is what makes this safe: on Windows,
+/// `std::fs::rename` replaces an existing destination file, and `staged`
+/// lives in the same directory as `live` so this is always a same-volume
+/// rename, never the cross-device case that would need a copy fallback. An
+/// older version of this function deleted `live` unconditionally before
+/// attempting the swap and swallowed the fallback's error — if both steps
+/// failed (locked file, transient disk error), the app was left with the
+/// live DB gone and no indication anything went wrong.
 pub fn apply_pending_restore(dir: &std::path::Path) {
     let marker = dir.join(RESTORE_MARKER);
     let staged = dir.join(RESTORE_STAGED);
     if !marker.exists() { return; }
     if staged.exists() {
         let live = dir.join(BACKUP_FILE_NAME);
-        // Best-effort atomic-ish swap: remove live, rename staged in.
-        let _ = std::fs::remove_file(&live);
         if std::fs::rename(&staged, &live).is_err() {
-            // Cross-device fallback: copy then delete.
-            let _ = std::fs::copy(&staged, &live);
-            let _ = std::fs::remove_file(&staged);
+            return;
         }
     }
     let _ = std::fs::remove_file(&marker);
@@ -163,6 +175,58 @@ mod tests {
             signature_string((1, 2, 3, None)),
             signature_string((1, 2, 3, Some("2026-07-14".into())))
         );
+    }
+
+    #[test]
+    fn apply_pending_restore_swaps_staged_over_live_and_clears_markers() {
+        let dir = std::env::temp_dir().join(format!("aot_restore_ok_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(BACKUP_FILE_NAME), b"old live bytes").unwrap();
+        std::fs::write(dir.join(RESTORE_STAGED), b"new staged bytes").unwrap();
+        std::fs::write(dir.join(RESTORE_MARKER), b"1").unwrap();
+
+        apply_pending_restore(&dir);
+
+        assert_eq!(std::fs::read(dir.join(BACKUP_FILE_NAME)).unwrap(), b"new staged bytes");
+        assert!(!dir.join(RESTORE_MARKER).exists());
+        assert!(!dir.join(RESTORE_STAGED).exists());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn apply_pending_restore_is_a_noop_without_a_marker() {
+        let dir = std::env::temp_dir().join(format!("aot_restore_noop_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(BACKUP_FILE_NAME), b"untouched").unwrap();
+
+        apply_pending_restore(&dir);
+
+        assert_eq!(std::fs::read(dir.join(BACKUP_FILE_NAME)).unwrap(), b"untouched");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The critical property: if the swap can't happen, `live` must never be
+    /// touched. Simulated by pointing `live` at a path that can't be a
+    /// rename target (a directory, not a file) — `rename` then fails, and
+    /// the pre-fix version's separate `remove_file(&live)` would already
+    /// have deleted `live` before this point, unconditionally.
+    #[test]
+    fn apply_pending_restore_leaves_live_and_marker_alone_when_swap_fails() {
+        let dir = std::env::temp_dir().join(format!("aot_restore_fail_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // `live` is a directory here, so `rename(staged, live)` fails instead
+        // of replacing it — standing in for a locked-file/transient-error swap
+        // failure without needing to actually lock a file in a unit test.
+        std::fs::create_dir_all(dir.join(BACKUP_FILE_NAME)).unwrap();
+        std::fs::write(dir.join(RESTORE_STAGED), b"staged bytes").unwrap();
+        std::fs::write(dir.join(RESTORE_MARKER), b"1").unwrap();
+
+        apply_pending_restore(&dir);
+
+        assert!(dir.join(BACKUP_FILE_NAME).is_dir(), "live must be untouched on swap failure");
+        assert!(dir.join(RESTORE_MARKER).exists(), "marker must survive for a retry");
+        assert!(dir.join(RESTORE_STAGED).exists(), "staged bytes must survive for a retry");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

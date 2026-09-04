@@ -325,6 +325,13 @@ pub struct BackupStatus {
     pub connected: bool,
     pub last_at: Option<String>,
     pub size_bytes: Option<i64>,
+    /// Message from the most recent *failed* backup attempt (manual or the
+    /// opportunistic auto-backup after `refresh()`), or `None` if the last
+    /// attempt succeeded / none has run yet. Auto-backup failures used to be
+    /// swallowed entirely (`let _ = backup_now(...).await;`) — the user had
+    /// no way to learn backups had silently stopped working (expired OAuth
+    /// grant, Drive quota, network). Cleared on the next successful backup.
+    pub last_error: Option<String>,
 }
 
 #[cfg(test)]

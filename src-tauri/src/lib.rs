@@ -136,6 +136,7 @@ pub fn run() {
                 sticky_mirror: Mutex::new(std::collections::HashMap::new()),
                 library_import_running: std::sync::atomic::AtomicBool::new(false),
                 episode_backfill_running: std::sync::atomic::AtomicBool::new(false),
+                catalog_sync_running: std::sync::atomic::AtomicBool::new(false),
             });
 
             // Opportunistic startup cloud backup: silently does nothing

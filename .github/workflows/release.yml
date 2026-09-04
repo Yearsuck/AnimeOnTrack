@@ -10,6 +10,15 @@ name: Release
 # but cannot get past setup. They ship as clearly-labelled experimental
 # artifacts until `eval()` is ported to WKWebView / WebKitGTK. No signing
 # secrets are required (Google Drive creds are entered at runtime).
+#
+# Every action is pinned to a commit SHA (not a mutable version tag) — this
+# workflow builds and signs the actual installer users download, so a tag
+# that could be silently repointed is the wrong amount of trust to extend.
+# The `# vN` / `# stable` comment records what the pinned commit was when
+# pinned; bump both together when updating. `dtolnay/rust-toolchain@stable`
+# is normally a moving ref by design (tracks new Rust releases) — pinning it
+# trades that auto-update for the same supply-chain guarantee, at the cost
+# of needing a manual bump for future stable Rust releases.
 on:
   push:
     tags:
@@ -36,16 +45,16 @@ jobs:
             args: ""
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: lts/*
           cache: npm
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           # macOS needs both arches for the universal build; other OSes just
           # use the host target.
@@ -65,7 +74,7 @@ jobs:
             file
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: src-tauri
 
@@ -76,7 +85,7 @@ jobs:
       # release (keyed by the tag). tauri-action find-or-creates the release, so
       # the three jobs converge on one set of assets.
       - name: Build and release
-        uses: tauri-apps/tauri-action@v1
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { listAiringSeason, setFollowed } from "../api";
-import { useT, useLang } from "../i18n";
+import { useT } from "../i18n";
 import type { AiringItem, Series } from "../types";
 import { AiringSpotlight } from "./AiringSpotlight";
 
@@ -41,11 +41,22 @@ function getWeekday(nextEpisodeAt: number | null): number | null {
   return new Date(nextEpisodeAt * 1000).getDay();
 }
 
-// Localized short weekday name (e.g. "Lun", "Mon", "Dl") using current app language.
-function getWeekdayName(day: number, lang: string): string {
-  const date = new Date();
-  date.setDate(date.getDate() + ((day + 7 - date.getDay()) % 7));
-  return date.toLocaleDateString(lang, { weekday: "short" });
+// Localized short weekday name (e.g. "Lun", "Mon", "Dl"), from the app's own
+// i18n catalog rather than the browser's native Intl locale data — WebView2's
+// bundled ICU data doesn't reliably cover every locale the app supports
+// (Catalan in particular), silently falling back to the system locale
+// instead of respecting the language picked in Ajustes.
+const WEEKDAY_KEYS = [
+  "airing.daySun",
+  "airing.dayMon",
+  "airing.dayTue",
+  "airing.dayWed",
+  "airing.dayThu",
+  "airing.dayFri",
+  "airing.daySat",
+] as const;
+function getWeekdayName(day: number, t: ReturnType<typeof useT>): string {
+  return t(WEEKDAY_KEYS[day]);
 }
 
 type AiringViewMode = "all" | "season" | "week";
@@ -58,7 +69,6 @@ export function AiringGrid({
   refreshSignal?: number;
 }) {
   const t = useT();
-  const { lang } = useLang();
   const [items, setItems] = useState<AiringItem[]>([]);
   const [query, setQuery] = useState("");
   const [onlyFollowed, setOnlyFollowed] = useState(false);
@@ -187,7 +197,7 @@ export function AiringGrid({
               if (dayItems.length === 0) return null;
               return (
                 <div key={day} className={`week-day${day === today ? " today" : ""}`}>
-                  <h3 className="week-day-header">{getWeekdayName(day, lang)}</h3>
+                  <h3 className="week-day-header">{getWeekdayName(day, t)}</h3>
                   <div className="week-day-grid">
                     {dayItems.map(({ series: s }) => (
                       <div key={s.id} className="card" onClick={() => onOpenSeries(s)}>

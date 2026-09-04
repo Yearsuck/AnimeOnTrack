@@ -268,4 +268,5 @@ export interface BackupStatus {
   connected: boolean;
   last_at: string | null;
   size_bytes: number | null;
+  last_error: string | null;
 }
