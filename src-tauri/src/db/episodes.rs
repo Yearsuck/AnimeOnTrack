@@ -1,5 +1,18 @@
 use super::*;
 
+/// True for a `UNIQUE(series_id, url)` violation specifically — see
+/// `apply_episode_diff`'s doc comment for why this one constraint is
+/// tolerated (skip the offending row) rather than aborting the whole diff.
+fn is_unique_violation(e: &anyhow::Error) -> bool {
+    matches!(
+        e.downcast_ref::<rusqlite::Error>(),
+        Some(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error { code: rusqlite::ErrorCode::ConstraintViolation, .. },
+            _
+        ))
+    )
+}
+
 /// Extract a comparable numeric value from an episode-number string, e.g.
 /// "12" -> 12.0, "12.5" -> 12.5 (OVA/special numbering), "1x05" -> season 1
 /// episode 5 packed as 100005.0 (season-prefixed numbering seen on
@@ -335,12 +348,154 @@ impl Db {
             .collect::<rusqlite::Result<std::collections::HashSet<_>>>()?;
         Ok(urls)
     }
+
+    /// Apply one series' freshly-scraped episode list in a single
+    /// transaction: rewrite its URL if the serving mirror changed, refresh
+    /// the mutable metadata of episodes already known (by number, not URL —
+    /// see the call sites this replaces), insert genuinely new ones, and
+    /// stamp `last_checked_at`. Returns the count of new episodes inserted.
+    ///
+    /// This used to be a loop of individually autocommitted statements —
+    /// one `execute` per already-known episode plus one per new one, each
+    /// its own implicit transaction/fsync. For a long-running show that's a
+    /// couple dozen separate commits per series per refresh cycle, and on at
+    /// least one real machine that pattern reliably stalled indefinitely
+    /// partway through (zero CPU, not a SQLite-level lock — a concurrent
+    /// `sqlite3` write to the very row it was "stuck" on succeeded
+    /// instantly), consistent with a disk/AV write-rate heuristic tripping
+    /// on many rapid small writes to the same file rather than anything
+    /// SQLite itself was doing. One commit per series sidesteps that
+    /// regardless of the exact cause, and is strictly fewer fsyncs either way.
+    pub fn apply_episode_diff(
+        &self,
+        series_id: i64,
+        new_series_url: Option<&str>,
+        eps: &[crate::models::Episode],
+    ) -> Result<i64> {
+        let tx = self.conn.unchecked_transaction()?;
+        if let Some(url) = new_series_url {
+            self.update_series_url(series_id, url)?;
+        }
+        let known = self.existing_episode_numbers(series_id)?;
+        for e in eps.iter().filter(|e| known.contains(&e.number)) {
+            // A scraped episode can legitimately collide on
+            // UNIQUE(series_id, url) with another episode already stored
+            // under a different number — observed live on a real site
+            // whose listing briefly mapped two distinct episode numbers to
+            // the same href (a half-episode's page and its neighbor). That
+            // is bad *source* data, not a reason to abort this series' whole
+            // diff (which used to propagate the error and silently kill the
+            // entire `refresh()` cycle — every series still queued after
+            // this one, and the frontend's progress bar just froze on
+            // whatever number it last reached, looking exactly like a hang).
+            // Skip just this one episode's metadata refresh and keep going;
+            // it's retried on the next cycle and self-heals once the source
+            // page stops colliding.
+            if let Err(e2) = self.refresh_episode_meta(series_id, &e.number, &e.url, e.title.as_deref(), e.released_at.as_deref()) {
+                if is_unique_violation(&e2) {
+                    eprintln!("[refresh] series {series_id} episode {}: skipping metadata refresh, url collides with another episode ({e2})", e.number);
+                    continue;
+                }
+                return Err(e2);
+            }
+        }
+        let mut inserted = 0i64;
+        for mut e in crate::diff::new_episodes(eps, &known) {
+            e.series_id = series_id;
+            match self.insert_episode(&e) {
+                Ok(_) => inserted += 1,
+                Err(e2) if is_unique_violation(&e2) => {
+                    eprintln!("[refresh] series {series_id} episode {}: skipping insert, url collides with another episode ({e2})", e.number);
+                }
+                Err(e2) => return Err(e2),
+            }
+        }
+        self.set_last_checked_at(series_id)?;
+        tx.commit()?;
+        Ok(inserted)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use super::super::test_support::*;
+
+    #[test]
+    fn apply_episode_diff_refreshes_known_inserts_new_and_reports_the_new_count() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "old.example", "animeytx").unwrap();
+        let sid = db.upsert_series(src, &mk_airing("a", "A", None)).unwrap();
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: sid, number: "1".into(), title: None,
+            url: "https://old.example/a-1".into(), released_at: None, seen: true,
+        }).unwrap();
+
+        let scraped = vec![
+            crate::models::Episode {
+                id: 0, series_id: 0, number: "1".into(), title: Some("Ep 1".into()),
+                url: "https://new.example/a-1".into(), released_at: Some("hoy".into()), seen: false,
+            },
+            crate::models::Episode {
+                id: 0, series_id: 0, number: "2".into(), title: None,
+                url: "https://new.example/a-2".into(), released_at: None, seen: false,
+            },
+        ];
+        let inserted = db.apply_episode_diff(sid, Some("https://new.example"), &scraped).unwrap();
+        assert_eq!(inserted, 1, "only episode 2 is new");
+
+        let eps = db.list_series_episodes(sid).unwrap();
+        assert_eq!(eps.len(), 2);
+        assert!(eps[0].seen, "refreshing episode 1's link must not touch its seen state");
+        assert_eq!(eps[0].url, "https://new.example/a-1", "known episode's link is refreshed in place");
+        assert_eq!(db.get_series_url(sid).unwrap().as_deref(), Some("https://new.example"));
+        assert!(db.last_checked_age_secs(sid).unwrap().is_some(), "last_checked_at must be stamped");
+    }
+
+    #[test]
+    fn apply_episode_diff_repro_5006_constraint_clash() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "tio.example", "tioanime").unwrap();
+        let sid = db.upsert_series(src, &mk_airing("shingeki", "Shingeki", None)).unwrap();
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: sid, number: "135".into(), title: None,
+            url: "https://tioanime.com/ver/shingeki-no-kyojin-13.5".into(), released_at: None, seen: true,
+        }).unwrap();
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: sid, number: "13".into(), title: None,
+            url: "https://tioanime.com/ver/shingeki-no-kyojin-13".into(), released_at: None, seen: true,
+        }).unwrap();
+
+        let scraped = vec![
+            crate::models::Episode {
+                id: 0, series_id: 0, number: "135".into(), title: None,
+                url: "https://tioanime.com/ver/shingeki-no-kyojin-13.5".into(), released_at: None, seen: false,
+            },
+            crate::models::Episode {
+                id: 0, series_id: 0, number: "13".into(), title: None,
+                // Same url the "135" episode already owns — the exact
+                // constraint clash observed live for series 5006.
+                url: "https://tioanime.com/ver/shingeki-no-kyojin-13.5".into(), released_at: None, seen: false,
+            },
+        ];
+        // Must skip the colliding episode and finish normally — this used
+        // to propagate the constraint error and abort the whole `refresh()`
+        // cycle for every series still queued behind this one.
+        let inserted = db.apply_episode_diff(sid, None, &scraped).unwrap();
+        assert_eq!(inserted, 0, "both numbers were already known, nothing new to insert");
+    }
+
+    #[test]
+    fn apply_episode_diff_leaves_series_url_alone_when_none_is_given() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let sid = db.upsert_series(src, &mk_airing("a", "A", None)).unwrap();
+        let original_url = db.get_series_url(sid).unwrap();
+
+        db.apply_episode_diff(sid, None, &[]).unwrap();
+
+        assert_eq!(db.get_series_url(sid).unwrap(), original_url);
+    }
 
     #[test]
     fn episode_count_counts_only_this_series() {

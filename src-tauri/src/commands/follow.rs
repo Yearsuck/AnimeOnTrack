@@ -162,17 +162,9 @@ pub async fn start_watching(
     // De-duplicate by number, not URL (a domain change makes every URL look
     // new). Episodes already present — e.g. scraped by an earlier airing scan,
     // possibly already marked seen — are refreshed in place, never re-inserted
-    // as unseen duplicates. See db.rs's episode-dedup migration.
-    let known = db.existing_episode_numbers(series_id).map_err(|e| e.to_string())?;
-    for e in eps.iter().filter(|e| known.contains(&e.number)) {
-        db.refresh_episode_meta(series_id, &e.number, &e.url, e.title.as_deref(), e.released_at.as_deref())
-            .map_err(|e| e.to_string())?;
-    }
-    for mut e in new_episodes(&eps, &known) {
-        e.series_id = series_id;
-        e.seen = false;
-        db.insert_episode(&e).map_err(|e| e.to_string())?;
-    }
+    // as unseen duplicates. See db.rs's episode-dedup migration. One
+    // transaction for the whole list — see `apply_episode_diff`'s doc comment.
+    db.apply_episode_diff(series_id, None, &eps).map_err(|e| e.to_string())?;
     db.set_followed_canonical(series_id, true).map_err(|e| e.to_string())?;
     db.set_backlog_status(series_id, None).map_err(|e| e.to_string())?;
     Ok(LinkOutcome::Linked { url: series_url, episodes: episode_count })
@@ -561,16 +553,10 @@ async fn link_series_core(
     db.replace_series_genres(series_id, &detail.genres).map_err(|e| e.to_string())?;
     let episode_count = episodes.len() as i64;
     // De-duplicate by number (see the follow path above / db.rs migration): a
-    // re-link after a domain change must refresh links, not duplicate episodes.
-    let known = db.existing_episode_numbers(series_id).map_err(|e| e.to_string())?;
-    for e in episodes.iter().filter(|e| known.contains(&e.number)) {
-        db.refresh_episode_meta(series_id, &e.number, &e.url, e.title.as_deref(), e.released_at.as_deref())
-            .map_err(|e| e.to_string())?;
-    }
-    for mut e in new_episodes(&episodes, &known) {
-        e.series_id = series_id;
-        db.insert_episode(&e).map_err(|e| e.to_string())?;
-    }
+    // re-link after a domain change must refresh links, not duplicate
+    // episodes. One transaction for the whole list — see
+    // `apply_episode_diff`'s doc comment.
+    db.apply_episode_diff(series_id, None, &episodes).map_err(|e| e.to_string())?;
     if info.watched_externally {
         db.mark_all_episodes_seen(series_id).map_err(|e| e.to_string())?;
     }

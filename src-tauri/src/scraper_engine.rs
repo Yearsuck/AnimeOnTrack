@@ -24,6 +24,11 @@ const SCRAPE_CONCURRENCY: usize = 4;
 static SCRAPE_PERMITS: LazyLock<tokio::sync::Semaphore> =
     LazyLock::new(|| tokio::sync::Semaphore::new(SCRAPE_CONCURRENCY));
 
+/// How long to wait for `WebviewWindowBuilder::build()` before giving up —
+/// see `build_webview_window_with_timeout`'s doc comment for why this needs
+/// a dedicated-thread timeout rather than an `async` one.
+const WINDOW_BUILD_TIMEOUT: Duration = Duration::from_secs(20);
+
 /// Result of scraping a page: just the rendered HTML. Cover images are NOT
 /// fetched here (see `fetch_cover_image`) — doing it in bulk for every series
 /// on the airing list (~150 images in one go) reads to Cloudflare as scraping
@@ -42,6 +47,54 @@ pub struct ScrapeResult {
 
 fn emit_stage(app: &AppHandle, stage: &str) {
     let _ = app.emit("scrape-stage", stage);
+}
+
+/// Run a `WebviewWindowBuilder::build()` call on the app's **main** thread
+/// (via `AppHandle::run_on_main_thread`), with a real wall-clock timeout on
+/// waiting for the result.
+///
+/// Two separate constraints drive this shape:
+///
+/// - `.build()` is a **synchronous** function (confirmed in tauri's own
+///   source: it returns `tauri::Result<WebviewWindow>` directly, not a
+///   `Future`), and it has been live-observed to hang indefinitely (zero
+///   CPU, 10+ minutes, no error) right after a batch of concurrent scraper
+///   windows closes. A hang inside a synchronous call with no `.await`
+///   point can't be preempted by `tokio::time::timeout` on the async
+///   caller — that was live-verified to NOT fire even wrapping this exact
+///   call.
+/// - WebView2/Win32 window creation is thread-affine: it must happen on the
+///   thread that owns the app's GUI event loop. An earlier version of this
+///   function called `.build()` from a freshly spawned `std::thread`, which
+///   is off that thread — this crashed the whole process (an unhandled
+///   native access violation, invisible to Rust's panic hook: silent exit
+///   with no panic message, reproduced live right at the point the first
+///   concurrent cover-fetch window build started).
+///
+/// So the build itself is posted to the main thread with
+/// `run_on_main_thread` (satisfying thread affinity), while this function's
+/// caller waits for the result via `recv_timeout` on a plain channel — a
+/// real OS-level wait, not cooperative, so it still returns even if the
+/// main-thread build never completes. If the build genuinely never
+/// returns, the queued main-thread closure is leaked (there is no way to
+/// cancel it once posted), but the caller gets its timeout error back
+/// immediately.
+fn build_webview_window_with_timeout<F>(app: &AppHandle, build: F, timeout: Duration) -> Result<WebviewWindow>
+where
+    F: FnOnce() -> tauri::Result<WebviewWindow> + Send + 'static,
+{
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.run_on_main_thread(move || {
+        let _ = tx.send(build());
+    })
+    .map_err(|e| anyhow!("failed to queue window build on main thread: {e}"))?;
+    match rx.recv_timeout(timeout) {
+        Ok(Ok(window)) => Ok(window),
+        Ok(Err(e)) => Err(anyhow!("window build failed: {e}")),
+        Err(_) => Err(anyhow!(
+            "window build timed out after {timeout:?} (main thread likely stuck)"
+        )),
+    }
 }
 
 /// Reject navigation targets that could reach a local file or an internal
@@ -101,6 +154,26 @@ pub async fn fetch_html_with_script(
     url: &str,
     extra_script: Option<&str>,
 ) -> Result<ScrapeResult> {
+    // Outer hard timeout, same reasoning as `fetch_cover_image`'s:
+    // `extract_when_ready`'s own poll loop is bounded (40s ready-poll, plus
+    // up to a further 90s if `extra_script` is jkanime's episode-fetch
+    // script), but `WebviewWindowBuilder::build()` right below has no
+    // timeout of its own and has been observed to hang indefinitely under
+    // rapid window churn. Comfortably above the 40+90=130s a legitimate slow
+    // jkanime fetch can take, so this only fires when something is
+    // genuinely stuck rather than just slow.
+    const OUTER_TIMEOUT: Duration = Duration::from_secs(150);
+    match tokio::time::timeout(OUTER_TIMEOUT, fetch_html_with_script_inner(app, url, extra_script)).await {
+        Ok(result) => result,
+        Err(_) => Err(anyhow!("scrape timed out (window build stalled): {url}")),
+    }
+}
+
+async fn fetch_html_with_script_inner(
+    app: &AppHandle,
+    url: &str,
+    extra_script: Option<&str>,
+) -> Result<ScrapeResult> {
     if !is_safe_external_url(url) {
         return Err(anyhow!("refusing to navigate to unsafe url: {url}"));
     }
@@ -112,24 +185,29 @@ pub async fn fetch_html_with_script(
     let _permit = SCRAPE_PERMITS.acquire().await?;
     emit_stage(app, "opening");
     let label = format!("scraper-{}", uuid_like());
+    let parsed_url = url.parse().map_err(|_| anyhow!("bad url: {url}"))?;
     let build_started = std::time::Instant::now();
-    let window = WebviewWindowBuilder::new(
+    let app_for_build = app.clone();
+    let window = build_webview_window_with_timeout(
         app,
-        &label,
-        WebviewUrl::External(url.parse().map_err(|_| anyhow!("bad url: {url}"))?),
-    )
-    .title("AnimeOnTrack scraper")
-    .inner_size(1000.0, 800.0)
-    // Hidden: a visible popup stealing focus/screen space on every series
-    // scraped was too disruptive during refresh. The poll-based readiness
-    // check in extract_when_ready handles the normal case with no user
-    // interaction; same invisible pattern fetch_cover_image already uses
-    // safely. Trade-off: if Cloudflare ever escalates to a challenge that
-    // needs a human click (not just a timed JS check), there's no visible
-    // window to solve it in — that shows up as a 40s "did not become ready"
-    // error instead of a stuck window waiting on you.
-    .visible(false)
-    .build()?;
+        move || {
+            WebviewWindowBuilder::new(&app_for_build, &label, WebviewUrl::External(parsed_url))
+                .title("AnimeOnTrack scraper")
+                .inner_size(1000.0, 800.0)
+                // Hidden: a visible popup stealing focus/screen space on every
+                // series scraped was too disruptive during refresh. The
+                // poll-based readiness check in extract_when_ready handles the
+                // normal case with no user interaction; same invisible pattern
+                // fetch_cover_image already uses safely. Trade-off: if
+                // Cloudflare ever escalates to a challenge that needs a human
+                // click (not just a timed JS check), there's no visible window
+                // to solve it in — that shows up as a 40s "did not become
+                // ready" error instead of a stuck window waiting on you.
+                .visible(false)
+                .build()
+        },
+        WINDOW_BUILD_TIMEOUT,
+    )?;
     let window_build_ms = build_started.elapsed().as_millis();
 
     let result = extract_when_ready(app, &window, window_build_ms, total_started, extra_script).await;
@@ -259,23 +337,45 @@ len: document.body ? document.body.innerHTML.length : -1})";
 ///
 /// Call this sparingly (once per followed series per refresh, not in bulk —
 /// see `ScrapeResult`'s doc comment for why).
+///
+/// The whole call is wrapped in a hard outer timeout: the readiness poll
+/// below is itself bounded (20 × up to 5s), but `WebviewWindowBuilder::build()`
+/// has no timeout of its own, and was live-observed on a real machine to hang
+/// indefinitely (zero CPU, 10+ minutes, no error) building a cover window
+/// right after a batch of concurrent scraper windows had just closed — a
+/// WebView2-runtime hiccup under rapid window churn is the leading suspect,
+/// but this guards the symptom (one series' cover stalling the whole refresh
+/// cycle forever) regardless of the exact cause. A timeout leaks the
+/// in-flight hidden window (there is no handle left to call `.close()` on
+/// once the future driving it is dropped) — an acceptable trade against
+/// hanging the caller forever, and rare in practice.
 pub async fn fetch_cover_image(app: &AppHandle, image_url: &str) -> Result<String> {
+    const OUTER_TIMEOUT: Duration = Duration::from_secs(30);
+    match tokio::time::timeout(OUTER_TIMEOUT, fetch_cover_image_inner(app, image_url)).await {
+        Ok(result) => result,
+        Err(_) => Err(anyhow!("cover fetch timed out (window build or ready-poll stalled)")),
+    }
+}
+
+async fn fetch_cover_image_inner(app: &AppHandle, image_url: &str) -> Result<String> {
     if !is_safe_external_url(image_url) {
         return Err(anyhow!("refusing to navigate to unsafe cover url: {image_url}"));
     }
     let _permit = SCRAPE_PERMITS.acquire().await?;
     let label = format!("cover-{}", uuid_like());
-    let window = WebviewWindowBuilder::new(
+    let parsed_url = image_url.parse().map_err(|_| anyhow!("bad image url: {image_url}"))?;
+    let app_for_build = app.clone();
+    let window = build_webview_window_with_timeout(
         app,
-        &label,
-        WebviewUrl::External(
-            image_url.parse().map_err(|_| anyhow!("bad image url: {image_url}"))?,
-        ),
-    )
-    .title("AnimeOnTrack cover")
-    .inner_size(300.0, 450.0)
-    .visible(false)
-    .build()?;
+        move || {
+            WebviewWindowBuilder::new(&app_for_build, &label, WebviewUrl::External(parsed_url))
+                .title("AnimeOnTrack cover")
+                .inner_size(300.0, 450.0)
+                .visible(false)
+                .build()
+        },
+        WINDOW_BUILD_TIMEOUT,
+    )?;
 
     const READY_PROBE: &str = "JSON.stringify(!!document.images[0] \
 && document.images[0].complete && document.images[0].naturalWidth > 0)";
