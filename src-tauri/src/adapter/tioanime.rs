@@ -1,4 +1,4 @@
-use super::SiteAdapter;
+use super::{digits_in, slug_from_url, text_of, SiteAdapter};
 use crate::models::{Episode, FinishedCard, Series, SeriesDetail};
 use anyhow::Result;
 use scraper::{Html, Selector};
@@ -72,29 +72,6 @@ fn abs(path: &str) -> String {
     }
 }
 
-fn slug_from_url(url: &str) -> String {
-    url.trim_end_matches('/').rsplit('/').next().unwrap_or("").to_string()
-}
-
-fn text_of(el: scraper::ElementRef, sel: &Selector) -> Option<String> {
-    el.select(sel)
-        .next()
-        .map(|n| n.text().collect::<String>().trim().to_string())
-        .filter(|s| !s.is_empty())
-}
-
-/// Trailing run of ASCII digits in `s`, e.g. "Episodio 12" -> "12". Falls
-/// back to the whole trimmed string if there are no digits at all (mirrors
-/// AnimeYT's `slug_from_url` fallback discipline: never panic, never produce
-/// an empty episode number silently).
-fn digits_in(s: &str) -> String {
-    let digits: String = s.chars().filter(|c| c.is_ascii_digit()).collect();
-    if digits.is_empty() {
-        s.trim().to_string()
-    } else {
-        digits
-    }
-}
 
 impl SiteAdapter for TioanimeAdapter {
     fn airing_url(&self, base_url: &str) -> String {

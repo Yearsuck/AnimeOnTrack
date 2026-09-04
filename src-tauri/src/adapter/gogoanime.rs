@@ -1,4 +1,4 @@
-use super::SiteAdapter;
+use super::{digits_in, slug_from_url, text_of, SiteAdapter};
 use crate::models::{Episode, FinishedCard, Series, SeriesDetail};
 use anyhow::Result;
 use scraper::{Html, Selector};
@@ -33,28 +33,6 @@ pub struct GogoanimeAdapter;
 const AIRING_CARD: &str = ".bsx";
 const EPISODE_ITEM: &str = ".episodes-container .ep-list .episode-item";
 
-fn slug_from_url(url: &str) -> String {
-    url.trim_end_matches('/').rsplit('/').next().unwrap_or("").to_string()
-}
-
-fn text_of(el: scraper::ElementRef, sel: &Selector) -> Option<String> {
-    el.select(sel)
-        .next()
-        .map(|n| n.text().collect::<String>().trim().to_string())
-        .filter(|s| !s.is_empty())
-}
-
-/// Trailing run of ASCII digits in `s`. Falls back to the whole trimmed
-/// string if there are none, mirroring the never-panic discipline the other
-/// adapters' own digit-extraction helpers use.
-fn digits_in(s: &str) -> String {
-    let digits: String = s.chars().filter(|c| c.is_ascii_digit()).collect();
-    if digits.is_empty() {
-        s.trim().to_string()
-    } else {
-        digits
-    }
-}
 
 /// Extract (title, url, poster_url) from a `.bsx` card's anchor + img — same
 /// shape `animeytx`'s own `card_basics` uses (this site is the same theme
@@ -150,6 +128,13 @@ impl SiteAdapter for GogoanimeAdapter {
     fn parse_series_detail(&self, html: &str) -> Result<SeriesDetail> {
         let doc = Html::parse_document(html);
         let genxed_sel = Selector::parse(".genxed a").unwrap();
+        // Scoped to `.infox` (the series' own info block, confirmed against
+        // the live fixture: `.typez`/`.genxed` are siblings inside it) rather
+        // than searched page-wide — an unscoped `.typez` would grab the
+        // FIRST match anywhere in the DOM, including a DooPlay "related/
+        // recommended" sidebar widget's own `.typez` badge if one sits
+        // earlier in the page than the series' own.
+        let infox_sel = Selector::parse(".infox").unwrap();
         let typez_sel = Selector::parse(".typez").unwrap();
         let synopsis_sel = Selector::parse(".ninfo > p").unwrap();
 
@@ -158,7 +143,7 @@ impl SiteAdapter for GogoanimeAdapter {
             .map(|a| a.text().collect::<String>().trim().to_string())
             .filter(|s| !s.is_empty())
             .collect();
-        let kind = text_of(doc.root_element(), &typez_sel);
+        let kind = doc.select(&infox_sel).next().and_then(|infox| text_of(infox, &typez_sel));
         let synopsis = doc
             .select(&synopsis_sel)
             .next()
@@ -262,6 +247,23 @@ mod tests {
         assert_eq!(d.genres, vec!["Comedy".to_string(), "Romance".to_string()]);
         assert_eq!(d.kind.as_deref(), Some("TV Show"));
         assert!(d.synopsis.unwrap().contains("Haibara"));
+    }
+
+    /// Regression: an unscoped `.typez` lookup would grab a sidebar widget's
+    /// badge instead of the series' own, if the widget sits earlier in the
+    /// DOM — scoping to `.infox` must ignore it.
+    #[test]
+    fn parse_series_detail_ignores_a_typez_badge_outside_infox() {
+        let html = r#"<html><body>
+            <div class="sidebar-widget"><div class="bsx"><span class="typez">Movie</span></div></div>
+            <div class="infox">
+                <div class="ninfo"><p>Synopsis text.</p></div>
+                <span class="typez">TV Show</span>
+                <div class="genxed"><a href="/genre/comedy/">Comedy</a></div>
+            </div>
+        </body></html>"#;
+        let d = GogoanimeAdapter.parse_series_detail(html).unwrap();
+        assert_eq!(d.kind.as_deref(), Some("TV Show"));
     }
 
     #[test]
