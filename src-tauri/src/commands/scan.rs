@@ -679,7 +679,17 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
     // Partition into skip/fetch. Skipped series are reported to the progress
     // bar immediately (the bar visibly races through them) so X/Y still
     // covers ALL followed series, not just the fetched ones.
+    //
+    // A skipped series (typically: already finished, no longer airing) never
+    // goes through the fetch loop below, which is the only place a cover
+    // gets converted from its scraped remote url to a fetched `data:` URI.
+    // The frontend's CSP only allows `data:`/`asset:` images, not arbitrary
+    // remote hosts, so a series whose cover never gets picked up here simply
+    // never shows an image at all — for a library where most followed shows
+    // have already finished airing, that's most of the library. `cover_backlog`
+    // collects those so a bounded pass after the main loop can clear it.
     let mut to_fetch: Vec<Series> = Vec::new();
+    let mut cover_backlog: Vec<Series> = Vec::new();
     let mut idx = 0usize;
     for s in followed {
         let db_max_number = max_numbers.get(&s.id).copied().unwrap_or(0);
@@ -699,6 +709,9 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
         } else {
             idx += 1;
             emit_refresh_progress(&app, idx, total_series, &s.title);
+            if s.cover_url.as_deref().is_some_and(|u| !u.starts_with("data:")) {
+                cover_backlog.push(s);
+            }
         }
     }
     let skipped = total_series - to_fetch.len();
@@ -833,6 +846,26 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
         // pace to before while trimming the fixed idle time in half.
         tokio::time::sleep(std::time::Duration::from_millis(400)).await;
     }
+
+    // Clear the cover backlog collected above — bounded and self-limiting:
+    // a series drops out of it for good the first time this succeeds, so
+    // this only ever does real work for series that still need it (a large
+    // one-time pass right after upgrading past the readiness-check bug that
+    // made every cover fetch fail, then near-zero on every refresh after).
+    let backlog_total = cover_backlog.len();
+    for (i, s) in cover_backlog.iter().enumerate() {
+        emit_refresh_progress(&app, i, backlog_total, &format!("Descargando carátulas: {}", s.title));
+        if let Some(remote) = &s.cover_url {
+            match fetch_cover_image(&app, remote).await {
+                Ok(data_uri) => {
+                    let db = state.db.lock().unwrap();
+                    let _ = db.update_series_cover(s.id, &data_uri);
+                }
+                Err(e) => eprintln!("[cover] series {} ({}): backlog fetch failed: {e}", s.id, s.title),
+            }
+        }
+    }
+
     emit_refresh_progress(&app, total_series, total_series, "Completado");
     eprintln!(
         "[scrape] refresh() wall time: {:?} for {total_series} followed series ({skipped} skipped), {total_new} new episodes",
