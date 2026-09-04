@@ -9,6 +9,7 @@ import {
   syncAnimeCatalog,
 } from "../api";
 import { useT } from "../i18n";
+import { createFilterCache } from "../lib/createFilterCache";
 import type { CatalogAnime, CatalogFacets, CatalogFilter, CatalogSyncProgress } from "../types";
 
 // decide_catalog_card args for a catalog row. CatalogAnime.id is AniList's
@@ -28,8 +29,8 @@ function decideArgs(a: CatalogAnime, decision: "Want" | "Seen") {
 
 const EMPTY_FACETS: CatalogFacets = { genres: [], formats: [], studios: [] };
 
-// Module-level cache survives unmount/remount of this view (tab switch in App.tsx)
-let catalogFilterCache: {
+// Survives unmount/remount of this view (tab switch in App.tsx).
+const catalogFilterCache = createFilterCache<{
   searchInput: string;
   search: string;
   selectedGenres: string[];
@@ -38,7 +39,7 @@ let catalogFilterCache: {
   episodes: string;
   studio: string;
   page: number;
-} | null = null;
+}>();
 
 export function Catalog() {
   const t = useT();
@@ -64,7 +65,7 @@ export function Catalog() {
     [t]
   );
   const [items, setItems] = useState<CatalogAnime[]>([]);
-  const [page, setPage] = useState(() => catalogFilterCache?.page ?? 1);
+  const [page, setPage] = useState(() => catalogFilterCache.current?.page ?? 1);
   const [hasNextPage, setHasNextPage] = useState(true);
   const [totalSynced, setTotalSynced] = useState<number | null>(null);
   const [totalMatching, setTotalMatching] = useState<number | null>(null);
@@ -75,17 +76,17 @@ export function Catalog() {
   const syncingRef = useRef(false);
 
   const [facets, setFacets] = useState<CatalogFacets>(EMPTY_FACETS);
-  const [searchInput, setSearchInput] = useState(() => catalogFilterCache?.searchInput ?? "");
-  const [search, setSearch] = useState(() => catalogFilterCache?.search ?? "");
-  const [selectedGenres, setSelectedGenres] = useState<string[]>(() => catalogFilterCache?.selectedGenres ?? []);
-  const [format, setFormat] = useState(() => catalogFilterCache?.format ?? "");
-  const [minScore, setMinScore] = useState(() => catalogFilterCache?.minScore ?? "");
-  const [episodes, setEpisodes] = useState(() => catalogFilterCache?.episodes ?? "");
-  const [studio, setStudio] = useState(() => catalogFilterCache?.studio ?? "");
+  const [searchInput, setSearchInput] = useState(() => catalogFilterCache.current?.searchInput ?? "");
+  const [search, setSearch] = useState(() => catalogFilterCache.current?.search ?? "");
+  const [selectedGenres, setSelectedGenres] = useState<string[]>(() => catalogFilterCache.current?.selectedGenres ?? []);
+  const [format, setFormat] = useState(() => catalogFilterCache.current?.format ?? "");
+  const [minScore, setMinScore] = useState(() => catalogFilterCache.current?.minScore ?? "");
+  const [episodes, setEpisodes] = useState(() => catalogFilterCache.current?.episodes ?? "");
+  const [studio, setStudio] = useState(() => catalogFilterCache.current?.studio ?? "");
 
-  // Persist filter state to module-level cache on every change
+  // Persist filter state to the module-level cache on every change
   useEffect(() => {
-    catalogFilterCache = { searchInput, search, selectedGenres, format, minScore, episodes, studio, page };
+    catalogFilterCache.write({ searchInput, search, selectedGenres, format, minScore, episodes, studio, page });
   }, [searchInput, search, selectedGenres, format, minScore, episodes, studio, page]);
 
   // Multi-select + batch actions. The selected map holds the full card object

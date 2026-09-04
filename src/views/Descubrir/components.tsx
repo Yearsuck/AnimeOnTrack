@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import type { Series } from "../../types";
+import { useOutsideClick } from "../../lib/useOutsideClick";
 import { listasInitials } from "./helpers";
 
 // ---- Shared Listas card bits (poster+initials fallback, status chip, and an
@@ -30,14 +31,7 @@ export function OverflowMenu({
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    function onDown(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    }
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
-  }, [open]);
+  useOutsideClick(open, ref, () => setOpen(false));
   if (items.length === 0) return null;
   return (
     <div className="card-menu-wrap" ref={ref}>

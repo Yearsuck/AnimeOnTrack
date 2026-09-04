@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listLibrary, openEpisode, reclassifySeries } from "../api";
 import { useT } from "../i18n";
+import { createFilterCache } from "../lib/createFilterCache";
+import { useOutsideClick } from "../lib/useOutsideClick";
 import type { LibraryItem, Series } from "../types";
 
 type Status = "completed" | "watching" | "plan";
@@ -109,20 +111,9 @@ function LibraryCard({
 
   // Overflow "⋯" menu (Watching cards only) — reclassify actions
   // (see docs/superpowers/specs/2026-07-11-reversibility-classifications-design.md).
-  // Closed on an outside click, same pattern used nowhere else yet in this
-  // codebase so wired by hand here.
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!menuOpen) return;
-    function onDocMouseDown(e: MouseEvent) {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        setMenuOpen(false);
-      }
-    }
-    document.addEventListener("mousedown", onDocMouseDown);
-    return () => document.removeEventListener("mousedown", onDocMouseDown);
-  }, [menuOpen]);
+  useOutsideClick(menuOpen, menuRef, () => setMenuOpen(false));
 
   async function unfollow(e: React.SyntheticEvent) {
     e.stopPropagation();
@@ -331,8 +322,8 @@ function LibrarySection({
   );
 }
 
-// Module-level cache survives unmount/remount of this view (tab switch in App.tsx)
-let libraryFilterCache: {
+// Survives unmount/remount of this view (tab switch in App.tsx).
+const libraryFilterCache = createFilterCache<{
   query: string;
   airingFilter: AiringFilter;
   statusFilter: StatusFilter;
@@ -340,25 +331,25 @@ let libraryFilterCache: {
   includedGenres: Set<string>;
   excludedGenres: Set<string>;
   studioFilter: string;
-} | null = null;
+}>();
 
 export function Library({ onOpenSeries }: { onOpenSeries: (s: Series) => void }) {
   const t = useT();
   const [items, setItems] = useState<LibraryItem[]>([]);
-  const [query, setQuery] = useState(() => libraryFilterCache?.query ?? "");
-  const [airingFilter, setAiringFilter] = useState<AiringFilter>(() => libraryFilterCache?.airingFilter ?? "all");
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>(() => libraryFilterCache?.statusFilter ?? "all");
-  const [typeFilter, setTypeFilter] = useState<string>(() => libraryFilterCache?.typeFilter ?? "all");
-  const [includedGenres, setIncludedGenres] = useState<Set<string>>(() => libraryFilterCache?.includedGenres ?? new Set());
-  const [excludedGenres, setExcludedGenres] = useState<Set<string>>(() => libraryFilterCache?.excludedGenres ?? new Set());
-  const [studioFilter, setStudioFilter] = useState<string>(() => libraryFilterCache?.studioFilter ?? "all");
+  const [query, setQuery] = useState(() => libraryFilterCache.current?.query ?? "");
+  const [airingFilter, setAiringFilter] = useState<AiringFilter>(() => libraryFilterCache.current?.airingFilter ?? "all");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>(() => libraryFilterCache.current?.statusFilter ?? "all");
+  const [typeFilter, setTypeFilter] = useState<string>(() => libraryFilterCache.current?.typeFilter ?? "all");
+  const [includedGenres, setIncludedGenres] = useState<Set<string>>(() => libraryFilterCache.current?.includedGenres ?? new Set());
+  const [excludedGenres, setExcludedGenres] = useState<Set<string>>(() => libraryFilterCache.current?.excludedGenres ?? new Set());
+  const [studioFilter, setStudioFilter] = useState<string>(() => libraryFilterCache.current?.studioFilter ?? "all");
   // Purely a display cap, not persisted: the catalog carries dozens of
   // genres and showing them all ate the whole filter bar's screen space.
   const [showAllGenres, setShowAllGenres] = useState(false);
 
-  // Persist filter state to module-level cache on every change
+  // Persist filter state to the module-level cache on every change
   useEffect(() => {
-    libraryFilterCache = { query, airingFilter, statusFilter, typeFilter, includedGenres, excludedGenres, studioFilter };
+    libraryFilterCache.write({ query, airingFilter, statusFilter, typeFilter, includedGenres, excludedGenres, studioFilter });
   }, [query, airingFilter, statusFilter, typeFilter, includedGenres, excludedGenres, studioFilter]);
 
   const [selectMode, setSelectMode] = useState(false);
