@@ -142,6 +142,7 @@ export const es = {
   "settings.backupRestoreConfirm": "Esto reemplazará tus datos actuales con la copia de la nube y reiniciará la app. ¿Continuar?",
   "settings.backupRestoring": "Descargando y restaurando…",
   "settings.backupLast": "Última copia: {when}",
+  "settings.backupLastError": "La última copia falló: {error}",
   "settings.backupNever": "Aún no hay ninguna copia.",
   "settings.backupSize": "Tamaño: {size}",
   "settings.backupIntro": "Guarda una copia de tus datos en una carpeta privada de tu Google Drive y restáurala en otro equipo.",

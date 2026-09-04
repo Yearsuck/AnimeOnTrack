@@ -1,6 +1,7 @@
 pub mod credentials;
 pub mod drive;
 pub mod oauth;
+pub mod secure_store;
 
 use crate::db::Db;
 use rusqlite::Connection;
@@ -92,7 +93,10 @@ pub async fn access_token(
 pub fn configured_client(db: &Db) -> Option<(String, String)> {
     credentials::resolve(
         db.get_setting("google_client_id").ok().flatten(),
-        db.get_setting("google_client_secret").ok().flatten(),
+        db.get_setting("google_client_secret")
+            .ok()
+            .flatten()
+            .map(|s| secure_store::unprotect(&s)),
     )
 }
 

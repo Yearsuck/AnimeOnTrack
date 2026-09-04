@@ -138,6 +138,7 @@ export const ca: Messages = {
   "settings.backupRestoreConfirm": "Això reemplaçarà les teves dades actuals amb la còpia del núvol i reiniciarà l'app. Vols continuar?",
   "settings.backupRestoring": "Baixant i restaurant…",
   "settings.backupLast": "Última còpia: {when}",
+  "settings.backupLastError": "L'última còpia ha fallat: {error}",
   "settings.backupNever": "Encara no hi ha cap còpia.",
   "settings.backupSize": "Mida: {size}",
   "settings.backupIntro": "Desa una còpia de les teves dades en una carpeta privada del teu Google Drive i restaura-la en un altre equip.",

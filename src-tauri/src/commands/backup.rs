@@ -12,11 +12,13 @@ pub fn backup_status(state: State<'_, AppState>) -> Result<BackupStatus, String>
         .ok()
         .flatten()
         .and_then(|s| s.parse::<i64>().ok());
+    let last_error = db.get_setting("backup_last_error").ok().flatten();
     Ok(BackupStatus {
         configured: backup::configured_client(&db).is_some(),
         connected: refresh.is_some(),
         last_at,
         size_bytes: size,
+        last_error,
     })
 }
 
@@ -40,7 +42,8 @@ pub fn set_google_credentials(
         let db = state.db.lock().unwrap();
         let previous = backup::configured_client(&db);
         db.set_setting("google_client_id", client_id.trim()).map_err(|e| e.to_string())?;
-        db.set_setting("google_client_secret", client_secret.trim()).map_err(|e| e.to_string())?;
+        db.set_setting("google_client_secret", &backup::secure_store::protect(client_secret.trim()))
+            .map_err(|e| e.to_string())?;
         if backup::configured_client(&db) != previous {
             db.delete_setting("gdrive_refresh_token").map_err(|e| e.to_string())?;
             db.delete_setting("gdrive_file_id").map_err(|e| e.to_string())?;
@@ -65,7 +68,8 @@ pub async fn connect_drive(app: AppHandle, state: State<'_, AppState>) -> Result
     let refresh = tokens.refresh_token.ok_or("Google did not return a refresh token")?;
     {
         let db = state.db.lock().unwrap();
-        db.set_setting("gdrive_refresh_token", &refresh).map_err(|e| e.to_string())?;
+        db.set_setting("gdrive_refresh_token", &backup::secure_store::protect(&refresh))
+            .map_err(|e| e.to_string())?;
     }
     backup_status(state)
 }
@@ -91,6 +95,8 @@ pub async fn backup_now(app: AppHandle, state: State<'_, AppState>) -> Result<Ba
             .get_setting("gdrive_refresh_token")
             .ok()
             .flatten()
+            .map(|s| backup::secure_store::unprotect(&s))
+            .filter(|s| !s.is_empty())
             .ok_or("Not connected to Google Drive")?;
         let bytes = backup::snapshot_bytes(&db, &dir)?;
         let sig = backup::signature_string(db.signature_counts().map_err(|e| e.to_string())?);
@@ -126,6 +132,9 @@ pub async fn backup_now(app: AppHandle, state: State<'_, AppState>) -> Result<Ba
         if let Some(m) = meta.as_ref().and_then(|m| m.size.clone()) {
             db.set_setting("backup_size_bytes", &m).ok();
         }
+        // A successful backup clears any previously-recorded failure — the
+        // Settings warning banner is about the *current* state, not history.
+        db.delete_setting("backup_last_error").ok();
     }
     backup_status(state)
 }
@@ -166,7 +175,17 @@ pub async fn auto_backup_if_due(app: AppHandle) -> Result<(), String> {
     if !backup::is_auto_backup_due(last_at, backup_now_unix(), &last_sig, &cur_sig) {
         return Ok(());
     }
-    // Reuse the manual path; ignore the returned status.
-    let _ = backup_now(app.clone(), app.state::<AppState>()).await?;
+    // Reuse the manual path. A failure here must never propagate to the
+    // caller (this runs fire-and-forget after `refresh()`/at startup — see
+    // `spawn`/`spawn_episode_backfill`'s doc comments for why those never
+    // block their trigger on background work) — but it also must not just
+    // vanish: record it so `backup_status`/Settings can tell the user
+    // backups have stopped working instead of silently doing nothing on
+    // every future cycle (expired OAuth grant, quota, a Drive API change).
+    if let Err(e) = backup_now(app.clone(), app.state::<AppState>()).await {
+        let state = app.state::<AppState>();
+        let db = state.db.lock().unwrap();
+        db.set_setting("backup_last_error", &e).ok();
+    }
     Ok(())
 }

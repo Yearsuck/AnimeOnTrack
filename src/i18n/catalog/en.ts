@@ -131,6 +131,7 @@ export const en: Messages = {
   "settings.backupRestoreConfirm": "This will replace your current data with the cloud copy and restart the app. Continue?",
   "settings.backupRestoring": "Downloading and restoring…",
   "settings.backupLast": "Last backup: {when}",
+  "settings.backupLastError": "Last backup failed: {error}",
   "settings.backupNever": "No backup yet.",
   "settings.backupSize": "Size: {size}",
   "settings.backupIntro": "Keep a copy of your data in a private folder on your Google Drive and restore it on another machine.",

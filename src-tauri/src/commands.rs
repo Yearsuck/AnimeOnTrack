@@ -8,7 +8,7 @@ use crate::models::{
     Series, SeriesDetail, SeriesGraphNode, TypeStat, WatchInsights, WatchSummary,
 };
 use crate::player::{AppWindowPlayer, EpisodePlayer};
-use crate::scraper_engine::{fetch_cover_image, fetch_html_with_script, ScrapeResult};
+use crate::scraper_engine::{fetch_cover_image, fetch_html_with_script, is_safe_external_url, ScrapeResult};
 use crate::swipe::{pick_index, shuffle, undecided_cards, weighted_pick_index};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -108,6 +108,13 @@ pub struct AppState {
     /// flag because the two background jobs do unrelated work and either can
     /// legitimately still be running when the other's scan trigger fires.
     pub episode_backfill_running: std::sync::atomic::AtomicBool,
+    /// Same one-at-a-time guard, for the AniList catalog sync
+    /// (`sync_anime_catalog`/`maybe_sync_catalog_incremental`) — without it,
+    /// the manual "Sync" button pressed within the auto-incremental sync's
+    /// startup throttle window ran both concurrently: interleaved
+    /// read-modify-write updates to `catalog_sync_state` could clobber each
+    /// other, and both burned AniList's shared ~30 req/min budget at once.
+    pub catalog_sync_running: std::sync::atomic::AtomicBool,
 }
 
 /// How many recent swipe decisions `swipe_history` remembers.
@@ -336,6 +343,8 @@ pub async fn restore_latest(app: AppHandle, state: State<'_, AppState>) -> Resul
             .get_setting("gdrive_refresh_token")
             .ok()
             .flatten()
+            .map(|s| backup_lib::secure_store::unprotect(&s))
+            .filter(|s| !s.is_empty())
             .ok_or("Not connected to Google Drive")?;
         let file_id = db.get_setting("gdrive_file_id").ok().flatten();
         (client, refresh, file_id)

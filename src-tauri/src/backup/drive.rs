@@ -31,7 +31,8 @@ pub async fn find_backup_file(token: &str) -> Result<Option<String>, String> {
             ("q", &format!("name='{}'", super::BACKUP_FILE_NAME)),
             ("fields", "files(id)"),
         ])
-        .send().await.map_err(|e| format!("list: {e}"))?;
+        .send().await.map_err(|e| format!("list: {e}"))?
+        .error_for_status().map_err(|e| format!("list status: {e}"))?;
     let list: FileList = resp.json().await.map_err(|e| format!("list json: {e}"))?;
     Ok(list.files.into_iter().next().map(|f| f.id))
 }
@@ -56,7 +57,8 @@ pub async fn create_backup(token: &str, bytes: Vec<u8>) -> Result<String, String
         .bearer_auth(token)
         .query(&[("uploadType", "multipart"), ("fields", "id")])
         .multipart(form)
-        .send().await.map_err(|e| format!("create: {e}"))?;
+        .send().await.map_err(|e| format!("create: {e}"))?
+        .error_for_status().map_err(|e| format!("create status: {e}"))?;
     let f: FileRef = resp.json().await.map_err(|e| format!("create json: {e}"))?;
     Ok(f.id)
 }
@@ -77,7 +79,8 @@ pub async fn get_metadata(token: &str, file_id: &str) -> Result<FileMeta, String
         .get(format!("{FILES}/{file_id}"))
         .bearer_auth(token)
         .query(&[("fields", "size,modifiedTime")])
-        .send().await.map_err(|e| format!("meta: {e}"))?;
+        .send().await.map_err(|e| format!("meta: {e}"))?
+        .error_for_status().map_err(|e| format!("meta status: {e}"))?;
     resp.json().await.map_err(|e| format!("meta json: {e}"))
 }
 
