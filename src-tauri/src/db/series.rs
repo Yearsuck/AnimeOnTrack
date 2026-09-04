@@ -197,13 +197,18 @@ impl Db {
     /// already has one, otherwise the synthetic row's takes over. Slug/url/
     /// cover/kind/episodes are untouched: the existing row is canonical
     /// (already scraped through the normal path), not the synthetic one.
+    /// Wrapped in one transaction so a crash between the flag merge and the
+    /// synthetic row's deletion can't leave both rows alive with the same
+    /// flags (a visible duplicate until the next merge attempt happens to
+    /// fire again).
     pub fn merge_series_into(&self, existing_id: i64, synthetic_id: i64) -> Result<()> {
-        let (followed, backlog_status, watched_externally): (i64, Option<String>, i64) = self.conn.query_row(
+        let tx = self.conn.unchecked_transaction()?;
+        let (followed, backlog_status, watched_externally): (i64, Option<String>, i64) = tx.query_row(
             "SELECT followed, backlog_status, watched_externally FROM series WHERE id=?1",
             [synthetic_id],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )?;
-        self.conn.execute(
+        tx.execute(
             "UPDATE series SET
                 followed = followed OR ?1,
                 watched_externally = watched_externally OR ?2,
@@ -211,7 +216,13 @@ impl Db {
              WHERE id=?4",
             (followed, watched_externally, backlog_status, existing_id),
         )?;
-        self.delete_series(synthetic_id)
+        // Same cleanup as `delete_series`, inlined so it runs inside this
+        // same transaction rather than opening a second one against `self`.
+        tx.execute("DELETE FROM episodes WHERE series_id=?1", [synthetic_id])?;
+        tx.execute("DELETE FROM series_genres WHERE series_id=?1", [synthetic_id])?;
+        tx.execute("DELETE FROM series WHERE id=?1", [synthetic_id])?;
+        tx.commit()?;
+        Ok(())
     }
 
     /// Rewrite a synthetic row's slug/url/cover/kind in place after a

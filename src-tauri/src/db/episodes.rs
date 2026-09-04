@@ -207,6 +207,12 @@ impl Db {
     /// leading digit while Rust's old strict `i64::parse` failed to 0,
     /// which made un-marking such an episode wipe the *whole series'*
     /// watched history instead of just the later episodes.
+    /// Wrapped in one transaction: a crash/panic partway through a long
+    /// cascade (a 1000+-episode runner marked seen in one go via
+    /// `mark_all_episodes_seen`) used to leave it half-applied, violating
+    /// the gap-free-watching invariant this function exists to enforce.
+    /// Every row-level `UPDATE` before this was its own implicit
+    /// transaction — a wasted fsync per row on top of the atomicity gap.
     pub fn set_seen_cascade(&self, series_id: i64, number: &str, seen: bool) -> Result<()> {
         let Some(target) = parse_ep_number(number) else {
             // No leading digits at all: ordering is meaningless, so just
@@ -218,12 +224,14 @@ impl Db {
             )?;
             return Ok(());
         };
-        let mut stmt = self
-            .conn
-            .prepare("SELECT id, number FROM episodes WHERE series_id=?1")?;
-        let rows: Vec<(i64, String)> = stmt
-            .query_map([series_id], |r| Ok((r.get(0)?, r.get(1)?)))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let tx = self.conn.unchecked_transaction()?;
+        let rows: Vec<(i64, String)> = {
+            let mut stmt = tx.prepare("SELECT id, number FROM episodes WHERE series_id=?1")?;
+            let collected = stmt
+                .query_map([series_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            collected
+        };
         for (id, num) in rows {
             let matches = match parse_ep_number(&num) {
                 Some(v) if seen => v <= target,
@@ -234,13 +242,14 @@ impl Db {
                 // seen_at cascades along with seen — every row the cascade
                 // touches gets the same stamped/cleared treatment as the
                 // one the user explicitly clicked, not just that one.
-                self.conn.execute(
+                tx.execute(
                     "UPDATE episodes SET seen=?1, seen_at = CASE WHEN ?1=1 THEN datetime('now') ELSE NULL END
                      WHERE id=?2",
                     (seen as i64, id),
                 )?;
             }
         }
+        tx.commit()?;
         Ok(())
     }
 

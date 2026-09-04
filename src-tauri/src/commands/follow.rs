@@ -135,7 +135,12 @@ pub async fn start_watching(
             return Ok(outcome);
         };
         let db = state.db.lock().unwrap();
-        db.set_followed(target_id, true).map_err(|e| e.to_string())?;
+        // Canonical, not per-row: see `Db::set_followed_canonical`'s doc
+        // comment — this is the exact "start_watching" path the per-site
+        // follow-inconsistency bug lived in (a series already scraped-but-
+        // unfollowed on another site stayed unfollowed there after being
+        // started here).
+        db.set_followed_canonical(target_id, true).map_err(|e| e.to_string())?;
         db.set_backlog_status(target_id, None).map_err(|e| e.to_string())?;
         return Ok(outcome);
     }
@@ -168,7 +173,7 @@ pub async fn start_watching(
         e.seen = false;
         db.insert_episode(&e).map_err(|e| e.to_string())?;
     }
-    db.set_followed(series_id, true).map_err(|e| e.to_string())?;
+    db.set_followed_canonical(series_id, true).map_err(|e| e.to_string())?;
     db.set_backlog_status(series_id, None).map_err(|e| e.to_string())?;
     Ok(LinkOutcome::Linked { url: series_url, episodes: episode_count })
 }
@@ -209,8 +214,19 @@ pub enum Classification {
 /// does **not** touch `episodes`/seen rows: the one target this can't reach
 /// (Want -> actively Watching for a catalog stub with no episodes) needs a
 /// scrape and stays on `start_watching`, unchanged.
+///
+/// Genuinely atomic, not just single-thread-safe: opens a real SQL
+/// transaction around the `db.set_*` calls below (they all execute against
+/// the same `db.conn`, so this covers them without duplicating their SQL),
+/// so a crash between two of them can't leave a partial classification —
+/// the `state.db` mutex alone only ever protected against another *thread*
+/// interleaving, not a process crash mid-sequence.
 fn reclassify_series_core(db: &Db, series_id: i64, to: Classification) -> Result<(), String> {
-    db.set_followed(series_id, false).map_err(|e| e.to_string())?;
+    let tx = db.conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    // Canonical unfollow — the mirror image of `start_watching`'s canonical
+    // follow. Without this, unfollowing on one site left a sibling row
+    // followed via `set_followed_canonical` elsewhere still marked followed.
+    db.set_followed_canonical(series_id, false).map_err(|e| e.to_string())?;
     db.set_backlog_status(series_id, None).map_err(|e| e.to_string())?;
     db.set_watched_externally(series_id, false).map_err(|e| e.to_string())?;
     match to {
@@ -225,6 +241,7 @@ fn reclassify_series_core(db: &Db, series_id: i64, to: Classification) -> Result
             db.set_watched_externally(series_id, true).map_err(|e| e.to_string())?
         }
     }
+    tx.commit().map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -425,7 +442,7 @@ async fn run_library_import(app: AppHandle) -> Result<crate::models::LibraryImpo
         match link_series_core(&app, &state, sid).await {
             Ok((_, Some(target_id))) => {
                 let db = state.db.lock().unwrap();
-                db.set_followed(target_id, true).map_err(|e| e.to_string())?;
+                db.set_followed_canonical(target_id, true).map_err(|e| e.to_string())?;
                 db.set_backlog_status(target_id, None).map_err(|e| e.to_string())?;
                 if entry.seen_watermark > 0 {
                     db.set_seen_cascade(target_id, &entry.seen_watermark.to_string(), true)
