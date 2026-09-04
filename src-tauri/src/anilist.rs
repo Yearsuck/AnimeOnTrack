@@ -31,64 +31,68 @@ use std::time::Duration;
 
 const ENDPOINT: &str = "https://graphql.anilist.co";
 
-const CATALOG_QUERY: &str = r#"
-query ($page: Int, $perPage: Int, $startDateGreater: FuzzyDateInt, $startDateLesser: FuzzyDateInt, $status: MediaStatus) {
-  Page(page: $page, perPage: $perPage) {
-    pageInfo { hasNextPage }
+/// Field selection shared by every catalog query — the single source of
+/// truth for what a `media` node returns. Used to live hand-duplicated in
+/// both `CATALOG_QUERY` and `BY_IDS_QUERY`; a field added/renamed in one copy
+/// and not the other would silently make `fetch_by_ids`'s backfill
+/// (`commands::backfill_catalog_metadata`) return partial data relative to
+/// the main crawl, with no compiler or test signal tying the two together.
+const MEDIA_FIELDS: &str = r#"id
+      title { romaji english }
+      coverImage { large }
+      format
+      genres
+      episodes
+      duration
+      averageScore
+      popularity
+      siteUrl
+      status
+      studios(isMain: true) { nodes { name } }
+      startDate { year month day }"#;
+
+fn catalog_query() -> String {
+    format!(
+        r#"
+query ($page: Int, $perPage: Int, $startDateGreater: FuzzyDateInt, $startDateLesser: FuzzyDateInt, $status: MediaStatus) {{
+  Page(page: $page, perPage: $perPage) {{
+    pageInfo {{ hasNextPage }}
     media(
       type: ANIME
       sort: ID
       startDate_greater: $startDateGreater
       startDate_lesser: $startDateLesser
       status: $status
-    ) {
-      id
-      title { romaji english }
-      coverImage { large }
-      format
-      genres
-      episodes
-      duration
-      averageScore
-      popularity
-      siteUrl
-      status
-      studios(isMain: true) { nodes { name } }
-      startDate { year month day }
-    }
-  }
+    ) {{
+      {MEDIA_FIELDS}
+    }}
+  }}
+}}
+"#
+    )
 }
-"#;
 
-/// Same media selection as `CATALOG_QUERY`, addressed by explicit ids instead
+/// Same media selection as `catalog_query`, addressed by explicit ids instead
 /// of a date partition. Used to re-fetch rows that were synced before some of
 /// the fields above existed: `title_romaji`, `duration`, `status`, `studio`
 /// and `start_date` were all added after the first full catalog crawl, so tens
 /// of thousands of stored rows carry `NULL` for them and the incremental sync
 /// (recent years only) will never revisit them. See
 /// `commands::backfill_catalog_metadata`.
-const BY_IDS_QUERY: &str = r#"
-query ($ids: [Int], $perPage: Int) {
-  Page(page: 1, perPage: $perPage) {
-    pageInfo { hasNextPage }
-    media(type: ANIME, id_in: $ids, sort: ID) {
-      id
-      title { romaji english }
-      coverImage { large }
-      format
-      genres
-      episodes
-      duration
-      averageScore
-      popularity
-      siteUrl
-      status
-      studios(isMain: true) { nodes { name } }
-      startDate { year month day }
-    }
-  }
+fn by_ids_query() -> String {
+    format!(
+        r#"
+query ($ids: [Int], $perPage: Int) {{
+  Page(page: 1, perPage: $perPage) {{
+    pageInfo {{ hasNextPage }}
+    media(type: ANIME, id_in: $ids, sort: ID) {{
+      {MEDIA_FIELDS}
+    }}
+  }}
+}}
+"#
+    )
 }
-"#;
 
 /// AniList's own per-request page cap. `fetch_by_ids` must never be handed
 /// more ids than this — anything past the cap is silently dropped by the API,
@@ -446,7 +450,7 @@ fn build_variables(partition: &Partition, page: i64, per_page: i64) -> serde_jso
 /// after the cap beats retrying forever indistinguishably from a real hang.
 pub async fn fetch_partition_page(partition: &Partition, page: i64, per_page: i64) -> Result<PartitionPage> {
     let variables = build_variables(partition, page, per_page);
-    let body = serde_json::json!({ "query": CATALOG_QUERY, "variables": variables });
+    let body = serde_json::json!({ "query": catalog_query(), "variables": variables });
     execute_query(body, &format!("{} page {page}", partition.label)).await
 }
 
@@ -468,7 +472,7 @@ pub async fn fetch_by_ids(ids: &[i64]) -> Result<Vec<CatalogAnime>> {
         ));
     }
     let body = serde_json::json!({
-        "query": BY_IDS_QUERY,
+        "query": by_ids_query(),
         "variables": { "ids": ids, "perPage": MAX_IDS_PER_REQUEST },
     });
     Ok(execute_query(body, "by-ids").await?.items)
