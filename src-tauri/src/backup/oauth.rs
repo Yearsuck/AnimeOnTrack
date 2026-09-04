@@ -23,54 +23,68 @@ pub fn pkce_pair() -> Pkce {
     Pkce { verifier, challenge }
 }
 
-/// Fill `buf` with OS randomness without pulling in the `rand` crate — uses a
-/// std source good enough for a PKCE nonce.
-fn getrandom_bytes(buf: &mut [u8]) {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let seed = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-    let mut x = seed as u64 ^ 0x9E3779B97F4A7C15;
-    for b in buf.iter_mut() {
-        // xorshift64*
-        x ^= x >> 12; x ^= x << 25; x ^= x >> 27;
-        *b = (x.wrapping_mul(0x2545F4914F6CDD1D) >> 33) as u8;
-    }
+/// A random `state` value for the OAuth authorization request — same 32
+/// random bytes / base64url shape as the PKCE verifier, just a distinct
+/// value so a leftover `state` can never accidentally equal a leftover PKCE
+/// verifier.
+pub fn random_state() -> String {
+    let mut bytes = [0u8; 32];
+    getrandom_bytes(&mut bytes);
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
 
-pub fn build_auth_url(client_id: &str, redirect_uri: &str, challenge: &str) -> String {
+/// Fill `buf` with OS-provided randomness (the `getrandom` crate — on
+/// Windows this calls `BCryptGenRandom`). A hand-rolled PRNG seeded from the
+/// system clock used to live here — its entropy was bounded by clock
+/// resolution (an attacker who can bound when the OAuth flow started can
+/// narrow the seed space), which defeats the point of PKCE/state values
+/// whose entire job is to be unguessable.
+fn getrandom_bytes(buf: &mut [u8]) {
+    getrandom::fill(buf).expect("OS RNG must succeed for a security-sensitive nonce");
+}
+
+pub fn build_auth_url(client_id: &str, redirect_uri: &str, challenge: &str, state: &str) -> String {
     format!(
         "{AUTH_ENDPOINT}?client_id={cid}&redirect_uri={ruri}&response_type=code\
 &scope={scope}&code_challenge={chal}&code_challenge_method=S256\
-&access_type=offline&prompt=consent",
+&access_type=offline&prompt=consent&state={st}",
         cid = urlencoding::encode(client_id),
         ruri = urlencoding::encode(redirect_uri),
         scope = urlencoding::encode(SCOPE),
         chal = urlencoding::encode(challenge),
+        st = urlencoding::encode(state),
     )
 }
 
 #[derive(Debug, PartialEq)]
 pub enum RedirectResult {
-    Code(String),
+    Code { code: String, state: Option<String> },
     Error(String),
 }
 
-/// Parse the first request line of the loopback redirect. Extracts `code` or
-/// `error` from the query string, ignoring anything else (e.g. favicon).
+/// Parse the first request line of the loopback redirect. Extracts `code`,
+/// `state` or `error` from the query string. A pair without `=` (e.g. a bare
+/// flag param) is skipped rather than aborting the whole parse — Google's
+/// real redirect only ever sends `code`/`state`/`scope`/`error`, but a `code`
+/// that arrived before some hypothetical future malformed param must not be
+/// discarded along with it.
 pub fn parse_redirect_line(line: &str) -> Option<RedirectResult> {
     let path = line.split_whitespace().nth(1)?; // "/?code=..."
     let query = path.split_once('?')?.1;
     let mut code = None;
+    let mut state = None;
     let mut error = None;
     for pair in query.split('&') {
-        let (k, v) = pair.split_once('=')?;
+        let Some((k, v)) = pair.split_once('=') else { continue };
         match k {
             "code" => code = Some(v.to_string()),
+            "state" => state = Some(v.to_string()),
             "error" => error = Some(v.to_string()),
             _ => {}
         }
     }
     if let Some(e) = error { return Some(RedirectResult::Error(e)); }
-    code.map(RedirectResult::Code)
+    code.map(|code| RedirectResult::Code { code, state })
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -97,6 +111,15 @@ const REDIRECT_HTML: &str = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset
 /// screen, and block until Google redirects back with `?code=`. Returns the
 /// authorization code and the `redirect_uri` actually used (needed verbatim
 /// in the token exchange).
+///
+/// Generates and checks a random `state` value (RFC 6749 §10.12): without
+/// it, any local process that wins the race to connect to the ephemeral
+/// loopback port before the real browser redirect arrives could hand this
+/// function a `code` of its own choosing. `state` doesn't stop that
+/// connection from being accepted (a single-shot loopback listener taking
+/// whoever connects first is inherent to this flow), but it does mean a
+/// connection carrying the wrong `state` — or none — is rejected instead of
+/// silently accepted as if it were Google's redirect.
 pub async fn run_loopback_and_get_code<F: Fn(&str)>(
     client_id: &str,
     challenge: &str,
@@ -105,7 +128,8 @@ pub async fn run_loopback_and_get_code<F: Fn(&str)>(
     let listener = TcpListener::bind("127.0.0.1:0").await.map_err(|e| format!("bind: {e}"))?;
     let port = listener.local_addr().map_err(|e| format!("addr: {e}"))?.port();
     let redirect_uri = format!("http://127.0.0.1:{port}");
-    open_browser(&build_auth_url(client_id, &redirect_uri, challenge));
+    let expected_state = random_state();
+    open_browser(&build_auth_url(client_id, &redirect_uri, challenge, &expected_state));
 
     let (mut stream, _) = listener.accept().await.map_err(|e| format!("accept: {e}"))?;
     let mut buf = [0u8; 2048];
@@ -117,7 +141,12 @@ pub async fn run_loopback_and_get_code<F: Fn(&str)>(
     stream.flush().await.ok();
 
     match result {
-        Some(RedirectResult::Code(c)) => Ok((c, redirect_uri)),
+        Some(RedirectResult::Code { code, state }) => {
+            if state.as_deref() != Some(expected_state.as_str()) {
+                return Err("redirect state mismatch — rejecting a possibly forged authorization code".into());
+            }
+            Ok((code, redirect_uri))
+        }
         Some(RedirectResult::Error(e)) => Err(format!("consent error: {e}")),
         None => Err("no authorization code in redirect".into()),
     }
@@ -185,7 +214,7 @@ mod tests {
 
     #[test]
     fn auth_url_has_required_params() {
-        let url = build_auth_url("cid.apps.googleusercontent.com", "http://127.0.0.1:5000", "CHAL");
+        let url = build_auth_url("cid.apps.googleusercontent.com", "http://127.0.0.1:5000", "CHAL", "STATE1");
         assert!(url.starts_with(AUTH_ENDPOINT));
         assert!(url.contains("client_id=cid.apps.googleusercontent.com"));
         assert!(url.contains("code_challenge=CHAL"));
@@ -194,12 +223,33 @@ mod tests {
         assert!(url.contains("access_type=offline"));
         assert!(url.contains("scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive.appdata"));
         assert!(url.contains("redirect_uri=http%3A%2F%2F127.0.0.1%3A5000"));
+        assert!(url.contains("state=STATE1"));
     }
 
     #[test]
-    fn parse_redirect_extracts_code() {
-        let line = "GET /?code=4/abcDEF&scope=https://www.googleapis.com/auth/drive.appdata HTTP/1.1";
-        assert_eq!(parse_redirect_line(line), Some(RedirectResult::Code("4/abcDEF".into())));
+    fn random_state_is_url_safe_and_unpredictable_across_calls() {
+        let a = random_state();
+        let b = random_state();
+        assert!(a.len() >= 43);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn parse_redirect_extracts_code_and_state() {
+        let line = "GET /?state=xyz&code=4/abcDEF&scope=https://www.googleapis.com/auth/drive.appdata HTTP/1.1";
+        assert_eq!(
+            parse_redirect_line(line),
+            Some(RedirectResult::Code { code: "4/abcDEF".into(), state: Some("xyz".into()) })
+        );
+    }
+
+    #[test]
+    fn parse_redirect_extracts_code_without_state() {
+        let line = "GET /?code=4/abcDEF HTTP/1.1";
+        assert_eq!(
+            parse_redirect_line(line),
+            Some(RedirectResult::Code { code: "4/abcDEF".into(), state: None })
+        );
     }
 
     #[test]
@@ -211,6 +261,18 @@ mod tests {
     #[test]
     fn parse_redirect_ignores_junk() {
         assert_eq!(parse_redirect_line("GET /favicon.ico HTTP/1.1"), None);
+    }
+
+    /// A malformed query pair (no `=`) must not discard a `code` that arrived
+    /// alongside it — the old implementation used `?` on every pair, so one
+    /// bad segment anywhere in the query silently dropped the whole parse.
+    #[test]
+    fn parse_redirect_skips_a_malformed_pair_without_losing_the_code() {
+        let line = "GET /?bareflag&code=4/abcDEF&state=xyz HTTP/1.1";
+        assert_eq!(
+            parse_redirect_line(line),
+            Some(RedirectResult::Code { code: "4/abcDEF".into(), state: Some("xyz".into()) })
+        );
     }
 
     #[test]
