@@ -143,6 +143,11 @@ function BackupCard() {
               ? ` · ${t("settings.backupSize", { size: `${Math.round(status.size_bytes / 1024)} KB` })}`
               : ""}
           </p>
+          {status.last_error && (
+            <p className="muted text-sm text-danger">
+              {t("settings.backupLastError", { error: status.last_error })}
+            </p>
+          )}
           <div className="row">
             <button className="btn btn-primary" disabled={busy !== null} onClick={() => run("backup", backupNow)}>
               {busy === "backup" ? t("settings.backupWorking") : t("settings.backupNow")}

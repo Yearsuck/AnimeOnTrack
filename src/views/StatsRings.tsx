@@ -230,8 +230,8 @@ export function GenreCards({
 }: {
   genres: GenreCard[];
 }) {
+  const t = useT();
   if (genres.length === 0) {
-    const t = useT();
     return <div className="empty">{t("stats.ringsEmpty")}</div>;
   }
 

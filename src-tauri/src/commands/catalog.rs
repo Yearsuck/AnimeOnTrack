@@ -236,10 +236,12 @@ pub async fn backfill_catalog_metadata(app: AppHandle, state: State<'_, AppState
         let fetched = crate::anilist::fetch_by_ids(batch).await.map_err(|e| e.to_string())?;
         {
             let db = state.db.lock().unwrap();
+            let mut items = Vec::with_capacity(fetched.len());
             for anime in &fetched {
                 let sort_order = db.catalog_sort_order(anime.id).map_err(|e| e.to_string())?;
-                db.upsert_catalog_anime(anime, sort_order).map_err(|e| e.to_string())?;
+                items.push((anime, sort_order));
             }
+            db.upsert_catalog_anime_batch(&items).map_err(|e| e.to_string())?;
         }
         // Counted over the batch, not the response: ids AniList no longer
         // serves (deleted/merged entries) never come back, and counting only
@@ -259,6 +261,21 @@ async fn run_catalog_sync(
 ) -> Result<i64, String> {
     use crate::anilist::{build_partitions, incremental_partitions, pending_partitions, CatalogSyncState};
     use chrono::Datelike;
+    use std::sync::atomic::Ordering;
+
+    // One sync at a time: the manual "Sync" button and the auto-incremental
+    // startup trigger could otherwise both run `run_catalog_sync`
+    // concurrently, interleaving read-modify-write updates to
+    // `catalog_sync_state` (one run's completed-partitions write can clobber
+    // the other's stale in-memory copy) and doubling AniList's shared
+    // ~30 req/min rate-limit consumption. Report the current count rather
+    // than erroring the caller — a concurrent trigger isn't a failure, just
+    // redundant.
+    if state.catalog_sync_running.swap(true, Ordering::SeqCst) {
+        let db = state.db.lock().unwrap();
+        return db.catalog_count().map_err(|e| e.to_string());
+    }
+    let _clear = crate::commands::follow::RunningGuard(&state.catalog_sync_running);
 
     const PAGE_SIZE: i64 = 50;
     // Real total (~21,000) can't be known up front (AniList's own totals
@@ -315,10 +332,13 @@ async fn run_catalog_sync(
 
             {
                 let db = state.db.lock().unwrap();
-                for (idx, anime) in result.items.iter().enumerate() {
-                    let sort_order = synced + idx as i64;
-                    db.upsert_catalog_anime(anime, sort_order).map_err(|e| e.to_string())?;
-                }
+                let items: Vec<_> = result
+                    .items
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, anime)| (anime, synced + idx as i64))
+                    .collect();
+                db.upsert_catalog_anime_batch(&items).map_err(|e| e.to_string())?;
                 synced = db.catalog_count().map_err(|e| e.to_string())?;
             }
             let total = FULL_SYNC_ESTIMATE.max(synced);

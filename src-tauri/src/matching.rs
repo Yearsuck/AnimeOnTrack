@@ -301,18 +301,29 @@ fn is_ascii_int(t: &str) -> bool {
     !t.is_empty() && t.chars().all(|c| c.is_ascii_digit())
 }
 
-/// The "franchise base" of a normalized title: the same title with any
-/// trailing season/part markers stripped, in order. Drops trailing marker
-/// words ("season", "temporada", "part", "final", "the", …), ordinals ("2nd"),
-/// Roman numerals ("ii".."x"), and a bare integer **only when a marker word
-/// immediately precedes it** ("... part 2" → the 2 goes; "steins gate 0" → the
-/// 0 stays, because no marker precedes it, so it's part of the title of a
-/// distinct work). Order-aware on purpose — a token *set* can't tell "Part 2"
-/// (same show, later part) from "Steins;Gate 0" (a different work).
-fn franchise_base(norm: &str) -> String {
-    const MARKERS: &[&str] = SEASON_MARKERS;
-    const ROMANS: &[&str] = ROMAN_NUMERALS;
-    let is_marker = |t: &str| MARKERS.contains(&t);
+/// Drop trailing season/part markers from `tokens`, testing each token's
+/// normalized form via `normalize` (identity for already-normalized input —
+/// see `franchise_base` — or real normalization for raw display tokens, as
+/// `db::stats::franchise_display_title` needs).
+///
+/// Single home for logic that used to be byte-for-byte duplicated here and in
+/// `db::stats` — the same char-boundary panic on multi-byte titles (roman
+/// numerals, Cyrillic, fullwidth, fractions) had to be fixed independently in
+/// both copies once already; a future change to the marker list only needs
+/// to happen in one place now.
+///
+/// Drops marker words ("season", "temporada", "part", "final", "the", …),
+/// ordinals ("2nd"), Roman numerals ("ii".."x"), and a bare integer **only
+/// when a marker word immediately precedes it** ("... part 2" → the 2 goes;
+/// "steins gate 0" → the 0 stays, because no marker precedes it, so it's part
+/// of the title of a distinct work). Order-aware on purpose — a token *set*
+/// can't tell "Part 2" (same show, later part) from "Steins;Gate 0" (a
+/// different work).
+pub(crate) fn strip_season_markers(
+    mut tokens: Vec<&str>,
+    normalize: impl Fn(&str) -> String,
+) -> Vec<&str> {
+    let is_marker = |t: &str| SEASON_MARKERS.contains(&t);
     let is_int = is_ascii_int;
     let is_ordinal = |t: &str| {
         // char-boundary safe: use strip_suffix instead of byte indexing.
@@ -333,24 +344,35 @@ fn franchise_base(norm: &str) -> String {
     // A trailing 4-digit year (1900–2099) is a re-release tag ("Fruits Basket
     // (2019)", "Hunter x Hunter 2011"), not a distinct work — strip it so year
     // variants reduce to the same base.
-    let is_year = |t: &str| {
-        // `starts_with` rather than the byte slice `&t[..2]` this used to do:
-        // the `is_int` guard already made that slice safe, but there is no
-        // reason to leave a second byte-index into a title token in the file.
-        t.len() == 4 && is_int(t) && (t.starts_with("19") || t.starts_with("20"))
-    };
-    let mut tokens: Vec<&str> = norm.split_whitespace().collect();
+    let is_year = |t: &str| t.len() == 4 && is_int(t) && (t.starts_with("19") || t.starts_with("20"));
+
     while let Some(&last) = tokens.last() {
-        if is_marker(last) || is_ordinal(last) || ROMANS.contains(&last) || is_year(last) {
+        let normalized = normalize(last);
+        if is_marker(&normalized) || is_ordinal(&normalized) || ROMAN_NUMERALS.contains(&normalized.as_str())
+            || is_year(&normalized)
+        {
             tokens.pop();
-        } else if is_int(last) && tokens.len() >= 2 && is_marker(tokens[tokens.len() - 2]) {
-            tokens.pop(); // the number
-            tokens.pop(); // its preceding marker word
-        } else {
-            break;
+            continue;
         }
+        if is_int(&normalized) {
+            let introduced_by_marker =
+                tokens.len() >= 2 && is_marker(&normalize(tokens[tokens.len() - 2]));
+            if introduced_by_marker {
+                tokens.pop(); // the number
+                tokens.pop(); // its preceding marker word
+                continue;
+            }
+        }
+        break;
     }
-    tokens.join(" ")
+    tokens
+}
+
+/// The "franchise base" of a normalized title: the same title with any
+/// trailing season/part markers stripped — see `strip_season_markers`. Input
+/// is already normalized, so tokens are tested as-is (identity closure).
+fn franchise_base(norm: &str) -> String {
+    strip_season_markers(norm.split_whitespace().collect(), |t| t.to_string()).join(" ")
 }
 
 /// Do two normalized titles reduce to the same franchise base — i.e. are they

@@ -44,6 +44,48 @@ fn emit_stage(app: &AppHandle, stage: &str) {
     let _ = app.emit("scrape-stage", stage);
 }
 
+/// Reject navigation targets that could reach a local file or an internal
+/// network address instead of the public site being scraped/mirrored.
+/// Applied to every URL that reaches `WebviewUrl::External` — mirror URLs a
+/// user pastes into Settings, and `cover_url` values lifted verbatim from a
+/// scraped `img[src]`/`data-src` attribute by every site adapter.
+///
+/// A malicious or merely wrong mirror is a real threat model for this app
+/// specifically: mirror URLs are exactly the kind of value shared in
+/// pirate-site forums/Discord ("official domain is down, use this one"), so
+/// a user pasting one in good faith must not be able to point a hidden
+/// scraper window at `file://` or an internal service.
+///
+/// Deliberately conservative and synchronous: only `http`/`https` schemes
+/// are allowed, and a literal loopback/private/link-local IP or the
+/// hostname `localhost` is rejected. A hostname that only *resolves* to one
+/// of those (DNS rebinding) is not caught here — that needs an actual DNS
+/// lookup, which this cheap pre-navigation check doesn't perform.
+pub fn is_safe_external_url(raw: &str) -> bool {
+    let Ok(u) = url::Url::parse(raw) else { return false };
+    if u.scheme() != "http" && u.scheme() != "https" {
+        return false;
+    }
+    match u.host() {
+        Some(url::Host::Domain(d)) => !d.eq_ignore_ascii_case("localhost"),
+        Some(url::Host::Ipv4(ip)) => {
+            !(ip.is_loopback() || ip.is_private() || ip.is_link_local() || ip.is_unspecified())
+        }
+        Some(url::Host::Ipv6(ip)) => {
+            !(ip.is_loopback() || ip.is_unspecified() || is_unique_local_v6(&ip) || is_link_local_v6(&ip))
+        }
+        None => false,
+    }
+}
+
+fn is_unique_local_v6(ip: &std::net::Ipv6Addr) -> bool {
+    (ip.segments()[0] & 0xfe00) == 0xfc00 // fc00::/7
+}
+
+fn is_link_local_v6(ip: &std::net::Ipv6Addr) -> bool {
+    (ip.segments()[0] & 0xffc0) == 0xfe80 // fe80::/10
+}
+
 /// Load `url` in a hidden webview, wait for Cloudflare/JS to settle, then
 /// return the rendered HTML — plus, when `extra_script` is `Some` (see
 /// `SiteAdapter::episode_fetch_script`), the result of running that script
@@ -59,8 +101,15 @@ pub async fn fetch_html_with_script(
     url: &str,
     extra_script: Option<&str>,
 ) -> Result<ScrapeResult> {
+    if !is_safe_external_url(url) {
+        return Err(anyhow!("refusing to navigate to unsafe url: {url}"));
+    }
     let total_started = std::time::Instant::now();
-    let _permit = SCRAPE_PERMITS.acquire().await;
+    // Propagate rather than discard: `SCRAPE_PERMITS` is never `close()`d
+    // today, but a bare `let _ =` here would have every future caller sail
+    // through with zero concurrency control instead of failing loudly if
+    // that ever changed.
+    let _permit = SCRAPE_PERMITS.acquire().await?;
     emit_stage(app, "opening");
     let label = format!("scraper-{}", uuid_like());
     let build_started = std::time::Instant::now();
@@ -211,7 +260,10 @@ len: document.body ? document.body.innerHTML.length : -1})";
 /// Call this sparingly (once per followed series per refresh, not in bulk —
 /// see `ScrapeResult`'s doc comment for why).
 pub async fn fetch_cover_image(app: &AppHandle, image_url: &str) -> Result<String> {
-    let _permit = SCRAPE_PERMITS.acquire().await;
+    if !is_safe_external_url(image_url) {
+        return Err(anyhow!("refusing to navigate to unsafe cover url: {image_url}"));
+    }
+    let _permit = SCRAPE_PERMITS.acquire().await?;
     let label = format!("cover-{}", uuid_like());
     let window = WebviewWindowBuilder::new(
         app,
@@ -317,4 +369,50 @@ async fn eval(window: &WebviewWindow, script: &str, timeout_secs: u64) -> Result
 fn uuid_like() -> u128 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn allows_ordinary_https_and_http_mirrors() {
+        assert!(is_safe_external_url("https://example.com/directorio"));
+        assert!(is_safe_external_url("http://some-mirror.example/path?x=1"));
+    }
+
+    #[test]
+    fn rejects_non_http_schemes() {
+        assert!(!is_safe_external_url("file:///C:/Windows/System32/config"));
+        assert!(!is_safe_external_url("data:text/html,<script>1</script>"));
+        assert!(!is_safe_external_url("ftp://example.com/x"));
+    }
+
+    #[test]
+    fn rejects_localhost_and_loopback() {
+        assert!(!is_safe_external_url("http://localhost/"));
+        assert!(!is_safe_external_url("http://LOCALHOST:8080/"));
+        assert!(!is_safe_external_url("http://127.0.0.1/"));
+        assert!(!is_safe_external_url("http://[::1]/"));
+    }
+
+    #[test]
+    fn rejects_private_and_link_local_ipv4_ranges() {
+        assert!(!is_safe_external_url("http://10.0.0.5/"));
+        assert!(!is_safe_external_url("http://172.16.3.4/"));
+        assert!(!is_safe_external_url("http://192.168.1.1/"));
+        assert!(!is_safe_external_url("http://169.254.169.254/")); // cloud metadata endpoint
+    }
+
+    #[test]
+    fn rejects_unique_local_and_link_local_ipv6() {
+        assert!(!is_safe_external_url("http://[fc00::1]/"));
+        assert!(!is_safe_external_url("http://[fe80::1]/"));
+    }
+
+    #[test]
+    fn rejects_unparseable_urls() {
+        assert!(!is_safe_external_url("not a url at all"));
+        assert!(!is_safe_external_url(""));
+    }
 }

@@ -1,4 +1,4 @@
-use super::SiteAdapter;
+use super::{slug_from_url, text_of, SiteAdapter};
 use crate::models::{Episode, FinishedCard, Series, SeriesDetail};
 use anyhow::Result;
 use scraper::{Html, Selector};
@@ -86,16 +86,6 @@ fn abs(path: &str) -> String {
     }
 }
 
-fn slug_from_url(url: &str) -> String {
-    url.trim_end_matches('/').rsplit('/').next().unwrap_or("").to_string()
-}
-
-fn text_of(el: scraper::ElementRef, sel: &Selector) -> Option<String> {
-    el.select(sel)
-        .next()
-        .map(|n| n.text().collect::<String>().trim().to_string())
-        .filter(|s| !s.is_empty())
-}
 
 impl SiteAdapter for AnimeflvAdapter {
     fn airing_url(&self, base_url: &str) -> String {

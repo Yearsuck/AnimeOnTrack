@@ -110,11 +110,24 @@ pub fn get_mirrors(state: State<'_, AppState>) -> Result<Vec<String>, String> {
 /// site the app is currently actually using (`sources.base_url`), that URL is
 /// kept at the front regardless — otherwise a Settings edit can silently
 /// strand every future scan with no working entry at all.
+///
+/// Mirror URLs eventually reach `WebviewUrl::External` navigation (airing
+/// scans, episode fetches, cover images) — a mirror pointing at `file://` or
+/// an internal network address is rejected here rather than only at
+/// navigation time, so Settings gives immediate feedback instead of a scan
+/// silently refusing every fetch against it later.
 #[tauri::command]
 pub fn set_mirrors(state: State<'_, AppState>, urls: Vec<String>) -> Result<(), String> {
     let site_id = get_active_site_id(&state);
     let db = state.db.lock().unwrap();
-    let mut cleaned: Vec<String> = urls.iter().map(|u| normalize(u)).filter(|u| !u.is_empty()).collect();
+    let mut cleaned: Vec<String> = urls
+        .iter()
+        .map(|u| normalize(u))
+        .filter(|u| !u.is_empty())
+        .collect();
+    if let Some(bad) = cleaned.iter().find(|u| !is_safe_external_url(u)) {
+        return Err(format!("mirror no permitido: {bad}"));
+    }
     if let Ok(Some(src_id)) = state.source_id.lock().map(|g| *g) {
         if let Ok(Some(base_url)) = db.get_source_base_url(src_id) {
             let base_url = normalize(&base_url);

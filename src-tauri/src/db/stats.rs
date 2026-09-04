@@ -15,16 +15,23 @@ use chrono::Datelike;
 /// "parte N", "cour N", "Nth season", "final season", a trailing standalone
 /// integer, and trailing Roman numerals (ii..x). It's a heuristic, not a
 /// canonical grouping — good enough to keep "X", "X: Arco Y" and "X Temporada
-/// 2" together without a metadata source. Never returns "" (falls back to the
-/// full normalized title if stripping would otherwise empty it).
+/// 2" together without a metadata source. Never returns "" — falls back to
+/// the full normalized title if stripping would otherwise empty it, and (a
+/// title that is itself all punctuation/noise, so even `normalize_title`
+/// reduces it to "") to the raw trimmed+lowercased title, so two different
+/// garbage titles don't silently collapse into one shared empty-keyed
+/// franchise.
 pub(crate) fn franchise_key(title: &str) -> String {
     let norm = crate::matching::normalize_title(title);
-    let tokens: Vec<&str> = strip_season_markers(norm.split_whitespace().collect(), |t| t.to_string());
+    let tokens: Vec<&str> =
+        crate::matching::strip_season_markers(norm.split_whitespace().collect(), |t| t.to_string());
     let key = tokens.join(" ");
-    if key.is_empty() {
+    if !key.is_empty() {
+        key
+    } else if !norm.is_empty() {
         norm
     } else {
-        key
+        title.trim().to_lowercase()
     }
 }
 
@@ -50,62 +57,6 @@ pub(crate) fn franchise_parent_key(title: &str) -> Option<String> {
     (!parent.is_empty() && parent != franchise_key(title)).then_some(parent)
 }
 
-/// Drop trailing season/part markers from `tokens`, testing each token's
-/// normalized form via `normalize` (identity for already-normalized input,
-/// real normalization for raw display tokens).
-///
-/// A bare trailing integer is only a season number when a marker word
-/// introduces it ("Temporada 2", "Part 2") — stripping any trailing digit
-/// unconditionally merged genuinely distinct titles whose name ends in one,
-/// e.g. "Steins;Gate 0" (a different work, with its own AniList entry and
-/// episode count) into "Steins;Gate".
-fn strip_season_markers(
-    mut tokens: Vec<&str>,
-    normalize: impl Fn(&str) -> String,
-) -> Vec<&str> {
-    const ROMANS: &[&str] = &["ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x"];
-    const MARKER_WORDS: &[&str] =
-        &["season", "temporada", "part", "parte", "cour", "final", "the"];
-    let is_marker_word = |t: &str| MARKER_WORDS.contains(&t);
-    let is_int = |t: &str| !t.is_empty() && t.chars().all(|c| c.is_ascii_digit());
-    let is_ordinal = |t: &str| {
-        // char-boundary safe: use strip_suffix instead of byte indexing.
-        // Titles can contain multi-byte Unicode (roman numerals, Cyrillic,
-        // superscripts, fullwidth, fractions). Byte-slicing panics on non-char
-        // boundaries; in #[tauri::command] paths on the main thread this aborts
-        // the whole process (FAST_FAIL_FATAL_APP_EXIT).
-        let Some(head) = t
-            .strip_suffix("st")
-            .or_else(|| t.strip_suffix("nd"))
-            .or_else(|| t.strip_suffix("rd"))
-            .or_else(|| t.strip_suffix("th"))
-        else {
-            return false;
-        };
-        !head.is_empty() && head.chars().all(|c| c.is_ascii_digit())
-    };
-
-    while let Some(&last) = tokens.last() {
-        let normalized = normalize(last);
-        if is_marker_word(&normalized) || is_ordinal(&normalized) || ROMANS.contains(&normalized.as_str())
-        {
-            tokens.pop();
-            continue;
-        }
-        if is_int(&normalized) {
-            let introduced_by_marker = tokens.len() >= 2
-                && is_marker_word(&normalize(tokens[tokens.len() - 2]));
-            if introduced_by_marker {
-                tokens.pop();
-                tokens.pop();
-                continue;
-            }
-        }
-        break;
-    }
-    tokens
-}
-
 /// A human-facing franchise name derived from one member title, with the
 /// original casing and accents preserved — `franchise_key`'s normalized output
 /// ("one piece") is a grouping key, never something to show a user.
@@ -119,7 +70,7 @@ fn strip_season_markers(
 /// group supplies the label. Falls back to the trimmed input when stripping
 /// would leave nothing.
 pub(crate) fn franchise_display_title(title: &str) -> String {
-    let tokens = strip_season_markers(
+    let tokens = crate::matching::strip_season_markers(
         title.split_whitespace().collect(),
         crate::matching::normalize_title,
     );
@@ -1567,6 +1518,16 @@ mod tests {
         // A title that is *only* a season marker must not collapse to "".
         assert!(!franchise_key("Season 2").is_empty());
         assert!(!franchise_key("IV").is_empty());
+    }
+
+    /// A title that is entirely punctuation/noise normalizes to "" even
+    /// before season-marker stripping — the key must not also be "" (two
+    /// such garbage titles would otherwise silently share one franchise).
+    #[test]
+    fn franchise_key_keeps_two_all_punctuation_titles_distinct() {
+        assert!(!franchise_key("!!!").is_empty());
+        assert!(!franchise_key("???").is_empty());
+        assert_ne!(franchise_key("!!!"), franchise_key("???"));
     }
 
     #[test]

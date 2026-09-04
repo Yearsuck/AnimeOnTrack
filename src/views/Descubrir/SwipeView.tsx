@@ -309,6 +309,16 @@ export function SwipeView() {
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
+      // Don't hijack arrow keys (or Ctrl+Z) while the user is focused on a
+      // real form control — the filters panel's date inputs use ArrowLeft/
+      // Right/Up/Down to move between day/month/year segments, and without
+      // this check this window-level listener wins the race and fires a
+      // real swipe decision on the current card instead.
+      const el = document.activeElement;
+      const tag = el?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (el as HTMLElement | null)?.isContentEditable) {
+        return;
+      }
       if (e.ctrlKey && e.key.toLowerCase() === "z") {
         e.preventDefault();
         undo();
