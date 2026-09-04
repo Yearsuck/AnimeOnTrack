@@ -53,6 +53,24 @@ pub fn path_of(url: &str) -> Result<String, String> {
     Ok(format!("{}{}", u.path(), u.query().map(|q| format!("?{q}")).unwrap_or_default()))
 }
 
+/// Rewrite `url`'s scheme+host to `mirror`'s, keeping its path and query.
+///
+/// Three adapters (tioanime, animeflv, animeland) resolve relative `href`s
+/// against a hardcoded default-domain constant instead of the mirror that
+/// actually served the page they're parsing — `scrape_via_mirrors` can fall
+/// through to a configured fallback mirror while those adapters keep baking
+/// in their own default domain regardless. Applied uniformly right after a
+/// scrape succeeds (not inside the adapters), so every site's page/episode
+/// URLs always match the mirror that actually served them, whether or not
+/// that particular adapter has the bug. Left unchanged (falls back to the
+/// original `url`) when `url` doesn't parse — never worse than before.
+pub fn rebase_to_mirror(url: &str, mirror: &str) -> String {
+    match path_of(url) {
+        Ok(path) => format!("{}{}", mirror.trim_end_matches('/'), path),
+        Err(_) => url.to_string(),
+    }
+}
+
 /// Fetch and parse a series detail page, falling through mirrors the same
 /// way every other scrape does. An empty genre list is treated the same as
 /// "page loaded but didn't parse" (see `scrape_via_mirrors`'s doc comment) —
@@ -113,7 +131,7 @@ pub async fn fetch_episode_list_for(
     a: &dyn SiteAdapter,
 ) -> Result<Vec<Episode>, String> {
     let path = path_of(series_url)?;
-    let (_scraped, eps, _mirror) = scrape_via_mirrors_with_script(
+    let (_scraped, mut eps, working_mirror) = scrape_via_mirrors_with_script(
         app,
         mirrors,
         &path,
@@ -122,6 +140,9 @@ pub async fn fetch_episode_list_for(
         |scraped| a.parse_series(scraped.extra.as_deref().unwrap_or(&scraped.html)),
     )
     .await?;
+    for e in &mut eps {
+        e.url = rebase_to_mirror(&e.url, &working_mirror);
+    }
     Ok(eps)
 }
 
@@ -148,6 +169,9 @@ async fn scan_airing_via_mirrors(
     let page1_path = a.airing_page_url("", 1).unwrap_or_else(|| a.airing_url(""));
     let (_scraped, mut series, working_mirror) =
         scrape_via_mirrors(app, &mirrors, &page1_path, false, |scraped| a.parse_airing(&scraped.html)).await?;
+    for s in &mut series {
+        s.url = rebase_to_mirror(&s.url, &working_mirror);
+    }
     let mut seen_slugs: std::collections::HashSet<String> =
         series.iter().map(|s| s.slug.clone()).collect();
     let page_mirrors = vec![working_mirror.clone()];
@@ -161,13 +185,14 @@ async fn scan_airing_via_mirrors(
             a.parse_airing(&scraped.html).map(|v| vec![v])
         })
         .await;
-        let Ok((_s, mut pages, _m)) = fetched else { break };
+        let Ok((_s, mut pages, page_mirror)) = fetched else { break };
         let Some(page_series) = pages.pop() else { break };
         if page_series.is_empty() {
             break;
         }
         let mut added = 0;
-        for s in page_series {
+        for mut s in page_series {
+            s.url = rebase_to_mirror(&s.url, &page_mirror);
             if seen_slugs.insert(s.slug.clone()) {
                 series.push(s);
                 added += 1;
@@ -485,7 +510,12 @@ async fn fetch_series_episodes(
     })
     .await
     {
-        Ok((_scraped, eps, working_mirror)) => Some((eps, working_mirror, path)),
+        Ok((_scraped, mut eps, working_mirror)) => {
+            for e in &mut eps {
+                e.url = rebase_to_mirror(&e.url, &working_mirror);
+            }
+            Some((eps, working_mirror, path))
+        }
         Err(_) => None,
     }
 }
@@ -608,7 +638,10 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
     let listing_path = a.airing_url("").to_string();
     let listing_slugs: Option<std::collections::HashSet<String>> =
         match scrape_via_mirrors(&app, &mirrors, &listing_path, false, |scraped| a.parse_airing(&scraped.html)).await {
-            Ok((_scraped, series, _mirror)) => {
+            Ok((_scraped, mut series, working_mirror)) => {
+                for s in &mut series {
+                    s.url = rebase_to_mirror(&s.url, &working_mirror);
+                }
                 let db = state.db.lock().unwrap();
                 for s in &series {
                     db.upsert_series(src, s).map_err(|e| e.to_string())?;
