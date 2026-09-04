@@ -1,9 +1,7 @@
-use super::SiteAdapter;
+use super::{slug_from_url, text_of, SiteAdapter};
 use crate::models::{Episode, FinishedCard, Series, SeriesDetail};
 use anyhow::{anyhow, Result};
 use scraper::{Html, Selector};
-use serde::Deserialize;
-
 pub struct JkanimeAdapter;
 
 // Confirmed live against https://jkanime.net 2026-07-22 via browser devtools
@@ -113,6 +111,12 @@ const EPISODE_FETCH_SCRIPT: &str = r#"(function(){
     var all = [];
     var page = 1;
     var lastPage = 1;
+    // Cap on trust in the server-reported last_page: re-read fresh every
+    // iteration (below), so a compromised/misbehaving mirror that inflates
+    // it can otherwise hold one of the app's global scrape permits for the
+    // full eval() timeout in synchronous XHRs. 500 pages is far beyond any
+    // real series (the longest observed live run was ~74 pages).
+    var MAX_PAGES = 500;
     do {
         var xhr = new XMLHttpRequest();
         xhr.open('POST', urlPrefix + page, false);
@@ -138,27 +142,9 @@ const EPISODE_FETCH_SCRIPT: &str = r#"(function(){
             all.push(ep);
         }
         page++;
-    } while (page <= lastPage);
+    } while (page <= lastPage && page <= MAX_PAGES);
     return JSON.stringify(all);
 })()"#;
-
-#[derive(Deserialize)]
-struct RawEpisode {
-    number: i64,
-    url: String,
-    timestamp: String,
-}
-
-fn slug_from_url(url: &str) -> String {
-    url.trim_end_matches('/').rsplit('/').next().unwrap_or("").to_string()
-}
-
-fn text_of(el: scraper::ElementRef, sel: &Selector) -> Option<String> {
-    el.select(sel)
-        .next()
-        .map(|n| n.text().collect::<String>().trim().to_string())
-        .filter(|s| !s.is_empty())
-}
 
 /// `style="background-image: url(...)"` -> the URL inside. No `regex` crate
 /// dependency in this codebase yet, and one string search doesn't justify
@@ -225,22 +211,42 @@ impl SiteAdapter for JkanimeAdapter {
         Ok(out)
     }
 
+    /// Parsed permissively, one episode at a time, instead of via a single
+    /// strict `Vec<RawEpisode>` deserialize: `number` used to be typed as a
+    /// hard `i64`, so a single non-integer value anywhere in the response
+    /// (a fractional OVA number like `"12.5"`, or the site emitting it as a
+    /// numeric string for one entry) failed `serde_json::from_str` for the
+    /// *entire* array — the whole series silently got zero episode updates
+    /// that scan cycle, not just the one odd episode. `number` is accepted
+    /// as either a JSON number or a string (every other adapter already
+    /// stores episode number as a permissive `String`); an episode missing
+    /// `number`/`url` entirely, or with `number` in some other shape, is
+    /// skipped rather than aborting its siblings.
     fn parse_series(&self, json: &str) -> Result<Vec<Episode>> {
-        let raw: Vec<RawEpisode> =
+        let raw: Vec<serde_json::Value> =
             serde_json::from_str(json).map_err(|e| anyhow!("episode JSON did not parse: {e}"))?;
         Ok(raw
             .into_iter()
-            .map(|r| Episode {
-                id: 0,
-                series_id: 0,
-                number: r.number.to_string(),
-                // JSON's own `title` field is just "{series title} - {N}",
-                // not a distinct per-episode title — same call tioanime
-                // already made for its own repeated-series-title rows.
-                title: None,
-                url: r.url,
-                released_at: Some(r.timestamp),
-                seen: false,
+            .filter_map(|v| {
+                let number = match v.get("number")? {
+                    serde_json::Value::Number(n) => n.to_string(),
+                    serde_json::Value::String(s) => s.clone(),
+                    _ => return None,
+                };
+                let url = v.get("url")?.as_str()?.to_string();
+                let released_at = v.get("timestamp").and_then(|t| t.as_str()).map(str::to_string);
+                Some(Episode {
+                    id: 0,
+                    series_id: 0,
+                    number,
+                    // JSON's own `title` field is just "{series title} - {N}",
+                    // not a distinct per-episode title — same call tioanime
+                    // already made for its own repeated-series-title rows.
+                    title: None,
+                    url,
+                    released_at,
+                    seen: false,
+                })
             })
             .collect())
     }
@@ -383,6 +389,23 @@ mod tests {
         assert_eq!(out[0].url, "https://jkanime.net/hanaori-san-wa-tensei-shitemo-kenka-ga-shitai/1/");
         assert_eq!(out[0].released_at.as_deref(), Some("2026-07-11 17:47:15"));
         assert_eq!(out[1].number, "2");
+    }
+
+    /// Regression for the "one malformed episode kills the whole array" bug:
+    /// a fractional/non-integer `number` (or a missing field) on one entry
+    /// must not prevent its siblings from parsing.
+    #[test]
+    fn a_malformed_episode_is_skipped_not_fatal_to_the_batch() {
+        let json = r#"[
+            {"number": 1, "url": "https://jkanime.net/show/1/", "timestamp": "2026-07-11 00:00:00"},
+            {"number": "12.5", "url": "https://jkanime.net/show/12.5/", "timestamp": "2026-07-18 00:00:00"},
+            {"number": null, "url": "https://jkanime.net/show/bad/", "timestamp": "2026-07-19 00:00:00"},
+            {"url": "https://jkanime.net/show/no-number/", "timestamp": "2026-07-20 00:00:00"},
+            {"number": 2, "url": "https://jkanime.net/show/2/", "timestamp": "2026-07-25 00:00:00"}
+        ]"#;
+        let out = JkanimeAdapter.parse_series(json).unwrap();
+        let numbers: Vec<&str> = out.iter().map(|e| e.number.as_str()).collect();
+        assert_eq!(numbers, vec!["1", "12.5", "2"]);
     }
 
     #[test]
