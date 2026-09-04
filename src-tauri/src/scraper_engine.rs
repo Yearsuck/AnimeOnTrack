@@ -382,8 +382,18 @@ async fn fetch_cover_image_inner(app: &AppHandle, image_url: &str) -> Result<Str
     let mut ready = false;
     for _ in 0..20 {
         tokio::time::sleep(Duration::from_millis(150)).await;
+        // `eval` returns WebView2's own JSON-encoding of the script's
+        // result. The script's own `JSON.stringify(bool)` return value is
+        // itself a *string* ("true"/"false"), so the outer JSON-string
+        // layer has to be decoded first before it means anything as a
+        // bool — parsing the raw `eval` result directly as a bool always
+        // fails (it's JSON string syntax, not JSON bool syntax) and falls
+        // back to `false` unconditionally, which made this readiness check
+        // never fire regardless of how quickly the image actually loaded
+        // and reliably burned the whole 20-poll window on every fetch.
         if let Ok(json) = eval(&window, READY_PROBE, 5).await {
-            if serde_json::from_str::<bool>(&json).unwrap_or(false) {
+            let inner: String = serde_json::from_str(&json).unwrap_or_default();
+            if inner == "true" {
                 ready = true;
                 break;
             }

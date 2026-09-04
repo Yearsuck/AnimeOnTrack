@@ -803,9 +803,19 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
             // its doc comment — so this can never stall the whole cycle.
             if let Some(remote) = &s.cover_url {
                 if !remote.starts_with("data:") {
-                    if let Ok(data_uri) = fetch_cover_image(&app, remote).await {
-                        let db = state.db.lock().unwrap();
-                        let _ = db.update_series_cover(s.id, &data_uri);
+                    match fetch_cover_image(&app, remote).await {
+                        Ok(data_uri) => {
+                            let db = state.db.lock().unwrap();
+                            let _ = db.update_series_cover(s.id, &data_uri);
+                        }
+                        // Kept permanently, same reasoning as the `[scrape]
+                        // fetch timing` line: a cover that never gets past
+                        // this stage leaves a stale remote url in place
+                        // silently forever otherwise, which is exactly how
+                        // this readiness check's JSON-string double-decode
+                        // bug (see `fetch_cover_image_inner`'s ready-poll)
+                        // went unnoticed for as long as it did.
+                        Err(e) => eprintln!("[cover] series {} ({}): fetch failed: {e}", s.id, s.title),
                     }
                 }
             }
