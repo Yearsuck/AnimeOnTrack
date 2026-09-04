@@ -583,19 +583,13 @@ async fn run_episode_backfill(app: AppHandle) -> Result<(), String> {
         {
             let db = state.db.lock().unwrap();
             let new_url = format!("{working_mirror}{path}");
-            if new_url != s.url {
-                db.update_series_url(s.id, &new_url).map_err(|e| e.to_string())?;
-            }
+            let new_url = (new_url != s.url).then_some(new_url.as_str());
             // A never-fetched series has no known episode numbers yet, so
             // this is always the full list — same insert path `refresh()`
             // uses, so a later real refresh() sees these as already-known
-            // and doesn't duplicate them.
-            let known = db.existing_episode_numbers(s.id).map_err(|e| e.to_string())?;
-            for mut e in new_episodes(&eps, &known) {
-                e.series_id = s.id;
-                db.insert_episode(&e).map_err(|e| e.to_string())?;
-            }
-            db.set_last_checked_at(s.id).map_err(|e| e.to_string())?;
+            // and doesn't duplicate them. One transaction for the whole list
+            // — see `apply_episode_diff`'s doc comment.
+            db.apply_episode_diff(s.id, new_url, &eps).map_err(|e| e.to_string())?;
             if let Some(n) = db.take_carried_seen_number(s.id).map_err(|e| e.to_string())? {
                 db.set_seen_cascade(s.id, &n.to_string(), true).map_err(|e| e.to_string())?;
             }
@@ -765,38 +759,39 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
 
         for (s, result) in chunk.iter().zip(fetched) {
             let Some((eps, working_mirror, path)) = result else { continue };
-            {
+            // A per-series DB error (a data-integrity problem this
+            // particular series' scraped page happens to trip, a locked
+            // file, whatever) must never abort the whole cycle — the other
+            // series in `to_fetch` are still waiting, and bailing here used
+            // to kill every one of them along with this one, silently
+            // freezing the frontend's progress bar on whatever number it
+            // last reached. Log and move on to the next series instead.
+            let db_result: Result<(), String> = (|| {
                 let db = state.db.lock().unwrap();
                 let new_url = format!("{working_mirror}{path}");
-                if new_url != s.url {
-                    db.update_series_url(s.id, &new_url).map_err(|e| e.to_string())?;
-                }
-                // De-duplicate by episode number, not URL: the site may have
-                // moved to a new domain (the URLs all changed), so a URL-keyed
-                // diff would re-insert every episode as a new unseen duplicate.
-                let known = db.existing_episode_numbers(s.id).map_err(|e| e.to_string())?;
-                // Episodes we already have get their link refreshed in place
-                // (the domain/path may have changed) without touching seen.
-                for e in eps.iter().filter(|e| known.contains(&e.number)) {
-                    db.refresh_episode_meta(s.id, &e.number, &e.url, e.title.as_deref(), e.released_at.as_deref())
-                        .map_err(|e| e.to_string())?;
-                }
-                for mut e in new_episodes(&eps, &known) {
-                    e.series_id = s.id;
-                    db.insert_episode(&e).map_err(|e| e.to_string())?;
-                    total_new += 1;
-                }
-                // Only on a *successful* fetch — a failed one leaves the old
-                // timestamp so the finished-show recheck retries next cycle.
-                db.set_last_checked_at(s.id).map_err(|e| e.to_string())?;
+                let new_url = (new_url != s.url).then_some(new_url.as_str());
+                // De-duplicate by episode number, not URL (the site may have
+                // moved to a new domain, so a URL-keyed diff would re-insert
+                // every episode as a new unseen duplicate) — see
+                // `apply_episode_diff`'s doc comment for why this is one
+                // transaction instead of a loop of individually committed
+                // statements.
+                total_new += db.apply_episode_diff(s.id, new_url, &eps).map_err(|e| e.to_string())?;
 
                 // Apply-once cross-site progress carry-over: if this series'
                 // follow was carried from another site, mark every episode up
                 // to the carried watermark seen now that its episode list has
                 // been fetched, then clear the marker so it never re-fires.
+                // Kept outside the transaction above — set_seen_cascade opens
+                // its own (SQLite doesn't nest transactions on one connection).
                 if let Some(n) = db.take_carried_seen_number(s.id).map_err(|e| e.to_string())? {
                     db.set_seen_cascade(s.id, &n.to_string(), true).map_err(|e| e.to_string())?;
                 }
+                Ok(())
+            })();
+            if let Err(e) = db_result {
+                eprintln!("[refresh] series {} ({}): DB update failed, skipping to next series: {e}", s.id, s.title);
+                continue;
             }
 
             // One cover fetch per followed series per refresh — never in
@@ -804,6 +799,8 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
             // loop is sequential). Skip once it's already a fetched data:
             // URI; a failure here just leaves the remote (broken) url in
             // place to retry next time, it never blocks episode updates.
+            // fetch_cover_image itself is timeout-bounded end to end — see
+            // its doc comment — so this can never stall the whole cycle.
             if let Some(remote) = &s.cover_url {
                 if !remote.starts_with("data:") {
                     if let Ok(data_uri) = fetch_cover_image(&app, remote).await {

@@ -2,7 +2,6 @@ use crate::adapter::{self, SiteAdapter};
 use crate::backup as backup_lib;
 use crate::dates::parse_spanish_date;
 use crate::db::Db;
-use crate::diff::new_episodes;
 use crate::models::{
     AiringItem, BackupStatus, BingeRecord, Episode, FinishedCard, GenreAffinity, GenreStat, HourCount,
     Series, SeriesDetail, SeriesGraphNode, TypeStat, WatchInsights, WatchSummary,
