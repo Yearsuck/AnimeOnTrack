@@ -635,19 +635,28 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
     let total_series = followed.len();
     let now_unix = chrono::Utc::now().timestamp();
 
+    // One query each for every followed series' max episode number / last-
+    // checked age, instead of two queries per series in the loop below — see
+    // `Db::max_episode_numbers_for_source`'s doc comment. A series absent
+    // from either map (no episode rows yet / theoretically impossible for
+    // `last_checked_ages`) falls back to the same defaults the old
+    // per-series calls used (0, and `None`).
+    let (max_numbers, checked_ages) = {
+        let db = state.db.lock().unwrap();
+        (
+            db.max_episode_numbers_for_source(src).map_err(|e| e.to_string())?,
+            db.last_checked_ages_for_source(src).map_err(|e| e.to_string())?,
+        )
+    };
+
     // Partition into skip/fetch. Skipped series are reported to the progress
     // bar immediately (the bar visibly races through them) so X/Y still
     // covers ALL followed series, not just the fetched ones.
     let mut to_fetch: Vec<Series> = Vec::new();
     let mut idx = 0usize;
     for s in followed {
-        let (db_max_number, checked_age) = {
-            let db = state.db.lock().unwrap();
-            (
-                db.max_episode_number(s.id).map_err(|e| e.to_string())?,
-                db.last_checked_age_secs(s.id).map_err(|e| e.to_string())?,
-            )
-        };
+        let db_max_number = max_numbers.get(&s.id).copied().unwrap_or(0);
+        let checked_age = checked_ages.get(&s.id).copied().flatten();
         let on_listing = listing_slugs.as_ref().is_some_and(|set| set.contains(&s.slug));
         if should_fetch_series(
             force,

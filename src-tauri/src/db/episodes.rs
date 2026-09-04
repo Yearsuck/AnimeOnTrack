@@ -55,12 +55,44 @@ impl Db {
     /// SQLite's `CAST(x AS INTEGER)` parses a leading integer and stops at the
     /// first non-digit, so `'13'`->13, `'1 | v2'`->1, `'0 | Recap'`->0,
     /// `'Recap'`->0. Returns 0 when the series has no episode rows.
+    // Kept as a public single-series lookup even though `refresh()` now uses
+    // the batched `max_episode_numbers_for_source` instead (see its doc
+    // comment) — a real, useful primitive on its own, exercised directly by
+    // the tests below.
+    #[allow(dead_code)]
     pub fn max_episode_number(&self, series_id: i64) -> Result<i64> {
         Ok(self.conn.query_row(
             "SELECT COALESCE(MAX(CAST(number AS INTEGER)), 0) FROM episodes WHERE series_id=?1",
             [series_id],
             |r| r.get(0),
         )?)
+    }
+
+    /// Batched form of `max_episode_number` for every followed series of
+    /// `source_id`, one query instead of one-per-series. `refresh()`'s skip
+    /// decision used to call `max_episode_number` (plus
+    /// `Db::last_checked_age_secs`) once per followed series before it even
+    /// started fetching — for a library of 100+ shows that's 200+ separate
+    /// short-lived `state.db` mutex lock/query round-trips on every refresh
+    /// cycle (every app launch and every "Actualizar" click), each also
+    /// contending with any UI-triggered command that needs the same lock.
+    /// A series with zero episode rows has no entry in the returned map
+    /// (there's no `GROUP BY` row for it) — callers must treat a missing key
+    /// as 0, matching `max_episode_number`'s own COALESCE default.
+    pub fn max_episode_numbers_for_source(
+        &self,
+        source_id: i64,
+    ) -> Result<std::collections::HashMap<i64, i64>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT e.series_id, MAX(CAST(e.number AS INTEGER))
+             FROM episodes e JOIN series s ON s.id = e.series_id
+             WHERE s.source_id=?1 AND s.followed=1
+             GROUP BY e.series_id",
+        )?;
+        let rows = stmt
+            .query_map([source_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<std::collections::HashMap<i64, i64>>>()?;
+        Ok(rows)
     }
 
     /// The lowest-numbered episode's `released_at` for every airing series in
@@ -358,6 +390,48 @@ mod tests {
         // No episodes at all -> 0.
         let sid_c = db.upsert_series(src, &mk_airing("c", "C", None)).unwrap();
         assert_eq!(db.max_episode_number(sid_c).unwrap(), 0);
+    }
+
+    /// The batched form must agree with `max_episode_number` per series, be
+    /// scoped to followed rows of the given source, and simply omit a
+    /// series with zero episode rows (callers default a missing key to 0).
+    #[test]
+    fn max_episode_numbers_for_source_matches_the_per_series_version() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let other_src = db.upsert_source("TioAnime", "t", "tioanime").unwrap();
+
+        let sid_a = db.upsert_series(src, &mk_airing("a", "A", None)).unwrap();
+        db.set_followed(sid_a, true).unwrap();
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: sid_a, number: "5".into(), title: None,
+            url: "https://site/a-5".into(), released_at: None, seen: false,
+        }).unwrap();
+
+        // Followed but no episodes yet -> absent from the map.
+        let sid_b = db.upsert_series(src, &mk_airing("b", "B", None)).unwrap();
+        db.set_followed(sid_b, true).unwrap();
+
+        // Not followed -> excluded even though it has episodes.
+        let sid_c = db.upsert_series(src, &mk_airing("c", "C", None)).unwrap();
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: sid_c, number: "9".into(), title: None,
+            url: "https://site/c-9".into(), released_at: None, seen: false,
+        }).unwrap();
+
+        // Followed on a different source -> excluded from this source's map.
+        let sid_other = db.upsert_series(other_src, &mk_airing("d", "D", None)).unwrap();
+        db.set_followed(sid_other, true).unwrap();
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: sid_other, number: "3".into(), title: None,
+            url: "https://site/d-3".into(), released_at: None, seen: false,
+        }).unwrap();
+
+        let map = db.max_episode_numbers_for_source(src).unwrap();
+        assert_eq!(map.get(&sid_a).copied(), Some(5));
+        assert_eq!(map.get(&sid_b), None, "no episode rows -> absent, not 0");
+        assert_eq!(map.get(&sid_c), None, "not followed -> excluded");
+        assert_eq!(map.get(&sid_other), None, "different source -> excluded");
     }
 
     // ---- "Esta temporada" first-episode date (2026-07-13) ----
