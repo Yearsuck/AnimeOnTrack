@@ -176,14 +176,30 @@ impl Db {
         let mut linked = 0i64;
         for (series_id, title) in self.series_needing_catalog_link()? {
             let base = crate::db::stats::franchise_base_title(&title);
-            // The reduced form is only worth a second lookup when it
-            // actually differs; otherwise this is the same query twice.
-            let candidates: Vec<&str> =
-                if base == title { vec![&title] } else { vec![&title, &base] };
-            let matched = index.lookup(&candidates).or_else(|| index.fuzzy_lookup(&candidates));
-            if let Some(anilist_id) = matched {
+            // Try the full site title first — exact, then fuzzy — before
+            // ever falling back to the franchise base name. This order
+            // matters specifically for season-N titles: "... Temporada 2"
+            // has no exact hit (AniList stores "... 2nd Season"), but its
+            // base "..." (season markers stripped) exact-matches season
+            // 1's own entry every time. Trying the base *before* fuzzy-
+            // matching the full title meant a season-2+ site row always
+            // linked to season 1's AniList id, even when the correct
+            // season-2 entry was already synced locally — fuzzy scoring
+            // (tuned to clear its threshold on exactly this "Temporada N"
+            // vs "Nth Season" shape) finds it first now. The base name is
+            // reserved for what it's actually meant for: an arc split
+            // ("One Piece: Arco de Elbaph") that has no AniList entry of
+            // its own and must fall back to the parent show.
+            if let Some(anilist_id) = index.lookup(&[&title]).or_else(|| index.fuzzy_lookup(&[&title])) {
                 self.set_anilist_id(series_id, anilist_id)?;
                 linked += 1;
+                continue;
+            }
+            if base != title {
+                if let Some(anilist_id) = index.lookup(&[&base]).or_else(|| index.fuzzy_lookup(&[&base])) {
+                    self.set_anilist_id(series_id, anilist_id)?;
+                    linked += 1;
+                }
             }
         }
         Ok(linked)
@@ -1288,6 +1304,66 @@ mod tests {
         assert_eq!(
             db.conn.query_row("SELECT anilist_id FROM series WHERE id=?1", [sid], |r| r.get::<_, Option<i64>>(0)).unwrap(),
             Some(187538)
+        );
+    }
+
+    #[test]
+    fn link_series_to_catalog_prefers_the_matching_season_over_season_one() {
+        // The reported bug: a site's "... Temporada 2" title has no exact
+        // catalog hit (AniList stores "... 2nd Season"), and its franchise
+        // base ("...", season markers stripped) exact-matches season 1 —
+        // which used to win outright before the full title's fuzzy score
+        // against the real season-2 entry was ever tried. Season 1 is
+        // seeded with far higher popularity so a popularity tie-break bug
+        // would also surface this as a failure.
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("TioAnime", "t", "tioanime").unwrap();
+        db.upsert_catalog_anime(
+            &catalog_anime_with_popularity(100, "Seihantai na Kimi to Boku", &["Comedy"], Some(50_000)),
+            0,
+        ).unwrap();
+        db.upsert_catalog_anime(
+            &catalog_anime_with_popularity(200, "Seihantai na Kimi to Boku 2nd Season", &["Comedy"], Some(5_000)),
+            0,
+        ).unwrap();
+
+        let sid = db.upsert_series(src, &crate::models::Series {
+            id: 0, slug: "seihantai-2".into(), title: "Seihantai na Kimi to Boku Temporada 2".into(),
+            url: "https://tioanime.example/series/seihantai-2".into(),
+            cover_url: None, is_airing: true, followed: true,
+            next_episode_at: None, site_episode_count: None,
+        }).unwrap();
+        db.set_followed(sid, true).unwrap();
+
+        assert_eq!(db.link_series_to_catalog().unwrap(), 1);
+        assert_eq!(
+            db.conn.query_row("SELECT anilist_id FROM series WHERE id=?1", [sid], |r| r.get::<_, Option<i64>>(0)).unwrap(),
+            Some(200),
+            "must link to season 2's own entry, not season 1's"
+        );
+    }
+
+    #[test]
+    fn link_series_to_catalog_falls_back_to_the_franchise_base_for_an_arc_with_no_entry_of_its_own() {
+        // An arc split ("One Piece: Arco de Elbaph") has no AniList entry of
+        // its own — the full title correctly finds nothing (exact or
+        // fuzzy), so this must still fall back to the parent show's entry.
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("TioAnime", "t", "tioanime").unwrap();
+        db.upsert_catalog_anime(&catalog_anime(21, "One Piece", &["Action"]), 0).unwrap();
+
+        let sid = db.upsert_series(src, &crate::models::Series {
+            id: 0, slug: "one-piece-elbaph".into(), title: "One Piece: Arco de Elbaph".into(),
+            url: "https://tioanime.example/series/one-piece-elbaph".into(),
+            cover_url: None, is_airing: true, followed: true,
+            next_episode_at: None, site_episode_count: None,
+        }).unwrap();
+        db.set_followed(sid, true).unwrap();
+
+        assert_eq!(db.link_series_to_catalog().unwrap(), 1);
+        assert_eq!(
+            db.conn.query_row("SELECT anilist_id FROM series WHERE id=?1", [sid], |r| r.get::<_, Option<i64>>(0)).unwrap(),
+            Some(21)
         );
     }
 
