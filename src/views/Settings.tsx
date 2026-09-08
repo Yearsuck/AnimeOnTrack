@@ -97,14 +97,19 @@ function GoogleCredentialsForm({ onConfigured }: { onConfigured: (s: BackupStatu
 function BackupCard() {
   const t = useT();
   const [status, setStatus] = useState<BackupStatus | null>(null);
-  const [busy, setBusy] = useState<null | "connect" | "backup" | "restore">(null);
+  // "disconnect" is its own kind, not a reuse of "connect": the two buttons
+  // read the same `busy` value for their labels, so sharing a kind made the
+  // Connect button flash "Conectando…" during (and right after) a
+  // disconnect, which is the opposite of what was happening.
+  type BusyKind = "connect" | "disconnect" | "backup" | "restore";
+  const [busy, setBusy] = useState<null | BusyKind>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     backupStatus().then(setStatus).catch((e) => setError(String(e)));
   }, []);
 
-  const run = async (kind: "connect" | "backup" | "restore", fn: () => Promise<unknown>) => {
+  const run = async (kind: BusyKind, fn: () => Promise<unknown>) => {
     setBusy(kind);
     setError(null);
     try {
@@ -161,7 +166,7 @@ function BackupCard() {
             >
               {busy === "restore" ? t("settings.backupRestoring") : t("settings.backupRestore")}
             </button>
-            <button className="btn btn-ghost" disabled={busy !== null} onClick={() => run("connect", disconnectDrive)}>
+            <button className="btn btn-ghost" disabled={busy !== null} onClick={() => run("disconnect", disconnectDrive)}>
               {t("settings.backupDisconnect")}
             </button>
           </div>
@@ -350,10 +355,26 @@ export function Settings({ onSiteChanged }: { onSiteChanged?: (site: SiteSummary
 
   async function saveMirrors() {
     setSavingMirrors(true);
+    // Cleared BEFORE the await, not only on success: `set_mirrors` rejects
+    // the whole list if any entry fails `is_safe_external_url` (a bare
+    // domain typed without `https://` is enough — the URL parser needs a
+    // scheme), and without this the previous "Lista de webs guardada."
+    // stayed on screen under the textarea claiming a save that never
+    // happened.
+    setMsg(null);
     try {
       const urls = mirrorsText.split("\n").map((u) => u.trim()).filter(Boolean);
       await setMirrors(urls);
+      // Even a successful save can persist something other than what was
+      // typed: `set_mirrors` force-reinserts the active site's `base_url`
+      // when the edit dropped it (commands/mirrors.rs refuses to strand the
+      // active site). Re-read the stored list — same call the mount does —
+      // so the textarea shows what is actually saved instead of the edit
+      // the backend partly overrode.
+      await loadMirrors();
       setMsg(t("settings.mirrorsSaved"));
+    } catch (e) {
+      setMsg(t("errors.generic", { detail: String(e) }));
     } finally {
       setSavingMirrors(false);
     }
