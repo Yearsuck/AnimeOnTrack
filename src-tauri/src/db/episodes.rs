@@ -1,16 +1,39 @@
 use super::*;
 
-/// True for a `UNIQUE(series_id, url)` violation specifically — see
-/// `apply_episode_diff`'s doc comment for why this one constraint is
+/// True for a `UNIQUE(series_id, url)` violation on `episodes` specifically —
+/// see `apply_episode_diff`'s doc comment for why this one constraint is
 /// tolerated (skip the offending row) rather than aborting the whole diff.
+///
+/// The check used to be `ErrorCode::ConstraintViolation` alone, which is the
+/// *class* of every constraint failure SQLite can raise: NOT NULL, CHECK,
+/// FOREIGN KEY, PRIMARY KEY. A genuine data bug in a scraped episode (a NULL
+/// number, a `series_id` pointing at a deleted series) therefore got quietly
+/// logged as "url collides with another episode" and skipped, instead of
+/// surfacing as the real error it is. Two things narrow it now:
+///
+/// - the **extended** result code must be `SQLITE_CONSTRAINT_UNIQUE` (2067),
+///   which rusqlite carries on `ffi::Error::extended_code` — that alone rules
+///   out every other constraint kind; and
+/// - when SQLite supplies its message (it always does in practice), it must
+///   name this exact constraint: "UNIQUE constraint failed: episodes.series_id,
+///   episodes.url". A missing message falls back to the extended code alone
+///   rather than misreporting a tolerable collision as a hard failure.
 fn is_unique_violation(e: &anyhow::Error) -> bool {
-    matches!(
-        e.downcast_ref::<rusqlite::Error>(),
-        Some(rusqlite::Error::SqliteFailure(
-            rusqlite::ffi::Error { code: rusqlite::ErrorCode::ConstraintViolation, .. },
-            _
-        ))
-    )
+    let Some(rusqlite::Error::SqliteFailure(err, msg)) = e.downcast_ref::<rusqlite::Error>() else {
+        return false;
+    };
+    if err.code != rusqlite::ErrorCode::ConstraintViolation
+        || err.extended_code != rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE
+    {
+        return false;
+    }
+    match msg {
+        Some(m) => {
+            let m = m.to_ascii_lowercase();
+            m.contains("episodes.series_id") && m.contains("episodes.url")
+        }
+        None => true,
+    }
 }
 
 /// Extract a comparable numeric value from an episode-number string, e.g.
@@ -460,6 +483,58 @@ impl Db {
 mod tests {
     use super::*;
     use super::super::test_support::*;
+
+    // ---- is_unique_violation must name ONE constraint, not a whole class ----
+
+    /// The real thing it is meant to tolerate: two episodes of the same series
+    /// on the same URL.
+    #[test]
+    fn is_unique_violation_accepts_the_episodes_url_collision() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let sid = db.upsert_series(src, &mk_airing("a", "A", None)).unwrap();
+        let err: anyhow::Error = db
+            .conn
+            .execute(
+                "INSERT INTO episodes(series_id, number, url) VALUES(?1, '1', 'u'), (?1, '2', 'u')",
+                [sid],
+            )
+            .unwrap_err()
+            .into();
+        assert!(is_unique_violation(&err), "expected a UNIQUE(series_id, url) hit, got: {err}");
+    }
+
+    /// Everything else that raises `ErrorCode::ConstraintViolation` must NOT be
+    /// swallowed as "url collides with another episode" — a scraped episode
+    /// with a NULL number, or one pointing at a series that doesn't exist, is a
+    /// genuine data bug and has to surface.
+    #[test]
+    fn is_unique_violation_rejects_other_constraint_failures() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let sid = db.upsert_series(src, &mk_airing("a", "A", None)).unwrap();
+
+        // NOT NULL on episodes.number.
+        let not_null: anyhow::Error = db
+            .conn
+            .execute("INSERT INTO episodes(series_id, number, url) VALUES(?1, NULL, 'n')", [sid])
+            .unwrap_err()
+            .into();
+        assert!(!is_unique_violation(&not_null), "NOT NULL must not read as a url collision");
+
+        // A different table's UNIQUE constraint (settings.key is the PK) is
+        // also not this one — the message check, not just the extended code.
+        db.set_setting("k", "v").unwrap();
+        let other_table: anyhow::Error = db
+            .conn
+            .execute("INSERT INTO settings(key, value) VALUES('k', 'v2')", [])
+            .unwrap_err()
+            .into();
+        assert!(!is_unique_violation(&other_table), "another table's constraint is not ours");
+
+        // And a plain non-SQLite error is never a match.
+        assert!(!is_unique_violation(&anyhow::anyhow!("something else entirely")));
+    }
 
     #[test]
     fn apply_episode_diff_refreshes_known_inserts_new_and_reports_the_new_count() {
