@@ -11,9 +11,18 @@ type PendingSort = "remaining_asc" | "remaining_desc";
 export function Pending({
   onOpenSeries,
   onChanged,
+  refreshSignal,
 }: {
   onOpenSeries: (s: Series) => void;
   onChanged: () => void;
+  // Bumped by App.tsx whenever something outside this component changed the
+  // pending set — a finished refresh() (including the one on startup, which
+  // lands after this view has already mounted and fetched), the topbar
+  // "Actualizar" button, a site switch, or the SeriesDetail overlay marking
+  // episodes seen on top of this list. Without it the list silently
+  // contradicted its own tab badge, which App.tsx *did* keep up to date.
+  // Same pattern as AiringGrid's identically-named prop.
+  refreshSignal?: number;
 }) {
   const t = useT();
   const [items, setItems] = useState<PendingItem[]>([]);
@@ -25,7 +34,10 @@ export function Pending({
   }, [sort]);
   useEffect(() => {
     load();
-  }, [load]);
+    // `refreshSignal` isn't read in the body — it's a bump counter whose only
+    // job is to be a dependency, same as in AiringGrid.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [load, refreshSignal]);
 
   async function watch(it: PendingItem) {
     await openEpisode(it.episode.url);
