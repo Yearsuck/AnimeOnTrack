@@ -176,30 +176,99 @@ export function Catalog() {
     episodes !== "" ||
     studio !== "";
 
-  const loadPage = useCallback(
-    async (targetPage: number) => {
+  // Monotonic id for the newest in-flight load, same guard Stats.tsx uses.
+  // Several triggers can overlap — a "Cargar más" click, the debounced
+  // search settling, a filter select, a finished sync — and without this the
+  // state reflected whichever request happened to settle last: a page-4
+  // response landing after the user retyped the search got appended to the
+  // now-unrelated filtered list.
+  const loadSeq = useRef(0);
+
+  // Replace the list with pages 1..lastPage. `lastPage === 1` is the
+  // ordinary reload; larger values only come from the remount restore below.
+  // Sequential rather than Promise.all: get_anime_catalog is a local SQLite
+  // read behind the AppState mutex, so parallel invokes would just queue on
+  // that lock.
+  const loadThrough = useCallback(
+    async (lastPage: number) => {
+      const seq = ++loadSeq.current;
       setLoading(true);
       setError(null);
       try {
-        const result = await getAnimeCatalog(targetPage, filter);
-        setItems((prev) => (targetPage === 1 ? result.items : [...prev, ...result.items]));
-        setHasNextPage(result.has_next_page);
-        setTotalSynced(result.total_synced);
-        setTotalMatching(result.total_matching);
-        setPage(targetPage);
+        const acc: CatalogAnime[] = [];
+        let reached = 1;
+        let hasNext = false;
+        let synced: number | null = null;
+        let matching: number | null = null;
+        for (let p = 1; p <= Math.max(1, lastPage); p++) {
+          const result = await getAnimeCatalog(p, filter);
+          if (seq !== loadSeq.current) return;
+          acc.push(...result.items);
+          reached = p;
+          hasNext = result.has_next_page;
+          synced = result.total_synced;
+          matching = result.total_matching;
+          // The stored page can outrun a list that has since shrunk (a
+          // narrower filter, rows removed by a sync) — stop at the real end.
+          if (!result.has_next_page) break;
+        }
+        setItems(acc);
+        setHasNextPage(hasNext);
+        setTotalSynced(synced);
+        setTotalMatching(matching);
+        setPage(reached);
       } catch (e) {
+        if (seq !== loadSeq.current) return;
         setError(t("errors.generic", { detail: String(e) }));
       } finally {
-        setLoading(false);
+        if (seq === loadSeq.current) setLoading(false);
       }
     },
     [filter]
   );
 
-  // Any filter change (including the debounced search settling) reloads
-  // from page 1 — this also covers the initial mount load.
+  // "Cargar más": append the next page onto what's already shown.
+  const loadMore = useCallback(async () => {
+    const targetPage = page + 1;
+    const seq = ++loadSeq.current;
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await getAnimeCatalog(targetPage, filter);
+      if (seq !== loadSeq.current) return;
+      setItems((prev) => [...prev, ...result.items]);
+      setHasNextPage(result.has_next_page);
+      setTotalSynced(result.total_synced);
+      setTotalMatching(result.total_matching);
+      setPage(targetPage);
+    } catch (e) {
+      if (seq !== loadSeq.current) return;
+      setError(t("errors.generic", { detail: String(e) }));
+    } finally {
+      if (seq === loadSeq.current) setLoading(false);
+    }
+  }, [page, filter]);
+
+  // How far the user had paged when this view was last unmounted. Read once
+  // at mount, before the persist effect above rewrites the cache.
+  const restorePageRef = useRef(catalogFilterCache.current?.page ?? 1);
+  // Identity of the `filter` this effect last acted on. The mount run sees
+  // the very filter it was initialized with, which is how a remount is told
+  // apart from a real filter change — and it survives StrictMode's
+  // dev-only double-invoke (refs persist, and the memoized filter object
+  // does not change identity across it), unlike a plain "first run" flag.
+  const lastFilterRef = useRef(filter);
+
+  // Any filter change (including the debounced search settling) reloads from
+  // page 1. A remount instead rebuilds pages 1..cached: reloading only page
+  // 1 threw the rest of the list away while App.tsx was still spending its
+  // scroll-restore budget (up to 5s of rAF ticks) chasing an offset that no
+  // longer existed in a 30-row list, so the scroll silently ended up pinned
+  // to the bottom.
   useEffect(() => {
-    loadPage(1);
+    const isRemount = lastFilterRef.current === filter;
+    lastFilterRef.current = filter;
+    loadThrough(isRemount ? restorePageRef.current : 1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filter]);
 
@@ -225,14 +294,14 @@ export function Catalog() {
     setSyncProgress(null);
     try {
       await syncAnimeCatalog();
-      await loadPage(1);
+      await loadThrough(1);
     } catch (e) {
       setError(t("errors.generic", { detail: String(e) }));
     } finally {
       setSyncing(false);
       syncingRef.current = false;
     }
-  }, [loadPage]);
+  }, [loadThrough]);
 
   function toggleGenre(g: string) {
     setSelectedGenres((prev) => (prev.includes(g) ? prev.filter((x) => x !== g) : [...prev, g]));
@@ -447,7 +516,7 @@ export function Catalog() {
 
           {hasNextPage && (
             <div className="catalog-more">
-              <button className="btn btn-primary" onClick={() => loadPage(page + 1)} disabled={loading}>
+              <button className="btn btn-primary" onClick={loadMore} disabled={loading}>
                 {loading ? t("common.loading") : t("catalog.loadMore")}
               </button>
             </div>
