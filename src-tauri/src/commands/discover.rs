@@ -380,11 +380,24 @@ pub fn discover_catalog_card(
     state: State<'_, AppState>,
     recommended: bool,
 ) -> Result<Option<FinishedCard>, String> {
-    let src = get_source_id(&state)?;
+    // Catalog cards are site-agnostic (see the cross-site affinity note
+    // below), but this still requires a site to be configured — same
+    // "no source configured; run scan_airing first" guard every other
+    // command in this app expects to have run by the time it's reachable.
+    let _ = get_source_id(&state)?;
     let db = state.db.lock().unwrap();
 
     let affinity = if recommended {
-        db.get_genre_affinity(src).map_err(|e| e.to_string())?
+        // Cross-site, unlike `discover_swipe_card`'s per-site pick: the
+        // AniList catalog itself is site-agnostic (candidates are excluded
+        // globally via `engaged_series_titles`/`anilist_id NOT IN series`),
+        // so scoring which genre to recommend from it using only the active
+        // site's follow/want/discard signal reset the user's whole taste
+        // profile on every site switch, even though nothing else about this
+        // deck is site-specific. `get_genre_affinity` stays per-site for
+        // `discover_swipe_card`, which genuinely does browse one site's own
+        // genre archive pages.
+        db.get_genre_affinity_across_sites().map_err(|e| e.to_string())?
     } else {
         HashMap::new()
     };
