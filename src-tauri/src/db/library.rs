@@ -412,11 +412,23 @@ impl Db {
     /// exactly the entries a cross-site import must resolve+link on the target
     /// site. Ordered most-progressed first so a paced import brings back the
     /// shows you're deepest into soonest.
+    ///
+    /// A still-synthetic `anilist-N` row does **not** count as present. Such a
+    /// row is a placeholder, not a link: its `url` points at anilist.co, it has
+    /// no episodes, and nothing on this site can be watched through it. They
+    /// arise two ways — a catalog swipe that hasn't been linked yet, and (the
+    /// bug this clause fixes) a cross-site import that created the placeholder,
+    /// failed to match the show on this site, and left the row behind. Counting
+    /// those as "present" meant one transient `NoMatch`/scrape failure/mirror
+    /// outage permanently disqualified that series from ever being retried on
+    /// that site. `commands::run_library_import` now also deletes its own
+    /// placeholder on failure (`delete_orphan_synthetic_series`); this clause is
+    /// what un-blocks the ones already sitting in existing databases.
     pub fn library_entries_missing_on_site(&self, source_id: i64) -> Result<Vec<LibraryEntry>> {
         // What the target site already has, as canonical keys.
         let mut stmt = self
             .conn
-            .prepare("SELECT anilist_id, title FROM series WHERE source_id=?1")?;
+            .prepare("SELECT anilist_id, title FROM series WHERE source_id=?1 AND slug NOT LIKE 'anilist-%'")?;
         let present: std::collections::HashSet<String> = stmt
             .query_map([source_id], |r| {
                 let anilist_id: Option<i64> = r.get(0)?;
@@ -554,6 +566,49 @@ mod tests {
         assert_eq!(missing.len(), 1, "only Frieren is missing on TioAnime");
         assert_eq!(missing[0].display_title, "Frieren");
         assert_eq!(missing[0].seen_watermark, 3);
+    }
+
+    /// A failed cross-site import must stay retryable. `run_library_import`
+    /// writes the synthetic `anilist-N` placeholder (and its `anilist_id`)
+    /// BEFORE it tries to link the series on the site; on a NoMatch / scrape
+    /// error / mirrors-down the row survived, and because it carried the right
+    /// `anilist_id`, this query reported the entry as already present on the
+    /// site — so the import never tried again, for good.
+    #[test]
+    fn a_failed_import_leaves_the_entry_still_missing_and_retryable() {
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        let b = db.upsert_source("TioAnime", "b", "tioanime").unwrap();
+        seed_followed(&db, a, "frieren", "Frieren", Some(154587), 3, 12);
+        db.sync_library_from_series().unwrap();
+        assert_eq!(db.library_entries_missing_on_site(b).unwrap().len(), 1, "missing to start with");
+
+        // Exactly what a failed import leaves behind on site B.
+        let orphan = db
+            .upsert_series(
+                b,
+                &crate::models::Series {
+                    id: 0, slug: "anilist-154587".into(), title: "Frieren".into(),
+                    url: "https://anilist.co/anime/154587".into(), cover_url: None,
+                    is_airing: false, followed: false, next_episode_at: None, site_episode_count: None,
+                },
+            )
+            .unwrap();
+        db.set_anilist_id(orphan, 154587).unwrap();
+
+        let missing = db.library_entries_missing_on_site(b).unwrap();
+        assert_eq!(missing.len(), 1, "an unlinked placeholder is not 'present on the site'");
+        assert_eq!(missing[0].display_title, "Frieren");
+
+        // And the import's own cleanup removes the dead row, so they can't pile
+        // up: after that the entry is still (correctly) missing.
+        assert!(db.delete_orphan_synthetic_series(orphan).unwrap());
+        assert_eq!(db.library_entries_missing_on_site(b).unwrap().len(), 1);
+
+        // A REAL linked row on B does end the retries, as it always did.
+        let linked = db.upsert_series(b, &mk_airing("frieren-tio", "Frieren", None)).unwrap();
+        db.set_anilist_id(linked, 154587).unwrap();
+        assert!(db.library_entries_missing_on_site(b).unwrap().is_empty());
     }
 
     #[test]

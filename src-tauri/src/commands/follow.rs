@@ -11,11 +11,23 @@ struct SearchOutcome {
 /// Pure carry-over planner: for each newly-scanned series, find the best
 /// title match among series followed on OTHER sites and, if it clears
 /// `matching::MATCH_THRESHOLD`, return `(index into new_site_series, watermark)`
-/// so the caller can carry the follow + progress onto that row. One best match
-/// per new-site series; nothing below the threshold carries (a false match
-/// would wrongly follow + mark a show seen). Already-followed rows are handled
-/// by `db::carry_follow`'s `followed=0` guard, not here. Split out pure so the
-/// matching behaviour is unit-testable without a DB/scrape.
+/// so the caller can carry the follow + progress onto that row. Nothing below
+/// the threshold carries (a false match would wrongly follow + mark a show
+/// seen). Already-followed rows are handled by `db::carry_follow`'s
+/// `followed=0` guard, not here. Split out pure so the matching behaviour is
+/// unit-testable without a DB/scrape.
+///
+/// The mapping is **one-to-one in both directions**. One best match per
+/// new-site series comes free from `best_match`; the other direction has to be
+/// enforced here. Several rows on the new site routinely clear the threshold
+/// against the *same* followed title — this codebase already carries guards
+/// for exactly that shape, since the sites split long-runners into one card per
+/// arc/season and `matching::score` deliberately treats every season of a show
+/// as a ≥0.9 match ("Overlord" vs "Overlord IV", "One Piece" vs its arc rows).
+/// Carrying onto all of them followed *and* cascade-marked-seen a pile of
+/// seasons the user never watched, off one follow. Only the single
+/// best-scoring row per followed title is carried; ties resolve to the
+/// earliest-scanned row so the plan is deterministic.
 pub fn plan_carryover(
     new_site_series: &[Series],
     followed_elsewhere: &[(String, i64)],
@@ -27,12 +39,26 @@ pub fn plan_carryover(
         .iter()
         .map(|(title, _)| crate::matching::TitleCandidate { title, url: "" })
         .collect();
-    let mut out = Vec::new();
+    // followed-title index -> (best new-site index so far, its score).
+    let mut best_per_followed: std::collections::HashMap<usize, (usize, f64)> =
+        std::collections::HashMap::new();
     for (i, s) in new_site_series.iter().enumerate() {
-        if let Some(m) = crate::matching::best_match(&[&s.title], &candidates) {
-            out.push((i, followed_elsewhere[m.index].1));
+        let Some(m) = crate::matching::best_match(&[&s.title], &candidates) else { continue };
+        match best_per_followed.get(&m.index) {
+            // `>=` keeps the earlier row on a tie (deterministic ordering).
+            Some((_, best_score)) if *best_score >= m.score => {}
+            _ => {
+                best_per_followed.insert(m.index, (i, m.score));
+            }
         }
     }
+    let mut out: Vec<(usize, i64)> = best_per_followed
+        .into_iter()
+        .map(|(followed_idx, (series_idx, _))| (series_idx, followed_elsewhere[followed_idx].1))
+        .collect();
+    // HashMap iteration order is not stable; sort so the plan (and therefore
+    // the order `carry_follow` is applied in) is reproducible.
+    out.sort_unstable();
     out
 }
 
@@ -442,8 +468,24 @@ async fn run_library_import(app: AppHandle) -> Result<crate::models::LibraryImpo
                 }
                 linked += 1;
             }
-            // NoMatch on this site, or a scrape error — leave it, report it.
-            Ok((_, None)) | Err(_) => skipped += 1,
+            // NoMatch on this site, or a scrape error. The placeholder row
+            // created above is now an unreachable orphan (its url points at
+            // anilist.co, there is nothing to scrape there) AND, because it
+            // carries the entry's `anilist_id` on this source, it used to make
+            // `library_entries_missing_on_site` report the entry as already
+            // present here — so this series was never retried on this site
+            // again, for the life of the database, while the dead rows
+            // accumulated. Drop it so the next import sees the entry as still
+            // missing and tries again. Guarded inside
+            // `delete_orphan_synthetic_series`: only an untouched placeholder
+            // is ever deleted.
+            Ok((_, None)) | Err(_) => {
+                let db = state.db.lock().unwrap();
+                if let Err(e) = db.delete_orphan_synthetic_series(sid) {
+                    eprintln!("[library] could not clean up failed import placeholder {sid}: {e}");
+                }
+                skipped += 1;
+            }
         }
         tokio::time::sleep(PACED).await;
     }
@@ -727,6 +769,47 @@ mod tests {
         ];
         let out = plan_carryover(&new_site, &followed);
         assert_eq!(out, vec![(0usize, 7i64)]);
+    }
+
+    /// The multi-carry bug: several rows on the newly-scanned site can clear
+    /// MATCH_THRESHOLD against ONE followed title, because `matching::score`
+    /// treats every season/part of a show as a ≥0.9 match by design and the
+    /// sites split long-runners into one card per season/arc. Carrying onto all
+    /// of them followed *and* cascade-marked-seen seasons the user never
+    /// watched. Only the single best-scoring row may be carried.
+    #[test]
+    fn plan_carryover_carries_only_the_best_match_per_followed_title() {
+        let new_site = vec![
+            scanned("Overlord IV"),    // season variant, scores 0.9
+            scanned("Overlord"),       // exact match, scores 1.0
+            scanned("Overlord II"),    // another season variant, scores 0.9
+        ];
+        let followed = vec![("Overlord".to_string(), 39i64)];
+        // Sanity: every one of these clears the threshold on its own, so the
+        // old "push every match" loop really did carry all three.
+        for s in &new_site {
+            assert!(
+                !plan_carryover(std::slice::from_ref(s), &followed).is_empty(),
+                "{} clears the threshold in isolation",
+                s.title
+            );
+        }
+        let out = plan_carryover(&new_site, &followed);
+        assert_eq!(out, vec![(1usize, 39i64)], "only the exact 'Overlord' row carries");
+    }
+
+    /// The narrowing is per followed title, not global: two genuinely different
+    /// followed shows still each carry onto their own best row, with their own
+    /// watermarks.
+    #[test]
+    fn plan_carryover_still_carries_one_row_for_each_distinct_followed_title() {
+        let new_site = vec![scanned("Frieren"), scanned("Bleach"), scanned("Bleach Sub Español")];
+        let followed = vec![("Frieren".to_string(), 12i64), ("Bleach".to_string(), 4i64)];
+        let out = plan_carryover(&new_site, &followed);
+        // Frieren -> index 0 (12); Bleach -> index 1, the exact row, not the
+        // noise-suffixed duplicate at index 2 (both normalize to "bleach", a
+        // 1.0 tie, so the earlier row wins deterministically).
+        assert_eq!(out, vec![(0usize, 12i64), (1usize, 4i64)]);
     }
 
     #[test]
