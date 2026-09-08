@@ -201,11 +201,26 @@ impl Db {
     /// synthetic row's deletion can't leave both rows alive with the same
     /// flags (a visible duplicate until the next merge attempt happens to
     /// fire again).
+    ///
+    /// The merge also writes a `series_merges` row recording which flags it
+    /// actually *flipped* on the survivor, so `undo_swipe_decision` can undo a
+    /// swipe whose synthetic row was merged away instead of deleted. Without
+    /// it, undoing a "Ya lo vi" that happened to land on an already-tracked
+    /// site row was a silent no-op that left a real series permanently marked
+    /// watched. A flag the survivor already carried on its own is recorded as
+    /// 0 and therefore never cleared by an undo — the undo reverses this
+    /// merge's effect, not the user's own earlier decisions.
     pub fn merge_series_into(&self, existing_id: i64, synthetic_id: i64) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
-        let (followed, backlog_status, watched_externally): (i64, Option<String>, i64) = tx.query_row(
+        let (followed, backlog_status, watched_externally, title): (i64, Option<String>, i64, String) = tx
+            .query_row(
+                "SELECT followed, backlog_status, watched_externally, title FROM series WHERE id=?1",
+                [synthetic_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )?;
+        let (survivor_followed, survivor_backlog, survivor_watched): (i64, Option<String>, i64) = tx.query_row(
             "SELECT followed, backlog_status, watched_externally FROM series WHERE id=?1",
-            [synthetic_id],
+            [existing_id],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )?;
         tx.execute(
@@ -214,7 +229,21 @@ impl Db {
                 watched_externally = watched_externally OR ?2,
                 backlog_status = COALESCE(backlog_status, ?3)
              WHERE id=?4",
-            (followed, watched_externally, backlog_status, existing_id),
+            (followed, watched_externally, &backlog_status, existing_id),
+        )?;
+        // What this merge changed, and only that. `OR`/`COALESCE` above mean a
+        // field changed exactly when the survivor didn't already have it and
+        // the synthetic row did.
+        let set_followed = (survivor_followed == 0 && followed != 0) as i64;
+        let set_watched = (survivor_watched == 0 && watched_externally != 0) as i64;
+        let set_backlog = (survivor_backlog.is_none() && backlog_status.is_some()) as i64;
+        // OR REPLACE: SQLite reuses rowids, so a long-lived database can hand
+        // out a synthetic id that some far older merge already recorded.
+        tx.execute(
+            "INSERT OR REPLACE INTO series_merges
+                (synthetic_id, survivor_id, title, set_followed, set_watched_externally, set_backlog_status)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
+            (synthetic_id, existing_id, &title, set_followed, set_watched, set_backlog),
         )?;
         // Same cleanup as `delete_series`, inlined so it runs inside this
         // same transaction rather than opening a second one against `self`.
@@ -223,6 +252,78 @@ impl Db {
         tx.execute("DELETE FROM series WHERE id=?1", [synthetic_id])?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// Reverse one swipe decision, whichever shape its row ended up in, and
+    /// report the title of what was actually undone (`None` = nothing was).
+    ///
+    /// Two shapes, because a `Seen` catalog swipe fires a background site-link
+    /// that can rewrite what it decided on:
+    ///
+    /// 1. The swiped row still exists — hard-delete it, exactly as
+    ///    `undo_last_swipe`/`undo_swipe_entry` always did. The card returns to
+    ///    the deck because nothing excludes it any more.
+    /// 2. The row was merged into an existing site row by `merge_series_into`
+    ///    and deleted. Deleting is then both impossible and wrong (the
+    ///    survivor is a real, pre-existing, possibly-followed series), so
+    ///    instead this reverts precisely the flags that merge set on the
+    ///    survivor, per the `series_merges` trail. Before this existed, undo
+    ///    found no row, deleted nothing, and returned success — leaving the
+    ///    survivor stuck at `watched_externally=1` with no way back, while the
+    ///    UI showed "Deshecho".
+    ///
+    /// `None` (nothing undone) is not an error — undoing with an empty history
+    /// or a row someone already removed is a normal no-op. Callers use it to
+    /// decide whether to claim anything happened.
+    pub fn undo_swipe_decision(&self, series_id: i64) -> Result<Option<String>> {
+        let title: Option<String> = self
+            .conn
+            .query_row("SELECT title FROM series WHERE id=?1", [series_id], |r| r.get(0))
+            .optional()?;
+        if let Some(title) = title {
+            self.delete_series(series_id)?;
+            // A stale trail row for a reused rowid must not outlive the row it
+            // no longer describes.
+            self.conn.execute("DELETE FROM series_merges WHERE synthetic_id=?1", [series_id])?;
+            return Ok(Some(title));
+        }
+
+        let merge: Option<(i64, String, i64, i64, i64)> = self
+            .conn
+            .query_row(
+                "SELECT survivor_id, title, set_followed, set_watched_externally, set_backlog_status
+                 FROM series_merges WHERE synthetic_id=?1",
+                [series_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .optional()?;
+        let Some((survivor_id, title, set_followed, set_watched, set_backlog)) = merge else {
+            return Ok(None);
+        };
+        // The survivor can itself have been deleted since (a later "return to
+        // deck" on it, say) — then there's nothing to revert, but the stale
+        // trail row still goes.
+        let survivor_exists: bool = self
+            .conn
+            .query_row("SELECT 1 FROM series WHERE id=?1", [survivor_id], |_| Ok(()))
+            .optional()?
+            .is_some();
+        if survivor_exists {
+            if set_followed != 0 {
+                self.conn.execute("UPDATE series SET followed=0 WHERE id=?1", [survivor_id])?;
+            }
+            if set_watched != 0 {
+                self.conn.execute("UPDATE series SET watched_externally=0 WHERE id=?1", [survivor_id])?;
+            }
+            if set_backlog != 0 {
+                self.conn.execute("UPDATE series SET backlog_status=NULL WHERE id=?1", [survivor_id])?;
+            }
+        }
+        self.conn.execute("DELETE FROM series_merges WHERE synthetic_id=?1", [series_id])?;
+        if !survivor_exists {
+            return Ok(None);
+        }
+        Ok(Some(title))
     }
 
     /// Rewrite a synthetic row's slug/url/cover/kind in place after a
@@ -1308,6 +1409,102 @@ mod tests {
         // Existing row's own (more specific/pre-existing) status wins.
         let merged = db.get_series_for_link(existing_id).unwrap().unwrap();
         assert_eq!(merged.backlog_status.as_deref(), Some("discarded"));
+    }
+
+    /// The bug: decide "Ya lo vi" on a catalog card -> the background site
+    /// link finds the matched slug is already a tracked series and merges the
+    /// synthetic row into it (deleting the synthetic row) -> undo pops the
+    /// synthetic id, finds no row, deletes nothing, and reports success. The
+    /// pre-existing series was left flagged `watched_externally` forever.
+    #[test]
+    fn undo_of_a_seen_decision_that_got_merged_reverts_the_survivors_flag() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let existing = crate::models::Series {
+            id: 0, slug: "baki-dou".into(), title: "Baki-dou".into(),
+            url: "https://site/tv/baki-dou/".into(), cover_url: None, is_airing: true,
+            followed: true, next_episode_at: None, site_episode_count: None,
+        };
+        let existing_id = db.upsert_series(src, &existing).unwrap();
+        // A real series the user already follows and has NOT marked watched.
+        db.set_followed(existing_id, true).unwrap();
+        let before = db.get_series_for_link(existing_id).unwrap().unwrap();
+        assert!(!before.watched_externally);
+
+        // What decide_catalog_card's `Seen` branch writes.
+        let synthetic = crate::models::Series {
+            id: 0, slug: "anilist-7".into(), title: "Baki-dou".into(),
+            url: "https://anilist.co/anime/7".into(), cover_url: None, is_airing: false,
+            followed: false, next_episode_at: None, site_episode_count: None,
+        };
+        let synthetic_id = db.upsert_series(src, &synthetic).unwrap();
+        db.set_anilist_id(synthetic_id, 7).unwrap();
+        db.set_watched_externally(synthetic_id, true).unwrap();
+
+        // ...then the background link's slug-collision branch.
+        db.merge_series_into(existing_id, synthetic_id).unwrap();
+        assert!(db.get_series_for_link(existing_id).unwrap().unwrap().watched_externally);
+
+        // Undo, by the id that's in swipe_history — the now-deleted one.
+        assert_eq!(db.undo_swipe_decision(synthetic_id).unwrap().as_deref(), Some("Baki-dou"));
+
+        let after = db.get_series_for_link(existing_id).unwrap().unwrap();
+        assert!(!after.watched_externally, "the merge's watched_externally must be reversed");
+        assert!(after.followed, "the survivor's own pre-existing follow must survive the undo");
+        // The trail is one-shot: a second undo of the same id changes nothing.
+        assert_eq!(db.undo_swipe_decision(synthetic_id).unwrap(), None);
+    }
+
+    #[test]
+    fn undo_of_a_merged_decision_never_clears_a_flag_the_survivor_already_had() {
+        // The survivor was ALREADY marked watched-externally by the user
+        // before any swipe happened. The merge's `OR` therefore changed
+        // nothing, so undoing the swipe must not clear it either.
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let existing = crate::models::Series {
+            id: 0, slug: "baki-dou".into(), title: "Baki-dou".into(),
+            url: "https://site/tv/baki-dou/".into(), cover_url: None, is_airing: true,
+            followed: false, next_episode_at: None, site_episode_count: None,
+        };
+        let existing_id = db.upsert_series(src, &existing).unwrap();
+        db.set_watched_externally(existing_id, true).unwrap();
+        db.set_backlog_status(existing_id, Some("discarded")).unwrap();
+
+        let synthetic = crate::models::Series {
+            id: 0, slug: "anilist-7".into(), title: "Baki-dou".into(),
+            url: "https://anilist.co/anime/7".into(), cover_url: None, is_airing: false,
+            followed: false, next_episode_at: None, site_episode_count: None,
+        };
+        let synthetic_id = db.upsert_series(src, &synthetic).unwrap();
+        db.set_watched_externally(synthetic_id, true).unwrap();
+        db.set_backlog_status(synthetic_id, Some("want")).unwrap();
+
+        db.merge_series_into(existing_id, synthetic_id).unwrap();
+        db.undo_swipe_decision(synthetic_id).unwrap();
+
+        let after = db.get_series_for_link(existing_id).unwrap().unwrap();
+        assert!(after.watched_externally, "the user's own earlier decision is not the merge's to undo");
+        assert_eq!(after.backlog_status.as_deref(), Some("discarded"));
+    }
+
+    #[test]
+    fn undo_swipe_decision_deletes_a_still_live_row_and_reports_nothing_for_an_unknown_id() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let s = crate::models::Series {
+            id: 0, slug: "anilist-9".into(), title: "Solo Card".into(),
+            url: "https://anilist.co/anime/9".into(), cover_url: None, is_airing: false,
+            followed: false, next_episode_at: None, site_episode_count: None,
+        };
+        let sid = db.upsert_series(src, &s).unwrap();
+        db.set_watched_externally(sid, true).unwrap();
+
+        assert_eq!(db.undo_swipe_decision(sid).unwrap().as_deref(), Some("Solo Card"));
+        assert!(db.get_series_for_link(sid).unwrap().is_none());
+        // Nothing left to undo: a no-op, not an error, and nothing to report.
+        assert_eq!(db.undo_swipe_decision(sid).unwrap(), None);
+        assert_eq!(db.undo_swipe_decision(99_999).unwrap(), None);
     }
 
     #[test]

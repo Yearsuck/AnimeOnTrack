@@ -203,7 +203,11 @@ struct CatalogBackfillProgress {
 
 /// Re-fetch catalog rows stored before `title_romaji`/`duration`/`status`/
 /// `studio`/`start_date` were part of the sync query, filling those columns in
-/// place.
+/// place. Which rows those are comes from `db::stale_catalog_ids`, i.e. from
+/// each row's `metadata_version` stamp rather than from guessing at which
+/// columns happen to be NULL — see `db::catalog::CATALOG_METADATA_VERSION`.
+/// Writing a row back through `upsert_catalog_anime_batch` re-stamps it, so a
+/// backfilled row drops out of the stale set on the next run.
 ///
 /// Needed because none of the existing sync paths ever revisit them: a full
 /// sync runs once and then records itself complete, and the incremental sync
