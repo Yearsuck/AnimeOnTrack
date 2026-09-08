@@ -387,9 +387,28 @@ impl Db {
 
             if ceiling > row.own_watermark {
                 self.set_seen_cascade(row.id, &ceiling.to_string(), true)?;
+                // Re-read what actually got marked, rather than assuming the
+                // cascade reached `ceiling` exactly: this row's own episode
+                // set can simply not extend that far yet (fewer episodes
+                // scraped here so far than the twin site has, a numbering
+                // gap, ...) — `set_seen_cascade` marks everything it has up
+                // to the target and stops there, silently capped below
+                // `ceiling`. Stamping `applied=ceiling` regardless made the
+                // very next sync see `own_watermark < applied` and latch a
+                // rollback that never happened — nothing was ever unmarked,
+                // this site just hadn't caught up to the target yet. That
+                // false latch then permanently suppressed real cross-site
+                // catch-up for the row (confirmed live: it affected 162 of
+                // 438 followed rows in one real library).
+                let real_watermark: i64 = self.conn.query_row(
+                    "SELECT COALESCE(MAX(CASE WHEN seen=1 THEN CAST(number AS INTEGER) END), 0)
+                     FROM episodes WHERE series_id=?1",
+                    [row.id],
+                    |r| r.get(0),
+                )?;
                 self.conn.execute(
                     "UPDATE series SET sync_watermark_applied=?2 WHERE id=?1",
-                    (row.id, ceiling),
+                    (row.id, real_watermark),
                 )?;
                 advanced += 1;
             } else {
@@ -913,6 +932,62 @@ mod tests {
         db.set_seen_cascade(oa, "4", true).unwrap();
         assert_eq!(db.sync_seen_progress_across_sites().unwrap(), 1, "real progress past the rollback resumes catch-up");
         assert_eq!(db.list_series_episodes(oa).unwrap().iter().filter(|e| e.seen).count(), 10);
+    }
+
+    #[test]
+    fn sync_seen_progress_does_not_falsely_latch_a_rollback_when_a_site_simply_has_fewer_episodes() {
+        // The reported bug: A confirmed live to affect 162 of 438 followed
+        // rows in a real library. Site B has only scraped 5 episodes of a
+        // show whose twin on site A already has 10 marked seen. The cascade
+        // to B is real work (mark B's 5 seen) but can only ever reach 5 —
+        // stamping `sync_watermark_applied=10` (the requested ceiling)
+        // regardless made the *next* sync see B's real watermark (5) sitting
+        // below `applied` (10) and latch a rollback that never happened,
+        // permanently blocking B from ever catching up again once A gets
+        // more episodes.
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        let b = db.upsert_source("TioAnime", "b", "tioanime").unwrap();
+        seed_followed(&db, a, "shared", "Shared Show", None, 10, 10);
+        let ob = seed_followed(&db, b, "shared-b", "Shared Show", None, 0, 5);
+        let rollback_active = |db: &Db, id: i64| -> bool {
+            db.conn
+                .query_row("SELECT sync_rollback_active FROM series WHERE id=?1", [id], |r| r.get::<_, i64>(0))
+                .unwrap()
+                != 0
+        };
+
+        db.sync_seen_progress_across_sites().unwrap();
+        assert_eq!(
+            db.list_series_episodes(ob).unwrap().iter().filter(|e| e.seen).count(),
+            5,
+            "B can only ever reach its own 5 episodes"
+        );
+        assert!(!rollback_active(&db, ob), "B is already at its own real ceiling — must not be flagged as rolled back");
+
+        // The critical assertion: a second sync with nothing new on either
+        // side (B's own watermark is still capped at 5 — nothing to roll
+        // back from) must not falsely latch the rollback flag either. The
+        // pre-fix bug stamped `sync_watermark_applied` with the requested
+        // ceiling (10) instead of what B's cascade could actually reach (5),
+        // so this exact second sync used to see own(5) < applied(10) and
+        // latch a rollback that never happened.
+        db.sync_seen_progress_across_sites().unwrap();
+        assert!(!rollback_active(&db, ob), "still not rolled back after a second sync with no real change");
+
+        // B's site finally scrapes 5 more episodes (6-10) — real forward
+        // progress on B's own site, not a cross-site push. Confirms B is not
+        // stuck suppressed by a false rollback latch: a fresh sync (as would
+        // happen once B's episode list is re-fetched and its watermark
+        // recomputed) must still be able to advance it.
+        for n in 6..=10 {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: ob, number: n.to_string(), title: None,
+                url: format!("https://site-b/x-{n}/"), released_at: None, seen: false,
+            }).unwrap();
+        }
+        assert_eq!(db.sync_seen_progress_across_sites().unwrap(), 1, "B must still be able to catch up once it has more episodes");
+        assert_eq!(db.list_series_episodes(ob).unwrap().iter().filter(|e| e.seen).count(), 10);
     }
 
     #[test]
