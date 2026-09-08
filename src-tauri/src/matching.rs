@@ -48,6 +48,20 @@ pub const MATCH_THRESHOLD: f64 = 0.72;
 /// callers want the exact same normalization `best_match` uses internally,
 /// not a second slightly-different implementation.
 pub fn normalize_title(s: &str) -> String {
+    strip_noise_suffixes(&normalize_title_strict(s))
+}
+
+/// `normalize_title` **without** the trailing noise-suffix strip: lowercase,
+/// accent-free, punctuation collapsed to single spaces, nothing dropped.
+///
+/// Callers that must not let the noise list do their matching for them use
+/// this. `db::upsert_series`'s title fallback is the motivating one: under the
+/// lenient `normalize_title`, two genuinely separate listing cards on the same
+/// site that differ only by a noise token ("Naruto" and "Naruto Latino") compare
+/// *equal*, and the fallback merged the second card onto the first row —
+/// overwriting its slug/url/cover. Under this strict form they stay distinct,
+/// while a re-scraped card whose title is byte-identical still matches.
+pub fn normalize_title_strict(s: &str) -> String {
     let lower = crate::genres::strip_accents(s).to_lowercase();
     let mut collapsed = String::with_capacity(lower.len());
     let mut last_was_space = true; // true at start so leading punctuation doesn't emit a leading space
@@ -60,8 +74,17 @@ pub fn normalize_title(s: &str) -> String {
             last_was_space = true;
         }
     }
-    let trimmed = collapsed.trim_end().to_string();
-    strip_noise_suffixes(&trimmed)
+    collapsed.trim_end().to_string()
+}
+
+/// Is `s` made up of **nothing but** the noise tokens `normalize_title` strips
+/// ("sub espanol", "latino", "castellano", "hd", "online")? Used to judge the
+/// tail that one slug adds over another: a tail that is purely noise means the
+/// two slugs describe two separate listing cards for (nominally) the same show,
+/// not one card whose slug drifted. Empty input is not noise, it's nothing.
+pub fn is_all_noise(s: &str) -> bool {
+    let normalized = normalize_title_strict(s);
+    !normalized.is_empty() && strip_noise_suffixes(&normalized).is_empty()
 }
 
 /// Short, explicit noise-suffix list (see `normalize`'s doc comment). Order
@@ -589,6 +612,32 @@ mod tests {
         assert_eq!(normalize_title("Naruto Online"), "naruto");
         // Multiple stacked suffixes strip in one normalize_title() call.
         assert_eq!(normalize_title("Bleach Sub Español HD"), "bleach");
+    }
+
+    #[test]
+    fn normalize_title_strict_keeps_the_noise_suffix() {
+        // The strict form is what `upsert_series`'s title fallback compares on:
+        // these two titles are DIFFERENT cards and must not compare equal.
+        assert_eq!(normalize_title_strict("Naruto Latino"), "naruto latino");
+        assert_ne!(normalize_title_strict("Naruto"), normalize_title_strict("Naruto Latino"));
+        // …while the lenient form still collapses them (that's its job).
+        assert_eq!(normalize_title("Naruto"), normalize_title("Naruto Latino"));
+        // Everything else about the normalization is identical.
+        assert_eq!(normalize_title_strict("Shingeki no Kyojin!"), "shingeki no kyojin");
+        assert_eq!(normalize_title_strict("ATTACK ON TITAN"), "attack on titan");
+    }
+
+    #[test]
+    fn is_all_noise_recognizes_pure_noise_tails() {
+        assert!(is_all_noise("latino"));
+        assert!(is_all_noise("Sub Español"));
+        assert!(is_all_noise("sub-espanol-hd"));
+        assert!(is_all_noise("HD"));
+        // A real word (even next to noise) is not pure noise.
+        assert!(!is_all_noise("shippuden"));
+        assert!(!is_all_noise("shippuden-latino"));
+        assert!(!is_all_noise("2"));
+        assert!(!is_all_noise(""));
     }
 
     #[test]
