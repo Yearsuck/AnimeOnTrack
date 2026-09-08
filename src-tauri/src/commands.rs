@@ -114,6 +114,13 @@ pub struct AppState {
     /// read-modify-write updates to `catalog_sync_state` could clobber each
     /// other, and both burned AniList's shared ~30 req/min budget at once.
     pub catalog_sync_running: std::sync::atomic::AtomicBool,
+    /// Same one-at-a-time guard, for the automatic cloud backup
+    /// (`auto_backup_if_due`, fired both at startup and after every
+    /// `refresh()`). Two overlapping runs before the first backup has ever
+    /// happened both see no `gdrive_file_id`, both fail to find an existing
+    /// file, and both create one — leaving two files in Drive that never
+    /// converge again.
+    pub backup_running: std::sync::atomic::AtomicBool,
 }
 
 /// How many recent swipe decisions `swipe_history` remembers.
@@ -338,17 +345,13 @@ pub async fn restore_latest(app: AppHandle, state: State<'_, AppState>) -> Resul
         let db = state.db.lock().unwrap();
         let client = backup_lib::configured_client(&db)
             .ok_or("Google credentials not configured")?;
-        let refresh = db
-            .get_setting("gdrive_refresh_token")
-            .ok()
-            .flatten()
-            .map(|s| backup_lib::secure_store::unprotect(&s))
-            .filter(|s| !s.is_empty())
-            .ok_or("Not connected to Google Drive")?;
+        let refresh =
+            crate::commands::backup::connected_token(&db).ok_or("Not connected to Google Drive")?;
         let file_id = db.get_setting("gdrive_file_id").ok().flatten();
         (client, refresh, file_id)
     };
-    let token = backup_lib::access_token(&client, &refresh).await?;
+    let token =
+        crate::commands::backup::access_token_or_disconnect(&state, &client, &refresh).await?;
     // Falling back to a lookup by name is what makes "restore onto a new
     // machine" — the whole point of the feature — actually work: a fresh
     // install has an empty settings table, so `gdrive_file_id` is only ever

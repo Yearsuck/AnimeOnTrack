@@ -11,11 +11,23 @@ struct SearchOutcome {
 /// Pure carry-over planner: for each newly-scanned series, find the best
 /// title match among series followed on OTHER sites and, if it clears
 /// `matching::MATCH_THRESHOLD`, return `(index into new_site_series, watermark)`
-/// so the caller can carry the follow + progress onto that row. One best match
-/// per new-site series; nothing below the threshold carries (a false match
-/// would wrongly follow + mark a show seen). Already-followed rows are handled
-/// by `db::carry_follow`'s `followed=0` guard, not here. Split out pure so the
-/// matching behaviour is unit-testable without a DB/scrape.
+/// so the caller can carry the follow + progress onto that row. Nothing below
+/// the threshold carries (a false match would wrongly follow + mark a show
+/// seen). Already-followed rows are handled by `db::carry_follow`'s
+/// `followed=0` guard, not here. Split out pure so the matching behaviour is
+/// unit-testable without a DB/scrape.
+///
+/// The mapping is **one-to-one in both directions**. One best match per
+/// new-site series comes free from `best_match`; the other direction has to be
+/// enforced here. Several rows on the new site routinely clear the threshold
+/// against the *same* followed title — this codebase already carries guards
+/// for exactly that shape, since the sites split long-runners into one card per
+/// arc/season and `matching::score` deliberately treats every season of a show
+/// as a ≥0.9 match ("Overlord" vs "Overlord IV", "One Piece" vs its arc rows).
+/// Carrying onto all of them followed *and* cascade-marked-seen a pile of
+/// seasons the user never watched, off one follow. Only the single
+/// best-scoring row per followed title is carried; ties resolve to the
+/// earliest-scanned row so the plan is deterministic.
 pub fn plan_carryover(
     new_site_series: &[Series],
     followed_elsewhere: &[(String, i64)],
@@ -27,12 +39,26 @@ pub fn plan_carryover(
         .iter()
         .map(|(title, _)| crate::matching::TitleCandidate { title, url: "" })
         .collect();
-    let mut out = Vec::new();
+    // followed-title index -> (best new-site index so far, its score).
+    let mut best_per_followed: std::collections::HashMap<usize, (usize, f64)> =
+        std::collections::HashMap::new();
     for (i, s) in new_site_series.iter().enumerate() {
-        if let Some(m) = crate::matching::best_match(&[&s.title], &candidates) {
-            out.push((i, followed_elsewhere[m.index].1));
+        let Some(m) = crate::matching::best_match(&[&s.title], &candidates) else { continue };
+        match best_per_followed.get(&m.index) {
+            // `>=` keeps the earlier row on a tie (deterministic ordering).
+            Some((_, best_score)) if *best_score >= m.score => {}
+            _ => {
+                best_per_followed.insert(m.index, (i, m.score));
+            }
         }
     }
+    let mut out: Vec<(usize, i64)> = best_per_followed
+        .into_iter()
+        .map(|(followed_idx, (series_idx, _))| (series_idx, followed_elsewhere[followed_idx].1))
+        .collect();
+    // HashMap iteration order is not stable; sort so the plan (and therefore
+    // the order `carry_follow` is applied in) is reproducible.
+    out.sort_unstable();
     out
 }
 
@@ -158,6 +184,13 @@ pub async fn start_watching(
     };
     let eps = fetch_episode_list_for(&app, &mirrors, &series_url, a.as_ref()).await?;
     let db = state.db.lock().unwrap();
+    // Same in-flight-delete race as `apply_link_writes` guards: this scrape
+    // takes seconds, during which the row can be removed from Listas (or
+    // undone from the history strip). Writing episodes to a dead id would
+    // leave orphan `episodes` rows behind, which no cascade cleans up.
+    if !db.series_exists(series_id).map_err(|e| e.to_string())? {
+        return Ok(LinkOutcome::NoMatch);
+    }
     let episode_count = eps.len() as i64;
     // De-duplicate by number, not URL (a domain change makes every URL look
     // new). Episodes already present — e.g. scraped by an earlier airing scan,
@@ -442,8 +475,24 @@ async fn run_library_import(app: AppHandle) -> Result<crate::models::LibraryImpo
                 }
                 linked += 1;
             }
-            // NoMatch on this site, or a scrape error — leave it, report it.
-            Ok((_, None)) | Err(_) => skipped += 1,
+            // NoMatch on this site, or a scrape error. The placeholder row
+            // created above is now an unreachable orphan (its url points at
+            // anilist.co, there is nothing to scrape there) AND, because it
+            // carries the entry's `anilist_id` on this source, it used to make
+            // `library_entries_missing_on_site` report the entry as already
+            // present here — so this series was never retried on this site
+            // again, for the life of the database, while the dead rows
+            // accumulated. Drop it so the next import sees the entry as still
+            // missing and tries again. Guarded inside
+            // `delete_orphan_synthetic_series`: only an untouched placeholder
+            // is ever deleted.
+            Ok((_, None)) | Err(_) => {
+                let db = state.db.lock().unwrap();
+                if let Err(e) = db.delete_orphan_synthetic_series(sid) {
+                    eprintln!("[library] could not clean up failed import placeholder {sid}: {e}");
+                }
+                skipped += 1;
+            }
         }
         tokio::time::sleep(PACED).await;
     }
@@ -520,18 +569,27 @@ async fn link_series_core(
     // it's on the airing list). Merge onto that existing row instead of
     // touching slug/url at all — no extra scrape needed, the existing row
     // already has real episodes/genres from its own normal scrape.
-    if let Some(existing_id) = {
+    //
+    // One lock for the existence check, the lookup and the merge together:
+    // `undo_swipe_decision` takes the same mutex, so this can't observe the
+    // row and then merge a row that undo deleted in between (see
+    // `apply_link_writes`).
+    {
         let db = state.db.lock().unwrap();
-        db.find_series_id_by_slug(info.source_id, &new_slug, series_id).map_err(|e| e.to_string())?
-    } {
-        let db = state.db.lock().unwrap();
-        db.merge_series_into(existing_id, series_id).map_err(|e| e.to_string())?;
-        let episodes = db.list_series_episodes(existing_id).map_err(|e| e.to_string())?.len() as i64;
-        let url = db
-            .get_series_url(existing_id)
-            .map_err(|e| e.to_string())?
-            .unwrap_or(matched.url.clone());
-        return Ok((LinkOutcome::Linked { url, episodes }, Some(existing_id)));
+        if !db.series_exists(series_id).map_err(|e| e.to_string())? {
+            return Ok((LinkOutcome::NoMatch, None));
+        }
+        if let Some(existing_id) =
+            db.find_series_id_by_slug(info.source_id, &new_slug, series_id).map_err(|e| e.to_string())?
+        {
+            db.merge_series_into(existing_id, series_id).map_err(|e| e.to_string())?;
+            let episodes = db.list_series_episodes(existing_id).map_err(|e| e.to_string())?.len() as i64;
+            let url = db
+                .get_series_url(existing_id)
+                .map_err(|e| e.to_string())?
+                .unwrap_or(matched.url.clone());
+            return Ok((LinkOutcome::Linked { url, episodes }, Some(existing_id)));
+        }
     }
 
     // No collision: fetch the matched series page once, reused for both the
@@ -547,21 +605,80 @@ async fn link_series_core(
     let detail = a.parse_series_detail(&scraped.html).map_err(|e| e.to_string())?;
     let kind = detail.kind.unwrap_or(matched.kind.clone());
 
-    let db = state.db.lock().unwrap();
-    db.relink_series(series_id, &new_slug, &matched.url, matched.poster_url.as_deref(), &kind)
-        .map_err(|e| e.to_string())?;
-    db.replace_series_genres(series_id, &detail.genres).map_err(|e| e.to_string())?;
     let episode_count = episodes.len() as i64;
+    let written = {
+        let db = state.db.lock().unwrap();
+        apply_link_writes(
+            &db,
+            series_id,
+            &new_slug,
+            &matched.url,
+            matched.poster_url.as_deref(),
+            &kind,
+            &detail.genres,
+            &episodes,
+            info.watched_externally,
+        )?
+    };
+    if !written {
+        // The user undid the decision while the scrape above was running.
+        // Nothing to link, and nothing was written. `NoMatch` (rather than a
+        // dedicated outcome) so the frontend's link-status line resolves and
+        // clears instead of hanging on "Buscando…" forever; the swipe it
+        // belonged to no longer exists either way.
+        return Ok((LinkOutcome::NoMatch, None));
+    }
+
+    Ok((LinkOutcome::Linked { url: matched.url, episodes: episode_count }, Some(series_id)))
+}
+
+/// The DB-write half of a successful (non-merge) link, guarded on the target
+/// `series` row still existing.
+///
+/// **The guard is the point.** `link_series_core` scrapes before it writes,
+/// and that scrape takes seconds; a `Seen` swipe fires it in the background
+/// while the deck stays interactive, so the user can perfectly well press
+/// undo (or "Devolver al mazo") in the meantime — which hard-deletes the very
+/// row this is about to write episodes to. The schema declares no
+/// `ON DELETE CASCADE`, so `apply_episode_diff` against a dead id inserts
+/// orphan `episodes` rows with no parent, and several stats queries read
+/// `episodes` without joining `series`, so those orphans permanently inflate
+/// episode totals, the 30-day heatmap and the binge record with a show the
+/// user explicitly un-decided.
+///
+/// Returns `false` when the row is gone — a silent no-op is the correct
+/// answer, not an error: the decision this link belonged to was already
+/// reversed, so there is nothing left to link. Callers must hold the `db`
+/// mutex across this call (as `link_series_core` does): `undo_swipe_decision`
+/// takes the same mutex, which is what makes check-then-write atomic against
+/// it. It can't be one SQL transaction because `apply_episode_diff` opens its
+/// own and SQLite rejects nesting.
+#[allow(clippy::too_many_arguments)]
+fn apply_link_writes(
+    db: &Db,
+    series_id: i64,
+    slug: &str,
+    url: &str,
+    cover_url: Option<&str>,
+    kind: &str,
+    genres: &[String],
+    episodes: &[Episode],
+    watched_externally: bool,
+) -> Result<bool, String> {
+    if !db.series_exists(series_id).map_err(|e| e.to_string())? {
+        return Ok(false);
+    }
+    db.relink_series(series_id, slug, url, cover_url, kind).map_err(|e| e.to_string())?;
+    db.replace_series_genres(series_id, genres).map_err(|e| e.to_string())?;
     // De-duplicate by number (see the follow path above / db.rs migration): a
     // re-link after a domain change must refresh links, not duplicate
     // episodes. One transaction for the whole list — see
     // `apply_episode_diff`'s doc comment.
-    db.apply_episode_diff(series_id, None, &episodes).map_err(|e| e.to_string())?;
-    if info.watched_externally {
+    db.apply_episode_diff(series_id, None, episodes).map_err(|e| e.to_string())?;
+    if watched_externally {
         db.mark_all_episodes_seen(series_id).map_err(|e| e.to_string())?;
     }
-
-    Ok((LinkOutcome::Linked { url: matched.url, episodes: episode_count }, Some(series_id)))
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -685,6 +802,79 @@ mod tests {
         assert!(eps[0].seen, "episode seen state must survive a reclassify");
     }
 
+    fn ep(number: &str) -> Episode {
+        Episode {
+            id: 0, series_id: 0, number: number.into(), title: None,
+            url: format!("https://site.example/ep/{number}"), released_at: None, seen: false,
+        }
+    }
+
+    /// The happy path still writes: slug/url/kind rewritten and every scraped
+    /// episode inserted.
+    #[test]
+    fn apply_link_writes_relinks_and_inserts_episodes_for_a_live_row() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let sid = insert_test_series(&db, src, "anilist-77");
+
+        let written = apply_link_writes(
+            &db, sid, "real-slug", "https://site.example/real-slug", None, "TV",
+            &["Action".to_string()], &[ep("1"), ep("2")], false,
+        )
+        .unwrap();
+
+        assert!(written);
+        assert_eq!(db.list_series_episodes(sid).unwrap().len(), 2);
+        assert_eq!(db.get_series_url(sid).unwrap().as_deref(), Some("https://site.example/real-slug"));
+    }
+
+    /// Regression (orphan `episodes` rows): undo races the background link.
+    /// The user swipes "Ya lo vi", the fire-and-forget `link_catalog_series`
+    /// starts scraping, the user presses undo — which hard-deletes the series
+    /// row — and only then does the scrape come back. Writing episodes now
+    /// would leave rows in `episodes` whose `series_id` has no parent (the
+    /// schema has no `ON DELETE CASCADE`), and the stats queries that read
+    /// `episodes` without joining `series` would count them forever.
+    #[test]
+    fn apply_link_writes_is_a_silent_no_op_after_undo_deleted_the_row() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let sid = insert_test_series(&db, src, "anilist-88");
+
+        // Exactly what `undo_last_swipe`/`undo_swipe_entry` do to the row.
+        assert_eq!(db.undo_swipe_decision(sid).unwrap().as_deref(), Some("anilist-88"));
+        assert!(!db.series_exists(sid).unwrap());
+
+        let written = apply_link_writes(
+            &db, sid, "real-slug", "https://site.example/real-slug", None, "TV",
+            &["Action".to_string()], &[ep("1"), ep("2"), ep("3")], true,
+        )
+        .unwrap();
+
+        assert!(!written, "the link must report that it wrote nothing");
+        let orphans: i64 = db
+            .conn
+            .query_row("SELECT COUNT(*) FROM episodes WHERE series_id=?1", [sid], |r| r.get(0))
+            .unwrap();
+        assert_eq!(orphans, 0, "orphan episode rows were inserted for a deleted series");
+        let any_orphan: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM episodes e
+                 WHERE NOT EXISTS (SELECT 1 FROM series s WHERE s.id = e.series_id)",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(any_orphan, 0, "the episodes table must have no parentless rows at all");
+        // The genre table has no cascade either.
+        let genres: i64 = db
+            .conn
+            .query_row("SELECT COUNT(*) FROM series_genres WHERE series_id=?1", [sid], |r| r.get(0))
+            .unwrap();
+        assert_eq!(genres, 0);
+    }
+
     fn scanned(title: &str) -> Series {
         Series {
             id: 0,
@@ -727,6 +917,47 @@ mod tests {
         ];
         let out = plan_carryover(&new_site, &followed);
         assert_eq!(out, vec![(0usize, 7i64)]);
+    }
+
+    /// The multi-carry bug: several rows on the newly-scanned site can clear
+    /// MATCH_THRESHOLD against ONE followed title, because `matching::score`
+    /// treats every season/part of a show as a ≥0.9 match by design and the
+    /// sites split long-runners into one card per season/arc. Carrying onto all
+    /// of them followed *and* cascade-marked-seen seasons the user never
+    /// watched. Only the single best-scoring row may be carried.
+    #[test]
+    fn plan_carryover_carries_only_the_best_match_per_followed_title() {
+        let new_site = vec![
+            scanned("Overlord IV"),    // season variant, scores 0.9
+            scanned("Overlord"),       // exact match, scores 1.0
+            scanned("Overlord II"),    // another season variant, scores 0.9
+        ];
+        let followed = vec![("Overlord".to_string(), 39i64)];
+        // Sanity: every one of these clears the threshold on its own, so the
+        // old "push every match" loop really did carry all three.
+        for s in &new_site {
+            assert!(
+                !plan_carryover(std::slice::from_ref(s), &followed).is_empty(),
+                "{} clears the threshold in isolation",
+                s.title
+            );
+        }
+        let out = plan_carryover(&new_site, &followed);
+        assert_eq!(out, vec![(1usize, 39i64)], "only the exact 'Overlord' row carries");
+    }
+
+    /// The narrowing is per followed title, not global: two genuinely different
+    /// followed shows still each carry onto their own best row, with their own
+    /// watermarks.
+    #[test]
+    fn plan_carryover_still_carries_one_row_for_each_distinct_followed_title() {
+        let new_site = vec![scanned("Frieren"), scanned("Bleach"), scanned("Bleach Sub Español")];
+        let followed = vec![("Frieren".to_string(), 12i64), ("Bleach".to_string(), 4i64)];
+        let out = plan_carryover(&new_site, &followed);
+        // Frieren -> index 0 (12); Bleach -> index 1, the exact row, not the
+        // noise-suffixed duplicate at index 2 (both normalize to "bleach", a
+        // 1.0 tie, so the earlier row wins deterministically).
+        assert_eq!(out, vec![(0usize, 12i64), (1usize, 4i64)]);
     }
 
     #[test]

@@ -62,12 +62,33 @@ pub enum RedirectResult {
     Error(String),
 }
 
+/// Percent-decode one query-string value.
+///
+/// The authorization code Google hands back routinely contains `/` (codes look
+/// like `4/0Ab...`), which arrives in the redirect URL as `%2F`. Handing that
+/// raw to `exchange_code` — which posts it with `reqwest`'s `.form()`, i.e.
+/// percent-encodes it *again* — turns the literal `%` into `%25` and Google
+/// rejects the corrupted code with an opaque `invalid_grant`. Decoding an
+/// already-unencoded code is a no-op (nothing in an unencoded code is a `%`
+/// escape), so this is safe to do unconditionally.
+///
+/// `urlencoding::decode` only fails when the decoded bytes aren't valid UTF-8;
+/// an OAuth code is ASCII, so falling back to the raw value there is the
+/// conservative no-op rather than a reason to drop the code.
+fn percent_decode(value: &str) -> String {
+    urlencoding::decode(value).map(|c| c.into_owned()).unwrap_or_else(|_| value.to_string())
+}
+
 /// Parse the first request line of the loopback redirect. Extracts `code`,
 /// `state` or `error` from the query string. A pair without `=` (e.g. a bare
 /// flag param) is skipped rather than aborting the whole parse — Google's
 /// real redirect only ever sends `code`/`state`/`scope`/`error`, but a `code`
 /// that arrived before some hypothetical future malformed param must not be
 /// discarded along with it.
+///
+/// Every extracted value is percent-decoded (see `percent_decode`). `state` is
+/// base64url, so decoding it is always a no-op, but decoding all three keeps
+/// one rule instead of a per-key exception.
 pub fn parse_redirect_line(line: &str) -> Option<RedirectResult> {
     let path = line.split_whitespace().nth(1)?; // "/?code=..."
     let query = path.split_once('?')?.1;
@@ -77,9 +98,9 @@ pub fn parse_redirect_line(line: &str) -> Option<RedirectResult> {
     for pair in query.split('&') {
         let Some((k, v)) = pair.split_once('=') else { continue };
         match k {
-            "code" => code = Some(v.to_string()),
-            "state" => state = Some(v.to_string()),
-            "error" => error = Some(v.to_string()),
+            "code" => code = Some(percent_decode(v)),
+            "state" => state = Some(percent_decode(v)),
+            "error" => error = Some(percent_decode(v)),
             _ => {}
         }
     }
@@ -101,6 +122,68 @@ pub struct TokenSet {
 
 pub fn parse_token_response(json: &str) -> Result<TokenSet, String> {
     serde_json::from_str(json).map_err(|e| format!("token parse: {e}"))
+}
+
+/// Google's OAuth error body shape (RFC 6749 §5.2): `{"error":"invalid_grant",
+/// "error_description":"Token has been expired or revoked."}`.
+#[derive(Debug, serde::Deserialize)]
+struct TokenErrorBody {
+    error: String,
+    #[serde(default)]
+    error_description: Option<String>,
+}
+
+/// Marker embedded in the error string when Google rejected the *grant* — the
+/// stored refresh token (or the just-issued authorization code) is dead and no
+/// retry will ever fix it; only reconnecting will. Callers detect it with
+/// [`is_grant_rejected`] rather than string-matching Google's wording, which
+/// isn't a stable API.
+const GRANT_REJECTED_TAG: &str = "[reconnect-required]";
+
+/// True when `err` came from a token request Google rejected because the grant
+/// itself is expired/revoked. The caller's cue to drop the stored refresh
+/// token so the UI stops claiming "connected" and offers the reconnect flow.
+pub fn is_grant_rejected(err: &str) -> bool {
+    err.contains(GRANT_REJECTED_TAG)
+}
+
+/// Interpret one response from Google's token endpoint.
+///
+/// Both token calls used to hand the raw body straight to
+/// `parse_token_response`, so an HTTP 400 `{"error":"invalid_grant"}` — the
+/// answer to a revoked or expired refresh token, the single most likely way
+/// this breaks in the field — surfaced as `token parse: missing field
+/// access_token`, indistinguishable from a truncated response or an API
+/// change. Checking the body for an `error` field first (and only then the
+/// status, since a non-2xx without a recognisable error body is still a
+/// failure) makes "reconnect Google Drive" separable from "something else went
+/// wrong, retry later".
+pub fn parse_token_body(status: u16, body: &str) -> Result<TokenSet, String> {
+    // A success body has no `error` field, so this only matches real errors.
+    if let Ok(err) = serde_json::from_str::<TokenErrorBody>(body) {
+        let detail = err
+            .error_description
+            .filter(|d| !d.is_empty())
+            .map(|d| format!(": {d}"))
+            .unwrap_or_default();
+        return Err(match err.error.as_str() {
+            "invalid_grant" => format!(
+                "{GRANT_REJECTED_TAG} Google rejected the saved Drive authorization \
+                 (invalid_grant{detail}). Reconnect Google Drive in Ajustes."
+            ),
+            other => format!("Google rejected the token request ({other}{detail})"),
+        });
+    }
+    if !(200..300).contains(&status) {
+        return Err(format!("token endpoint returned HTTP {status}: {}", snippet(body)));
+    }
+    parse_token_response(body)
+}
+
+/// First ~200 *characters* of a response body, for an error message. Sliced by
+/// chars, never by bytes — a byte slice through a multi-byte character panics.
+fn snippet(body: &str) -> String {
+    body.chars().take(200).collect()
 }
 
 const REDIRECT_HTML: &str = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n\r\n\
@@ -173,8 +256,9 @@ pub async fn exchange_code(
         .send()
         .await
         .map_err(|e| format!("token request: {e}"))?;
+    let status = resp.status().as_u16();
     let text = resp.text().await.map_err(|e| format!("token body: {e}"))?;
-    parse_token_response(&text)
+    parse_token_body(status, &text)
 }
 
 pub async fn refresh_access_token(
@@ -194,8 +278,9 @@ pub async fn refresh_access_token(
         .send()
         .await
         .map_err(|e| format!("refresh request: {e}"))?;
+    let status = resp.status().as_u16();
     let text = resp.text().await.map_err(|e| format!("refresh body: {e}"))?;
-    Ok(parse_token_response(&text)?.access_token)
+    Ok(parse_token_body(status, &text)?.access_token)
 }
 
 #[cfg(test)]
@@ -290,5 +375,80 @@ mod tests {
         let json = r#"{"access_token":"ya29.y","expires_in":3599,"token_type":"Bearer"}"#;
         let t = parse_token_response(json).unwrap();
         assert_eq!(t.refresh_token, None);
+    }
+
+    /// A `/` in an authorization code arrives percent-encoded. Passing `%2F`
+    /// through untouched let `reqwest`'s `.form()` re-encode the `%` to `%25`,
+    /// corrupting the code and failing the exchange with an opaque error.
+    #[test]
+    fn parse_redirect_percent_decodes_the_code() {
+        let line = "GET /?state=xyz&code=4%2F0AbC%2DdEf%2Bgh%3D%3D&scope=drive.appdata HTTP/1.1";
+        assert_eq!(
+            parse_redirect_line(line),
+            Some(RedirectResult::Code { code: "4/0AbC-dEf+gh==".into(), state: Some("xyz".into()) })
+        );
+    }
+
+    /// Decoding a code that was never encoded must not change it — that's what
+    /// makes decoding safe to do unconditionally.
+    #[test]
+    fn parse_redirect_leaves_an_unencoded_code_alone() {
+        let line = "GET /?code=4/0AbC-dEf_gh HTTP/1.1";
+        assert_eq!(
+            parse_redirect_line(line),
+            Some(RedirectResult::Code { code: "4/0AbC-dEf_gh".into(), state: None })
+        );
+    }
+
+    /// The bug this replaced: Google answers a revoked/expired refresh grant
+    /// with HTTP 400 + `{"error":"invalid_grant"}`, which fell through to
+    /// `parse_token_response` and surfaced as `missing field access_token` —
+    /// unreadable, and indistinguishable from a truncated body.
+    #[test]
+    fn invalid_grant_is_reported_as_needing_a_reconnect() {
+        let body = r#"{"error":"invalid_grant","error_description":"Token has been expired or revoked."}"#;
+        let err = parse_token_body(400, body).unwrap_err();
+        assert!(is_grant_rejected(&err), "invalid_grant must be flagged for reconnect: {err}");
+        assert!(err.contains("invalid_grant"), "{err}");
+        assert!(err.contains("Token has been expired or revoked."), "{err}");
+        assert!(!err.contains("missing field"), "must not leak the old parse error: {err}");
+    }
+
+    /// Everything else that can go wrong must stay *distinct* from the
+    /// reconnect case, or the token gets thrown away on a transient blip.
+    #[test]
+    fn other_failures_are_not_mistaken_for_a_rejected_grant() {
+        // A different OAuth error code (client misconfiguration, not a dead grant).
+        let other = parse_token_body(401, r#"{"error":"invalid_client"}"#).unwrap_err();
+        assert!(!is_grant_rejected(&other), "{other}");
+        assert!(other.contains("invalid_client"), "{other}");
+
+        // A non-JSON 5xx (Google's LB, a captive portal): still an error, still
+        // not a reason to drop the refresh token, and the status is surfaced.
+        let server = parse_token_body(503, "<html>Service Unavailable</html>").unwrap_err();
+        assert!(!is_grant_rejected(&server), "{server}");
+        assert!(server.contains("503"), "{server}");
+
+        // A 200 whose body isn't a token at all — a genuine parse failure.
+        let parse = parse_token_body(200, "{\"unexpected\":1}").unwrap_err();
+        assert!(!is_grant_rejected(&parse), "{parse}");
+        assert!(parse.contains("token parse"), "{parse}");
+    }
+
+    #[test]
+    fn parse_token_body_still_reads_a_normal_success() {
+        let json = r#"{"access_token":"ya29.x","refresh_token":"1//rt","expires_in":3599}"#;
+        let t = parse_token_body(200, json).unwrap();
+        assert_eq!(t.access_token, "ya29.x");
+        assert_eq!(t.refresh_token.as_deref(), Some("1//rt"));
+    }
+
+    /// Error messages get shown in Settings; a multi-byte body must not panic
+    /// the truncation (the `&s[..n]` char-boundary class of crash).
+    #[test]
+    fn a_multibyte_error_body_is_truncated_without_panicking() {
+        let body = "日".repeat(500);
+        let err = parse_token_body(500, &body).unwrap_err();
+        assert!(err.contains("500"));
     }
 }

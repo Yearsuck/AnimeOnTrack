@@ -292,8 +292,22 @@ export function SwipeView() {
   // History-strip actions. Re-classifying a past card moves it between lists
   // (local, via the shared reclassify inverse); returning it to the deck
   // hard-deletes its row so the picker offers it again.
+  //
+  // Both DISARM the undo button. `canUndo` only ever means "the backend's
+  // swipe_history still starts with the decision this button claims to
+  // reverse", and it stops meaning that the moment any history entry other
+  // than that one is consumed or altered: undo_last_swipe always pops the
+  // FRONT of the backend deque, so after a "Devolver al mazo" on an older
+  // entry (which removes it from the deque) a subsequent Ctrl+Z would
+  // hard-revert whatever decision happens to be at the front now — a
+  // different card the user never asked to undo, with no confirmation.
+  // Re-arming is deliberately left to the next real decide(): "make a new
+  // decision before undo works again" is correct and cheap, whereas trying
+  // to keep a stale `true` accurate would need the backend to expose its
+  // current undo target.
   const reclassifyHistory = useCallback(
     async (item: SwipeHistoryItem, action: "discard" | "want" | "seen") => {
+      setCanUndo(false);
       await reclassifySeries(item.series_id, RECLASSIFY_TARGET[action]);
       refreshHistory();
     },
@@ -301,6 +315,7 @@ export function SwipeView() {
   );
   const returnToDeck = useCallback(
     async (item: SwipeHistoryItem) => {
+      setCanUndo(false);
       await undoSwipeEntry(item.series_id);
       // Same as undo(): the row is hard-deleted, so fillQueue must be
       // allowed to serve this url again.

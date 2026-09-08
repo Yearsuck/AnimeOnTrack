@@ -31,6 +31,67 @@ pub struct SeriesForLink {
     pub watched_externally: bool,
 }
 
+/// Are two slugs on the same source "clearly related" — one a drifted spelling
+/// of the other, rather than two separate listing cards?
+///
+/// Related means: identical once punctuation/case is normalized, or one is a
+/// strict **token**-prefix of the other whose extra tail is not purely a noise
+/// token. That last clause is the whole point: "naruto" and "naruto-latino" are
+/// a prefix pair, but the only thing distinguishing them is exactly the noise
+/// `normalize_title` strips, which is precisely the coincidence that makes the
+/// two cards look like one show in the first place. Treating that as "related"
+/// would rubber-stamp the very merge this guard exists to block.
+fn slugs_are_related(a: &str, b: &str) -> bool {
+    let na = crate::matching::normalize_title_strict(a);
+    let nb = crate::matching::normalize_title_strict(b);
+    if na.is_empty() || nb.is_empty() {
+        return false;
+    }
+    if na == nb {
+        return true;
+    }
+    let (short, long) = if na.len() <= nb.len() { (&na, &nb) } else { (&nb, &na) };
+    let Some(tail) = long.strip_prefix(short.as_str()) else { return false };
+    // A token boundary, not a mid-word coincidence ("naruto" vs "narutox").
+    if !tail.starts_with(' ') {
+        return false;
+    }
+    !crate::matching::is_all_noise(tail)
+}
+
+/// May `upsert_series`'s normalized-title fallback fold the incoming card onto
+/// an existing row whose title normalizes the same way?
+///
+/// The fallback exists for one thing: a re-scraped card whose *slug* the site
+/// restructured (the "Youjo Senki II" bug — `-2` became `-ii`), which a
+/// slug-keyed upsert would otherwise treat as a brand-new series, orphaning all
+/// its seen history. Matching on the normalized title alone is too loose for
+/// that job, because `matching::normalize_title` deliberately strips noise
+/// suffixes ("latino", "sub espanol", "hd", "online"): two genuinely separate
+/// cards on the same listing that differ only by such a suffix — "Naruto" and
+/// "Naruto Latino" — normalize identically, and the second upsert overwrote the
+/// first row's slug/url/cover_url, silently collapsing two shows into one.
+///
+/// So the fallback fires only when the two cards are related by something the
+/// noise list did *not* invent:
+/// - their titles are equal under the **strict** normalization (no noise
+///   stripping) — pure slug drift, the case this fallback was written for; or
+/// - their slugs are clearly related (see `slugs_are_related`) — the title
+///   moved, but the URL path says it's the same card.
+///
+/// Anything else stays two rows. Erring toward two rows is the cheap direction:
+/// a spurious extra row is a duplicate card in the grid, while a spurious merge
+/// destroys a row's identity and its scraped URL.
+fn title_fallback_is_safe(
+    new_slug: &str,
+    new_title_strict: &str,
+    existing_slug: &str,
+    existing_title: &str,
+) -> bool {
+    new_title_strict == crate::matching::normalize_title_strict(existing_title)
+        || slugs_are_related(new_slug, existing_slug)
+}
+
 impl SeriesForLink {
     /// Idempotent early-out for `commands::link_series_core`: a row is
     /// "already linked" either because it was never a catalog row to begin
@@ -92,17 +153,24 @@ impl Db {
         let by_title = if existing_id.is_none() && !is_synthetic {
             // Scan this source's other non-synthetic rows and compare
             // normalized titles in Rust (SQLite has no access to
-            // `normalize_title`'s Unicode-aware folding).
+            // `normalize_title`'s Unicode-aware folding). A normalized-title
+            // hit is necessary but NOT sufficient — see
+            // `title_fallback_is_safe` for why the slug/strict-title guard
+            // has to run before two rows are folded into one.
             let norm = crate::matching::normalize_title(&s.title);
+            let strict = crate::matching::normalize_title_strict(&s.title);
             let mut stmt = self.conn.prepare(
-                "SELECT id, title FROM series WHERE source_id=?1 AND slug NOT LIKE 'anilist-%'",
+                "SELECT id, slug, title FROM series WHERE source_id=?1 AND slug NOT LIKE 'anilist-%'",
             )?;
             let mut rows = stmt.query([source_id])?;
             let mut found = None;
             while let Some(row) = rows.next()? {
                 let id: i64 = row.get(0)?;
-                let title: String = row.get(1)?;
-                if crate::matching::normalize_title(&title) == norm {
+                let existing_slug: String = row.get(1)?;
+                let title: String = row.get(2)?;
+                if crate::matching::normalize_title(&title) == norm
+                    && title_fallback_is_safe(&s.slug, &strict, &existing_slug, &title)
+                {
                     found = Some(id);
                     break;
                 }
@@ -735,30 +803,122 @@ impl Db {
         Ok(out)
     }
 
+    /// Every row's `SELECT` list for the "Listas" queries below — the
+    /// `row_to_series` columns plus the two grouping keys.
+    const CLASSIFIED_COLUMNS: &str =
+        "id, source_id, anilist_id, slug, title, url, cover_url, is_airing, followed,
+         next_episode_at, site_episode_count";
+
+    /// Collapse `series` rows drawn from **all** sites to one entry per
+    /// canonical show (`library::canon_key`: AniList id, else normalized
+    /// title), preferring the member on the active site so the row the UI
+    /// acts on ("Empezar a ver", "Abrir") is the current site's whenever it
+    /// has one. Ordered by title, case-insensitively.
+    fn canonical_representatives(
+        rows: Vec<(i64, Option<i64>, crate::models::Series)>,
+        active_source_id: i64,
+    ) -> Vec<crate::models::Series> {
+        let mut order: Vec<String> = Vec::new();
+        let mut groups: std::collections::HashMap<String, Vec<(i64, crate::models::Series)>> =
+            std::collections::HashMap::new();
+        for (source_id, anilist_id, s) in rows {
+            let key = super::library::canon_key(anilist_id, &s.title);
+            if !groups.contains_key(&key) {
+                order.push(key.clone());
+            }
+            groups.entry(key).or_default().push((source_id, s));
+        }
+        let mut out = Vec::with_capacity(order.len());
+        for key in &order {
+            let mut group = groups.remove(key).unwrap();
+            group.sort_by(|a, b| {
+                let a_active = (a.0 == active_source_id) as u8;
+                let b_active = (b.0 == active_source_id) as u8;
+                b_active
+                    .cmp(&a_active)
+                    .then(b.1.cover_url.is_some().cmp(&a.1.cover_url.is_some()))
+                    .then(a.1.id.cmp(&b.1.id))
+            });
+            out.push(group.into_iter().next().unwrap().1);
+        }
+        out.sort_by_key(|s| s.title.to_lowercase());
+        out
+    }
+
     /// Series with the given `backlog_status` ('want' or 'discarded'), for
     /// the swipe mode's "Listas" sub-view.
-    pub fn list_backlog(&self, source_id: i64, status: &str) -> Result<Vec<crate::models::Series>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, slug, title, url, cover_url, is_airing, followed, next_episode_at, site_episode_count
-             FROM series WHERE source_id=?1 AND backlog_status=?2 ORDER BY title",
-        )?;
+    ///
+    /// **Site-agnostic**, like `list_library` and unlike the per-site query
+    /// this replaced: a Want/Descartar decision is excluded from the Descubrir
+    /// deck globally (`engaged_series_titles` has no source filter), so listing
+    /// it per-site made an old decision invisible — and therefore impossible to
+    /// review or reverse — the moment you switched sites, while it silently
+    /// went on suppressing the title in the deck. Same per-site-scoping bug
+    /// class already fixed for Estadísticas and the deck exclusion itself.
+    ///
+    /// `active_source_id` is a *preference*, not a filter — see
+    /// `canonical_representatives`.
+    pub fn list_backlog(
+        &self,
+        active_source_id: i64,
+        status: &str,
+    ) -> Result<Vec<crate::models::Series>> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {} FROM series WHERE backlog_status=?1 ORDER BY title, id",
+            Self::CLASSIFIED_COLUMNS
+        ))?;
         let rows = stmt
-            .query_map((source_id, status), Self::row_to_series)?
+            .query_map([status], |r| {
+                Ok((
+                    r.get::<_, i64>("source_id")?,
+                    r.get::<_, Option<i64>>("anilist_id")?,
+                    Self::row_to_series(r)?,
+                ))
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
+        Ok(Self::canonical_representatives(rows, active_source_id))
     }
 
     /// Series with `watched_externally=1` ("Ya lo vi" catalog swipe), for
-    /// the Listas view's "Ya vistas" sub-list — mirrors `list_backlog`.
-    pub fn list_watched_externally(&self, source_id: i64) -> Result<Vec<crate::models::Series>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, slug, title, url, cover_url, is_airing, followed, next_episode_at, site_episode_count
-             FROM series WHERE source_id=?1 AND watched_externally=1 ORDER BY title",
-        )?;
+    /// the Listas view's "Ya vistas" sub-list — mirrors `list_backlog`,
+    /// site-agnostic for the same reason.
+    pub fn list_watched_externally(
+        &self,
+        active_source_id: i64,
+    ) -> Result<Vec<crate::models::Series>> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {} FROM series WHERE watched_externally=1 ORDER BY title, id",
+            Self::CLASSIFIED_COLUMNS
+        ))?;
         let rows = stmt
-            .query_map([source_id], Self::row_to_series)?
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>("source_id")?,
+                    r.get::<_, Option<i64>>("anilist_id")?,
+                    Self::row_to_series(r)?,
+                ))
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
+        Ok(Self::canonical_representatives(rows, active_source_id))
+    }
+
+    /// Whether a `series` row with this id still exists.
+    ///
+    /// Exists because the schema declares **no** `ON DELETE CASCADE`: a write
+    /// to `episodes` (or `series_genres`) for an id whose parent row is gone
+    /// succeeds silently and leaves an orphan behind, and several stats
+    /// queries read `episodes` without joining back to `series`, so orphans
+    /// permanently inflate episode totals / the 30-day heatmap / the binge
+    /// record. Any code path that scrapes first and writes episodes *after*
+    /// (the background catalog link, `start_watching`) must re-check this
+    /// under the `db` lock right before writing — the user can have undone
+    /// the decision, and deleted the row, while the scrape was in flight.
+    pub fn series_exists(&self, series_id: i64) -> Result<bool> {
+        Ok(self
+            .conn
+            .query_row("SELECT 1 FROM series WHERE id=?1", [series_id], |_| Ok(()))
+            .optional()?
+            .is_some())
     }
 
     /// Hard-delete a series and everything referencing it (episodes,
@@ -771,6 +931,50 @@ impl Db {
         self.conn.execute("DELETE FROM series_genres WHERE series_id=?1", [series_id])?;
         self.conn.execute("DELETE FROM series WHERE id=?1", [series_id])?;
         Ok(())
+    }
+
+    /// Delete the synthetic `anilist-N` placeholder a cross-site import created
+    /// when that import then failed to find the show on this site, and report
+    /// whether anything was deleted.
+    ///
+    /// `run_library_import` writes the placeholder (plus `set_anilist_id`)
+    /// *before* attempting the site link. On a `NoMatch`, a scrape error, or
+    /// mirrors being down, the row survived: unreachable (its `url` points at
+    /// anilist.co, and there is nothing to scrape there), invisible in the UI,
+    /// and — because `library_entries_missing_on_site` matched it by
+    /// `anilist_id` — proof to every later import that the entry was "already
+    /// present on this site". One transient failure therefore blocked that
+    /// series from ever being retried on that site again, while the dead rows
+    /// piled up.
+    ///
+    /// Deliberately conservative, so the error path can call it blindly: only a
+    /// row that is still an untouched placeholder goes — slug still
+    /// `anilist-%`, no episodes, and none of the user-facing signals
+    /// (`followed` / `watched_externally` / `backlog_status`) set. A successful
+    /// link rewrites the slug (`relink_series`) or merges the row away
+    /// (`merge_series_into`), and a catalog "want"/"Ya lo vi" row carries a
+    /// signal — none of those can be hit by this.
+    pub fn delete_orphan_synthetic_series(&self, series_id: i64) -> Result<bool> {
+        let is_orphan: bool = self
+            .conn
+            .query_row(
+                "SELECT 1 FROM series s
+                  WHERE s.id=?1
+                    AND s.slug LIKE 'anilist-%'
+                    AND s.followed=0
+                    AND COALESCE(s.watched_externally, 0)=0
+                    AND s.backlog_status IS NULL
+                    AND NOT EXISTS (SELECT 1 FROM episodes e WHERE e.series_id = s.id)",
+                [series_id],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        if !is_orphan {
+            return Ok(false);
+        }
+        self.delete_series(series_id)?;
+        Ok(true)
     }
 
     pub fn list_followed(&self, source_id: i64) -> Result<Vec<crate::models::Series>> {
@@ -960,6 +1164,146 @@ mod tests {
         let eps = db.list_series_episodes(sid).unwrap();
         assert_eq!(eps.len(), 5, "seen episodes must still be reachable under the same series id");
         assert!(eps.iter().all(|e| e.seen), "seen state must survive the slug change");
+    }
+
+    /// The title-fallback over-merge: `normalize_title` strips noise suffixes
+    /// ("latino", "sub espanol", "hd", "online"), so two GENUINELY separate
+    /// cards on the same listing that differ only by such a suffix normalized
+    /// to the same string. The fallback then folded the second card onto the
+    /// first row and the UPDATE overwrote its slug/url/cover_url — two shows
+    /// collapsed into one, with the survivor pointing at the wrong page.
+    #[test]
+    fn upsert_series_keeps_two_cards_that_differ_only_by_a_noise_suffix_separate() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+
+        let mut plain = mk_airing("naruto", "Naruto", None);
+        plain.url = "https://site/anime/naruto/".into();
+        plain.cover_url = Some("https://site/covers/naruto.jpg".into());
+        let plain_id = db.upsert_series(src, &plain).unwrap();
+
+        let mut latino = mk_airing("naruto-latino", "Naruto Latino", None);
+        latino.url = "https://site/anime/naruto-latino/".into();
+        latino.cover_url = Some("https://site/covers/naruto-latino.jpg".into());
+        let latino_id = db.upsert_series(src, &latino).unwrap();
+
+        assert_ne!(plain_id, latino_id, "two distinct listing cards must stay two rows");
+        let rows: i64 = db
+            .conn
+            .query_row("SELECT COUNT(*) FROM series WHERE source_id=?1", [src], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 2);
+        // The first card kept its own slug/url/cover — nothing was overwritten.
+        let (slug, url, cover): (String, String, Option<String>) = db
+            .conn
+            .query_row("SELECT slug, url, cover_url FROM series WHERE id=?1", [plain_id], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .unwrap();
+        assert_eq!(slug, "naruto");
+        assert_eq!(url, "https://site/anime/naruto/");
+        assert_eq!(cover.as_deref(), Some("https://site/covers/naruto.jpg"));
+
+        // Re-scanning either card still resolves to its own row (idempotent).
+        assert_eq!(db.upsert_series(src, &plain).unwrap(), plain_id);
+        assert_eq!(db.upsert_series(src, &latino).unwrap(), latino_id);
+    }
+
+    /// The guard must not cost the fallback its actual job: a card whose title
+    /// is unchanged but whose slug the site restructured still merges, even
+    /// when the two slugs share no prefix at all.
+    #[test]
+    fn upsert_series_title_fallback_still_merges_a_drifted_slug() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let a = db.upsert_series(src, &mk_airing("youjo-senki-2", "Youjo Senki II", None)).unwrap();
+        // Same title, a wholly different slug shape.
+        let b = db.upsert_series(src, &mk_airing("anime-youjo-senki-ii", "Youjo Senki II", None)).unwrap();
+        assert_eq!(a, b, "identical titles are pure slug drift and must merge");
+    }
+
+    /// …and a card whose *title* gained/lost punctuation or case still merges
+    /// (the strict normalization only keeps the noise tokens, nothing else).
+    #[test]
+    fn upsert_series_title_fallback_merges_across_punctuation_and_case() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let a = db.upsert_series(src, &mk_airing("bocchi", "Bocchi the Rock!", None)).unwrap();
+        let b = db.upsert_series(src, &mk_airing("bocchi-the-rock", "BOCCHI THE ROCK", None)).unwrap();
+        assert_eq!(a, b);
+    }
+
+    /// A related slug rescues the merge when only the title picked up noise:
+    /// the URL path says it is the same card, so the tail is real evidence.
+    #[test]
+    fn upsert_series_title_fallback_merges_when_the_slug_tail_is_not_noise() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let a = db.upsert_series(src, &mk_airing("naruto", "Naruto", None)).unwrap();
+        // Title gained a noise word, but the slug tail ("tv") is a real token.
+        let b = db.upsert_series(src, &mk_airing("naruto-tv", "Naruto HD", None)).unwrap();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn slugs_are_related_rejects_a_pure_noise_tail() {
+        assert!(slugs_are_related("naruto", "naruto"));
+        assert!(slugs_are_related("naruto", "naruto-tv"));
+        assert!(slugs_are_related("youjo-senki-2", "youjo_senki_2"));
+        // Purely a noise tail — the exact coincidence the guard exists for.
+        assert!(!slugs_are_related("naruto", "naruto-latino"));
+        assert!(!slugs_are_related("bleach", "bleach-sub-espanol"));
+        assert!(!slugs_are_related("one-piece", "one-piece-hd"));
+        // Mid-word, not a token boundary.
+        assert!(!slugs_are_related("naruto", "narutox"));
+        // Unrelated slugs.
+        assert!(!slugs_are_related("naruto", "bleach"));
+        assert!(!slugs_are_related("", "naruto"));
+    }
+
+    /// A failed cross-site import must not leave an unreachable `anilist-N`
+    /// placeholder behind (its url points at anilist.co, not the site) — see
+    /// `delete_orphan_synthetic_series`. The guards make it safe to call
+    /// blindly on the error path.
+    #[test]
+    fn delete_orphan_synthetic_series_only_removes_untouched_placeholders() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("TioAnime", "b", "tioanime").unwrap();
+
+        let synthetic = |slug: &str| crate::models::Series {
+            id: 0, slug: slug.into(), title: "Placeholder".into(),
+            url: "https://anilist.co/anime/21".into(), cover_url: None,
+            is_airing: false, followed: false, next_episode_at: None, site_episode_count: None,
+        };
+
+        // An untouched placeholder from a failed import: deleted.
+        let orphan = db.upsert_series(src, &synthetic("anilist-21")).unwrap();
+        db.set_anilist_id(orphan, 21).unwrap();
+        assert!(db.delete_orphan_synthetic_series(orphan).unwrap());
+        assert_eq!(db.get_series_url(orphan).unwrap(), None);
+
+        // A real (linked) row is never touched, even with an anilist_id set.
+        let real = db.upsert_series(src, &mk_airing("one-piece", "One Piece", None)).unwrap();
+        db.set_anilist_id(real, 21).unwrap();
+        assert!(!db.delete_orphan_synthetic_series(real).unwrap());
+        assert!(db.get_series_url(real).unwrap().is_some());
+
+        // A placeholder the user has classified is real state — kept.
+        let wanted = db.upsert_series(src, &synthetic("anilist-99")).unwrap();
+        db.set_anilist_id(wanted, 99).unwrap();
+        db.set_backlog_status(wanted, Some("want")).unwrap();
+        assert!(!db.delete_orphan_synthetic_series(wanted).unwrap());
+        assert!(db.get_series_url(wanted).unwrap().is_some());
+
+        // …as is one that somehow already has episodes.
+        let with_eps = db.upsert_series(src, &synthetic("anilist-100")).unwrap();
+        db.set_anilist_id(with_eps, 100).unwrap();
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: with_eps, number: "1".into(), title: None,
+            url: "https://site/x-1".into(), released_at: None, seen: false,
+        }).unwrap();
+        assert!(!db.delete_orphan_synthetic_series(with_eps).unwrap());
+        assert!(db.get_series_url(with_eps).unwrap().is_some());
     }
 
     #[test]
@@ -1249,6 +1593,108 @@ mod tests {
         let watched_rows = db.list_watched_externally(src).unwrap();
         assert_eq!(watched_rows.len(), 1);
         assert_eq!(watched_rows[0].id, sid_watched);
+    }
+
+    /// The Listas view must show a Want/Descartar decision taken under
+    /// another site: the Descubrir deck excludes it globally regardless of
+    /// the active site, so scoping the listing per-site left the user with no
+    /// UI path at all to review or reverse it after a site switch.
+    #[test]
+    fn list_backlog_still_lists_a_decision_made_under_another_site() {
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        let b = db.upsert_source("TioAnime", "b", "tioanime").unwrap();
+
+        let want = crate::models::Series {
+            id: 0, slug: "anilist-1".into(), title: "Decided On A".into(),
+            url: "https://anilist.co/anime/1".into(), cover_url: None, is_airing: false,
+            followed: false, next_episode_at: None, site_episode_count: None,
+        };
+        let sid_want = db.upsert_series(a, &want).unwrap();
+        db.set_backlog_status(sid_want, Some("want")).unwrap();
+
+        let discarded = crate::models::Series {
+            id: 0, slug: "anilist-2".into(), title: "Discarded On A".into(),
+            url: "https://anilist.co/anime/2".into(), cover_url: None, is_airing: false,
+            followed: false, next_episode_at: None, site_episode_count: None,
+        };
+        let sid_disc = db.upsert_series(a, &discarded).unwrap();
+        db.set_backlog_status(sid_disc, Some("discarded")).unwrap();
+
+        // Site B is now the active one — both decisions must still be listed.
+        let wants = db.list_backlog(b, "want").unwrap();
+        assert_eq!(wants.len(), 1, "a 'want' decided on site A vanished once site B became active");
+        assert_eq!(wants[0].id, sid_want);
+
+        let discards = db.list_backlog(b, "discarded").unwrap();
+        assert_eq!(discards.len(), 1);
+        assert_eq!(discards[0].id, sid_disc);
+    }
+
+    /// Same for the "Ya vistas" sub-list.
+    #[test]
+    fn list_watched_externally_still_lists_a_decision_made_under_another_site() {
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        let b = db.upsert_source("TioAnime", "b", "tioanime").unwrap();
+
+        let watched = crate::models::Series {
+            id: 0, slug: "anilist-9".into(), title: "Seen On A".into(),
+            url: "https://anilist.co/anime/9".into(), cover_url: None, is_airing: false,
+            followed: false, next_episode_at: None, site_episode_count: None,
+        };
+        let sid = db.upsert_series(a, &watched).unwrap();
+        db.set_watched_externally(sid, true).unwrap();
+
+        let rows = db.list_watched_externally(b).unwrap();
+        assert_eq!(rows.len(), 1, "a 'ya lo vi' decided on site A vanished once site B became active");
+        assert_eq!(rows[0].id, sid);
+    }
+
+    /// One show present on two sites is one Listas entry, not two — and the
+    /// active site's row is the representative, so the row the UI acts on
+    /// ("Empezar a ver") belongs to the site currently being scraped.
+    #[test]
+    fn list_backlog_collapses_cross_site_duplicates_preferring_the_active_site() {
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        let b = db.upsert_source("TioAnime", "b", "tioanime").unwrap();
+
+        let make = |slug: &str, url: &str| crate::models::Series {
+            id: 0, slug: slug.into(), title: "Overlord IV".into(), url: url.into(),
+            cover_url: None, is_airing: false, followed: false,
+            next_episode_at: None, site_episode_count: None,
+        };
+        let sid_a = db.upsert_series(a, &make("overlord-iv", "https://a.example/overlord-iv")).unwrap();
+        db.set_anilist_id(sid_a, 4242).unwrap();
+        db.set_backlog_status(sid_a, Some("want")).unwrap();
+        let sid_b = db.upsert_series(b, &make("overlord-4", "https://b.example/overlord-4")).unwrap();
+        db.set_anilist_id(sid_b, 4242).unwrap();
+        db.set_backlog_status(sid_b, Some("want")).unwrap();
+
+        let wants = db.list_backlog(b, "want").unwrap();
+        assert_eq!(wants.len(), 1, "the same show on two sites must be one Listas entry");
+        assert_eq!(wants[0].id, sid_b, "the active site's row must be the representative");
+    }
+
+    #[test]
+    fn series_exists_is_true_until_the_row_is_deleted() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let sid = db
+            .upsert_series(
+                src,
+                &crate::models::Series {
+                    id: 0, slug: "s".into(), title: "S".into(), url: "u".into(),
+                    cover_url: None, is_airing: false, followed: false,
+                    next_episode_at: None, site_episode_count: None,
+                },
+            )
+            .unwrap();
+        assert!(db.series_exists(sid).unwrap());
+        db.delete_series(sid).unwrap();
+        assert!(!db.series_exists(sid).unwrap());
+        assert!(!db.series_exists(sid + 9_999).unwrap());
     }
 
     #[test]

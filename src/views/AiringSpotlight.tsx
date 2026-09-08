@@ -23,7 +23,13 @@ function highResCover(url: string): string {
 
 export function AiringSpotlight({ items, onOpenSeries }: AiringSpotlightProps) {
   const t = useT();
-  const [currentIndex, setCurrentIndex] = useState(0);
+  // What's on screen is tracked by the item's own series id, not by its
+  // position. `featuredItems` is re-sorted by `next_episode_at` on every
+  // `items` change, so two countdowns crossing each other reorders the list
+  // without changing its length — a stored index would keep the same number
+  // while silently pointing at a different show, swapping the banner
+  // mid-view. `null` (nothing shown yet) resolves to the first slide.
+  const [currentId, setCurrentId] = useState<number | null>(null);
   const [isHovering, setIsHovering] = useState(false);
 
   const featuredItems = useMemo(() => {
@@ -37,23 +43,27 @@ export function AiringSpotlight({ items, onOpenSeries }: AiringSpotlightProps) {
     return sorted.slice(0, 4);
   }, [items]);
 
+  // Re-derived from the id after every re-sort, so the banner follows the
+  // show it was showing rather than the slot it was in. This also subsumes
+  // the clamp this component used to need: `featuredItems` can shrink out
+  // from under the selection (AiringGrid switching from "Todas" to "Esta
+  // temporada" without remounting the spotlight, or the shown series no
+  // longer airing), and a missing id falls back to index 0 instead of
+  // computing a translateX past -100% and rendering a blank banner.
+  const currentIndex = useMemo(() => {
+    if (featuredItems.length === 0) return 0;
+    const idx = featuredItems.findIndex((it) => it.series.id === currentId);
+    return idx >= 0 ? idx : 0;
+  }, [featuredItems, currentId]);
+
   const goTo = useCallback((idx: number) => {
-    setCurrentIndex((idx + featuredItems.length) % featuredItems.length);
-  }, [featuredItems.length]);
+    if (featuredItems.length === 0) return;
+    const next = ((idx % featuredItems.length) + featuredItems.length) % featuredItems.length;
+    setCurrentId(featuredItems[next].series.id);
+  }, [featuredItems]);
 
   const goPrev = useCallback(() => goTo(currentIndex - 1), [currentIndex, goTo]);
   const goNext = useCallback(() => goTo(currentIndex + 1), [currentIndex, goTo]);
-
-  // `currentIndex` persists across renders of this same mounted instance;
-  // `featuredItems` can shrink out from under it (e.g. AiringGrid switching
-  // from "Todas" to "Esta temporada" without remounting the spotlight) —
-  // without this clamp the transform below computes a translateX beyond
-  // -100%, rendering a blank banner until the next auto-advance/click.
-  useEffect(() => {
-    if (currentIndex >= featuredItems.length && featuredItems.length > 0) {
-      setCurrentIndex(0);
-    }
-  }, [featuredItems.length, currentIndex]);
 
   useEffect(() => {
     if (isHovering || featuredItems.length === 0) return;
