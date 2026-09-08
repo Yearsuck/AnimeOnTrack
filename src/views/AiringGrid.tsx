@@ -1,8 +1,28 @@
 import { useEffect, useMemo, useState } from "react";
 import { listAiringSeason, setFollowed } from "../api";
 import { useT } from "../i18n";
+import { initials } from "../lib/posterFallback";
 import type { AiringItem, Series } from "../types";
 import { AiringSpotlight } from "./AiringSpotlight";
+
+// A series' cover_url is only ever a data: URI (fetched and CSP-allowed) for
+// series the refresh cycle actually touches — followed series, plus anything
+// linked to an AniList catalog entry. An airing series that's neither still
+// carries the site's raw remote thumbnail, which the app's CSP silently
+// blocks. Same degrade-to-initials pattern as Library.tsx's LibraryCard:
+// null cover shows the fallback up-front, a blocked/broken remote URL shows
+// it via onError — the grid never sits on a permanently broken <img>.
+function AiringPoster({ title, coverUrl }: { title: string; coverUrl: string | null }) {
+  const [failed, setFailed] = useState(false);
+  if (!coverUrl || failed) {
+    return (
+      <div className="poster-fallback" aria-hidden="true">
+        {initials(title)}
+      </div>
+    );
+  }
+  return <img src={coverUrl} alt={title} loading="lazy" onError={() => setFailed(true)} />;
+}
 
 // Human label for the next-episode countdown the backend sorting is based
 // on — makes the newest-first ordering legible instead of mysterious.
@@ -206,9 +226,7 @@ export function AiringGrid({
                           {countdownLabel(s.next_episode_at, t) && (
                             <span className="chip chip-countdown">{countdownLabel(s.next_episode_at, t)}</span>
                           )}
-                          {s.cover_url ? (
-                            <img src={s.cover_url} alt={s.title} loading="lazy" />
-                          ) : null}
+                          <AiringPoster title={s.title} coverUrl={s.cover_url} />
                         </div>
                         <div className="card-body">
                           <div className="card-title">{s.title}</div>
@@ -236,9 +254,7 @@ export function AiringGrid({
                 {countdownLabel(s.next_episode_at, t) && (
                   <span className="chip chip-countdown">{countdownLabel(s.next_episode_at, t)}</span>
                 )}
-                {s.cover_url ? (
-                  <img src={s.cover_url} alt={s.title} loading="lazy" />
-                ) : null}
+                <AiringPoster title={s.title} coverUrl={s.cover_url} />
               </div>
               <div className="card-body">
                 <div className="card-title">{s.title}</div>

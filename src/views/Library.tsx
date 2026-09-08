@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listLibrary, openEpisode, reclassifySeries } from "../api";
 import { useT } from "../i18n";
 import { createFilterCache } from "../lib/createFilterCache";
+import { initials } from "../lib/posterFallback";
 import { useOutsideClick } from "../lib/useOutsideClick";
 import type { LibraryItem, Series } from "../types";
 
@@ -66,19 +67,6 @@ function byRecentWatched(a: LibraryItem, b: LibraryItem): number {
 
 function byTitle(a: LibraryItem, b: LibraryItem): number {
   return a.series.title.localeCompare(b.series.title);
-}
-
-// Up to two initials from the title, for the poster-less fallback block —
-// never render a broken <img> when cover_url is null.
-function initials(title: string): string {
-  const chars = title
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((w) => w[0]?.toUpperCase() ?? "")
-    .join("");
-  return chars || "?";
 }
 
 function LibraryCard({
