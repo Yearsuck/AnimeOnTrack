@@ -71,6 +71,50 @@ pub fn rebase_to_mirror(url: &str, mirror: &str) -> String {
     }
 }
 
+/// `url`'s host (plus port, when it carries one), or `None` when it isn't an
+/// absolute URL with a host — which covers both a malformed value and a
+/// `data:` URI. Used to decide whether a scraped `cover_url` was resolved
+/// against the same domain as the page it came from.
+fn host_of(url: &str) -> Option<String> {
+    let u = url::Url::parse(url).ok()?;
+    let host = u.host_str()?.to_string();
+    Some(match u.port() {
+        Some(port) => format!("{host}:{port}"),
+        None => host,
+    })
+}
+
+/// Rebase one scanned series onto the mirror that actually served the listing:
+/// its page URL **and** its `cover_url`.
+///
+/// The cover matters just as much as the page URL and was previously left
+/// behind: `tioanime`/`animeflv`/`animeland` build `cover_url` through the very
+/// same `abs()` helper (and therefore the same hardcoded default-domain
+/// constant) that produces the relative-href page URLs `rebase_to_mirror`
+/// exists to correct. After a mirror fallback every page/episode URL pointed at
+/// the working mirror while every cover still pointed at the dead default
+/// domain, so `fetch_cover_image` burned its full timeout per followed series,
+/// every refresh, against a host that cannot answer.
+///
+/// The cover is only rewritten when it is served from the **same host as the
+/// series page itself** — that is exactly the "resolved against the adapter's
+/// BASE constant" case. A cover on a separate image CDN (a different host from
+/// the page) is genuinely hosted elsewhere and must be left alone; blindly
+/// pointing it at the mirror would break a cover that works today. `data:`
+/// URIs (an already-fetched image) have no host and are never touched.
+///
+/// Order matters: the cover decision is made against `s.url` as the adapter
+/// emitted it, *before* that URL is itself rewritten.
+pub fn rebase_series_to_mirror(s: &mut Series, mirror: &str) {
+    if let Some(cover) = s.cover_url.as_deref() {
+        let page_host = host_of(&s.url);
+        if page_host.is_some() && host_of(cover) == page_host {
+            s.cover_url = Some(rebase_to_mirror(cover, mirror));
+        }
+    }
+    s.url = rebase_to_mirror(&s.url, mirror);
+}
+
 /// Fetch and parse a series detail page, falling through mirrors the same
 /// way every other scrape does. An empty genre list is treated the same as
 /// "page loaded but didn't parse" (see `scrape_via_mirrors`'s doc comment) —
@@ -150,13 +194,25 @@ pub fn slug_from_url(url: &str) -> String {
     url.trim_end_matches('/').rsplit('/').next().unwrap_or("").to_string()
 }
 
-async fn scan_airing_via_mirrors(
+/// One complete scan of the site's "en emisión" listing across **every** page,
+/// with each card's page URL and cover rebased onto the mirror that actually
+/// served it. Returns the deduped series plus that working mirror.
+///
+/// Shared by `scan_airing`/`rescan_airing` (via `scan_airing_via_mirrors`) and
+/// by `refresh()`. `refresh()` used to run its own single-page
+/// `a.airing_url("")` fetch instead, which made the two paths disagree about
+/// what "on the current listing" means: on a paginating site (TioAnime's
+/// directory is ~5 pages of 20) every followed series from page 2 onwards
+/// looked absent from the listing to `should_fetch_series`, so it fell into the
+/// slow off-listing bucket (`OFF_LISTING_RECHECK_SECS`, one recheck a day)
+/// rather than the on-listing badge/countdown fast path — delaying real new
+/// episodes by up to a day for most of the library. One implementation, one
+/// definition of "on the listing".
+async fn scrape_airing_listing(
     app: &AppHandle,
-    state: &State<'_, AppState>,
-    mirrors: Vec<String>,
+    mirrors: &[String],
     a: &dyn SiteAdapter,
-    site_id: &str,
-) -> Result<Vec<Series>, String> {
+) -> Result<(Vec<Series>, String), String> {
     emit_refresh_progress(app, 0, 1, "Escaneando listado de estrenos");
     // Walk every page of the airing listing, not just the first. Some sites
     // paginate their "en emisión" directory (TioAnime: ~5 pages of 20), so a
@@ -168,9 +224,9 @@ async fn scan_airing_via_mirrors(
     const MAX_AIRING_PAGES: u32 = 25;
     let page1_path = a.airing_page_url("", 1).unwrap_or_else(|| a.airing_url(""));
     let (_scraped, mut series, working_mirror) =
-        scrape_via_mirrors(app, &mirrors, &page1_path, false, |scraped| a.parse_airing(&scraped.html)).await?;
+        scrape_via_mirrors(app, mirrors, &page1_path, false, |scraped| a.parse_airing(&scraped.html)).await?;
     for s in &mut series {
-        s.url = rebase_to_mirror(&s.url, &working_mirror);
+        rebase_series_to_mirror(s, &working_mirror);
     }
     let mut seen_slugs: std::collections::HashSet<String> =
         series.iter().map(|s| s.slug.clone()).collect();
@@ -192,7 +248,7 @@ async fn scan_airing_via_mirrors(
         }
         let mut added = 0;
         for mut s in page_series {
-            s.url = rebase_to_mirror(&s.url, &page_mirror);
+            rebase_series_to_mirror(&mut s, &page_mirror);
             if seen_slugs.insert(s.slug.clone()) {
                 series.push(s);
                 added += 1;
@@ -205,6 +261,17 @@ async fn scan_airing_via_mirrors(
         }
     }
     emit_refresh_progress(app, 1, 1, "Listado completo");
+    Ok((series, working_mirror))
+}
+
+async fn scan_airing_via_mirrors(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    mirrors: Vec<String>,
+    a: &dyn SiteAdapter,
+    site_id: &str,
+) -> Result<Vec<Series>, String> {
+    let (series, working_mirror) = scrape_airing_listing(app, &mirrors, a).await?;
     // Cover images are intentionally NOT fetched here: doing it for every
     // series on the airing list (~150 at once) reads as scraping abuse to
     // Cloudflare and gets rate-limited regardless of session validity. Covers
@@ -635,19 +702,20 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
         load_mirrors(&db, &site_id)?
     };
 
-    // One fresh airing-listing fetch up front — the skip decisions below are
+    // One fresh airing-listing scan up front — the skip decisions below are
     // only sound against metadata from *this* scan, never a stale one, so
     // this scan deliberately doesn't consult any cache. On failure (all
     // mirrors down) fall back to fetching every followed series, exactly
     // like the pre-skip-logic refresh.
-    emit_refresh_progress(&app, 0, 1, "Escaneando listado de estrenos");
-    let listing_path = a.airing_url("").to_string();
+    //
+    // This is the SAME full-pagination walk `scan_airing` performs (see
+    // `scrape_airing_listing`), not a page-1-only fetch: `should_fetch_series`
+    // treats "absent from the listing" as a much slower recheck bucket, so a
+    // partial listing silently demoted every followed series on page 2+ and
+    // delayed their new episodes by up to a day.
     let listing_slugs: Option<std::collections::HashSet<String>> =
-        match scrape_via_mirrors(&app, &mirrors, &listing_path, false, |scraped| a.parse_airing(&scraped.html)).await {
-            Ok((_scraped, mut series, working_mirror)) => {
-                for s in &mut series {
-                    s.url = rebase_to_mirror(&s.url, &working_mirror);
-                }
+        match scrape_airing_listing(&app, &mirrors, a.as_ref()).await {
+            Ok((series, _working_mirror)) => {
                 let db = state.db.lock().unwrap();
                 for s in &series {
                     db.upsert_series(src, s).map_err(|e| e.to_string())?;
@@ -1046,6 +1114,97 @@ mod tests {
             true, true, true, Some(NOW + DAY), Some(5), 5, Some(0), NOW
         ));
         assert!(should_fetch_series(true, true, false, None, None, 5, Some(0), NOW));
+    }
+
+    // ---- rebase_series_to_mirror (cover_url stranded on a dead mirror) ----
+
+    fn scanned(url: &str, cover: Option<&str>) -> Series {
+        Series {
+            id: 0,
+            slug: "x".into(),
+            title: "X".into(),
+            url: url.into(),
+            cover_url: cover.map(str::to_string),
+            is_airing: true,
+            followed: false,
+            next_episode_at: None,
+            site_episode_count: None,
+        }
+    }
+
+    /// The bug: tioanime/animeflv/animeland resolve BOTH the card href and the
+    /// poster `src` against their hardcoded default-domain constant, so after a
+    /// mirror fallback the page URL was corrected and the cover was not —
+    /// leaving `fetch_cover_image` to burn its whole timeout on a dead host,
+    /// once per followed series, on every refresh.
+    #[test]
+    fn rebase_moves_a_same_host_cover_onto_the_working_mirror() {
+        let mut s = scanned(
+            "https://tioanime.com/anime/some-show",
+            Some("https://tioanime.com/uploads/portadas/1234.jpg"),
+        );
+        rebase_series_to_mirror(&mut s, "https://tioanime.xyz/");
+        assert_eq!(s.url, "https://tioanime.xyz/anime/some-show");
+        assert_eq!(
+            s.cover_url.as_deref(),
+            Some("https://tioanime.xyz/uploads/portadas/1234.jpg")
+        );
+    }
+
+    /// A cover's query string is part of its identity on some sites
+    /// (animeland's `?xxx` cache-buster) and must survive the rebase.
+    #[test]
+    fn rebase_keeps_a_covers_query_string() {
+        let mut s = scanned(
+            "https://w7.animeland.tv/anime/re-monster",
+            Some("https://w7.animeland.tv/Thumbs/Re-Monster.jpg?xxx"),
+        );
+        rebase_series_to_mirror(&mut s, "https://w8.animeland.tv");
+        assert_eq!(
+            s.cover_url.as_deref(),
+            Some("https://w8.animeland.tv/Thumbs/Re-Monster.jpg?xxx")
+        );
+    }
+
+    /// A cover genuinely hosted elsewhere (a separate image CDN) is NOT the
+    /// hardcoded-default-domain case and works fine as-is — pointing it at the
+    /// mirror would break a cover that currently loads.
+    #[test]
+    fn rebase_leaves_a_cover_on_another_host_alone() {
+        let mut s = scanned(
+            "https://jkanime.net/yami-shibai-17/",
+            Some("https://cdn.jkanime.net/assets/images/animes/image/yami-shibai-17.jpg"),
+        );
+        rebase_series_to_mirror(&mut s, "https://jkanime.org");
+        assert_eq!(s.url, "https://jkanime.org/yami-shibai-17/");
+        assert_eq!(
+            s.cover_url.as_deref(),
+            Some("https://cdn.jkanime.net/assets/images/animes/image/yami-shibai-17.jpg"),
+            "a CDN-hosted cover is not the relative-href case and must survive untouched"
+        );
+    }
+
+    /// An already-fetched cover is stored inline as a `data:` URI (it has no
+    /// host at all) — rebasing one would destroy the image.
+    #[test]
+    fn rebase_never_touches_a_fetched_data_uri_cover() {
+        let mut s = scanned("https://tioanime.com/anime/x", Some("data:image/png;base64,AAAA"));
+        rebase_series_to_mirror(&mut s, "https://tioanime.xyz");
+        assert_eq!(s.cover_url.as_deref(), Some("data:image/png;base64,AAAA"));
+        // …and a series with no cover at all stays that way.
+        let mut none = scanned("https://tioanime.com/anime/x", None);
+        rebase_series_to_mirror(&mut none, "https://tioanime.xyz");
+        assert_eq!(none.cover_url, None);
+    }
+
+    /// A page URL that doesn't parse leaves everything as-is rather than
+    /// producing a nonsense cover (`rebase_to_mirror`'s own fallback rule).
+    #[test]
+    fn rebase_is_a_no_op_when_the_page_url_has_no_host() {
+        let mut s = scanned("not a url", Some("https://tioanime.com/x.jpg"));
+        rebase_series_to_mirror(&mut s, "https://tioanime.xyz");
+        assert_eq!(s.url, "not a url");
+        assert_eq!(s.cover_url.as_deref(), Some("https://tioanime.com/x.jpg"));
     }
 
     #[test]
