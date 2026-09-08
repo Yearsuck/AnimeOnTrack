@@ -31,6 +31,67 @@ pub struct SeriesForLink {
     pub watched_externally: bool,
 }
 
+/// Are two slugs on the same source "clearly related" — one a drifted spelling
+/// of the other, rather than two separate listing cards?
+///
+/// Related means: identical once punctuation/case is normalized, or one is a
+/// strict **token**-prefix of the other whose extra tail is not purely a noise
+/// token. That last clause is the whole point: "naruto" and "naruto-latino" are
+/// a prefix pair, but the only thing distinguishing them is exactly the noise
+/// `normalize_title` strips, which is precisely the coincidence that makes the
+/// two cards look like one show in the first place. Treating that as "related"
+/// would rubber-stamp the very merge this guard exists to block.
+fn slugs_are_related(a: &str, b: &str) -> bool {
+    let na = crate::matching::normalize_title_strict(a);
+    let nb = crate::matching::normalize_title_strict(b);
+    if na.is_empty() || nb.is_empty() {
+        return false;
+    }
+    if na == nb {
+        return true;
+    }
+    let (short, long) = if na.len() <= nb.len() { (&na, &nb) } else { (&nb, &na) };
+    let Some(tail) = long.strip_prefix(short.as_str()) else { return false };
+    // A token boundary, not a mid-word coincidence ("naruto" vs "narutox").
+    if !tail.starts_with(' ') {
+        return false;
+    }
+    !crate::matching::is_all_noise(tail)
+}
+
+/// May `upsert_series`'s normalized-title fallback fold the incoming card onto
+/// an existing row whose title normalizes the same way?
+///
+/// The fallback exists for one thing: a re-scraped card whose *slug* the site
+/// restructured (the "Youjo Senki II" bug — `-2` became `-ii`), which a
+/// slug-keyed upsert would otherwise treat as a brand-new series, orphaning all
+/// its seen history. Matching on the normalized title alone is too loose for
+/// that job, because `matching::normalize_title` deliberately strips noise
+/// suffixes ("latino", "sub espanol", "hd", "online"): two genuinely separate
+/// cards on the same listing that differ only by such a suffix — "Naruto" and
+/// "Naruto Latino" — normalize identically, and the second upsert overwrote the
+/// first row's slug/url/cover_url, silently collapsing two shows into one.
+///
+/// So the fallback fires only when the two cards are related by something the
+/// noise list did *not* invent:
+/// - their titles are equal under the **strict** normalization (no noise
+///   stripping) — pure slug drift, the case this fallback was written for; or
+/// - their slugs are clearly related (see `slugs_are_related`) — the title
+///   moved, but the URL path says it's the same card.
+///
+/// Anything else stays two rows. Erring toward two rows is the cheap direction:
+/// a spurious extra row is a duplicate card in the grid, while a spurious merge
+/// destroys a row's identity and its scraped URL.
+fn title_fallback_is_safe(
+    new_slug: &str,
+    new_title_strict: &str,
+    existing_slug: &str,
+    existing_title: &str,
+) -> bool {
+    new_title_strict == crate::matching::normalize_title_strict(existing_title)
+        || slugs_are_related(new_slug, existing_slug)
+}
+
 impl SeriesForLink {
     /// Idempotent early-out for `commands::link_series_core`: a row is
     /// "already linked" either because it was never a catalog row to begin
@@ -92,17 +153,24 @@ impl Db {
         let by_title = if existing_id.is_none() && !is_synthetic {
             // Scan this source's other non-synthetic rows and compare
             // normalized titles in Rust (SQLite has no access to
-            // `normalize_title`'s Unicode-aware folding).
+            // `normalize_title`'s Unicode-aware folding). A normalized-title
+            // hit is necessary but NOT sufficient — see
+            // `title_fallback_is_safe` for why the slug/strict-title guard
+            // has to run before two rows are folded into one.
             let norm = crate::matching::normalize_title(&s.title);
+            let strict = crate::matching::normalize_title_strict(&s.title);
             let mut stmt = self.conn.prepare(
-                "SELECT id, title FROM series WHERE source_id=?1 AND slug NOT LIKE 'anilist-%'",
+                "SELECT id, slug, title FROM series WHERE source_id=?1 AND slug NOT LIKE 'anilist-%'",
             )?;
             let mut rows = stmt.query([source_id])?;
             let mut found = None;
             while let Some(row) = rows.next()? {
                 let id: i64 = row.get(0)?;
-                let title: String = row.get(1)?;
-                if crate::matching::normalize_title(&title) == norm {
+                let existing_slug: String = row.get(1)?;
+                let title: String = row.get(2)?;
+                if crate::matching::normalize_title(&title) == norm
+                    && title_fallback_is_safe(&s.slug, &strict, &existing_slug, &title)
+                {
                     found = Some(id);
                     break;
                 }
@@ -865,6 +933,50 @@ impl Db {
         Ok(())
     }
 
+    /// Delete the synthetic `anilist-N` placeholder a cross-site import created
+    /// when that import then failed to find the show on this site, and report
+    /// whether anything was deleted.
+    ///
+    /// `run_library_import` writes the placeholder (plus `set_anilist_id`)
+    /// *before* attempting the site link. On a `NoMatch`, a scrape error, or
+    /// mirrors being down, the row survived: unreachable (its `url` points at
+    /// anilist.co, and there is nothing to scrape there), invisible in the UI,
+    /// and — because `library_entries_missing_on_site` matched it by
+    /// `anilist_id` — proof to every later import that the entry was "already
+    /// present on this site". One transient failure therefore blocked that
+    /// series from ever being retried on that site again, while the dead rows
+    /// piled up.
+    ///
+    /// Deliberately conservative, so the error path can call it blindly: only a
+    /// row that is still an untouched placeholder goes — slug still
+    /// `anilist-%`, no episodes, and none of the user-facing signals
+    /// (`followed` / `watched_externally` / `backlog_status`) set. A successful
+    /// link rewrites the slug (`relink_series`) or merges the row away
+    /// (`merge_series_into`), and a catalog "want"/"Ya lo vi" row carries a
+    /// signal — none of those can be hit by this.
+    pub fn delete_orphan_synthetic_series(&self, series_id: i64) -> Result<bool> {
+        let is_orphan: bool = self
+            .conn
+            .query_row(
+                "SELECT 1 FROM series s
+                  WHERE s.id=?1
+                    AND s.slug LIKE 'anilist-%'
+                    AND s.followed=0
+                    AND COALESCE(s.watched_externally, 0)=0
+                    AND s.backlog_status IS NULL
+                    AND NOT EXISTS (SELECT 1 FROM episodes e WHERE e.series_id = s.id)",
+                [series_id],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        if !is_orphan {
+            return Ok(false);
+        }
+        self.delete_series(series_id)?;
+        Ok(true)
+    }
+
     pub fn list_followed(&self, source_id: i64) -> Result<Vec<crate::models::Series>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, slug, title, url, cover_url, is_airing, followed, next_episode_at, site_episode_count
@@ -1052,6 +1164,146 @@ mod tests {
         let eps = db.list_series_episodes(sid).unwrap();
         assert_eq!(eps.len(), 5, "seen episodes must still be reachable under the same series id");
         assert!(eps.iter().all(|e| e.seen), "seen state must survive the slug change");
+    }
+
+    /// The title-fallback over-merge: `normalize_title` strips noise suffixes
+    /// ("latino", "sub espanol", "hd", "online"), so two GENUINELY separate
+    /// cards on the same listing that differ only by such a suffix normalized
+    /// to the same string. The fallback then folded the second card onto the
+    /// first row and the UPDATE overwrote its slug/url/cover_url — two shows
+    /// collapsed into one, with the survivor pointing at the wrong page.
+    #[test]
+    fn upsert_series_keeps_two_cards_that_differ_only_by_a_noise_suffix_separate() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+
+        let mut plain = mk_airing("naruto", "Naruto", None);
+        plain.url = "https://site/anime/naruto/".into();
+        plain.cover_url = Some("https://site/covers/naruto.jpg".into());
+        let plain_id = db.upsert_series(src, &plain).unwrap();
+
+        let mut latino = mk_airing("naruto-latino", "Naruto Latino", None);
+        latino.url = "https://site/anime/naruto-latino/".into();
+        latino.cover_url = Some("https://site/covers/naruto-latino.jpg".into());
+        let latino_id = db.upsert_series(src, &latino).unwrap();
+
+        assert_ne!(plain_id, latino_id, "two distinct listing cards must stay two rows");
+        let rows: i64 = db
+            .conn
+            .query_row("SELECT COUNT(*) FROM series WHERE source_id=?1", [src], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 2);
+        // The first card kept its own slug/url/cover — nothing was overwritten.
+        let (slug, url, cover): (String, String, Option<String>) = db
+            .conn
+            .query_row("SELECT slug, url, cover_url FROM series WHERE id=?1", [plain_id], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .unwrap();
+        assert_eq!(slug, "naruto");
+        assert_eq!(url, "https://site/anime/naruto/");
+        assert_eq!(cover.as_deref(), Some("https://site/covers/naruto.jpg"));
+
+        // Re-scanning either card still resolves to its own row (idempotent).
+        assert_eq!(db.upsert_series(src, &plain).unwrap(), plain_id);
+        assert_eq!(db.upsert_series(src, &latino).unwrap(), latino_id);
+    }
+
+    /// The guard must not cost the fallback its actual job: a card whose title
+    /// is unchanged but whose slug the site restructured still merges, even
+    /// when the two slugs share no prefix at all.
+    #[test]
+    fn upsert_series_title_fallback_still_merges_a_drifted_slug() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let a = db.upsert_series(src, &mk_airing("youjo-senki-2", "Youjo Senki II", None)).unwrap();
+        // Same title, a wholly different slug shape.
+        let b = db.upsert_series(src, &mk_airing("anime-youjo-senki-ii", "Youjo Senki II", None)).unwrap();
+        assert_eq!(a, b, "identical titles are pure slug drift and must merge");
+    }
+
+    /// …and a card whose *title* gained/lost punctuation or case still merges
+    /// (the strict normalization only keeps the noise tokens, nothing else).
+    #[test]
+    fn upsert_series_title_fallback_merges_across_punctuation_and_case() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let a = db.upsert_series(src, &mk_airing("bocchi", "Bocchi the Rock!", None)).unwrap();
+        let b = db.upsert_series(src, &mk_airing("bocchi-the-rock", "BOCCHI THE ROCK", None)).unwrap();
+        assert_eq!(a, b);
+    }
+
+    /// A related slug rescues the merge when only the title picked up noise:
+    /// the URL path says it is the same card, so the tail is real evidence.
+    #[test]
+    fn upsert_series_title_fallback_merges_when_the_slug_tail_is_not_noise() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let a = db.upsert_series(src, &mk_airing("naruto", "Naruto", None)).unwrap();
+        // Title gained a noise word, but the slug tail ("tv") is a real token.
+        let b = db.upsert_series(src, &mk_airing("naruto-tv", "Naruto HD", None)).unwrap();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn slugs_are_related_rejects_a_pure_noise_tail() {
+        assert!(slugs_are_related("naruto", "naruto"));
+        assert!(slugs_are_related("naruto", "naruto-tv"));
+        assert!(slugs_are_related("youjo-senki-2", "youjo_senki_2"));
+        // Purely a noise tail — the exact coincidence the guard exists for.
+        assert!(!slugs_are_related("naruto", "naruto-latino"));
+        assert!(!slugs_are_related("bleach", "bleach-sub-espanol"));
+        assert!(!slugs_are_related("one-piece", "one-piece-hd"));
+        // Mid-word, not a token boundary.
+        assert!(!slugs_are_related("naruto", "narutox"));
+        // Unrelated slugs.
+        assert!(!slugs_are_related("naruto", "bleach"));
+        assert!(!slugs_are_related("", "naruto"));
+    }
+
+    /// A failed cross-site import must not leave an unreachable `anilist-N`
+    /// placeholder behind (its url points at anilist.co, not the site) — see
+    /// `delete_orphan_synthetic_series`. The guards make it safe to call
+    /// blindly on the error path.
+    #[test]
+    fn delete_orphan_synthetic_series_only_removes_untouched_placeholders() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("TioAnime", "b", "tioanime").unwrap();
+
+        let synthetic = |slug: &str| crate::models::Series {
+            id: 0, slug: slug.into(), title: "Placeholder".into(),
+            url: "https://anilist.co/anime/21".into(), cover_url: None,
+            is_airing: false, followed: false, next_episode_at: None, site_episode_count: None,
+        };
+
+        // An untouched placeholder from a failed import: deleted.
+        let orphan = db.upsert_series(src, &synthetic("anilist-21")).unwrap();
+        db.set_anilist_id(orphan, 21).unwrap();
+        assert!(db.delete_orphan_synthetic_series(orphan).unwrap());
+        assert_eq!(db.get_series_url(orphan).unwrap(), None);
+
+        // A real (linked) row is never touched, even with an anilist_id set.
+        let real = db.upsert_series(src, &mk_airing("one-piece", "One Piece", None)).unwrap();
+        db.set_anilist_id(real, 21).unwrap();
+        assert!(!db.delete_orphan_synthetic_series(real).unwrap());
+        assert!(db.get_series_url(real).unwrap().is_some());
+
+        // A placeholder the user has classified is real state — kept.
+        let wanted = db.upsert_series(src, &synthetic("anilist-99")).unwrap();
+        db.set_anilist_id(wanted, 99).unwrap();
+        db.set_backlog_status(wanted, Some("want")).unwrap();
+        assert!(!db.delete_orphan_synthetic_series(wanted).unwrap());
+        assert!(db.get_series_url(wanted).unwrap().is_some());
+
+        // …as is one that somehow already has episodes.
+        let with_eps = db.upsert_series(src, &synthetic("anilist-100")).unwrap();
+        db.set_anilist_id(with_eps, 100).unwrap();
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: with_eps, number: "1".into(), title: None,
+            url: "https://site/x-1".into(), released_at: None, seen: false,
+        }).unwrap();
+        assert!(!db.delete_orphan_synthetic_series(with_eps).unwrap());
+        assert!(db.get_series_url(with_eps).unwrap().is_some());
     }
 
     #[test]
