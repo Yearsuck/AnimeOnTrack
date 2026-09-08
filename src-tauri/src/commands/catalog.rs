@@ -10,21 +10,17 @@ pub fn get_series_genres(state: State<'_, AppState>, series_id: i64) -> Result<V
 /// This user's top `limit` genres by affinity score (positive only), for
 /// the "Tus géneros favoritos" chip row in the swipe UI — makes the
 /// otherwise-invisible taste-weighting in `discover_swipe_card` visible.
+///
+/// Deliberately **not** scoped to the active site: this is a summary of the
+/// user's whole library, like every other stats-shaped figure in the app. It
+/// used to reuse the deck's own `get_genre_affinity(source_id)` — a query
+/// correctly scoped to one site for picking which of *that* site's genre pages
+/// to browse — which silently dropped the taste evidence sitting on the other
+/// sites. See `Db::get_genre_affinity_across_sites`.
 #[tauri::command]
 pub fn get_top_genres(state: State<'_, AppState>, limit: usize) -> Result<Vec<GenreAffinity>, String> {
-    let src = get_source_id(&state)?;
     let db = state.db.lock().unwrap();
-    let mut scored: Vec<(String, f64)> = db
-        .get_genre_affinity(src)
-        .map_err(|e| e.to_string())?
-        .into_iter()
-        .filter(|(_, score)| *score > 0.0)
-        .collect();
-    // Tie-break alphabetically: scores come out of a HashMap, so without a
-    // secondary key equal-scored genres would reorder from call to call.
-    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal).then_with(|| a.0.cmp(&b.0)));
-    scored.truncate(limit);
-    Ok(scored.into_iter().map(|(genre, score)| GenreAffinity { genre, score }).collect())
+    db.get_favorite_genres(limit).map_err(|e| e.to_string())
 }
 
 /// Full matched AniList catalog entry for a series (cover/genres/format/
