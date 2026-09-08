@@ -2,10 +2,57 @@ use super::*;
 use crate::backup;
 use tauri_plugin_opener::OpenerExt;
 
+/// Whether Drive is actually usable right now: the stored refresh token must
+/// be present **and** decrypt to something non-empty.
+///
+/// This used to be a bare `is_some()` on the raw setting while `backup_now` and
+/// `restore_latest` checked the decrypted value — so after restoring a snapshot
+/// taken on another machine or Windows account, where the DPAPI blob no longer
+/// decrypts, Settings showed a permanently "connected" Drive whose every backup
+/// failed with "Not connected to Google Drive" and no way to reach the
+/// reconnect flow. See `backup::connected_refresh_token`.
+pub(crate) fn connected_token(db: &crate::db::Db) -> Option<String> {
+    backup::connected_refresh_token(db.get_setting("gdrive_refresh_token").ok().flatten())
+}
+
+/// Drop a refresh token Google has told us is dead (see
+/// `oauth::is_grant_rejected`), so `backup_status` reports `connected: false`
+/// and Settings offers "Conectar" instead of retrying a grant that can never
+/// succeed again. Only ever called for `invalid_grant` — a network blip or a
+/// Drive outage must not cost the user their connection.
+///
+/// `gdrive_file_id` is deliberately left alone: it names a file in the user's
+/// Drive that is still there, and keeping it means reconnecting the same
+/// account updates that backup instead of creating a second one.
+fn forget_rejected_grant(state: &AppState) {
+    if let Ok(db) = state.db.lock() {
+        db.delete_setting("gdrive_refresh_token").ok();
+    }
+}
+
+/// `backup::access_token`, plus the cleanup that turns a permanently-dead
+/// grant into an honest "not connected" instead of an error the user sees
+/// again on every future backup.
+pub(crate) async fn access_token_or_disconnect(
+    state: &AppState,
+    client: &(String, String),
+    refresh: &str,
+) -> Result<String, String> {
+    match backup::access_token(client, refresh).await {
+        Ok(token) => Ok(token),
+        Err(e) => {
+            if backup::oauth::is_grant_rejected(&e) {
+                forget_rejected_grant(state);
+            }
+            Err(e)
+        }
+    }
+}
+
 #[tauri::command]
 pub fn backup_status(state: State<'_, AppState>) -> Result<BackupStatus, String> {
     let db = state.db.lock().unwrap();
-    let refresh = db.get_setting("gdrive_refresh_token").ok().flatten();
+    let refresh = connected_token(&db);
     let last_at = db.get_setting("backup_last_at_iso").ok().flatten();
     let size = db
         .get_setting("backup_size_bytes")
@@ -91,18 +138,12 @@ pub async fn backup_now(app: AppHandle, state: State<'_, AppState>) -> Result<Ba
         let db = state.db.lock().unwrap();
         let client = backup::configured_client(&db)
             .ok_or("Google credentials not configured")?;
-        let refresh = db
-            .get_setting("gdrive_refresh_token")
-            .ok()
-            .flatten()
-            .map(|s| backup::secure_store::unprotect(&s))
-            .filter(|s| !s.is_empty())
-            .ok_or("Not connected to Google Drive")?;
+        let refresh = connected_token(&db).ok_or("Not connected to Google Drive")?;
         let bytes = backup::snapshot_bytes(&db, &dir)?;
         let sig = backup::signature_string(db.signature_counts().map_err(|e| e.to_string())?);
         (client, refresh, bytes, sig)
     };
-    let token = backup::access_token(&client, &refresh).await?;
+    let token = access_token_or_disconnect(&state, &client, &refresh).await?;
     let existing = {
         let db = state.db.lock().unwrap();
         db.get_setting("gdrive_file_id").ok().flatten()
@@ -153,13 +194,32 @@ fn backup_now_iso() -> String {
 /// signature (`backup::is_auto_backup_due`). Called from the startup spawn in
 /// `lib.rs` and opportunistically at the end of `refresh()`. Errors are
 /// swallowed by callers — this must never surface to or block the user.
+///
+/// One at a time, via the same `AtomicBool` + `RunningGuard` pattern as
+/// `catalog_sync_running`/`library_import_running`. Both trigger points can be
+/// in flight at once (startup spawn, then `refresh()` finishing), and before
+/// the *first* backup has ever run neither has a `gdrive_file_id` — so both
+/// would call `find_backup_file` (finding nothing), both would call
+/// `create_backup`, and Drive would end up with two backup files that never
+/// converge again. Skipping the second run costs nothing: the work it wanted
+/// done is already happening.
 #[tauri::command]
 pub async fn auto_backup_if_due(app: AppHandle) -> Result<(), String> {
+    use std::sync::atomic::Ordering;
+
     let state = app.state::<AppState>();
+    if state.backup_running.swap(true, Ordering::SeqCst) {
+        return Ok(());
+    }
+    // Released however this function exits, including every `?` below —
+    // otherwise one failure wedges the flag on and no backup ever runs again
+    // for the rest of the session.
+    let _clear = crate::commands::follow::RunningGuard(&state.backup_running);
+
     let (last_at, last_sig, cur_sig, connected) = {
         let db = state.db.lock().unwrap();
-        let connected = backup::configured_client(&db).is_some()
-            && db.get_setting("gdrive_refresh_token").ok().flatten().is_some();
+        let connected =
+            backup::configured_client(&db).is_some() && connected_token(&db).is_some();
         let last_at = db
             .get_setting("backup_last_at_unix")
             .ok()
@@ -188,4 +248,58 @@ pub async fn auto_backup_if_due(app: AppHandle) -> Result<(), String> {
         db.set_setting("backup_last_error", &e).ok();
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::commands::follow::RunningGuard;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// The concurrency guard `auto_backup_if_due` now claims at its top.
+    ///
+    /// A full end-to-end test of two overlapping `auto_backup_if_due` calls
+    /// isn't reachable from a unit test: the function takes an `AppHandle` and
+    /// resolves the managed `AppState` from it, so it needs a running Tauri
+    /// app, and its body then talks to Google's OAuth and Drive endpoints.
+    /// What *is* testable — and what the fix actually consists of — is the
+    /// claim/release protocol itself: the second entrant must be turned away
+    /// while the first holds the flag, and the flag must come back on scope
+    /// exit so the next trigger isn't wedged out forever.
+    #[test]
+    fn backup_guard_turns_away_a_second_entrant_and_releases_on_scope_exit() {
+        let running = AtomicBool::new(false);
+
+        // First entrant claims the flag.
+        assert!(!running.swap(true, Ordering::SeqCst), "first call must get through");
+        {
+            let _clear = RunningGuard(&running);
+            // Second (and third) entrant, before the first has finished: both
+            // see the flag set and bail. This is the pair of calls that used
+            // to each create their own file in Drive.
+            assert!(running.swap(true, Ordering::SeqCst), "overlapping call must be turned away");
+            assert!(running.swap(true, Ordering::SeqCst), "still turned away");
+        }
+        // Guard dropped — the next trigger runs normally.
+        assert!(!running.load(Ordering::SeqCst), "the guard must release the flag");
+        assert!(!running.swap(true, Ordering::SeqCst), "a later call must get through");
+    }
+
+    /// The flag must be released even when the guarded body bails out early,
+    /// which `auto_backup_if_due` does on every `?` and on "not connected" /
+    /// "not due". Without RAII, one such exit wedges backups off for the whole
+    /// session.
+    #[test]
+    fn backup_guard_releases_on_an_early_return() {
+        let running = AtomicBool::new(false);
+        fn body(running: &AtomicBool) -> Result<(), &'static str> {
+            if running.swap(true, Ordering::SeqCst) {
+                return Ok(());
+            }
+            let _clear = RunningGuard(running);
+            Err("not connected")?;
+            Ok(())
+        }
+        assert!(body(&running).is_err());
+        assert!(!running.load(Ordering::SeqCst), "early return must still release the flag");
+    }
 }
