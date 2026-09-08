@@ -128,9 +128,32 @@ impl Db {
             }
         };
 
+        // `cover_url` is the one scanned field this UPDATE must NOT overwrite
+        // unconditionally. A followed series' cover is downloaded once, by
+        // `refresh()`'s cover step, and stored as a `data:` URI (see
+        // CLAUDE.md — covers are fetched one at a time through a WebView2
+        // window precisely because bulk-fetching them reads as scraping abuse
+        // to Cloudflare, and the frontend's CSP only renders `data:`/`asset:`
+        // images anyway). `refresh()` upserts every airing-listing card
+        // *before* it reads `list_followed`, so overwriting here put the
+        // remote thumbnail URL back on every followed airing series on every
+        // single cycle — the cover step's `!remote.starts_with("data:")`
+        // guard then saw a remote URL again and re-opened the fetch window
+        // for that series, forever, flatly contradicting its own "drops out
+        // of it for good the first time this succeeds" comment.
+        //
+        // So: an already-stored `data:` URI wins over an incoming non-`data:`
+        // value (a remote thumbnail, or NULL from a caller that has no cover
+        // at all). An incoming `data:` value still overwrites — that's a
+        // freshly fetched image, strictly newer than what's stored. The
+        // dedicated `update_series_cover` remains the way to set one.
         self.conn.execute(
-            "UPDATE series SET slug=?2, title=?3, url=?4, cover_url=?5, is_airing=?6,
-                next_episode_at=?7, site_episode_count=?8
+            "UPDATE series SET slug=?2, title=?3, url=?4,
+                cover_url = CASE
+                    WHEN substr(COALESCE(cover_url, ''), 1, 5) = 'data:'
+                     AND substr(COALESCE(?5, ''), 1, 5) <> 'data:'
+                    THEN cover_url ELSE ?5 END,
+                is_airing=?6, next_episode_at=?7, site_episode_count=?8
              WHERE id=?1",
             (
                 target_id, &s.slug, &s.title, &s.url,
@@ -734,6 +757,86 @@ mod tests {
         let got = db.list_airing(src).unwrap().into_iter().find(|r| r.id == sid).unwrap();
         assert_eq!(got.next_episode_at, Some(1_783_954_940));
         assert_eq!(got.site_episode_count, Some(3));
+    }
+
+    /// A fetched cover (`data:` URI) must survive the next airing-listing
+    /// upsert. `refresh()` upserts every listing card before it reads
+    /// `list_followed`, so clobbering the stored `data:` URI with the
+    /// listing's remote thumbnail put every followed airing series back into
+    /// the "needs a cover fetch" state on every cycle — re-opening a WebView2
+    /// window per series, per refresh, forever.
+    #[test]
+    fn upsert_series_never_clobbers_an_already_fetched_data_uri_cover() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let mut s = mk_airing("x", "X", None);
+        s.cover_url = Some("https://site/wp-content/x.jpg".into());
+        let sid = db.upsert_series(src, &s).unwrap();
+
+        // refresh()'s cover step downloads it and stores the pixels inline.
+        const FETCHED: &str = "data:image/png;base64,AAAA";
+        db.update_series_cover(sid, FETCHED).unwrap();
+
+        // Next scan re-sends the original remote thumbnail on the card.
+        let mut again = mk_airing("x", "X", None);
+        again.cover_url = Some("https://site/wp-content/x.jpg".into());
+        assert_eq!(db.upsert_series(src, &again).unwrap(), sid, "same row");
+        assert_eq!(
+            stored_cover(&db, sid).as_deref(),
+            Some(FETCHED),
+            "the fetched data: URI must survive the re-scan"
+        );
+
+        // A card that carries no cover at all must not wipe it either.
+        let none_cover = mk_airing("x", "X", None);
+        assert_eq!(none_cover.cover_url, None, "sanity: this card has no cover");
+        db.upsert_series(src, &none_cover).unwrap();
+        assert_eq!(stored_cover(&db, sid).as_deref(), Some(FETCHED));
+    }
+
+    /// The raw `series.cover_url` column — deliberately not `list_airing`,
+    /// which COALESCEs a linked catalog poster over the site's own value.
+    fn stored_cover(db: &Db, series_id: i64) -> Option<String> {
+        db.conn
+            .query_row("SELECT cover_url FROM series WHERE id=?1", [series_id], |r| r.get(0))
+            .unwrap()
+    }
+
+    /// The guard is narrow on purpose: it only protects a stored `data:` URI
+    /// from a *remote* value. Everything else about `cover_url` still behaves
+    /// like the scan-owned field it is.
+    #[test]
+    fn upsert_series_still_refreshes_a_remote_cover_and_accepts_a_new_data_uri() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let mut s = mk_airing("x", "X", None);
+        s.cover_url = Some("https://old.site/x.jpg".into());
+        let sid = db.upsert_series(src, &s).unwrap();
+
+        // remote -> remote: the site moved the image, take the new URL.
+        let mut moved = mk_airing("x", "X", None);
+        moved.cover_url = Some("https://new.site/x.jpg".into());
+        db.upsert_series(src, &moved).unwrap();
+        assert_eq!(stored_cover(&db, sid).as_deref(), Some("https://new.site/x.jpg"));
+
+        // remote -> data:: a freshly fetched image is strictly newer, take it.
+        let mut fetched = mk_airing("x", "X", None);
+        fetched.cover_url = Some("data:image/png;base64,BBBB".into());
+        db.upsert_series(src, &fetched).unwrap();
+        assert_eq!(stored_cover(&db, sid).as_deref(), Some("data:image/png;base64,BBBB"));
+
+        // data: -> data:: also taken (only a non-data: value is held off).
+        let mut newer = mk_airing("x", "X", None);
+        newer.cover_url = Some("data:image/png;base64,CCCC".into());
+        db.upsert_series(src, &newer).unwrap();
+        assert_eq!(stored_cover(&db, sid).as_deref(), Some("data:image/png;base64,CCCC"));
+
+        // remote -> NULL on a row whose cover is NOT a data: URI still clears
+        // it, exactly as before — the guard is only about protecting a real
+        // downloaded image.
+        db.update_series_cover(sid, "https://plain.site/x.jpg").unwrap();
+        db.upsert_series(src, &mk_airing("x", "X", None)).unwrap();
+        assert_eq!(stored_cover(&db, sid), None);
     }
 
     #[test]

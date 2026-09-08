@@ -2837,7 +2837,7 @@ mod tests {
             ("4", "2024-12-31 12:00:00"), // different year, must not appear
         ];
         for (num, seen_at) in eps {
-            let ep = db.insert_episode(&crate::models::Episode {
+            let (ep, _) = db.insert_episode(&crate::models::Episode {
                 id: 0, series_id: series, number: num.into(), title: None,
                 url: format!("https://site/x-{num}/"), released_at: None, seen: true,
             }).unwrap();
@@ -2883,7 +2883,7 @@ mod tests {
 
         // Add a mark in a past year — both should appear.
         let series = db.upsert_series(src, &mk_airing("x", "X", None)).unwrap();
-        let ep = db.insert_episode(&crate::models::Episode {
+        let (ep, _) = db.insert_episode(&crate::models::Episode {
             id: 0, series_id: series, number: "1".into(), title: None,
             url: "https://site/x-1/".into(), released_at: None, seen: true,
         }).unwrap();

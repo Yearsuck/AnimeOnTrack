@@ -165,28 +165,52 @@ pub(crate) fn text_of(el: scraper::ElementRef, sel: &scraper::Selector) -> Optio
         .filter(|s| !s.is_empty())
 }
 
-/// The first maximal run of ASCII digits in `s`, e.g. "Episodio 12" -> "12".
-/// Falls back to the whole trimmed string if there are no digits at all
-/// (never panics, never produces an empty episode number silently).
+/// The first number in `s`, e.g. "Episodio 12" -> "12", "Episodio 13.5" ->
+/// "13.5". Falls back to the whole trimmed string if there are no digits at
+/// all (never panics, never produces an empty episode number silently).
 ///
 /// Deliberately the *first contiguous run*, not every digit character in the
 /// string concatenated together: the latter turned "Episode 12 (1080p)" into
 /// "121080" and "1x12" into "112" — real-looking labels this could plausibly
 /// see from a markup change — instead of the actual episode number.
+///
+/// A single `.` **between two digit runs** is part of the number, not a
+/// separator. Fractional episode numbers ("13.5", "10.5" — half-episodes,
+/// recaps and specials, which all of these sites number that way) are real,
+/// distinct episodes. Taking only the leading integer run collapsed
+/// "Episodio 13.5" into "13" — the number the *real* episode 13 already owns.
+/// Confirmed live on series 5006 ("Shingeki no Kyojin", tioanime): the diff
+/// then classifies the half-episode as an already-known number, so
+/// `refresh_episode_meta` rewrites episode 13's `url` to the half-episode's
+/// href (corrupting it), the half-episode is never stored as its own row, and
+/// the next scan hits `UNIQUE(series_id, url)` on the pair forever after.
+/// Keeping the decimal makes it its own comparable value — `db::episodes::
+/// parse_ep_number` already reads "13.5" as 13.5, so the seen-cascade orders
+/// it correctly. `jkanime` (JSON `number` field) and `animeflv`
+/// (`input.mseen[data-number]`) already carry the decimal through verbatim
+/// and never went through this helper, which is why only tioanime/animeland
+/// ever showed the bug.
+///
+/// Anything past a *second* `.` is still dropped ("2026.01.15" -> "2026.01"):
+/// one decimal point is a number, two are a date.
 pub(crate) fn digits_in(s: &str) -> String {
-    let mut run = String::new();
-    for c in s.chars() {
-        if c.is_ascii_digit() {
-            run.push(c);
-        } else if !run.is_empty() {
-            break;
+    let chars: Vec<char> = s.chars().collect();
+    let Some(start) = chars.iter().position(|c| c.is_ascii_digit()) else {
+        return s.trim().to_string();
+    };
+    let mut end = start;
+    while end < chars.len() && chars[end].is_ascii_digit() {
+        end += 1;
+    }
+    // Only a '.' immediately followed by another digit continues the number —
+    // a trailing "13." (end of a phrase) stays "13".
+    if end + 1 < chars.len() && chars[end] == '.' && chars[end + 1].is_ascii_digit() {
+        end += 1;
+        while end < chars.len() && chars[end].is_ascii_digit() {
+            end += 1;
         }
     }
-    if run.is_empty() {
-        s.trim().to_string()
-    } else {
-        run
-    }
+    chars[start..end].iter().collect()
 }
 
 #[cfg(test)]
@@ -203,6 +227,33 @@ mod helper_tests {
     #[test]
     fn digits_in_falls_back_to_trimmed_input_with_no_digits() {
         assert_eq!(digits_in("  Especial  "), "Especial");
+    }
+
+    /// The series-5006 regression: a fractional episode label must NOT
+    /// collapse onto the integer episode that shares its leading digits.
+    #[test]
+    fn digits_in_keeps_a_fractional_episode_number_distinct() {
+        assert_eq!(digits_in("Episodio 13.5"), "13.5");
+        assert_eq!(digits_in("Episodio 13"), "13");
+        assert_ne!(
+            digits_in("Episodio 13.5"),
+            digits_in("Episodio 13"),
+            "13.5 and 13 are different episodes and must never share a number"
+        );
+        assert_eq!(digits_in("Capitulo 10.5 (Recap)"), "10.5");
+    }
+
+    /// The decimal is only part of the number when a digit actually follows
+    /// it — punctuation must not leak into an episode number.
+    #[test]
+    fn digits_in_stops_at_a_dot_that_is_not_followed_by_a_digit() {
+        assert_eq!(digits_in("Episodio 13. Final"), "13");
+        assert_eq!(digits_in("Episodio 13."), "13");
+    }
+
+    #[test]
+    fn digits_in_takes_at_most_one_decimal_point() {
+        assert_eq!(digits_in("2026.01.15"), "2026.01");
     }
 }
 
