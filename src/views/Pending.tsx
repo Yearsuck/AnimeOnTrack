@@ -46,15 +46,38 @@ export function Pending({
   function markSeen(it: PendingItem) {
     setRemoving((r) => new Set(r).add(it.episode.id));
     setTimeout(async () => {
-      await setSeenCascade(it.series.id, it.episode.number, true);
-      await load();
-      onChanged();
+      try {
+        await setSeenCascade(it.series.id, it.episode.number, true);
+        await load();
+        onChanged();
+      } catch (e) {
+        console.error("markSeen failed:", e);
+      } finally {
+        // Release the fade-out marker. The set only ever grew before, so an
+        // id that came BACK into the list — un-marked from the SeriesDetail
+        // overlay while this view stays mounted, then reloaded through
+        // `refreshSignal` — still matched `.ep-row.removing { opacity: 0 }`
+        // and rendered invisible-but-present. In `finally` so a failed
+        // cascade (where the row legitimately stays in the list) can't hide
+        // it either.
+        setRemoving((r) => {
+          const next = new Set(r);
+          next.delete(it.episode.id);
+          return next;
+        });
+      }
     }, REMOVE_MS);
   }
 
-  const groups = new Map<string, PendingItem[]>();
+  // Keyed by series id, not by title: two distinct `series` rows can carry
+  // the same title (one show scraped under two slugs on a site, or two
+  // unrelated shows named identically). Keying on the text merged them into
+  // a single block whose header click-through opened `eps[0].series` — the
+  // right show for the first group member and silently the wrong one for
+  // every other.
+  const groups = new Map<number, PendingItem[]>();
   for (const it of items) {
-    const k = it.series.title;
+    const k = it.series.id;
     (groups.get(k) ?? groups.set(k, []).get(k)!).push(it);
   }
 
@@ -96,14 +119,14 @@ export function Pending({
           {t("pending.emptyHint")}
         </div>
       ) : (
-        [...groups.entries()].map(([title, eps]) => {
+        [...groups.entries()].map(([seriesId, eps]) => {
           const series = eps[0].series;
           return (
-            <div key={title} className="series-block">
+            <div key={seriesId} className="series-block">
               <div className="series-head clickable" onClick={() => onOpenSeries(series)}>
                 {series.cover_url && <img src={series.cover_url} alt="" />}
                 <div>
-                  <div className="name">{title}</div>
+                  <div className="name">{series.title}</div>
                   <div className="count">
                     {t(eps.length === 1 ? "pending.new" : "pending.newPlural", { count: eps.length })}
                   </div>
