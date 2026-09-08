@@ -164,6 +164,95 @@ fn prefer_display_title(candidate: &str, current: &str) -> bool {
     }
 }
 
+/// Record `parent` as the candidate parent key of `key`, deterministically.
+///
+/// Two member rows of one `franchise_key` can propose *different* parents —
+/// differing colon-heads that only collapse to the same key after season
+/// stripping ("Fate: Zero" and "Fate/stay night: UBW" both living under one
+/// key, say). This used to be `parent_of.entry(key).or_insert(parent)`, i.e.
+/// whichever row SQLite happened to return first won, so the same database
+/// could roll up differently between two runs. Every other tie-break in this
+/// file is explicit (see `prefer_display_title`), and this one now reuses those
+/// same rules — shortest key wins, ties broken alphabetically — so the winner
+/// depends only on the data, never on row order.
+fn record_parent_candidate(parent_of: &mut HashMap<String, String>, key: &str, parent: String) {
+    match parent_of.get(key) {
+        Some(current) if !prefer_display_title(&parent, current) => {}
+        _ => {
+            parent_of.insert(key.to_string(), parent);
+        }
+    }
+}
+
+/// Alias map folding the title-derived `franchise_key`s of rows AniList says
+/// are the same show onto one shared key.
+///
+/// `franchise_key` is pure title text, so the same show scraped as "Shingeki no
+/// Kyojin" on one site and "Attack on Titan" on another produced two franchises
+/// — inflating `distinct_anime`/`top_series` and defeating the per-site
+/// "best single site, never the sum" rule, which buckets by this key and so
+/// never saw the two sites as one show. Whenever two keys carry the same
+/// `anilist_id` they are folded together here, *before* any grouping runs.
+///
+/// Title matching stays the primary rule (a franchise's arcs are usually only
+/// partly linked, and keying off `anilist_id` alone would split them again);
+/// this only ever *merges* keys, never splits one. Rows with no `anilist_id`
+/// are untouched and simply keep their own key.
+///
+/// The chosen representative is the lexicographically smallest key of each
+/// connected component, so the result depends only on the set of keys, not on
+/// query order. Parent pointers only ever move to a smaller key, so the
+/// resolution walk cannot cycle.
+fn franchise_key_aliases(rows: &[(Option<i64>, String)]) -> HashMap<String, String> {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    let mut by_anilist_id: BTreeMap<i64, BTreeSet<String>> = BTreeMap::new();
+    for (anilist_id, key) in rows {
+        if let Some(id) = anilist_id {
+            by_anilist_id.entry(*id).or_default().insert(key.clone());
+        }
+    }
+
+    fn root(parent: &BTreeMap<String, String>, key: &str) -> String {
+        // Bounded purely defensively — pointers strictly decrease, so a chain
+        // is finite by construction.
+        const MAX_DEPTH: usize = 64;
+        let mut current = key.to_string();
+        for _ in 0..MAX_DEPTH {
+            match parent.get(&current) {
+                Some(next) if next != &current => current = next.clone(),
+                _ => break,
+            }
+        }
+        current
+    }
+
+    let mut parent: BTreeMap<String, String> = BTreeMap::new();
+    for keys in by_anilist_id.values() {
+        if keys.len() < 2 {
+            continue;
+        }
+        for key in keys {
+            parent.entry(key.clone()).or_insert_with(|| key.clone());
+        }
+        let mut members = keys.iter();
+        let anchor = members.next().expect("len >= 2");
+        for key in members {
+            let (a, b) = (root(&parent, anchor), root(&parent, key));
+            if a != b {
+                let (winner, loser) = if a < b { (a, b) } else { (b, a) };
+                parent.insert(loser, winner);
+            }
+        }
+    }
+
+    parent
+        .keys()
+        .map(|key| (key.clone(), root(&parent, key)))
+        .filter(|(key, target)| key != target)
+        .collect()
+}
+
 /// Fold each group whose colon-stripped parent key is *also* a group in this
 /// same data into that parent, then return the survivors.
 ///
@@ -233,7 +322,9 @@ fn merge_into_parent_franchises(
         existing.has_external |= rollup.has_external;
         if rollup.external_episodes > existing.external_episodes {
             existing.external_episodes = rollup.external_episodes;
-            existing.external_minutes = rollup.external_minutes;
+            // The rate travels with the count it belongs to — see
+            // `FranchiseRollup::external_per_episode`.
+            existing.external_per_episode = rollup.external_per_episode;
         }
         // The parent's label already won by being seeded above; a child only
         // ever contributes counts.
@@ -244,6 +335,9 @@ fn merge_into_parent_franchises(
 /// the franchise roll-up, never exposed outside this module.
 struct SeriesWatchRow {
     title: String,
+    /// The linked AniList id, when the series has been resolved to a catalog
+    /// row — the identity signal `franchise_key_aliases` folds titles by.
+    anilist_id: Option<i64>,
     kind: Option<String>,
     watched_externally: bool,
     source_id: i64,
@@ -274,7 +368,19 @@ pub(crate) struct FranchiseRollup {
     /// Largest catalog episode count among members marked "Ya lo vi" that have
     /// no real seen episodes of their own. 0 when there is no such member.
     pub external_episodes: i64,
-    pub external_minutes: i64,
+    /// Minutes per episode behind `external_episodes` — the per-episode rate of
+    /// whichever member row supplied that count (AniList's `duration`, else the
+    /// format/kind estimate). Deliberately stored as a *rate*, not as a
+    /// precomputed total: `extra_external_minutes` must price exactly the
+    /// episodes `extra_external_episodes` reports, and a total invited the two
+    /// to be computed on different bases. It used to hold
+    /// `external_episodes * rate` and the minute remainder was
+    /// `external_minutes - real_minutes` — but `real_minutes` accumulates each
+    /// member row's OWN rate (a "Pelicula" arc row prices its episodes at 100
+    /// min each), so a franchise with a movie-format arc plus a normal-length
+    /// "Ya lo vi" entry produced a negative difference, clamped to 0, and the
+    /// same stats page showed positive extra episodes worth zero extra minutes.
+    pub external_per_episode: i64,
     /// Whether any member row carries the "Ya lo vi" flag *at all*, whether or
     /// not a catalog episode count was available for it. `external_episodes`
     /// only answers "did we have data"; this answers "did the user claim to
@@ -300,13 +406,14 @@ impl FranchiseRollup {
         (self.external_episodes - self.real_seen).max(0)
     }
 
-    /// Minutes for `extra_external_episodes`, on the same additive basis.
+    /// Minutes for `extra_external_episodes`, on the same additive basis — and
+    /// on the same *basis* as the episode figure it prices: exactly those extra
+    /// episodes at the estimate's own per-episode rate. Episodes and minutes
+    /// therefore agree by construction (one is 0 iff the other is), instead of
+    /// being two independently computed differences that could disagree — see
+    /// `external_per_episode`.
     pub fn extra_external_minutes(&self) -> i64 {
-        if self.external_episodes > self.real_seen {
-            (self.external_minutes - self.real_minutes).max(0)
-        } else {
-            0
-        }
+        self.extra_external_episodes() * self.external_per_episode
     }
 }
 
@@ -508,6 +615,111 @@ impl Db {
         Ok(scores)
     }
 
+    /// The same taste weighting as `get_genre_affinity` (+2 followed, +1
+    /// "want", -1.5 discarded, folded onto AniList's canonical genre names),
+    /// but computed over the **whole library** instead of one `source_id`, and
+    /// deduped across sites: a show followed on two sites is one show with the
+    /// union of both sites' genre tags, contributing its +2 once.
+    ///
+    /// `get_genre_affinity` is deliberately per-site — it feeds the swipe
+    /// deck's genre pick, which browses one site's genre pages, so only that
+    /// site's rows are relevant. "Tus géneros favoritos" is a summary of the
+    /// user's taste, not of one site, and reusing the deck's query for it hid
+    /// every genre whose evidence lived on a non-active site (and double-counted
+    /// the ones present on two). Every other stats figure in this file is
+    /// site-agnostic; this one now is too.
+    pub fn get_genre_affinity_across_sites(&self) -> Result<HashMap<String, f64>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT s.anilist_id, s.title, s.followed, s.backlog_status, sg.genre
+             FROM series_genres sg
+             JOIN series s ON s.id = sg.series_id",
+        )?;
+        struct GenreRow {
+            canon_key: String,
+            followed: bool,
+            backlog_status: Option<String>,
+            genre: String,
+        }
+        let rows: Vec<GenreRow> = stmt
+            .query_map([], |r| {
+                let anilist_id: Option<i64> = r.get(0)?;
+                let title: String = r.get(1)?;
+                Ok(GenreRow {
+                    canon_key: super::library::canon_key(anilist_id, &title),
+                    followed: r.get::<_, i64>(2)? != 0,
+                    backlog_status: r.get(3)?,
+                    genre: r.get(4)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        // One verdict per canonical show, with its genres unioned across sites
+        // — the same shape `group_followed_canonically` gives the descriptive
+        // stats. Status precedence matches `library::merge_backlog`: an actual
+        // follow outranks any backlog tag, and "want" outranks "discarded".
+        #[derive(Default)]
+        struct CanonicalShow {
+            followed: bool,
+            want: bool,
+            discarded: bool,
+            genres: HashSet<String>,
+        }
+        let mut shows: HashMap<String, CanonicalShow> = HashMap::new();
+        for row in rows {
+            let entry = shows.entry(row.canon_key).or_default();
+            entry.followed |= row.followed;
+            match row.backlog_status.as_deref() {
+                Some("want") => entry.want = true,
+                Some("discarded") => entry.discarded = true,
+                _ => {}
+            }
+            entry.genres.insert(
+                crate::genres::canonical_genre(&row.genre)
+                    .map(|s| s.to_string())
+                    .unwrap_or(row.genre),
+            );
+        }
+
+        let mut scores: HashMap<String, f64> = HashMap::new();
+        for show in shows.values() {
+            let delta = if show.followed {
+                2.0
+            } else if show.want {
+                1.0
+            } else if show.discarded {
+                -1.5
+            } else {
+                0.0
+            };
+            for genre in &show.genres {
+                *scores.entry(genre.clone()).or_insert(0.0) += delta;
+            }
+        }
+        Ok(scores)
+    }
+
+    /// This user's top `limit` genres by cross-site affinity, positive scores
+    /// only, strongest first — the "Tus géneros favoritos" chip row. Ties break
+    /// alphabetically: the scores come out of a `HashMap`, so without a
+    /// secondary key equal-scored genres would reorder between calls.
+    pub fn get_favorite_genres(&self, limit: usize) -> Result<Vec<crate::models::GenreAffinity>> {
+        let mut scored: Vec<(String, f64)> = self
+            .get_genre_affinity_across_sites()?
+            .into_iter()
+            .filter(|(_, score)| *score > 0.0)
+            .collect();
+        scored.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.0.cmp(&b.0))
+        });
+        scored.truncate(limit);
+        Ok(scored
+            .into_iter()
+            .map(|(genre, score)| crate::models::GenreAffinity { genre, score })
+            .collect())
+    }
+
     /// Followed shows with their genres (unioned across sites) and kind, for
     /// the 3D relationship graph, canonical across sites — one node per show,
     /// not per site's `series` row (see `group_followed_canonically`). The
@@ -658,9 +870,13 @@ impl Db {
     /// the same show scraped under near-identical titles on two different
     /// sites, without needing `anilist_id` as the primary key (which would
     /// regress the arc-collapsing case whenever only *some* arcs are linked).
+    /// `anilist_id` is applied on top of it as a *merge* signal only, via
+    /// `franchise_key_aliases`: titles that share a link are one franchise even
+    /// when the text doesn't match at all ("Shingeki no Kyojin" / "Attack on
+    /// Titan"), while unlinked rows keep the title-derived key they always had.
     pub(crate) fn franchise_rollups(&self) -> Result<Vec<FranchiseRollup>> {
         let mut stmt = self.conn.prepare(
-            "SELECT s.title, s.kind, s.watched_externally, s.source_id,
+            "SELECT s.title, s.anilist_id, s.kind, s.watched_externally, s.source_id,
                     (SELECT COUNT(*) FROM episodes e WHERE e.series_id=s.id AND e.seen=1) AS seen_cnt,
                     c.episodes, c.format, c.duration
              FROM series s
@@ -672,16 +888,28 @@ impl Db {
             .query_map([], |r| {
                 Ok(SeriesWatchRow {
                     title: r.get(0)?,
-                    kind: r.get(1)?,
-                    watched_externally: r.get::<_, i64>(2)? != 0,
-                    source_id: r.get(3)?,
-                    seen_count: r.get(4)?,
-                    catalog_episodes: r.get(5)?,
-                    catalog_format: r.get(6)?,
-                    catalog_duration: r.get(7)?,
+                    anilist_id: r.get(1)?,
+                    kind: r.get(2)?,
+                    watched_externally: r.get::<_, i64>(3)? != 0,
+                    source_id: r.get(4)?,
+                    seen_count: r.get(5)?,
+                    catalog_episodes: r.get(6)?,
+                    catalog_format: r.get(7)?,
+                    catalog_duration: r.get(8)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        // Two rows the user's own AniList links say are the same show share one
+        // franchise even when their titles don't look alike at all ("Shingeki
+        // no Kyojin" / "Attack on Titan") — see `franchise_key_aliases`.
+        let aliases = franchise_key_aliases(
+            &rows
+                .iter()
+                .map(|row| (row.anilist_id, franchise_key(&row.title)))
+                .collect::<Vec<_>>(),
+        );
+        let canonical = |key: String| aliases.get(&key).cloned().unwrap_or(key);
 
         let mut grouped: HashMap<String, FranchiseRollup> = HashMap::new();
         // Candidate parent per group, recorded while grouping and applied only
@@ -698,17 +926,19 @@ impl Db {
         // reported ~2600 "real" episodes for a ~1170-episode show.
         let mut per_site: HashMap<String, HashMap<i64, (i64, i64)>> = HashMap::new();
         for row in rows {
-            let key = franchise_key(&row.title);
+            let key = canonical(franchise_key(&row.title));
             let display = franchise_display_title(&row.title);
-            if let Some(parent) = franchise_parent_key(&row.title) {
-                parent_of.entry(key.clone()).or_insert(parent);
+            if let Some(parent) = franchise_parent_key(&row.title).map(&canonical) {
+                if parent != key {
+                    record_parent_candidate(&mut parent_of, &key, parent);
+                }
             }
             let entry = grouped.entry(key.clone()).or_insert_with(|| FranchiseRollup {
                 display_title: display.clone(),
                 real_seen: 0,
                 real_minutes: 0,
                 external_episodes: 0,
-                external_minutes: 0,
+                external_per_episode: 0,
                 has_external: false,
             });
             if prefer_display_title(&display, &entry.display_title) {
@@ -739,7 +969,7 @@ impl Db {
                 if let Some(episodes) = row.catalog_episodes {
                     if episodes > entry.external_episodes {
                         entry.external_episodes = episodes;
-                        entry.external_minutes = episodes * per_episode;
+                        entry.external_per_episode = per_episode;
                     }
                 }
             }
@@ -950,12 +1180,21 @@ impl Db {
         // buckets used to trust only the timestamp while the hourly and dusty
         // queries required both. One write that clears `seen` without clearing
         // `seen_at` and the same screen would contradict itself.
+        //
+        // Both ends of the window are bounded, exactly like `get_yearly_activity`
+        // constrains its query to the year its spine covers. The lower bound
+        // alone let a future-dated `seen_at` — clock skew, or a backup restored
+        // from a machine whose clock ran ahead — be counted by this query and
+        // then land in no bucket at all, since the spine only spans
+        // `today-29..=today`: the chart's own total silently disagreed with a
+        // raw count of the rows it claimed to be counting.
         let mut stmt = self.conn.prepare(
             "SELECT DATE(e.seen_at, 'localtime') AS d, COUNT(*) AS cnt
              FROM episodes e
              WHERE e.seen = 1
                AND e.seen_at IS NOT NULL
                AND DATE(e.seen_at, 'localtime') >= DATE('now', 'localtime', '-29 days')
+               AND DATE(e.seen_at, 'localtime') <= DATE('now', 'localtime')
              GROUP BY d
              ORDER BY d",
         )?;
@@ -1185,7 +1424,7 @@ impl Db {
         // in Rust; this follows the same pattern rather than trying to call
         // franchise_key() from inside a CTE.
         let mut stmt = self.conn.prepare(
-            "SELECT s.title, s.source_id, s.is_airing, s.site_episode_count, c.episodes,
+            "SELECT s.title, s.anilist_id, s.source_id, s.is_airing, s.site_episode_count, c.episodes,
                     (SELECT COUNT(*) FROM episodes t WHERE t.series_id=s.id) AS total_eps,
                     (SELECT COUNT(*) FROM episodes t WHERE t.series_id=s.id AND t.seen=1) AS seen_eps,
                     MIN(DATE(e.seen_at, 'localtime')) AS first_seen,
@@ -1199,6 +1438,7 @@ impl Db {
         )?;
         struct SeriesSpan {
             title: String,
+            anilist_id: Option<i64>,
             source_id: i64,
             is_airing: bool,
             site_episode_count: Option<i64>,
@@ -1212,17 +1452,29 @@ impl Db {
             .query_map([], |r| {
                 Ok(SeriesSpan {
                     title: r.get(0)?,
-                    source_id: r.get(1)?,
-                    is_airing: r.get::<_, i64>(2)? != 0,
-                    site_episode_count: r.get(3)?,
-                    catalog_episodes: r.get(4)?,
-                    total_eps: r.get(5)?,
-                    seen_eps: r.get(6)?,
-                    first_seen: r.get(7)?,
-                    last_seen: r.get(8)?,
+                    anilist_id: r.get(1)?,
+                    source_id: r.get(2)?,
+                    is_airing: r.get::<_, i64>(3)? != 0,
+                    site_episode_count: r.get(4)?,
+                    catalog_episodes: r.get(5)?,
+                    total_eps: r.get(6)?,
+                    seen_eps: r.get(7)?,
+                    first_seen: r.get(8)?,
+                    last_seen: r.get(9)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        // Same identity folding as `franchise_rollups` — two sites' rows for
+        // one show that the user's AniList links tie together are one
+        // franchise, whatever their titles look like.
+        let aliases = franchise_key_aliases(
+            &rows
+                .iter()
+                .map(|row| (row.anilist_id, franchise_key(&row.title)))
+                .collect::<Vec<_>>(),
+        );
+        let canonical = |key: String| aliases.get(&key).cloned().unwrap_or(key);
 
         // Roll up to franchise level: any airing member disqualifies the
         // whole franchise (not "finished" yet), and the span is the earliest
@@ -1247,9 +1499,11 @@ impl Db {
         // `franchise_rollups`.
         let mut parent_of: HashMap<String, String> = HashMap::new();
         for row in rows {
-            let key = franchise_key(&row.title);
-            if let Some(parent) = franchise_parent_key(&row.title) {
-                parent_of.entry(key.clone()).or_insert(parent);
+            let key = canonical(franchise_key(&row.title));
+            if let Some(parent) = franchise_parent_key(&row.title).map(&canonical) {
+                if parent != key {
+                    record_parent_candidate(&mut parent_of, &key, parent);
+                }
             }
             let entry = grouped.entry(key).or_insert_with(|| FranchiseSpan {
                 any_airing: false,
@@ -3572,6 +3826,235 @@ mod tests {
         assert!(
             db.get_hourly_distribution().unwrap().iter().all(|h| h.count == 0),
             "the hourly distribution already required both, and still does"
+        );
+    }
+
+    #[test]
+    fn extra_external_minutes_stay_positive_when_an_arc_is_movie_length() {
+        // The two sides of the "Ya lo vi" estimate used to be computed on
+        // different bases: the minute remainder subtracted `real_minutes`
+        // (each member row priced at its OWN per-episode rate — a "Pelicula"
+        // arc at 100 min/ep) from the estimate's own minutes (24 min/ep), so a
+        // franchise with a movie-format arc reported positive extra *episodes*
+        // and zero extra *minutes* on the same page.
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+
+        db.upsert_catalog_anime(
+            &crate::anilist::CatalogAnime {
+                id: 777, title: "Long Show".into(), title_romaji: None, title_english: None,
+                cover_url: None, format: Some("TV".into()), genres: vec![],
+                episodes: Some(100), average_score: None, popularity: None,
+                url: "https://anilist.co/anime/777".into(), status: None, duration: Some(24),
+                studio: None, start_date: None,
+            },
+            0,
+        ).unwrap();
+
+        // 25 movie-length episodes really marked: 25 * 100 = 2500 minutes,
+        // more than the 100-episode estimate's own 100 * 24 = 2400.
+        let arc = db.upsert_series(src, &mk_airing("ls-movies", "Long Show: Peliculas", None)).unwrap();
+        db.set_kind(arc, "Pelicula").unwrap();
+        insert_eps_seen_up_to(&db, arc, 25, 25);
+
+        let whole = db.upsert_series(src, &mk_airing("long-show", "Long Show", None)).unwrap();
+        db.set_watched_externally(whole, true).unwrap();
+        db.set_anilist_id(whole, 777).unwrap();
+
+        let summary = db.get_watch_summary().unwrap();
+        assert_eq!(summary.episodes_watched, 25);
+        assert_eq!(summary.episodes_watched_external, 75, "100 - 25, the remainder only");
+
+        let insights = db.get_watch_insights().unwrap();
+        assert_eq!(insights.estimated_minutes_tracked, 25 * 100, "arc rows keep their own rate");
+        assert_eq!(
+            insights.estimated_minutes_external, 75 * 24,
+            "the remainder priced at the estimate's own rate — never 0 while extra episodes are positive"
+        );
+        assert!(
+            summary.episodes_watched_external > 0 && insights.estimated_minutes_external > 0,
+            "episodes and minutes agree about whether there is anything extra at all"
+        );
+    }
+
+    #[test]
+    fn franchise_grouping_folds_two_titles_that_share_an_anilist_id() {
+        // Same show, two sites, genuinely different display titles. Grouping
+        // by normalized title alone made them two franchises: two entries in
+        // top_series, distinct_anime 2, and — because the per-site "best single
+        // site" rule buckets by that key — both sites' marks credited in full
+        // instead of the larger one winning.
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        let b = db.upsert_source("TioAnime", "b", "tioanime").unwrap();
+
+        db.upsert_catalog_anime(
+            &crate::anilist::CatalogAnime {
+                id: 16498, title: "Shingeki no Kyojin".into(), title_romaji: None,
+                title_english: Some("Attack on Titan".into()), cover_url: None,
+                format: Some("TV".into()), genres: vec![], episodes: Some(25),
+                average_score: None, popularity: None,
+                url: "https://anilist.co/anime/16498".into(), status: None, duration: Some(24),
+                studio: None, start_date: None,
+            },
+            0,
+        ).unwrap();
+
+        assert_ne!(
+            franchise_key("Shingeki no Kyojin"), franchise_key("Attack on Titan"),
+            "the two titles share no text — only the AniList link ties them together"
+        );
+
+        let jp = db.upsert_series(a, &mk_airing("snk", "Shingeki no Kyojin", None)).unwrap();
+        db.set_followed(jp, true).unwrap();
+        db.set_anilist_id(jp, 16498).unwrap();
+        insert_eps_seen_up_to(&db, jp, 25, 10);
+
+        let en = db.upsert_series(b, &mk_airing("aot", "Attack on Titan", None)).unwrap();
+        db.set_followed(en, true).unwrap();
+        db.set_anilist_id(en, 16498).unwrap();
+        insert_eps_seen_up_to(&db, en, 25, 8);
+
+        let insights = db.get_watch_insights().unwrap();
+        assert_eq!(
+            insights.top_series.len(), 1,
+            "one franchise, not one per spelling: {:?}", insights.top_series
+        );
+        assert_eq!(
+            insights.top_series[0].count, 10,
+            "and the better site's 10 marks win, rather than 10 and 8 standing as two shows"
+        );
+
+        let summary = db.get_watch_summary().unwrap();
+        assert_eq!(summary.distinct_anime, 1, "one anime watched, under either of its names");
+        assert_eq!(summary.episodes_watched, 10);
+    }
+
+    #[test]
+    fn parent_franchise_tie_break_does_not_depend_on_row_order() {
+        // Two rows share one `franchise_key` while proposing *different*
+        // parents ("Alpha Beta" vs "Alpha"): their colon-heads differ but the
+        // whole titles normalize identically. `parent_of` used to keep
+        // whichever row SQLite returned first, so the same data could roll up
+        // two different ways between runs.
+        //
+        // The two titles must still be *distinct* rows: `upsert_series` folds
+        // a source's rows together by normalized title, so the season marker
+        // is what keeps them two rows that nonetheless share one franchise key.
+        assert_eq!(
+            franchise_key("Alpha Beta: Gamma"), franchise_key("Alpha: Beta Gamma Temporada 2"),
+            "the ambiguous case this test is about"
+        );
+        assert_ne!(
+            crate::matching::normalize_title("Alpha Beta: Gamma"),
+            crate::matching::normalize_title("Alpha: Beta Gamma Temporada 2"),
+            "…and they survive `upsert_series`' own title-based dedup as two rows"
+        );
+        assert_eq!(franchise_parent_key("Alpha Beta: Gamma").as_deref(), Some("alpha beta"));
+        assert_eq!(franchise_parent_key("Alpha: Beta Gamma Temporada 2").as_deref(), Some("alpha"));
+
+        let seed = |titles: &[&str]| -> Vec<(String, i64)> {
+            let db = Db::open(":memory:").unwrap();
+            let src = db.upsert_source("A", "a", "animeytx").unwrap();
+            for (i, title) in titles.iter().enumerate() {
+                let id = db.upsert_series(src, &mk_airing(&format!("s{i}"), title, None)).unwrap();
+                insert_eps_seen_up_to(&db, id, 1, 1);
+            }
+            db.get_watch_insights()
+                .unwrap()
+                .top_series
+                .into_iter()
+                .map(|t| (t.title, t.count))
+                .collect()
+        };
+
+        let forward = seed(&["Alpha", "Alpha Beta", "Alpha Beta: Gamma", "Alpha: Beta Gamma Temporada 2"]);
+        let reversed = seed(&["Alpha: Beta Gamma Temporada 2", "Alpha Beta: Gamma", "Alpha Beta", "Alpha"]);
+        assert_eq!(forward, reversed, "same data, same roll-up, whatever order the rows arrive in");
+        assert_eq!(
+            forward,
+            vec![("Alpha".to_string(), 3), ("Alpha Beta".to_string(), 1)],
+            "and the winner is the one `prefer_display_title` picks — the shorter parent key"
+        );
+    }
+
+    #[test]
+    fn the_30_day_spine_counts_exactly_the_rows_it_can_plot() {
+        // A future-dated `seen_at` (clock skew, or a backup restored from a
+        // machine running ahead) passed the query's lower bound and then had no
+        // bucket to land in — counted by the SQL, dropped by the spine, so the
+        // chart's total disagreed with a raw count of its own source rows.
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+        let sid = db.upsert_series(src, &mk_airing("x", "X", None)).unwrap();
+        insert_eps_seen_up_to(&db, sid, 3, 3);
+        db.conn
+            .execute(
+                "UPDATE episodes SET seen_at = datetime('now', '+3 days') WHERE number = '3'",
+                [],
+            )
+            .unwrap();
+
+        let insights = db.get_watch_insights().unwrap();
+        let plotted: i64 = insights.marks_by_day.iter().map(|d| d.count).sum();
+        let in_window: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM episodes
+                 WHERE seen = 1 AND seen_at IS NOT NULL
+                   AND DATE(seen_at, 'localtime') >= DATE('now', 'localtime', '-29 days')
+                   AND DATE(seen_at, 'localtime') <= DATE('now', 'localtime')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(insights.marks_by_day.len(), 30);
+        assert_eq!(in_window, 2, "two of the three marks are dated today");
+        assert_eq!(
+            plotted, in_window,
+            "the chart's total is exactly the rows its 30 buckets can hold: {:?}",
+            insights.marks_by_day
+        );
+    }
+
+    #[test]
+    fn favorite_genres_see_the_whole_library_not_just_the_active_site() {
+        // "Tus géneros favoritos" reused the swipe deck's per-site
+        // `get_genre_affinity`, so a genre whose only evidence sat on a
+        // non-active site was invisible — and a show followed on two sites
+        // counted its taste signal twice.
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        let b = db.upsert_source("TioAnime", "b", "tioanime").unwrap();
+
+        // Only on the non-active site.
+        let only_b = db.upsert_series(b, &mk_airing("mecha", "Mecha Show", None)).unwrap();
+        db.set_followed(only_b, true).unwrap();
+        db.insert_series_genres(only_b, &["Mecha".to_string()]).unwrap();
+
+        // Followed on both sites: one show, one +2, not two.
+        for src in [a, b] {
+            let dup = db.upsert_series(src, &mk_airing("dup", "Dup Show", None)).unwrap();
+            db.set_followed(dup, true).unwrap();
+            db.insert_series_genres(dup, &["Drama".to_string()]).unwrap();
+        }
+
+        let favorites = db.get_favorite_genres(5).unwrap();
+        let mecha = favorites.iter().find(|g| g.genre == "Mecha");
+        assert!(
+            mecha.is_some(),
+            "a genre followed only on the non-active site still counts: {favorites:?}"
+        );
+        assert_eq!(mecha.unwrap().score, 2.0);
+        let drama = favorites.iter().find(|g| g.genre == "Drama").expect("Drama");
+        assert_eq!(drama.score, 2.0, "one canonical show contributes +2 once, not once per site");
+
+        // The deck's own per-site query is untouched and still site-scoped —
+        // which is exactly why it was the wrong source for this display.
+        let deck_scores = db.get_genre_affinity(a).unwrap();
+        assert!(
+            !deck_scores.contains_key("Mecha"),
+            "the per-site affinity the swipe deck uses still sees only site A"
         );
     }
 }
