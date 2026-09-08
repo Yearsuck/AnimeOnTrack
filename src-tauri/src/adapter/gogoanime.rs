@@ -34,6 +34,49 @@ const AIRING_CARD: &str = ".bsx";
 const EPISODE_ITEM: &str = ".episodes-container .ep-list .episode-item";
 
 
+/// The next-release timestamp for one `.epx.cndwn` countdown span, or `None`
+/// when the site genuinely told us nothing.
+///
+/// `data-rlsdt` is the unix timestamp of the NEXT episode's release, and — as
+/// the module comment above records — it is the **empty string** once that
+/// episode has ALREADY released and the weekly `/schedule/` card hasn't
+/// rolled over yet (the first card of `gogoanime_airing.html` is exactly
+/// this shape). `"".parse::<i64>()` fails, so that used to collapse to
+/// `None`, which is the same value the adapter reports for a card with no
+/// countdown at all — throwing away the single strongest "check this series
+/// now" signal the listing carries. `should_fetch_series` (commands/scan.rs)
+/// branches on it directly: a `next_episode_at` in the past is an
+/// unconditional fetch ("the episode aired and the card hasn't rolled over"),
+/// while `None` falls through to the episode-count-badge rule, which happily
+/// skips a series whose `.sb` badge hasn't caught up yet.
+///
+/// So an empty `data-rlsdt` resolves to a real timestamp in the *past*
+/// instead. The sibling `data-cndwn` is the seconds-remaining countdown and
+/// goes negative once the episode released (`-3406` on that same fixture card
+/// = it aired ~57 minutes before the page was generated), which recovers
+/// roughly when that happened — worth using, because `next_episode_at` also
+/// drives the airing grid's "hace 57 min" chip and its weekday bucket, and
+/// pinning every already-released card to the scrape instant would move them
+/// all onto today. Without a usable (negative) `data-cndwn`, "just now" is
+/// the honest fallback: still in the past, which is all the fetch decision
+/// needs.
+///
+/// No `.epx.cndwn` span, or no `data-rlsdt` attribute at all, still yields
+/// `None` — genuinely absent, exactly like `animeytx` treats it.
+fn countdown_timestamp(el: scraper::ElementRef, now_unix: i64) -> Option<i64> {
+    let rlsdt = el.value().attr("data-rlsdt")?.trim();
+    if !rlsdt.is_empty() {
+        return rlsdt.parse::<i64>().ok();
+    }
+    let elapsed = el
+        .value()
+        .attr("data-cndwn")
+        .and_then(|s| s.trim().parse::<i64>().ok())
+        .filter(|&secs| secs < 0)
+        .unwrap_or(0);
+    Some(now_unix + elapsed)
+}
+
 /// Extract (title, url, poster_url) from a `.bsx` card's anchor + img — same
 /// shape `animeytx`'s own `card_basics` uses (this site is the same theme
 /// family), duplicated here rather than shared since every adapter module in
@@ -71,14 +114,17 @@ impl SiteAdapter for GogoanimeAdapter {
         let cndwn_sel = Selector::parse(".epx.cndwn").unwrap();
         let sb_sel = Selector::parse(".sb").unwrap();
 
+        // Read once for the whole page so every already-released card on this
+        // scrape resolves against the same instant — see `countdown_timestamp`.
+        let now_unix = chrono::Utc::now().timestamp();
+
         let mut out = Vec::new();
         for card in doc.select(&card_sel) {
             let Some((title, url, cover_url)) = card_basics(card, &a_sel, &tt_sel, &img_sel) else { continue };
             let next_episode_at = card
                 .select(&cndwn_sel)
                 .next()
-                .and_then(|el| el.value().attr("data-rlsdt"))
-                .and_then(|s| s.parse::<i64>().ok());
+                .and_then(|el| countdown_timestamp(el, now_unix));
             let site_episode_count = text_of(card, &sb_sel).and_then(|s| s.parse::<i64>().ok());
             out.push(Series {
                 id: 0,
@@ -215,14 +261,80 @@ mod tests {
             assert!(!s.title.is_empty());
             assert!(s.is_airing);
         }
-        // First card has an empty data-rlsdt (already released today).
+        // First card has an empty data-rlsdt (already released) alongside
+        // data-cndwn="-3406". That must resolve to a timestamp in the PAST —
+        // "due now" for should_fetch_series — not to None, which reads as
+        // "this site carries no countdown signal at all".
+        let now = chrono::Utc::now().timestamp();
         assert_eq!(out[0].slug, "haibara-kun-no-tsuyokute-seishun-new-game");
-        assert_eq!(out[0].next_episode_at, None);
+        let released = out[0].next_episode_at.expect("an already-released card still has a countdown signal");
+        assert!(released < now, "an already-released episode must be in the past: {released} vs {now}");
+        assert!(
+            (now - released - 3406).abs() <= 5,
+            "recovered from data-cndwn=-3406 (~57 min ago), got {} secs ago",
+            now - released
+        );
         assert_eq!(out[0].site_episode_count, Some(13));
         // Second card has a real populated data-rlsdt.
         assert_eq!(out[1].slug, "xiao-lu-he-xiao-lan-5th-season");
         assert_eq!(out[1].next_episode_at, Some(1784779500));
         assert_eq!(out[1].site_episode_count, Some(10));
+    }
+
+    /// `countdown_timestamp` in isolation, against a fixed "now" so the
+    /// already-released branch is deterministic.
+    #[test]
+    fn countdown_timestamp_resolves_every_documented_shape() {
+        const NOW: i64 = 1_800_000_000;
+        let parse_one = |html: &str| -> Option<i64> {
+            let doc = Html::parse_fragment(html);
+            let sel = Selector::parse(".epx.cndwn").unwrap();
+            doc.select(&sel).next().and_then(|el| countdown_timestamp(el, NOW))
+        };
+
+        // A populated data-rlsdt is taken verbatim.
+        assert_eq!(
+            parse_one(r#"<span class="epx cndwn" data-cndwn="22694" data-rlsdt="1784779500">0d 6h</span>"#),
+            Some(1_784_779_500)
+        );
+        // Empty data-rlsdt + negative data-cndwn: released that many seconds ago.
+        assert_eq!(
+            parse_one(r#"<span class="epx cndwn" data-cndwn="-3406" data-rlsdt="">01:50</span>"#),
+            Some(NOW - 3406)
+        );
+        // Empty data-rlsdt with no usable data-cndwn: "just now", still past-or-now.
+        assert_eq!(
+            parse_one(r#"<span class="epx cndwn" data-rlsdt="">01:50</span>"#),
+            Some(NOW)
+        );
+        assert_eq!(
+            parse_one(r#"<span class="epx cndwn" data-cndwn="nope" data-rlsdt="  ">01:50</span>"#),
+            Some(NOW)
+        );
+        // A positive data-cndwn alongside an empty data-rlsdt shouldn't happen
+        // and must never be read as a FUTURE release (that would re-introduce
+        // the skip this fix exists to remove).
+        assert_eq!(
+            parse_one(r#"<span class="epx cndwn" data-cndwn="500" data-rlsdt="">01:50</span>"#),
+            Some(NOW)
+        );
+        // No data-rlsdt attribute at all: genuinely absent, same as animeytx.
+        assert_eq!(parse_one(r#"<span class="epx cndwn" data-cndwn="-10">01:50</span>"#), None);
+        // Present but unparseable: no timestamp can be recovered.
+        assert_eq!(parse_one(r#"<span class="epx cndwn" data-rlsdt="soon">01:50</span>"#), None);
+    }
+
+    /// The whole point of the fix: an already-released card is "due now" for
+    /// the refresh skip logic, exactly like a real past timestamp is.
+    #[test]
+    fn an_already_released_card_reads_as_due_now() {
+        let html = include_str!("../../tests/fixtures/gogoanime_airing.html");
+        let out = GogoanimeAdapter.parse_airing(html).unwrap();
+        let now = chrono::Utc::now().timestamp();
+        assert!(
+            out[0].next_episode_at.is_some_and(|t| t <= now),
+            "should_fetch_series' `next_episode_at <= now` fetch rule must fire for it"
+        );
     }
 
     #[test]
