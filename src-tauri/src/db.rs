@@ -332,10 +332,30 @@ impl Db {
         // This collapses each (series_id, number) group back to a single row,
         // keeping "seen" if *any* copy in the group was seen (so watched
         // progress is never lost), and keeping the lowest-id row as the
-        // survivor. The scan path now de-duplicates by number (not URL), so it
-        // can't recur; and the next scan refreshes the survivor's URL to the
-        // current domain. Guarded by a settings flag so it runs exactly once.
-        if self.get_setting("episode_dedup_by_number_v1")?.is_none() {
+        // survivor. The scan path de-duplicates by number (not URL), so the
+        // original domain-change trigger can't recur; the next scan refreshes
+        // the survivor's URL to the current domain.
+        //
+        // It used to be gated behind a one-shot settings flag, which meant a
+        // database that grew duplicates *after* that first run — a re-labelled
+        // episode number, another domain change, a half-applied restore — kept
+        // them forever, with the only cleanup permanently disabled. The query
+        // is fully idempotent (on already-deduplicated data the UPDATE re-sets
+        // seen rows to seen and the DELETE matches nothing), so the correct gate
+        // is "are there any duplicates right now", not "has this ever run". The
+        // probe is a single grouped scan of a table that holds thousands of
+        // rows, and on the overwhelmingly common no-duplicates path it is the
+        // only work done. The old flag is left in place, unread, so a
+        // downgrade to an older build still finds it and doesn't re-run.
+        let duplicate_groups: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM (
+               SELECT 1 FROM episodes GROUP BY series_id, number HAVING COUNT(*) > 1
+             )",
+            [],
+            |r| r.get(0),
+        )?;
+        if duplicate_groups > 0 {
+            eprintln!("[db] collapsing {duplicate_groups} duplicated episode number group(s)");
             self.conn.execute_batch(
                 "UPDATE episodes SET seen = 1, seen_at = COALESCE(seen_at, datetime('now'))
                    WHERE id IN (
@@ -345,6 +365,8 @@ impl Db {
                    SELECT MIN(id) FROM episodes GROUP BY series_id, number
                  );",
             )?;
+        }
+        if self.get_setting("episode_dedup_by_number_v1")?.is_none() {
             self.set_setting("episode_dedup_by_number_v1", "1")?;
         }
 
@@ -514,6 +536,81 @@ mod tests {
             .unwrap();
         // One row per episode; episode 1 stays seen, episode 2 stays unseen.
         assert_eq!(rows, vec![("1".to_string(), 1), ("2".to_string(), 0)]);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Duplicates that appear AFTER the first run are cleaned up too. The
+    /// one-shot settings flag used to disable the only repair path for the life
+    /// of the database, so a later re-labelled episode number or domain change
+    /// left the duplicates in place permanently. Note this test never clears
+    /// `episode_dedup_by_number_v1` — the whole point is that the flag no
+    /// longer gates the cleanup.
+    #[test]
+    fn duplicates_appearing_after_the_first_run_are_still_collapsed() {
+        let path = std::env::temp_dir()
+            .join(format!("aot_ep_dedup_rerun_test_{}.sqlite", std::process::id()));
+        let path_str = path.to_str().unwrap();
+        let _ = std::fs::remove_file(&path);
+        let sid;
+        {
+            // First open: schema created, the dedup marker gets written.
+            let db = Db::open(path_str).unwrap();
+            let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+            sid = db.upsert_series(src, &mk_airing("x", "X", None)).unwrap();
+            assert!(
+                db.get_setting("episode_dedup_by_number_v1").unwrap().is_some(),
+                "sanity: the legacy one-shot marker is set on the first open"
+            );
+        }
+        {
+            // A later domain change duplicates episode 1 (seen on the old
+            // domain, unseen on the new one) — exactly the original bug's
+            // shape, only happening after the marker already exists.
+            let db = Db::open(path_str).unwrap();
+            let ep = |url: &str, seen: bool| crate::models::Episode {
+                id: 0, series_id: sid, number: "1".into(), title: None,
+                url: url.into(), released_at: None, seen,
+            };
+            db.insert_episode(&ep("https://old.example/x-capitulo-1/", true)).unwrap();
+            db.insert_episode(&ep("https://new.example/x-capitulo-1/", false)).unwrap();
+        }
+        let db = Db::open(path_str).unwrap();
+        let rows: Vec<(String, i64)> = db
+            .conn
+            .prepare("SELECT number, seen FROM episodes WHERE series_id=?1")
+            .unwrap()
+            .query_map([sid], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(rows, vec![("1".to_string(), 1)], "collapsed to one row, still seen");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// …and the cleanup is a genuine no-op when there is nothing to collapse:
+    /// re-opening a healthy database must not touch episode rows (in
+    /// particular, must not flip an unseen episode to seen).
+    #[test]
+    fn dedup_pass_is_a_no_op_on_a_healthy_database() {
+        let path = std::env::temp_dir()
+            .join(format!("aot_ep_dedup_noop_test_{}.sqlite", std::process::id()));
+        let path_str = path.to_str().unwrap();
+        let _ = std::fs::remove_file(&path);
+        let sid;
+        {
+            let db = Db::open(path_str).unwrap();
+            let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+            sid = db.upsert_series(src, &mk_airing("x", "X", None)).unwrap();
+            insert_eps_seen_up_to(&db, sid, 4, 2);
+        }
+        let db = Db::open(path_str).unwrap();
+        let eps = db.list_series_episodes(sid).unwrap();
+        assert_eq!(eps.len(), 4, "no rows deleted");
+        assert_eq!(
+            eps.iter().filter(|e| e.seen).count(),
+            2,
+            "seen state untouched — 3 and 4 must stay unseen"
+        );
         let _ = std::fs::remove_file(&path);
     }
 
