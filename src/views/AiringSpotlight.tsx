@@ -31,6 +31,11 @@ export function AiringSpotlight({ items, onOpenSeries }: AiringSpotlightProps) {
   // mid-view. `null` (nothing shown yet) resolves to the first slide.
   const [currentId, setCurrentId] = useState<number | null>(null);
   const [isHovering, setIsHovering] = useState(false);
+  // A series' cover_url can be a remote URL the app's CSP blocks (see
+  // AiringGrid's AiringPoster) — the background <img> then fails to load.
+  // Tracked by id so a blocked slide degrades to the plain scrim/gradient
+  // background instead of sitting on a broken-image icon.
+  const [failedIds, setFailedIds] = useState<Set<number>>(new Set());
 
   const featuredItems = useMemo(() => {
     const withCover = items.filter((it) => it.series.cover_url);
@@ -91,12 +96,15 @@ export function AiringSpotlight({ items, onOpenSeries }: AiringSpotlightProps) {
       >
         {featuredItems.map((item) => (
           <div key={item.series.id} className="spotlight-slide">
-            {item.series.cover_url && (
+            {item.series.cover_url && !failedIds.has(item.series.id) && (
               <img
                 className="spotlight-bg"
                 src={highResCover(item.series.cover_url)}
                 alt=""
                 aria-hidden="true"
+                onError={() =>
+                  setFailedIds((prev) => (prev.has(item.series.id) ? prev : new Set(prev).add(item.series.id)))
+                }
               />
             )}
             <div className="spotlight-scrim" />
