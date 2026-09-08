@@ -267,13 +267,17 @@ export function SwipeView() {
   const undo = useCallback(async () => {
     if (!canUndo) return;
     setCanUndo(false);
-    // Captured before the delete — history[0] is the card undoLastSwipe is
-    // about to remove (it's the most recently decided, still-live row).
-    const undoneTitle = history[0]?.title;
-    await undoLastSwipe();
-    // The card is back in the deck (its series row was hard-deleted) — let
-    // fillQueue serve it again.
-    if (lastDecidedUrlRef.current) {
+    // The backend reports what it actually reversed. Reading history[0]
+    // instead (what this used to do) named the wrong card whenever the real
+    // one had been merged into an existing series by the background link —
+    // that row is gone, so the strip doesn't list it — and claimed a
+    // successful undo even when nothing had been undone at all.
+    const undoneTitle = await undoLastSwipe();
+    // The card is back in the deck (its series row was hard-deleted, or the
+    // flags a merge set on the surviving row were cleared) — let fillQueue
+    // serve it again. Only when something really was undone: otherwise the
+    // decision still stands and the card must stay out of the deck.
+    if (undoneTitle && lastDecidedUrlRef.current) {
       decidedUrlsRef.current.delete(lastDecidedUrlRef.current);
       lastDecidedUrlRef.current = null;
     }
@@ -283,7 +287,7 @@ export function SwipeView() {
       undoneMessageTimerRef.current = setTimeout(() => setUndoneMessage(null), 5000);
     }
     refreshHistory();
-  }, [canUndo, history, refreshHistory, t]);
+  }, [canUndo, refreshHistory, t]);
 
   // History-strip actions. Re-classifying a past card moves it between lists
   // (local, via the shared reclassify inverse); returning it to the deck

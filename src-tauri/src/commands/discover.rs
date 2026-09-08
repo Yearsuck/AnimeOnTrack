@@ -165,18 +165,26 @@ pub async fn decide_swipe(
 }
 
 /// Undo the most recent decide_swipe/decide_catalog_card call (Ctrl+Z) by
-/// popping it off the front of `swipe_history` and hard-deleting the series
-/// row it created. Calling this with nothing left to undo is a no-op, not an
-/// error. For reaching further back than just the most recent, see
-/// `undo_swipe_entry`.
+/// popping it off the front of `swipe_history` and reversing it — see
+/// `db::undo_swipe_decision`, which hard-deletes the row the decision created
+/// or, when the background site-link already merged that row into an existing
+/// site series, reverts exactly the flags the merge set on that survivor.
+/// Calling this with nothing left to undo is a no-op, not an error.
+///
+/// Returns the title of what was actually undone, or `None` when nothing was
+/// (empty history, or an entry whose row is already gone and left no merge
+/// trail). The frontend only shows its "Deshecho" toast on `Some` — it used to
+/// read the title out of the history strip instead, which named the *previous*
+/// card whenever the real one had been merged away, i.e. it claimed a
+/// successful undo in exactly the case that silently did nothing.
+///
+/// For reaching further back than just the most recent, see `undo_swipe_entry`.
 #[tauri::command]
-pub fn undo_last_swipe(state: State<'_, AppState>) -> Result<(), String> {
+pub fn undo_last_swipe(state: State<'_, AppState>) -> Result<Option<String>, String> {
     let sid = state.swipe_history.lock().unwrap().pop_front();
-    if let Some(sid) = sid {
-        let db = state.db.lock().unwrap();
-        db.delete_series(sid).map_err(|e| e.to_string())?;
-    }
-    Ok(())
+    let Some(sid) = sid else { return Ok(None) };
+    let db = state.db.lock().unwrap();
+    db.undo_swipe_decision(sid).map_err(|e| e.to_string())
 }
 
 /// One entry in the swipe-history strip — a still-live `series` row from
@@ -240,11 +248,16 @@ pub fn list_swipe_history(state: State<'_, AppState>) -> Result<Vec<SwipeHistory
 /// targets an arbitrary entry in the history strip, not just the front —
 /// "undo this one" rather than "undo my last action". A no-op (not an
 /// error) if `series_id` isn't in the history or its row is already gone.
+///
+/// Shares `db::undo_swipe_decision` with `undo_last_swipe` so a merged-away
+/// decision is reversed the same way here (the history strip can't currently
+/// show one — `list_swipe_history` skips ids whose row is gone — but the two
+/// undo paths must not diverge in how they undo).
 #[tauri::command]
 pub fn undo_swipe_entry(state: State<'_, AppState>, series_id: i64) -> Result<(), String> {
     state.swipe_history.lock().unwrap().retain(|&id| id != series_id);
     let db = state.db.lock().unwrap();
-    db.delete_series(series_id).map_err(|e| e.to_string())?;
+    db.undo_swipe_decision(series_id).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -442,6 +455,11 @@ pub fn discover_catalog_card(
             .random_catalog_anime_in_genre(
                 genre,
                 &banned_formats,
+                // Not just the outer genre pick (`filter_candidate_genres`
+                // above): the ban list also has to reach the card-level query,
+                // or a title tagged both an allowed genre and a banned one
+                // still lands on the deck.
+                &banned_genres,
                 &excluded_norm_titles,
                 &affinity,
                 &format_affinity,

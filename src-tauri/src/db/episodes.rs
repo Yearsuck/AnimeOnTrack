@@ -178,9 +178,23 @@ impl Db {
         Ok(())
     }
 
-    /// Insert episode if its (series_id, url) is new. Returns the row id either way.
-    pub fn insert_episode(&self, e: &crate::models::Episode) -> Result<i64> {
-        self.conn.execute(
+    /// Insert episode if its `(series_id, url)` is new. Returns
+    /// `(row id, was actually inserted)`.
+    ///
+    /// The `bool` is the whole point of the tuple: `ON CONFLICT DO NOTHING`
+    /// followed by an unconditional `SELECT id` returns `Ok(id)` whether or
+    /// not a row was written, so the id alone can't tell a genuinely new
+    /// episode from one that already existed under this exact URL. Callers
+    /// that count new episodes (`apply_episode_diff`, which feeds
+    /// `refresh()`'s "N nuevos episodios" figure) reported one new episode
+    /// per refresh, forever, for any episode whose stored *number* drifted
+    /// from the scraped label while its URL stayed put — `new_episodes()`
+    /// keys on number, so it offers such an episode as new, the INSERT then
+    /// conflicts on URL and writes nothing, and the count was incremented
+    /// regardless. `rows_affected()` from the INSERT is the only honest
+    /// signal available here.
+    pub fn insert_episode(&self, e: &crate::models::Episode) -> Result<(i64, bool)> {
+        let rows_affected = self.conn.execute(
             "INSERT INTO episodes(series_id, number, title, url, released_at, seen)
              VALUES(?1, ?2, ?3, ?4, ?5, ?6)
              ON CONFLICT(series_id, url) DO NOTHING",
@@ -194,15 +208,19 @@ impl Db {
             (e.series_id, &e.url),
             |r| r.get(0),
         )?;
-        Ok(id)
+        Ok((id, rows_affected > 0))
     }
 
     /// Set an episode's seen flag either way (lets the user un-mark).
     /// `seen_at` tracks alongside: stamped `datetime('now')` when marking
-    /// seen, cleared back to NULL when un-marking.
+    /// seen for the first time, cleared back to NULL when un-marking.
+    /// `COALESCE` preserves an existing `seen_at` on a redundant
+    /// already-seen -> seen call — without it, re-marking an episode that
+    /// was already seen (e.g. via the cascade below re-touching it) resets
+    /// its watch date to today, silently rewriting watch-history stats.
     pub fn set_seen(&self, episode_id: i64, seen: bool) -> Result<()> {
         self.conn.execute(
-            "UPDATE episodes SET seen=?1, seen_at = CASE WHEN ?1=1 THEN datetime('now') ELSE NULL END
+            "UPDATE episodes SET seen=?1, seen_at = CASE WHEN ?1=1 THEN COALESCE(seen_at, datetime('now')) ELSE NULL END
              WHERE id=?2",
             (seen as i64, episode_id),
         )?;
@@ -230,8 +248,10 @@ impl Db {
         let Some(target) = parse_ep_number(number) else {
             // No leading digits at all: ordering is meaningless, so just
             // toggle the exact-matching episode(s) rather than cascade.
+            // COALESCE, same reasoning as `set_seen`: don't reset an
+            // already-seen episode's watch date to today.
             self.conn.execute(
-                "UPDATE episodes SET seen=?1, seen_at = CASE WHEN ?1=1 THEN datetime('now') ELSE NULL END
+                "UPDATE episodes SET seen=?1, seen_at = CASE WHEN ?1=1 THEN COALESCE(seen_at, datetime('now')) ELSE NULL END
                  WHERE series_id=?2 AND number=?3",
                 (seen as i64, series_id, number),
             )?;
@@ -255,8 +275,16 @@ impl Db {
                 // seen_at cascades along with seen — every row the cascade
                 // touches gets the same stamped/cleared treatment as the
                 // one the user explicitly clicked, not just that one.
+                // COALESCE preserves the real watch date of a row the
+                // cascade re-touches that was *already* seen (e.g. marking
+                // episode 12 seen also re-touches 1-11, which likely have
+                // their own earlier seen_at from being watched over time) —
+                // without it, every mark-seen click flattened the whole
+                // series' watch history to today, corrupting every
+                // date-bucketed stat (30-day heatmap, yearly activity,
+                // hourly distribution, dusty-watchlist ranges).
                 tx.execute(
-                    "UPDATE episodes SET seen=?1, seen_at = CASE WHEN ?1=1 THEN datetime('now') ELSE NULL END
+                    "UPDATE episodes SET seen=?1, seen_at = CASE WHEN ?1=1 THEN COALESCE(seen_at, datetime('now')) ELSE NULL END
                      WHERE id=?2",
                     (seen as i64, id),
                 )?;
@@ -403,7 +431,19 @@ impl Db {
         for mut e in crate::diff::new_episodes(eps, &known) {
             e.series_id = series_id;
             match self.insert_episode(&e) {
-                Ok(_) => inserted += 1,
+                // Only a row the INSERT actually wrote is a new episode.
+                // `new_episodes()` keys on episode *number*, the UNIQUE
+                // constraint keys on URL, and the two disagree whenever a
+                // stored episode's number drifts from the site's current
+                // label while its URL stays the same (e.g. the number
+                // "13.5" used to be stored as "135", then "13"). Such an
+                // episode is offered as new on every single refresh, the
+                // INSERT does nothing each time, and counting it regardless
+                // reported a phantom "1 nuevo episodio" forever.
+                Ok((_, true)) => inserted += 1,
+                Ok((_, false)) => {
+                    eprintln!("[refresh] series {series_id} episode {}: not new after all, its url already belongs to a stored episode", e.number);
+                }
                 Err(e2) if is_unique_violation(&e2) => {
                     eprintln!("[refresh] series {series_id} episode {}: skipping insert, url collides with another episode ({e2})", e.number);
                 }
@@ -483,6 +523,98 @@ mod tests {
         // cycle for every series still queued behind this one.
         let inserted = db.apply_episode_diff(sid, None, &scraped).unwrap();
         assert_eq!(inserted, 0, "both numbers were already known, nothing new to insert");
+    }
+
+    /// The counting bug: `new_episodes()` keys on episode *number*, the
+    /// UNIQUE constraint keys on URL. When a stored episode's number no
+    /// longer matches the site's label (here: "13.5" was stored as "135" by
+    /// an older `digits_in`, and the adapter now emits "13.5"), the diff
+    /// offers it as new, the INSERT conflicts on the unchanged URL and writes
+    /// nothing — and `apply_episode_diff` used to count it as one new episode
+    /// anyway, on every refresh, forever, for an episode it never inserted.
+    #[test]
+    fn apply_episode_diff_does_not_count_an_episode_whose_url_already_exists() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("TioAnime", "tio.example", "tioanime").unwrap();
+        let sid = db.upsert_series(src, &mk_airing("shingeki", "Shingeki", None)).unwrap();
+        // Stored under the OLD number for this URL.
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: sid, number: "135".into(), title: None,
+            url: "https://tioanime.com/ver/shingeki-no-kyojin-13.5".into(),
+            released_at: None, seen: false,
+        }).unwrap();
+
+        // The site now labels that same URL "13.5" — an unknown *number*, so
+        // the diff offers it as new, but its URL is already taken.
+        let scraped = vec![crate::models::Episode {
+            id: 0, series_id: 0, number: "13.5".into(), title: None,
+            url: "https://tioanime.com/ver/shingeki-no-kyojin-13.5".into(),
+            released_at: None, seen: false,
+        }];
+        let inserted = db.apply_episode_diff(sid, None, &scraped).unwrap();
+        assert_eq!(inserted, 0, "nothing was actually written, so nothing is new");
+        assert_eq!(db.episode_count(sid).unwrap(), 1, "and no duplicate row appeared");
+
+        // Repeating the refresh must stay at zero — this is the part that
+        // used to report a phantom new episode on every single cycle.
+        assert_eq!(db.apply_episode_diff(sid, None, &scraped).unwrap(), 0);
+    }
+
+    /// A genuinely-new fractional episode (its own number AND its own URL)
+    /// still counts, and lands as its own row next to the integer episode it
+    /// used to collide with once `digits_in` stopped truncating it.
+    #[test]
+    fn apply_episode_diff_stores_a_fractional_episode_as_its_own_row() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("TioAnime", "tio.example", "tioanime").unwrap();
+        let sid = db.upsert_series(src, &mk_airing("shingeki", "Shingeki", None)).unwrap();
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: sid, number: "13".into(), title: None,
+            url: "https://tioanime.com/ver/shingeki-no-kyojin-13".into(),
+            released_at: None, seen: true,
+        }).unwrap();
+
+        let scraped = vec![
+            crate::models::Episode {
+                id: 0, series_id: 0, number: "13".into(), title: None,
+                url: "https://tioanime.com/ver/shingeki-no-kyojin-13".into(),
+                released_at: None, seen: false,
+            },
+            crate::models::Episode {
+                id: 0, series_id: 0, number: "13.5".into(), title: None,
+                url: "https://tioanime.com/ver/shingeki-no-kyojin-13.5".into(),
+                released_at: None, seen: false,
+            },
+        ];
+        let inserted = db.apply_episode_diff(sid, None, &scraped).unwrap();
+        assert_eq!(inserted, 1, "only the half-episode is new");
+
+        let eps = db.list_series_episodes(sid).unwrap();
+        assert_eq!(eps.len(), 2);
+        let thirteen = eps.iter().find(|e| e.number == "13").unwrap();
+        assert_eq!(
+            thirteen.url, "https://tioanime.com/ver/shingeki-no-kyojin-13",
+            "episode 13's url must not be rewritten to the half-episode's href"
+        );
+        assert!(thirteen.seen, "and its watch state is untouched");
+        assert!(eps.iter().any(|e| e.number == "13.5"));
+
+        // Re-scraping the same list is a no-op — the fractional number is now
+        // a known number, so it is neither re-inserted nor re-counted.
+        assert_eq!(db.apply_episode_diff(sid, None, &scraped).unwrap(), 0);
+        assert_eq!(db.episode_count(sid).unwrap(), 2);
+
+        // The cascade orders it strictly between 13 and 14: marking 13.5 seen
+        // must not touch a later episode.
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: sid, number: "14".into(), title: None,
+            url: "https://tioanime.com/ver/shingeki-no-kyojin-14".into(),
+            released_at: None, seen: false,
+        }).unwrap();
+        db.set_seen_cascade(sid, "13.5", true).unwrap();
+        let eps = db.list_series_episodes(sid).unwrap();
+        assert!(eps.iter().find(|e| e.number == "13.5").unwrap().seen);
+        assert!(!eps.iter().find(|e| e.number == "14").unwrap().seen);
     }
 
     #[test]
@@ -748,8 +880,8 @@ mod tests {
             id: 0, series_id: sid, number: n.into(), title: None,
             url: url.into(), released_at: None, seen: false,
         };
-        let e1 = db.insert_episode(&mk("1", "https://site/e1")).unwrap();
-        let e2 = db.insert_episode(&mk("2", "https://site/e2")).unwrap();
+        let (e1, _) = db.insert_episode(&mk("1", "https://site/e1")).unwrap();
+        let (e2, _) = db.insert_episode(&mk("2", "https://site/e2")).unwrap();
 
         let seen_at = |id: i64| -> Option<String> {
             db.conn
@@ -772,6 +904,61 @@ mod tests {
     }
 
     #[test]
+    fn set_seen_cascade_preserves_seen_at_of_episodes_already_seen() {
+        // The reported bug: watching episodes 1-11 over separate days, each
+        // with its own real seen_at, then marking episode 12 seen used to
+        // stamp every one of the 12 rows with today's date — flattening the
+        // whole series' watch history and corrupting every date-bucketed
+        // stat (30-day heatmap, yearly activity, hourly distribution).
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "https://wwv.animeytx.net", "animeytx").unwrap();
+        let s = crate::models::Series {
+            id: 0, slug: "x".into(), title: "X".into(),
+            url: "u".into(), cover_url: None, is_airing: true, followed: false, next_episode_at: None, site_episode_count: None,
+        };
+        let sid = db.upsert_series(src, &s).unwrap();
+        let (e1, _) = db
+            .insert_episode(&crate::models::Episode {
+                id: 0, series_id: sid, number: "1".into(), title: None,
+                url: "https://site/e1".into(), released_at: None, seen: false,
+            })
+            .unwrap();
+        let (e2, _) = db
+            .insert_episode(&crate::models::Episode {
+                id: 0, series_id: sid, number: "2".into(), title: None,
+                url: "https://site/e2".into(), released_at: None, seen: false,
+            })
+            .unwrap();
+
+        // Episode 1 was watched three weeks ago — give it a real, old seen_at.
+        db.set_seen_cascade(sid, "1", true).unwrap();
+        db.conn
+            .execute(
+                "UPDATE episodes SET seen_at = datetime('now', '-21 days') WHERE id=?1",
+                [e1],
+            )
+            .unwrap();
+        let old_seen_at: String = db
+            .conn
+            .query_row("SELECT seen_at FROM episodes WHERE id=?1", [e1], |r| r.get(0))
+            .unwrap();
+
+        // Marking episode 2 seen today re-touches episode 1 via the cascade
+        // (1 <= 2) — its original watch date must survive unchanged.
+        db.set_seen_cascade(sid, "2", true).unwrap();
+        let seen_at_after: String = db
+            .conn
+            .query_row("SELECT seen_at FROM episodes WHERE id=?1", [e1], |r| r.get(0))
+            .unwrap();
+        assert_eq!(seen_at_after, old_seen_at, "cascade must not reset an already-seen episode's watch date");
+        let e2_seen_at: Option<String> = db
+            .conn
+            .query_row("SELECT seen_at FROM episodes WHERE id=?1", [e2], |r| r.get(0))
+            .unwrap();
+        assert!(e2_seen_at.is_some(), "the newly-seen episode still gets stamped");
+    }
+
+    #[test]
     fn set_seen_stamps_and_clears_seen_at() {
         let db = Db::open(":memory:").unwrap();
         let src = db.upsert_source("AnimeYT", "https://wwv.animeytx.net", "animeytx").unwrap();
@@ -780,7 +967,7 @@ mod tests {
             url: "u".into(), cover_url: None, is_airing: true, followed: false, next_episode_at: None, site_episode_count: None,
         };
         let sid = db.upsert_series(src, &s).unwrap();
-        let e1 = db
+        let (e1, _) = db
             .insert_episode(&crate::models::Episode {
                 id: 0, series_id: sid, number: "1".into(), title: None,
                 url: "https://site/e1".into(), released_at: None, seen: false,
@@ -906,10 +1093,15 @@ mod tests {
             id: 0, series_id: sid, number: "1".into(), title: None,
             url: "https://site/ep1".into(), released_at: None, seen: false,
         };
-        let eid = db.insert_episode(&ep).unwrap();
+        let (eid, was_new) = db.insert_episode(&ep).unwrap();
+        assert!(was_new, "the first insert really does write a row");
         // same url again => no new row
-        let eid_dup = db.insert_episode(&ep).unwrap();
+        let (eid_dup, was_new_again) = db.insert_episode(&ep).unwrap();
         assert_eq!(eid, eid_dup);
+        assert!(
+            !was_new_again,
+            "a conflicting insert writes nothing and must report itself as not-new"
+        );
 
         assert_eq!(db.pending_count(src).unwrap(), 1);
         db.set_seen(eid, true).unwrap();

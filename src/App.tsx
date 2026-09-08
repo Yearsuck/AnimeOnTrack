@@ -45,6 +45,13 @@ export default function App() {
   const [pending, setPending] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
   const [airingRefreshSignal, setAiringRefreshSignal] = useState(0);
+  // Pendientes' equivalent of `airingRefreshSignal`: bumping it makes the
+  // mounted Pending view re-fetch its episode list. The badge alone is not
+  // enough — `refreshBadge` only re-counts, so without this the list under
+  // the badge kept showing the pre-refresh episodes (stale after startup's
+  // background refresh(), after the topbar "Actualizar", and after the
+  // SeriesDetail overlay marked episodes seen on top of it).
+  const [pendingRefreshSignal, setPendingRefreshSignal] = useState(0);
   // Estadísticas mounts the three.js/d3-force graph, which is expensive to
   // build and re-layout — see docs/superpowers/specs/2026-07-10-stats-graph-cache-design.md.
   // Once visited it stays mounted (hidden via CSS, not unmounted) so
@@ -60,6 +67,15 @@ export default function App() {
     }
   }, []);
 
+  // The `onChanged` every view should get: the badge and the Pendientes list
+  // are two views of the same data, so they always move together. Passing
+  // plain `refreshBadge` anywhere that can change the pending set is what let
+  // the two drift apart.
+  const onPendingDataChanged = useCallback(async () => {
+    await refreshBadge();
+    setPendingRefreshSignal((n) => n + 1);
+  }, [refreshBadge]);
+
   // Decide first screen: onboarding if no source yet, else pending (+ refresh-on-open).
   // Guarded against React StrictMode's dev-only double-invoke so we don't hit
   // the scraped site twice on startup.
@@ -74,7 +90,9 @@ export default function App() {
         setRefreshing(true);
         await refresh().catch(() => 0);
         setRefreshing(false);
-        await refreshBadge();
+        // Pending is already mounted by now (it's the first screen), so it has
+        // fetched the *pre*-refresh list — reload it, not just the badge.
+        await onPendingDataChanged();
         // Fire-and-forget catalog maintenance, none of which blocks the UI.
         // Deliberately sequential, not Promise.all: the two AniList-facing
         // steps are each paced at ~28.6 req/min against a 30/min cap, so
@@ -96,7 +114,7 @@ export default function App() {
         setView("onboarding");
       }
     })();
-  }, [refreshBadge]);
+  }, [onPendingDataChanged]);
 
   async function doRefresh() {
     setRefreshing(true);
@@ -110,7 +128,10 @@ export default function App() {
       await refresh();
     } finally {
       setRefreshing(false);
-      await refreshBadge();
+      // Reloads Pendientes as well as its badge — this is the "Actualizar"
+      // button, and on the Pendientes tab the whole point is seeing the new
+      // episodes appear, not just the count next to the tab change.
+      await onPendingDataChanged();
       if (view !== "airing") navigate("pending");
     }
   }
@@ -163,13 +184,14 @@ export default function App() {
   //   than keep showing the old site's 3D graph.
   // - AiringGrid needs its refreshSignal bumped so it re-fetches even if it
   //   happens to already be mounted.
-  // - The pending badge is scoped to the active source too.
+  // - The pending badge *and* the Pendientes list are scoped to the active
+  //   source too, so both need re-fetching.
   // Landing on "airing" gives an immediate, visible confirmation that the
   // switch worked (the whole point of the live-verification requirement).
   async function onSiteChanged() {
     setStatsVisited(false);
     setAiringRefreshSignal((n) => n + 1);
-    await refreshBadge();
+    await onPendingDataChanged();
     navigate("airing");
   }
 
@@ -246,7 +268,11 @@ export default function App() {
       <div className="view-stack">
         {view === "pending" && (
           <div className="view-panel" ref={panelRef}>
-            <Pending onOpenSeries={setSelected} onChanged={refreshBadge} />
+            <Pending
+              onOpenSeries={setSelected}
+              onChanged={onPendingDataChanged}
+              refreshSignal={pendingRefreshSignal}
+            />
           </div>
         )}
         {view === "airing" && (
@@ -282,10 +308,15 @@ export default function App() {
 
         {selected && (
           <div className="view-panel">
+            {/* The detail overlay sits on top of whichever tab is showing —
+                including Pendientes, whose list it can invalidate by marking
+                episodes seen. `onPendingDataChanged` reloads that list
+                underneath, so closing the overlay reveals the real state
+                instead of the rows it just cleared. */}
             <SeriesDetail
               series={selected}
               onBack={() => setSelected(null)}
-              onChanged={refreshBadge}
+              onChanged={onPendingDataChanged}
             />
           </div>
         )}

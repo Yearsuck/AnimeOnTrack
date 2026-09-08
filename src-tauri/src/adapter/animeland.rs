@@ -238,6 +238,22 @@ mod tests {
         assert_eq!(out[1].number, "1");
     }
 
+    /// Same `digits_in` fix as tioanime's fractional-episode regression: a
+    /// half-episode must keep its decimal instead of collapsing onto the
+    /// integer episode with the same leading digits.
+    #[test]
+    fn parses_a_fractional_episode_as_its_own_number() {
+        let html = r#"<html><body><div class="anime-col"><ul>
+            <li class="play"><a href="https://w7.animeland.tv/show-episode-13-5-dubbed">Episode 13.5</a></li>
+            <li class="play"><a href="https://w7.animeland.tv/show-episode-13-dubbed">Episode 13</a></li>
+        </ul></div></body></html>"#;
+        let out = AnimelandAdapter.parse_series(html).unwrap();
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].number, "13.5");
+        assert_eq!(out[1].number, "13");
+        assert_ne!(out[0].number, out[1].number, "13.5 and 13 must not collapse together");
+    }
+
     #[test]
     fn parses_series_detail_fixture() {
         let html = include_str!("../../tests/fixtures/animeland_series.html");

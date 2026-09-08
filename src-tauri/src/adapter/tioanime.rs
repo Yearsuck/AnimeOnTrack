@@ -287,6 +287,31 @@ mod tests {
         }
     }
 
+    /// Series 5006 ("Shingeki no Kyojin"), confirmed live: the site lists a
+    /// half-episode as "Episodio 13.5" under its own `/ver/...-13.5` href.
+    /// `digits_in` used to reduce that to "13" — the exact number the real
+    /// episode 13 already owns — which made the diff treat the half-episode
+    /// as already-known, rewrite episode 13's url onto the half-episode's
+    /// href, and then clash on `UNIQUE(series_id, url)` on every later scan.
+    /// The two must parse to different numbers.
+    #[test]
+    fn parses_a_fractional_episode_as_its_own_number() {
+        let html = r#"<html><body><ul class="episodes-list list-unstyled">
+            <li><a href="/ver/shingeki-no-kyojin-13"><div class="flex-grow-1">
+                <p>Shingeki no Kyojin <span>Episodio 13</span></p><span>Hace 8 dias</span>
+            </div></a></li>
+            <li><a href="/ver/shingeki-no-kyojin-13.5"><div class="flex-grow-1">
+                <p>Shingeki no Kyojin <span>Episodio 13.5</span></p><span>Hace 2 dias</span>
+            </div></a></li>
+        </ul></body></html>"#;
+        let out = TioanimeAdapter.parse_series(html).unwrap();
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].number, "13");
+        assert_eq!(out[1].number, "13.5");
+        assert_ne!(out[0].number, out[1].number, "13 and 13.5 must not collapse together");
+        assert_eq!(out[1].url, "https://tioanime.com/ver/shingeki-no-kyojin-13.5");
+    }
+
     #[test]
     fn parses_series_detail_fixture() {
         let html = include_str!("../../tests/fixtures/tioanime_series_detail.html");
