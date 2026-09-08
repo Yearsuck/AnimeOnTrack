@@ -233,6 +233,18 @@ impl Db {
         // re-raising — while still resuming normal catch-up once the user
         // shows real forward progress past that point again.
         ensure_column(&self.conn, "series", "sync_watermark_applied", "INTEGER")?;
+        // series.sync_rollback_active: `sync_watermark_applied` alone can't
+        // tell "still sitting at the watermark I rolled back to" apart from
+        // "never rolled back, just haven't needed a push yet" once the
+        // rollback cycle above resyncs `sync_watermark_applied` down to the
+        // row's own (lower) watermark — both look identical on the next
+        // sync (own watermark == applied), and the cascade fired anyway,
+        // undoing the rollback one launch later. This flag is set the
+        // moment a rollback is first detected and only cleared once the
+        // row's own watermark rises past where it stood at that moment —
+        // at which point normal cross-site catch-up resumes immediately,
+        // even if it hasn't reached the old ceiling yet.
+        ensure_column(&self.conn, "series", "sync_rollback_active", "INTEGER NOT NULL DEFAULT 0")?;
 
         // Site-agnostic library (docs/cross-site-library-investigation.md,
         // option C). Identity is canonical (AniList id, else normalized title),
