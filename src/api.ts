@@ -117,7 +117,13 @@ export const discoverSwipeCard = () => invoke<SwipeCard | null>("discover_swipe_
 export const decideSwipe = (seriesUrl: string, decision: SwipeDecision) =>
   invoke<void>("decide_swipe", { seriesUrl, decision });
 
-export const undoLastSwipe = () => invoke<void>("undo_last_swipe");
+// Resolves to the title of the decision that was actually reversed, or null
+// when nothing was (empty history, or a row already gone). Only show an
+// "undone" confirmation on a non-null result — a Ya-lo-vi decision whose
+// background site-link merged it into an existing series is reversed on that
+// survivor, and before this returned anything the UI reported success even
+// when the undo had done nothing at all.
+export const undoLastSwipe = () => invoke<string | null>("undo_last_swipe");
 
 // Up to 5 most-recent swipe decisions still live in the DB, newest first —
 // the Descubrir history strip. `undo_swipe_entry` returns a specific one to

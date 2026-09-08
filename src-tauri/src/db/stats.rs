@@ -2,6 +2,31 @@ use super::*;
 use std::collections::{HashMap, HashSet};
 use chrono::Datelike;
 
+/// The change-fingerprint `backup::signature_string` renders and
+/// `backup::is_auto_backup_due` compares. Every field is one thing a user can
+/// change that ought to make an auto-backup worth taking — see
+/// `Db::signature_counts` for why this is far more than the episode counts it
+/// started as. Adding a field here is the way to teach the auto-backup about a
+/// new kind of mutation; `signature_string` renders whatever is here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignatureCounts {
+    pub series: i64,
+    pub episodes: i64,
+    pub max_episode_id: i64,
+    /// Newest `episodes.seen_at`, so re-watching (un-mark then re-mark, no
+    /// count change) still moves the fingerprint.
+    pub max_seen_at: Option<String>,
+    pub seen_episodes: i64,
+    pub followed: i64,
+    pub watched_externally: i64,
+    pub backlog_want: i64,
+    pub backlog_discarded: i64,
+    pub anilist_linked: i64,
+    /// FNV-1a over the `settings` table minus backup bookkeeping — see
+    /// `Db::settings_hash`.
+    pub settings_hash: u64,
+}
+
 /// Collapse a series title to a season/part-agnostic "franchise key" so
 /// multiple seasons (or arcs) of the same show count as one anime in the
 /// stats (`get_watch_summary`'s distinct-anime count, `get_watch_insights`'
@@ -1295,18 +1320,94 @@ impl Db {
         Ok(Some(spans_days.iter().sum::<f64>() / spans_days.len() as f64))
     }
 
-    /// A cheap fingerprint of the data, used to skip a redundant auto-backup
-    /// when nothing changed since the last one.
-    pub fn signature_counts(&self) -> Result<(i64, i64, i64, Option<String>)> {
-        let series: i64 = self.conn.query_row("SELECT COUNT(*) FROM series", [], |r| r.get(0))?;
-        let eps: i64 = self.conn.query_row("SELECT COUNT(*) FROM episodes", [], |r| r.get(0))?;
-        let max_ep: i64 = self.conn
-            .query_row("SELECT COALESCE(MAX(id),0) FROM episodes", [], |r| r.get(0))?;
-        let max_seen: Option<String> = self.conn
+    /// A cheap fingerprint of the user's data, used to skip a redundant
+    /// auto-backup when nothing changed since the last one.
+    ///
+    /// This deliberately reaches past the episode table. It used to be only
+    /// `(COUNT(series), COUNT(episodes), MAX(episodes.id), MAX(seen_at))`,
+    /// which is blind to almost everything the app actually lets you change:
+    /// follow/unfollow, "Ya lo vi", backlog moves, every swipe decision on a
+    /// catalog card (those write a `series` row but never an episode), AniList
+    /// links, and every setting — the mirror list, the active site, the deck's
+    /// genre/format bans and date bounds. An evening spent on any of that left
+    /// the fingerprint byte-identical, so `is_auto_backup_due` kept answering
+    /// "no" and the backup silently never ran.
+    ///
+    /// Cheap enough to run on every startup and after every refresh: eight
+    /// aggregates over indexed-or-tiny tables plus a scan of `settings` (a few
+    /// dozen rows).
+    pub fn signature_counts(&self) -> Result<SignatureCounts> {
+        let one = |sql: &str| -> Result<i64> { Ok(self.conn.query_row(sql, [], |r| r.get(0))?) };
+        let series = one("SELECT COUNT(*) FROM series")?;
+        let episodes = one("SELECT COUNT(*) FROM episodes")?;
+        let max_episode_id = one("SELECT COALESCE(MAX(id),0) FROM episodes")?;
+        let max_seen_at: Option<String> = self
+            .conn
             .query_row("SELECT MAX(seen_at) FROM episodes", [], |r| r.get(0))
             .optional()?
             .flatten();
-        Ok((series, eps, max_ep, max_seen))
+        // Counts, not just "did a row appear": these all flip back and forth
+        // on rows that already exist, which no COUNT(*) over the table sees.
+        let seen_episodes = one("SELECT COUNT(*) FROM episodes WHERE seen=1")?;
+        let followed = one("SELECT COUNT(*) FROM series WHERE followed=1")?;
+        let watched_externally = one("SELECT COUNT(*) FROM series WHERE watched_externally=1")?;
+        let backlog_want = one("SELECT COUNT(*) FROM series WHERE backlog_status='want'")?;
+        let backlog_discarded = one("SELECT COUNT(*) FROM series WHERE backlog_status='discarded'")?;
+        let anilist_linked = one("SELECT COUNT(*) FROM series WHERE anilist_id IS NOT NULL")?;
+        let settings_hash = self.settings_hash()?;
+        Ok(SignatureCounts {
+            series,
+            episodes,
+            max_episode_id,
+            max_seen_at,
+            seen_episodes,
+            followed,
+            watched_externally,
+            backlog_want,
+            backlog_discarded,
+            anilist_linked,
+            settings_hash,
+        })
+    }
+
+    /// Order-independent hash of the `settings` table, so a *changed value*
+    /// (not just an added key) moves the backup signature — the deck's ban
+    /// lists, the mirror list and the active site all live there as values
+    /// under a fixed set of keys, so a COUNT would never notice them.
+    ///
+    /// Backup bookkeeping is excluded on purpose: `backup_*`/`gdrive_*` are
+    /// written *by* a backup, so including them would make every backup change
+    /// the signature and the "has anything changed?" half of
+    /// `is_auto_backup_due` would degenerate into "always yes". Hashed rather
+    /// than concatenated so nothing from the settings table (which holds the
+    /// Google client secret) can end up stored in `backup_signature`.
+    fn settings_hash(&self) -> Result<u64> {
+        let mut stmt = self.conn.prepare(
+            "SELECT key, value FROM settings
+             WHERE key NOT LIKE 'backup\\_%' ESCAPE '\\'
+               AND key NOT LIKE 'gdrive\\_%' ESCAPE '\\'
+             ORDER BY key",
+        )?;
+        let rows: Vec<(String, String)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        // FNV-1a over "key=value\n" pairs in key order. Not cryptographic and
+        // doesn't need to be — the only requirement is that it changes when
+        // the settings do, and stays identical when they don't.
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut write = |bytes: &[u8]| {
+            for b in bytes {
+                hash ^= *b as u64;
+                hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        };
+        for (key, value) in &rows {
+            write(key.as_bytes());
+            write(b"=");
+            write(value.as_bytes());
+            write(b"\n");
+        }
+        Ok(hash)
     }
 
     /// Mainstream vs underground taste score — average AniList popularity of
@@ -2508,6 +2609,85 @@ mod tests {
         db.set_seen_cascade(series, "1", true).unwrap();
         let after = db.signature_counts().unwrap();
         assert_ne!(before, after);
+    }
+
+    /// Siblings of the test above, for the mutations the old episode-only
+    /// fingerprint was blind to. Each of these is something a user can spend a
+    /// whole session doing without a single episode row or `seen_at` moving —
+    /// and while the signature didn't move, `is_auto_backup_due` answered "no"
+    /// and the backup never ran.
+    #[test]
+    fn signature_changes_when_a_series_is_followed_or_unfollowed() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let series = db.upsert_series(src, &mk_airing("x", "X", None)).unwrap();
+
+        let before = db.signature_counts().unwrap();
+        db.set_followed(series, true).unwrap();
+        let followed = db.signature_counts().unwrap();
+        assert_ne!(before, followed);
+        db.set_followed(series, false).unwrap();
+        assert_ne!(followed, db.signature_counts().unwrap());
+    }
+
+    #[test]
+    fn signature_changes_when_watched_externally_flips() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let series = db.upsert_series(src, &mk_airing("x", "X", None)).unwrap();
+
+        let before = db.signature_counts().unwrap();
+        db.set_watched_externally(series, true).unwrap();
+        assert_ne!(before, db.signature_counts().unwrap());
+    }
+
+    #[test]
+    fn signature_changes_when_backlog_status_moves_between_lists() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let series = db.upsert_series(src, &mk_airing("x", "X", None)).unwrap();
+
+        let before = db.signature_counts().unwrap();
+        db.set_backlog_status(series, Some("want")).unwrap();
+        let wanted = db.signature_counts().unwrap();
+        assert_ne!(before, wanted);
+        // want -> discarded keeps the row count identical; only per-status
+        // counts can tell these apart.
+        db.set_backlog_status(series, Some("discarded")).unwrap();
+        assert_ne!(wanted, db.signature_counts().unwrap());
+    }
+
+    #[test]
+    fn signature_changes_when_a_series_is_linked_to_the_catalog() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let series = db.upsert_series(src, &mk_airing("x", "X", None)).unwrap();
+
+        let before = db.signature_counts().unwrap();
+        db.set_anilist_id(series, 12345).unwrap();
+        assert_ne!(before, db.signature_counts().unwrap());
+    }
+
+    #[test]
+    fn signature_changes_when_deck_bans_change_but_not_when_a_backup_records_itself() {
+        let db = Db::open(":memory:").unwrap();
+        let before = db.signature_counts().unwrap();
+
+        // A settings *value* change under an existing key — invisible to any
+        // count over the table.
+        db.set_banned_genres(&["Ecchi".to_string()]).unwrap();
+        let banned = db.signature_counts().unwrap();
+        assert_ne!(before, banned);
+        db.set_banned_genres(&["Ecchi".to_string(), "Hentai".to_string()]).unwrap();
+        assert_ne!(banned, db.signature_counts().unwrap());
+
+        // Backup bookkeeping must NOT move it, or "has anything changed since
+        // the last backup?" is true immediately after every backup.
+        let after_bans = db.signature_counts().unwrap();
+        db.set_setting("backup_last_at_unix", "1234567890").unwrap();
+        db.set_setting("backup_signature", "whatever").unwrap();
+        db.set_setting("gdrive_file_id", "abc").unwrap();
+        assert_eq!(after_bans, db.signature_counts().unwrap());
     }
 
     #[test]
