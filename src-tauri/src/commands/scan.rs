@@ -946,6 +946,29 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
         }
     }
 
+    // Covers for currently-airing series that aren't followed (and aren't
+    // AniList-linked, which already display fine via the catalog's own
+    // cover) — the loops above never touch these at all, since both are
+    // scoped to `list_followed`. Capped per cycle: see
+    // `airing_series_needing_cover_fetch`'s doc comment for why this can't
+    // just fetch all of them in one pass.
+    const MAX_AIRING_COVERS_PER_CYCLE: i64 = 20;
+    let airing_cover_backlog = {
+        let db = state.db.lock().unwrap();
+        db.airing_series_needing_cover_fetch(src, MAX_AIRING_COVERS_PER_CYCLE)
+            .map_err(|e| e.to_string())?
+    };
+    for (id, title, remote) in &airing_cover_backlog {
+        emit_refresh_progress(&app, total_series, total_series, &format!("Descargando carátulas: {title}"));
+        match fetch_cover_image(&app, remote).await {
+            Ok(data_uri) => {
+                let db = state.db.lock().unwrap();
+                let _ = db.update_series_cover(*id, &data_uri);
+            }
+            Err(e) => eprintln!("[cover] series {id} ({title}): airing-listing fetch failed: {e}"),
+        }
+    }
+
     emit_refresh_progress(&app, total_series, total_series, "Completado");
     eprintln!(
         "[scrape] refresh() wall time: {:?} for {total_series} followed series ({skipped} skipped), {total_new} new episodes",
