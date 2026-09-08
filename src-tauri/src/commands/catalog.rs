@@ -149,6 +149,13 @@ pub async fn sync_anime_catalog(
 /// fire-and-forget from the frontend on startup; throttled via
 /// `catalog_auto_sync_last_at` so it doesn't re-run (and re-hit AniList's
 /// rate limit) on every launch — see `should_auto_sync_catalog`.
+///
+/// The cooldown is stamped **after** the sync, and only when it succeeded (see
+/// `should_stamp_auto_sync`). Stamping up front meant a transient failure —
+/// AniList down, rate-limited, or simply no network at launch — burned the
+/// whole ~12h cooldown even though nothing had synced, so the retry the user
+/// would naturally trigger by relaunching the app was skipped for the rest of
+/// the day.
 #[tauri::command]
 pub async fn maybe_sync_catalog_incremental(
     app: AppHandle,
@@ -161,12 +168,20 @@ pub async fn maybe_sync_catalog_incremental(
     if !should_auto_sync_catalog(last_at.as_deref(), chrono::Utc::now()) {
         return Ok(None);
     }
-    {
+    // `state` is consumed by the sync; keep a handle to reach `AppState` again
+    // afterwards to record the outcome.
+    let app_after = app.clone();
+    let result = run_catalog_sync(app, state, false).await;
+    if should_stamp_auto_sync(&result) {
+        // Stamped at completion, not at start: the cooldown is "how long since
+        // the catalog was last actually brought up to date", and a full
+        // incremental pass is a multi-minute job.
+        let state = app_after.state::<AppState>();
         let db = state.db.lock().unwrap();
         db.set_setting("catalog_auto_sync_last_at", &chrono::Utc::now().to_rfc3339())
             .map_err(|e| e.to_string())?;
     }
-    run_catalog_sync(app, state, false).await.map(Some)
+    result.map(Some)
 }
 
 /// Pure throttle check for `maybe_sync_catalog_incremental`: run once per
@@ -179,6 +194,14 @@ pub fn should_auto_sync_catalog(last_at: Option<&str>, now: chrono::DateTime<chr
         Some(last) => (now - last.with_timezone(&chrono::Utc)).num_seconds() >= AUTO_SYNC_COOLDOWN_SECS,
         None => true,
     }
+}
+
+/// Whether an auto-sync attempt's outcome should write
+/// `catalog_auto_sync_last_at` — i.e. start the cooldown. Only a success does:
+/// the cooldown exists to stop us hammering AniList after a *real* sync, and a
+/// failed attempt synced nothing, so it has nothing to cool down from.
+pub fn should_stamp_auto_sync<T, E>(outcome: &Result<T, E>) -> bool {
+    outcome.is_ok()
 }
 
 /// Resolve engaged-but-unlinked series to their AniList catalog row using only
@@ -379,7 +402,7 @@ async fn run_catalog_sync(
 
 #[cfg(test)]
 mod auto_sync_tests {
-    use super::should_auto_sync_catalog;
+    use super::{should_auto_sync_catalog, should_stamp_auto_sync};
     use chrono::{Duration, Utc};
 
     #[test]
@@ -411,5 +434,43 @@ mod auto_sync_tests {
         let now = Utc::now();
         let last = (now - Duration::hours(12)).to_rfc3339();
         assert!(should_auto_sync_catalog(Some(&last), now));
+    }
+
+    /// The bug: the timestamp was written *before* the sync ran, so a
+    /// transient failure (AniList down, rate-limited, offline at launch) burned
+    /// the full 12h cooldown and the next launch skipped instead of retrying.
+    /// Walks the two predicates in the same order `maybe_sync_catalog_incremental`
+    /// does, over the same persisted string the settings table holds.
+    #[test]
+    fn a_failed_sync_does_not_burn_the_cooldown_but_a_successful_one_does() {
+        let t0 = Utc::now();
+        let mut stamp: Option<String> = None; // never auto-synced
+
+        // Launch 1: due, and the sync fails — nothing is stamped.
+        assert!(should_auto_sync_catalog(stamp.as_deref(), t0));
+        let failed: Result<i64, String> = Err("AniList unreachable".into());
+        assert!(!should_stamp_auto_sync(&failed));
+        if should_stamp_auto_sync(&failed) {
+            stamp = Some(t0.to_rfc3339());
+        }
+
+        // Launch 2, a minute later: must retry rather than wait out 12h.
+        let t1 = t0 + Duration::minutes(1);
+        assert!(
+            should_auto_sync_catalog(stamp.as_deref(), t1),
+            "a failed sync must not block the next attempt"
+        );
+
+        // This time it succeeds — now the cooldown starts.
+        let ok: Result<i64, String> = Ok(21_000);
+        assert!(should_stamp_auto_sync(&ok));
+        if should_stamp_auto_sync(&ok) {
+            stamp = Some(t1.to_rfc3339());
+        }
+        assert!(
+            !should_auto_sync_catalog(stamp.as_deref(), t1 + Duration::hours(1)),
+            "a successful sync must still hold the cooldown"
+        );
+        assert!(should_auto_sync_catalog(stamp.as_deref(), t1 + Duration::hours(13)));
     }
 }
