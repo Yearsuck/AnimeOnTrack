@@ -199,10 +199,14 @@ impl Db {
 
     /// Set an episode's seen flag either way (lets the user un-mark).
     /// `seen_at` tracks alongside: stamped `datetime('now')` when marking
-    /// seen, cleared back to NULL when un-marking.
+    /// seen for the first time, cleared back to NULL when un-marking.
+    /// `COALESCE` preserves an existing `seen_at` on a redundant
+    /// already-seen -> seen call — without it, re-marking an episode that
+    /// was already seen (e.g. via the cascade below re-touching it) resets
+    /// its watch date to today, silently rewriting watch-history stats.
     pub fn set_seen(&self, episode_id: i64, seen: bool) -> Result<()> {
         self.conn.execute(
-            "UPDATE episodes SET seen=?1, seen_at = CASE WHEN ?1=1 THEN datetime('now') ELSE NULL END
+            "UPDATE episodes SET seen=?1, seen_at = CASE WHEN ?1=1 THEN COALESCE(seen_at, datetime('now')) ELSE NULL END
              WHERE id=?2",
             (seen as i64, episode_id),
         )?;
@@ -230,8 +234,10 @@ impl Db {
         let Some(target) = parse_ep_number(number) else {
             // No leading digits at all: ordering is meaningless, so just
             // toggle the exact-matching episode(s) rather than cascade.
+            // COALESCE, same reasoning as `set_seen`: don't reset an
+            // already-seen episode's watch date to today.
             self.conn.execute(
-                "UPDATE episodes SET seen=?1, seen_at = CASE WHEN ?1=1 THEN datetime('now') ELSE NULL END
+                "UPDATE episodes SET seen=?1, seen_at = CASE WHEN ?1=1 THEN COALESCE(seen_at, datetime('now')) ELSE NULL END
                  WHERE series_id=?2 AND number=?3",
                 (seen as i64, series_id, number),
             )?;
@@ -255,8 +261,16 @@ impl Db {
                 // seen_at cascades along with seen — every row the cascade
                 // touches gets the same stamped/cleared treatment as the
                 // one the user explicitly clicked, not just that one.
+                // COALESCE preserves the real watch date of a row the
+                // cascade re-touches that was *already* seen (e.g. marking
+                // episode 12 seen also re-touches 1-11, which likely have
+                // their own earlier seen_at from being watched over time) —
+                // without it, every mark-seen click flattened the whole
+                // series' watch history to today, corrupting every
+                // date-bucketed stat (30-day heatmap, yearly activity,
+                // hourly distribution, dusty-watchlist ranges).
                 tx.execute(
-                    "UPDATE episodes SET seen=?1, seen_at = CASE WHEN ?1=1 THEN datetime('now') ELSE NULL END
+                    "UPDATE episodes SET seen=?1, seen_at = CASE WHEN ?1=1 THEN COALESCE(seen_at, datetime('now')) ELSE NULL END
                      WHERE id=?2",
                     (seen as i64, id),
                 )?;
@@ -769,6 +783,61 @@ mod tests {
         db.set_seen_cascade(sid, "2", false).unwrap();
         assert!(seen_at(e1).is_some(), "e1 stays seen, keeps its seen_at");
         assert!(seen_at(e2).is_none(), "e2 un-marked, seen_at cleared");
+    }
+
+    #[test]
+    fn set_seen_cascade_preserves_seen_at_of_episodes_already_seen() {
+        // The reported bug: watching episodes 1-11 over separate days, each
+        // with its own real seen_at, then marking episode 12 seen used to
+        // stamp every one of the 12 rows with today's date — flattening the
+        // whole series' watch history and corrupting every date-bucketed
+        // stat (30-day heatmap, yearly activity, hourly distribution).
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "https://wwv.animeytx.net", "animeytx").unwrap();
+        let s = crate::models::Series {
+            id: 0, slug: "x".into(), title: "X".into(),
+            url: "u".into(), cover_url: None, is_airing: true, followed: false, next_episode_at: None, site_episode_count: None,
+        };
+        let sid = db.upsert_series(src, &s).unwrap();
+        let e1 = db
+            .insert_episode(&crate::models::Episode {
+                id: 0, series_id: sid, number: "1".into(), title: None,
+                url: "https://site/e1".into(), released_at: None, seen: false,
+            })
+            .unwrap();
+        let e2 = db
+            .insert_episode(&crate::models::Episode {
+                id: 0, series_id: sid, number: "2".into(), title: None,
+                url: "https://site/e2".into(), released_at: None, seen: false,
+            })
+            .unwrap();
+
+        // Episode 1 was watched three weeks ago — give it a real, old seen_at.
+        db.set_seen_cascade(sid, "1", true).unwrap();
+        db.conn
+            .execute(
+                "UPDATE episodes SET seen_at = datetime('now', '-21 days') WHERE id=?1",
+                [e1],
+            )
+            .unwrap();
+        let old_seen_at: String = db
+            .conn
+            .query_row("SELECT seen_at FROM episodes WHERE id=?1", [e1], |r| r.get(0))
+            .unwrap();
+
+        // Marking episode 2 seen today re-touches episode 1 via the cascade
+        // (1 <= 2) — its original watch date must survive unchanged.
+        db.set_seen_cascade(sid, "2", true).unwrap();
+        let seen_at_after: String = db
+            .conn
+            .query_row("SELECT seen_at FROM episodes WHERE id=?1", [e1], |r| r.get(0))
+            .unwrap();
+        assert_eq!(seen_at_after, old_seen_at, "cascade must not reset an already-seen episode's watch date");
+        let e2_seen_at: Option<String> = db
+            .conn
+            .query_row("SELECT seen_at FROM episodes WHERE id=?1", [e2], |r| r.get(0))
+            .unwrap();
+        assert!(e2_seen_at.is_some(), "the newly-seen episode still gets stamped");
     }
 
     #[test]
