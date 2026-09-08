@@ -365,6 +365,19 @@ export function Library({ onOpenSeries }: { onOpenSeries: (s: Series) => void })
     });
   }
 
+  // A selection is scoped to the set it was made in: every filter here can
+  // hide already-selected cards, and the batch bar kept claiming "5
+  // seleccionadas" — and kept acting on all 5 — for rows the user could no
+  // longer see under the new filter. Search-then-select is one search, so
+  // any filter change drops the selection rather than silently carrying it
+  // across. `selectMode` deliberately survives (the user is still picking);
+  // the batch bar only renders while something is selected. Returning the
+  // previous set when it's already empty keeps this from re-rendering on
+  // every keystroke in the search box.
+  useEffect(() => {
+    setSelected((prev) => (prev.size === 0 ? prev : new Set()));
+  }, [query, statusFilter, airingFilter, typeFilter, includedGenres, excludedGenres, studioFilter]);
+
   // "watching"/"completed" are derived from real seen-episode progress
   // (see statusOf() above) — there is no single backend command that sets
   // them directly, only reclassify_series ("None"/"Want"/etc). "plan" is
@@ -373,6 +386,12 @@ export function Library({ onOpenSeries }: { onOpenSeries: (s: Series) => void })
   // "Want") (see moveToWant above), so that's the only bulk status action
   // this can honestly offer without a new bulk-marking-episodes-seen
   // feature that's out of scope here.
+  // Both bulk actions reconcile the UI in `finally`, never only on success:
+  // the loop is one backend call per id, so a rejection on item 3 of 5 still
+  // leaves items 1-2 reclassified in the DB. Reloading (and dropping the
+  // selection) only in the happy path left those two rendering their
+  // pre-action state, with the select-mode bar still up as if nothing had
+  // happened.
   async function bulkMoveToPlan() {
     if (selected.size === 0) return;
     setBatching(true);
@@ -381,13 +400,13 @@ export function Library({ onOpenSeries }: { onOpenSeries: (s: Series) => void })
       for (const id of ids) {
         await reclassifySeries(id, "Want");
       }
-      setSelected(new Set());
-      setSelectMode(false);
-      load();
     } catch (e) {
       console.error("Bulk status change failed:", e);
     } finally {
+      setSelected(new Set());
+      setSelectMode(false);
       setBatching(false);
+      load();
     }
   }
 
@@ -400,13 +419,13 @@ export function Library({ onOpenSeries }: { onOpenSeries: (s: Series) => void })
       for (const id of ids) {
         await reclassifySeries(id, "None");
       }
-      setSelected(new Set());
-      setSelectMode(false);
-      load();
     } catch (e) {
       console.error("Bulk remove failed:", e);
     } finally {
+      setSelected(new Set());
+      setSelectMode(false);
       setBatching(false);
+      load();
     }
   }
 
