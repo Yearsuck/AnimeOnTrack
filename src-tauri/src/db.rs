@@ -302,6 +302,39 @@ impl Db {
         // at which point normal cross-site catch-up resumes immediately,
         // even if it hasn't reached the old ceiling yet.
         ensure_column(&self.conn, "series", "sync_rollback_active", "INTEGER NOT NULL DEFAULT 0")?;
+        // series.follow_declined_at: the app had no memory of "the user does
+        // not want this show followed" — only of "is it followed right now".
+        // Two separate mechanisms re-derive a follow from a sibling row with
+        // no way to check that: cross-site carry-over (`carry_follow`, a
+        // fuzzy title match against another site's still-followed row) and
+        // the canonical-library auto-import. Both fire on the very next
+        // airing rescan, so unfollowing a show that has a fuzzy-matched
+        // sibling elsewhere (confirmed live: two different AniList seasons
+        // of the same show, matched via score()'s season-blind
+        // same_franchise floor) got silently re-followed — and its old
+        // carried watermark re-cascaded seen — one scan later. Stamped by
+        // `set_followed_canonical`'s unfollow path on exactly the rows it
+        // clears `followed` on, cleared again the moment any of those rows
+        // is explicitly re-followed. `carry_follow` refuses to touch a row
+        // with this set.
+        ensure_column(&self.conn, "series", "follow_declined_at", "TEXT")?;
+
+        // One-shot: `sync_seen_progress_across_sites` used to stamp
+        // `sync_watermark_applied` with the requested cross-site ceiling
+        // instead of what a cascade could actually reach on a row whose own
+        // episode set didn't extend that far — which then read as a
+        // rollback nobody performed and permanently suppressed real
+        // cross-site catch-up for that row (confirmed live: 162 of 438
+        // followed rows in one real library). The fix stops new false
+        // latches, but can't retroactively tell a real rollback apart from
+        // one of these stale false ones by the data alone, so this clears
+        // every latch once: worst case a genuinely-rolled-back row needs one
+        // more manual un-mark to be detected again: best case this revives
+        // cross-site sync for a large share of already-affected libraries.
+        if self.get_setting("sync_rollback_active_reset_v1")?.is_none() {
+            self.conn.execute("UPDATE series SET sync_rollback_active=0", [])?;
+            self.set_setting("sync_rollback_active_reset_v1", "1")?;
+        }
 
         // Site-agnostic library (docs/cross-site-library-investigation.md,
         // option C). Identity is canonical (AniList id, else normalized title),

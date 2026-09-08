@@ -466,11 +466,19 @@ impl Db {
             |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
         let f = followed as i64;
+        // An explicit unfollow is remembered (`follow_declined_at` stamped)
+        // so `carry_follow` won't silently re-follow this exact row from a
+        // fuzzy-matched sibling on another site on the very next scan — see
+        // that column's doc comment in db.rs. An explicit re-follow clears
+        // it: the user changed their mind, so carry-over/auto-import are
+        // welcome to treat this row normally again.
+        let declined_sql = if followed { "NULL" } else { "datetime('now')" };
         if let Some(aid) = anilist_id {
             // Fast path: everything sharing the AniList id is the same show.
-            let n = self
-                .conn
-                .execute("UPDATE series SET followed=?1 WHERE anilist_id=?2", (f, aid))?;
+            let n = self.conn.execute(
+                &format!("UPDATE series SET followed=?1, follow_declined_at={declined_sql} WHERE anilist_id=?2"),
+                (f, aid),
+            )?;
             return Ok(n);
         }
         // No AniList id: match by normalized title (computed in Rust — SQL can't
@@ -489,9 +497,10 @@ impl Db {
             .collect();
         let mut changed = 0;
         for id in ids {
-            changed += self
-                .conn
-                .execute("UPDATE series SET followed=?1 WHERE id=?2", (f, id))?;
+            changed += self.conn.execute(
+                &format!("UPDATE series SET followed=?1, follow_declined_at={declined_sql} WHERE id=?2"),
+                (f, id),
+            )?;
         }
         Ok(changed)
     }
@@ -527,9 +536,16 @@ impl Db {
     /// the user already follows on this site is left completely untouched.
     /// Returns true if a row was actually carried.
     pub fn carry_follow(&self, series_id: i64, watermark: i64) -> Result<bool> {
+        // `follow_declined_at IS NULL`: never re-follow a row the user just
+        // explicitly unfollowed — see that column's doc comment. Without
+        // this, a fuzzy title match (score()'s season-blind same_franchise
+        // floor treats every season of a show as interchangeable) against a
+        // still-followed sibling on another site silently re-followed and
+        // re-marked-seen the exact row the user un-followed, on the very
+        // next airing rescan.
         let n = self.conn.execute(
             "UPDATE series SET followed=1, carried_seen_number=?2
-             WHERE id=?1 AND followed=0",
+             WHERE id=?1 AND followed=0 AND follow_declined_at IS NULL",
             (series_id, watermark),
         )?;
         Ok(n > 0)
@@ -1331,6 +1347,41 @@ mod tests {
         db.set_followed(sid2, true).unwrap();
         assert!(!db.carry_follow(sid2, 9).unwrap(), "followed row is left untouched");
         assert_eq!(db.take_carried_seen_number(sid2).unwrap(), None);
+    }
+
+    #[test]
+    fn carry_follow_never_re_follows_a_row_the_user_explicitly_unfollowed() {
+        // The reported bug: unfollow a show, and a fuzzy title match against
+        // a still-followed sibling on another site (score()'s season-blind
+        // same_franchise floor treating "Temporada 2" and a same-base
+        // sibling as interchangeable) silently re-followed it — and
+        // re-cascaded its old watermark seen — on the very next scan.
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+        let sid = db.upsert_series(src, &mk_airing("s", "S", None)).unwrap();
+        let is_followed = |db: &Db, id: i64| -> bool {
+            db.conn
+                .query_row("SELECT followed FROM series WHERE id=?1", [id], |r| r.get::<_, i64>(0))
+                .unwrap()
+                != 0
+        };
+
+        db.set_followed(sid, true).unwrap();
+        db.set_followed_canonical(sid, false).unwrap();
+        assert!(!is_followed(&db, sid));
+
+        assert!(
+            !db.carry_follow(sid, 7).unwrap(),
+            "a declined row must not be re-followed by carry-over"
+        );
+        assert!(!is_followed(&db, sid));
+        assert_eq!(db.take_carried_seen_number(sid).unwrap(), None, "no watermark leaks through either");
+
+        // An explicit re-follow clears the decline, so carry-over is welcome
+        // to touch the row normally again afterwards.
+        db.set_followed_canonical(sid, true).unwrap();
+        db.set_followed(sid, false).unwrap(); // back to unfollowed, but no longer declined
+        assert!(db.carry_follow(sid, 7).unwrap(), "decline was cleared by the explicit re-follow");
     }
 
     #[test]
