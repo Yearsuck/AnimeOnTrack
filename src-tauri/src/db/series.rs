@@ -735,30 +735,122 @@ impl Db {
         Ok(out)
     }
 
+    /// Every row's `SELECT` list for the "Listas" queries below — the
+    /// `row_to_series` columns plus the two grouping keys.
+    const CLASSIFIED_COLUMNS: &str =
+        "id, source_id, anilist_id, slug, title, url, cover_url, is_airing, followed,
+         next_episode_at, site_episode_count";
+
+    /// Collapse `series` rows drawn from **all** sites to one entry per
+    /// canonical show (`library::canon_key`: AniList id, else normalized
+    /// title), preferring the member on the active site so the row the UI
+    /// acts on ("Empezar a ver", "Abrir") is the current site's whenever it
+    /// has one. Ordered by title, case-insensitively.
+    fn canonical_representatives(
+        rows: Vec<(i64, Option<i64>, crate::models::Series)>,
+        active_source_id: i64,
+    ) -> Vec<crate::models::Series> {
+        let mut order: Vec<String> = Vec::new();
+        let mut groups: std::collections::HashMap<String, Vec<(i64, crate::models::Series)>> =
+            std::collections::HashMap::new();
+        for (source_id, anilist_id, s) in rows {
+            let key = super::library::canon_key(anilist_id, &s.title);
+            if !groups.contains_key(&key) {
+                order.push(key.clone());
+            }
+            groups.entry(key).or_default().push((source_id, s));
+        }
+        let mut out = Vec::with_capacity(order.len());
+        for key in &order {
+            let mut group = groups.remove(key).unwrap();
+            group.sort_by(|a, b| {
+                let a_active = (a.0 == active_source_id) as u8;
+                let b_active = (b.0 == active_source_id) as u8;
+                b_active
+                    .cmp(&a_active)
+                    .then(b.1.cover_url.is_some().cmp(&a.1.cover_url.is_some()))
+                    .then(a.1.id.cmp(&b.1.id))
+            });
+            out.push(group.into_iter().next().unwrap().1);
+        }
+        out.sort_by_key(|s| s.title.to_lowercase());
+        out
+    }
+
     /// Series with the given `backlog_status` ('want' or 'discarded'), for
     /// the swipe mode's "Listas" sub-view.
-    pub fn list_backlog(&self, source_id: i64, status: &str) -> Result<Vec<crate::models::Series>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, slug, title, url, cover_url, is_airing, followed, next_episode_at, site_episode_count
-             FROM series WHERE source_id=?1 AND backlog_status=?2 ORDER BY title",
-        )?;
+    ///
+    /// **Site-agnostic**, like `list_library` and unlike the per-site query
+    /// this replaced: a Want/Descartar decision is excluded from the Descubrir
+    /// deck globally (`engaged_series_titles` has no source filter), so listing
+    /// it per-site made an old decision invisible — and therefore impossible to
+    /// review or reverse — the moment you switched sites, while it silently
+    /// went on suppressing the title in the deck. Same per-site-scoping bug
+    /// class already fixed for Estadísticas and the deck exclusion itself.
+    ///
+    /// `active_source_id` is a *preference*, not a filter — see
+    /// `canonical_representatives`.
+    pub fn list_backlog(
+        &self,
+        active_source_id: i64,
+        status: &str,
+    ) -> Result<Vec<crate::models::Series>> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {} FROM series WHERE backlog_status=?1 ORDER BY title, id",
+            Self::CLASSIFIED_COLUMNS
+        ))?;
         let rows = stmt
-            .query_map((source_id, status), Self::row_to_series)?
+            .query_map([status], |r| {
+                Ok((
+                    r.get::<_, i64>("source_id")?,
+                    r.get::<_, Option<i64>>("anilist_id")?,
+                    Self::row_to_series(r)?,
+                ))
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
+        Ok(Self::canonical_representatives(rows, active_source_id))
     }
 
     /// Series with `watched_externally=1` ("Ya lo vi" catalog swipe), for
-    /// the Listas view's "Ya vistas" sub-list — mirrors `list_backlog`.
-    pub fn list_watched_externally(&self, source_id: i64) -> Result<Vec<crate::models::Series>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, slug, title, url, cover_url, is_airing, followed, next_episode_at, site_episode_count
-             FROM series WHERE source_id=?1 AND watched_externally=1 ORDER BY title",
-        )?;
+    /// the Listas view's "Ya vistas" sub-list — mirrors `list_backlog`,
+    /// site-agnostic for the same reason.
+    pub fn list_watched_externally(
+        &self,
+        active_source_id: i64,
+    ) -> Result<Vec<crate::models::Series>> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {} FROM series WHERE watched_externally=1 ORDER BY title, id",
+            Self::CLASSIFIED_COLUMNS
+        ))?;
         let rows = stmt
-            .query_map([source_id], Self::row_to_series)?
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>("source_id")?,
+                    r.get::<_, Option<i64>>("anilist_id")?,
+                    Self::row_to_series(r)?,
+                ))
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
+        Ok(Self::canonical_representatives(rows, active_source_id))
+    }
+
+    /// Whether a `series` row with this id still exists.
+    ///
+    /// Exists because the schema declares **no** `ON DELETE CASCADE`: a write
+    /// to `episodes` (or `series_genres`) for an id whose parent row is gone
+    /// succeeds silently and leaves an orphan behind, and several stats
+    /// queries read `episodes` without joining back to `series`, so orphans
+    /// permanently inflate episode totals / the 30-day heatmap / the binge
+    /// record. Any code path that scrapes first and writes episodes *after*
+    /// (the background catalog link, `start_watching`) must re-check this
+    /// under the `db` lock right before writing — the user can have undone
+    /// the decision, and deleted the row, while the scrape was in flight.
+    pub fn series_exists(&self, series_id: i64) -> Result<bool> {
+        Ok(self
+            .conn
+            .query_row("SELECT 1 FROM series WHERE id=?1", [series_id], |_| Ok(()))
+            .optional()?
+            .is_some())
     }
 
     /// Hard-delete a series and everything referencing it (episodes,
@@ -1249,6 +1341,108 @@ mod tests {
         let watched_rows = db.list_watched_externally(src).unwrap();
         assert_eq!(watched_rows.len(), 1);
         assert_eq!(watched_rows[0].id, sid_watched);
+    }
+
+    /// The Listas view must show a Want/Descartar decision taken under
+    /// another site: the Descubrir deck excludes it globally regardless of
+    /// the active site, so scoping the listing per-site left the user with no
+    /// UI path at all to review or reverse it after a site switch.
+    #[test]
+    fn list_backlog_still_lists_a_decision_made_under_another_site() {
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        let b = db.upsert_source("TioAnime", "b", "tioanime").unwrap();
+
+        let want = crate::models::Series {
+            id: 0, slug: "anilist-1".into(), title: "Decided On A".into(),
+            url: "https://anilist.co/anime/1".into(), cover_url: None, is_airing: false,
+            followed: false, next_episode_at: None, site_episode_count: None,
+        };
+        let sid_want = db.upsert_series(a, &want).unwrap();
+        db.set_backlog_status(sid_want, Some("want")).unwrap();
+
+        let discarded = crate::models::Series {
+            id: 0, slug: "anilist-2".into(), title: "Discarded On A".into(),
+            url: "https://anilist.co/anime/2".into(), cover_url: None, is_airing: false,
+            followed: false, next_episode_at: None, site_episode_count: None,
+        };
+        let sid_disc = db.upsert_series(a, &discarded).unwrap();
+        db.set_backlog_status(sid_disc, Some("discarded")).unwrap();
+
+        // Site B is now the active one — both decisions must still be listed.
+        let wants = db.list_backlog(b, "want").unwrap();
+        assert_eq!(wants.len(), 1, "a 'want' decided on site A vanished once site B became active");
+        assert_eq!(wants[0].id, sid_want);
+
+        let discards = db.list_backlog(b, "discarded").unwrap();
+        assert_eq!(discards.len(), 1);
+        assert_eq!(discards[0].id, sid_disc);
+    }
+
+    /// Same for the "Ya vistas" sub-list.
+    #[test]
+    fn list_watched_externally_still_lists_a_decision_made_under_another_site() {
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        let b = db.upsert_source("TioAnime", "b", "tioanime").unwrap();
+
+        let watched = crate::models::Series {
+            id: 0, slug: "anilist-9".into(), title: "Seen On A".into(),
+            url: "https://anilist.co/anime/9".into(), cover_url: None, is_airing: false,
+            followed: false, next_episode_at: None, site_episode_count: None,
+        };
+        let sid = db.upsert_series(a, &watched).unwrap();
+        db.set_watched_externally(sid, true).unwrap();
+
+        let rows = db.list_watched_externally(b).unwrap();
+        assert_eq!(rows.len(), 1, "a 'ya lo vi' decided on site A vanished once site B became active");
+        assert_eq!(rows[0].id, sid);
+    }
+
+    /// One show present on two sites is one Listas entry, not two — and the
+    /// active site's row is the representative, so the row the UI acts on
+    /// ("Empezar a ver") belongs to the site currently being scraped.
+    #[test]
+    fn list_backlog_collapses_cross_site_duplicates_preferring_the_active_site() {
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        let b = db.upsert_source("TioAnime", "b", "tioanime").unwrap();
+
+        let make = |slug: &str, url: &str| crate::models::Series {
+            id: 0, slug: slug.into(), title: "Overlord IV".into(), url: url.into(),
+            cover_url: None, is_airing: false, followed: false,
+            next_episode_at: None, site_episode_count: None,
+        };
+        let sid_a = db.upsert_series(a, &make("overlord-iv", "https://a.example/overlord-iv")).unwrap();
+        db.set_anilist_id(sid_a, 4242).unwrap();
+        db.set_backlog_status(sid_a, Some("want")).unwrap();
+        let sid_b = db.upsert_series(b, &make("overlord-4", "https://b.example/overlord-4")).unwrap();
+        db.set_anilist_id(sid_b, 4242).unwrap();
+        db.set_backlog_status(sid_b, Some("want")).unwrap();
+
+        let wants = db.list_backlog(b, "want").unwrap();
+        assert_eq!(wants.len(), 1, "the same show on two sites must be one Listas entry");
+        assert_eq!(wants[0].id, sid_b, "the active site's row must be the representative");
+    }
+
+    #[test]
+    fn series_exists_is_true_until_the_row_is_deleted() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let sid = db
+            .upsert_series(
+                src,
+                &crate::models::Series {
+                    id: 0, slug: "s".into(), title: "S".into(), url: "u".into(),
+                    cover_url: None, is_airing: false, followed: false,
+                    next_episode_at: None, site_episode_count: None,
+                },
+            )
+            .unwrap();
+        assert!(db.series_exists(sid).unwrap());
+        db.delete_series(sid).unwrap();
+        assert!(!db.series_exists(sid).unwrap());
+        assert!(!db.series_exists(sid + 9_999).unwrap());
     }
 
     #[test]

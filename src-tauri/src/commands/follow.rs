@@ -158,6 +158,13 @@ pub async fn start_watching(
     };
     let eps = fetch_episode_list_for(&app, &mirrors, &series_url, a.as_ref()).await?;
     let db = state.db.lock().unwrap();
+    // Same in-flight-delete race as `apply_link_writes` guards: this scrape
+    // takes seconds, during which the row can be removed from Listas (or
+    // undone from the history strip). Writing episodes to a dead id would
+    // leave orphan `episodes` rows behind, which no cascade cleans up.
+    if !db.series_exists(series_id).map_err(|e| e.to_string())? {
+        return Ok(LinkOutcome::NoMatch);
+    }
     let episode_count = eps.len() as i64;
     // De-duplicate by number, not URL (a domain change makes every URL look
     // new). Episodes already present — e.g. scraped by an earlier airing scan,
@@ -520,18 +527,27 @@ async fn link_series_core(
     // it's on the airing list). Merge onto that existing row instead of
     // touching slug/url at all — no extra scrape needed, the existing row
     // already has real episodes/genres from its own normal scrape.
-    if let Some(existing_id) = {
+    //
+    // One lock for the existence check, the lookup and the merge together:
+    // `undo_swipe_decision` takes the same mutex, so this can't observe the
+    // row and then merge a row that undo deleted in between (see
+    // `apply_link_writes`).
+    {
         let db = state.db.lock().unwrap();
-        db.find_series_id_by_slug(info.source_id, &new_slug, series_id).map_err(|e| e.to_string())?
-    } {
-        let db = state.db.lock().unwrap();
-        db.merge_series_into(existing_id, series_id).map_err(|e| e.to_string())?;
-        let episodes = db.list_series_episodes(existing_id).map_err(|e| e.to_string())?.len() as i64;
-        let url = db
-            .get_series_url(existing_id)
-            .map_err(|e| e.to_string())?
-            .unwrap_or(matched.url.clone());
-        return Ok((LinkOutcome::Linked { url, episodes }, Some(existing_id)));
+        if !db.series_exists(series_id).map_err(|e| e.to_string())? {
+            return Ok((LinkOutcome::NoMatch, None));
+        }
+        if let Some(existing_id) =
+            db.find_series_id_by_slug(info.source_id, &new_slug, series_id).map_err(|e| e.to_string())?
+        {
+            db.merge_series_into(existing_id, series_id).map_err(|e| e.to_string())?;
+            let episodes = db.list_series_episodes(existing_id).map_err(|e| e.to_string())?.len() as i64;
+            let url = db
+                .get_series_url(existing_id)
+                .map_err(|e| e.to_string())?
+                .unwrap_or(matched.url.clone());
+            return Ok((LinkOutcome::Linked { url, episodes }, Some(existing_id)));
+        }
     }
 
     // No collision: fetch the matched series page once, reused for both the
@@ -547,21 +563,80 @@ async fn link_series_core(
     let detail = a.parse_series_detail(&scraped.html).map_err(|e| e.to_string())?;
     let kind = detail.kind.unwrap_or(matched.kind.clone());
 
-    let db = state.db.lock().unwrap();
-    db.relink_series(series_id, &new_slug, &matched.url, matched.poster_url.as_deref(), &kind)
-        .map_err(|e| e.to_string())?;
-    db.replace_series_genres(series_id, &detail.genres).map_err(|e| e.to_string())?;
     let episode_count = episodes.len() as i64;
+    let written = {
+        let db = state.db.lock().unwrap();
+        apply_link_writes(
+            &db,
+            series_id,
+            &new_slug,
+            &matched.url,
+            matched.poster_url.as_deref(),
+            &kind,
+            &detail.genres,
+            &episodes,
+            info.watched_externally,
+        )?
+    };
+    if !written {
+        // The user undid the decision while the scrape above was running.
+        // Nothing to link, and nothing was written. `NoMatch` (rather than a
+        // dedicated outcome) so the frontend's link-status line resolves and
+        // clears instead of hanging on "Buscando…" forever; the swipe it
+        // belonged to no longer exists either way.
+        return Ok((LinkOutcome::NoMatch, None));
+    }
+
+    Ok((LinkOutcome::Linked { url: matched.url, episodes: episode_count }, Some(series_id)))
+}
+
+/// The DB-write half of a successful (non-merge) link, guarded on the target
+/// `series` row still existing.
+///
+/// **The guard is the point.** `link_series_core` scrapes before it writes,
+/// and that scrape takes seconds; a `Seen` swipe fires it in the background
+/// while the deck stays interactive, so the user can perfectly well press
+/// undo (or "Devolver al mazo") in the meantime — which hard-deletes the very
+/// row this is about to write episodes to. The schema declares no
+/// `ON DELETE CASCADE`, so `apply_episode_diff` against a dead id inserts
+/// orphan `episodes` rows with no parent, and several stats queries read
+/// `episodes` without joining `series`, so those orphans permanently inflate
+/// episode totals, the 30-day heatmap and the binge record with a show the
+/// user explicitly un-decided.
+///
+/// Returns `false` when the row is gone — a silent no-op is the correct
+/// answer, not an error: the decision this link belonged to was already
+/// reversed, so there is nothing left to link. Callers must hold the `db`
+/// mutex across this call (as `link_series_core` does): `undo_swipe_decision`
+/// takes the same mutex, which is what makes check-then-write atomic against
+/// it. It can't be one SQL transaction because `apply_episode_diff` opens its
+/// own and SQLite rejects nesting.
+#[allow(clippy::too_many_arguments)]
+fn apply_link_writes(
+    db: &Db,
+    series_id: i64,
+    slug: &str,
+    url: &str,
+    cover_url: Option<&str>,
+    kind: &str,
+    genres: &[String],
+    episodes: &[Episode],
+    watched_externally: bool,
+) -> Result<bool, String> {
+    if !db.series_exists(series_id).map_err(|e| e.to_string())? {
+        return Ok(false);
+    }
+    db.relink_series(series_id, slug, url, cover_url, kind).map_err(|e| e.to_string())?;
+    db.replace_series_genres(series_id, genres).map_err(|e| e.to_string())?;
     // De-duplicate by number (see the follow path above / db.rs migration): a
     // re-link after a domain change must refresh links, not duplicate
     // episodes. One transaction for the whole list — see
     // `apply_episode_diff`'s doc comment.
-    db.apply_episode_diff(series_id, None, &episodes).map_err(|e| e.to_string())?;
-    if info.watched_externally {
+    db.apply_episode_diff(series_id, None, episodes).map_err(|e| e.to_string())?;
+    if watched_externally {
         db.mark_all_episodes_seen(series_id).map_err(|e| e.to_string())?;
     }
-
-    Ok((LinkOutcome::Linked { url: matched.url, episodes: episode_count }, Some(series_id)))
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -683,6 +758,79 @@ mod tests {
         let eps = db.list_series_episodes(sid).unwrap();
         assert_eq!(eps.len(), 1);
         assert!(eps[0].seen, "episode seen state must survive a reclassify");
+    }
+
+    fn ep(number: &str) -> Episode {
+        Episode {
+            id: 0, series_id: 0, number: number.into(), title: None,
+            url: format!("https://site.example/ep/{number}"), released_at: None, seen: false,
+        }
+    }
+
+    /// The happy path still writes: slug/url/kind rewritten and every scraped
+    /// episode inserted.
+    #[test]
+    fn apply_link_writes_relinks_and_inserts_episodes_for_a_live_row() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let sid = insert_test_series(&db, src, "anilist-77");
+
+        let written = apply_link_writes(
+            &db, sid, "real-slug", "https://site.example/real-slug", None, "TV",
+            &["Action".to_string()], &[ep("1"), ep("2")], false,
+        )
+        .unwrap();
+
+        assert!(written);
+        assert_eq!(db.list_series_episodes(sid).unwrap().len(), 2);
+        assert_eq!(db.get_series_url(sid).unwrap().as_deref(), Some("https://site.example/real-slug"));
+    }
+
+    /// Regression (orphan `episodes` rows): undo races the background link.
+    /// The user swipes "Ya lo vi", the fire-and-forget `link_catalog_series`
+    /// starts scraping, the user presses undo — which hard-deletes the series
+    /// row — and only then does the scrape come back. Writing episodes now
+    /// would leave rows in `episodes` whose `series_id` has no parent (the
+    /// schema has no `ON DELETE CASCADE`), and the stats queries that read
+    /// `episodes` without joining `series` would count them forever.
+    #[test]
+    fn apply_link_writes_is_a_silent_no_op_after_undo_deleted_the_row() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let sid = insert_test_series(&db, src, "anilist-88");
+
+        // Exactly what `undo_last_swipe`/`undo_swipe_entry` do to the row.
+        assert_eq!(db.undo_swipe_decision(sid).unwrap().as_deref(), Some("anilist-88"));
+        assert!(!db.series_exists(sid).unwrap());
+
+        let written = apply_link_writes(
+            &db, sid, "real-slug", "https://site.example/real-slug", None, "TV",
+            &["Action".to_string()], &[ep("1"), ep("2"), ep("3")], true,
+        )
+        .unwrap();
+
+        assert!(!written, "the link must report that it wrote nothing");
+        let orphans: i64 = db
+            .conn
+            .query_row("SELECT COUNT(*) FROM episodes WHERE series_id=?1", [sid], |r| r.get(0))
+            .unwrap();
+        assert_eq!(orphans, 0, "orphan episode rows were inserted for a deleted series");
+        let any_orphan: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM episodes e
+                 WHERE NOT EXISTS (SELECT 1 FROM series s WHERE s.id = e.series_id)",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(any_orphan, 0, "the episodes table must have no parentless rows at all");
+        // The genre table has no cascade either.
+        let genres: i64 = db
+            .conn
+            .query_row("SELECT COUNT(*) FROM series_genres WHERE series_id=?1", [sid], |r| r.get(0))
+            .unwrap();
+        assert_eq!(genres, 0);
     }
 
     fn scanned(title: &str) -> Series {
