@@ -577,6 +577,38 @@ impl Db {
         Ok(())
     }
 
+    /// Up to `limit` currently-airing series on `source_id` whose cover has
+    /// never been fetched: not AniList-linked (`list_airing` already shows
+    /// those via the catalog's own `data:`-compatible-by-CSP cover instead
+    /// of this column, see `db/airing.rs`) and not already a `data:` URI.
+    ///
+    /// This is `refresh()`'s only path to ever converting a cover for an
+    /// airing series that ISN'T followed — the main fetch/backlog loops are
+    /// both scoped to `list_followed`, so an unfollowed, unlinked airing
+    /// series' cover was permanently stuck on the site's raw remote URL,
+    /// which the app's CSP silently blocks (confirmed live: 279 of 308
+    /// currently-airing series across one real library). `limit` bounds
+    /// this to a modest number of fetches per refresh cycle rather than
+    /// bulk-fetching the whole airing listing's covers at once, which reads
+    /// to Cloudflare as scraping abuse regardless of having a valid session
+    /// — see CLAUDE.md. Self-limiting the same way the followed-series
+    /// cover backlog is: a row drops out for good the first time this
+    /// succeeds, so it converges over several refresh cycles instead of
+    /// needing to happen all at once.
+    pub fn airing_series_needing_cover_fetch(&self, source_id: i64, limit: i64) -> Result<Vec<(i64, String, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, title, cover_url FROM series
+             WHERE source_id=?1 AND is_airing=1 AND anilist_id IS NULL
+               AND cover_url IS NOT NULL AND cover_url NOT LIKE 'data:%'
+             ORDER BY id
+             LIMIT ?2",
+        )?;
+        let rows = stmt
+            .query_map((source_id, limit), |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
     /// Replace a series' cover with a fetched base64 data URI.
     pub fn update_series_cover(&self, series_id: i64, cover_url: &str) -> Result<()> {
         self.conn.execute(
@@ -1158,6 +1190,60 @@ mod tests {
         db.update_series_cover(sid, "https://plain.site/x.jpg").unwrap();
         db.upsert_series(src, &mk_airing("x", "X", None)).unwrap();
         assert_eq!(stored_cover(&db, sid), None);
+    }
+
+    #[test]
+    fn airing_series_needing_cover_fetch_finds_unfollowed_unlinked_airing_rows_only() {
+        // The bug: covers only ever got fetched for followed series (the
+        // main fetch loop and its backlog are both scoped to
+        // list_followed), so an airing series nobody follows kept its raw
+        // remote thumbnail forever — CSP silently blocks it, so it just
+        // never showed a photo. Confirmed live: 279 of 308 currently-airing
+        // series across one real library.
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+
+        // Needs a fetch: airing, unfollowed, unlinked, remote cover.
+        let mut needs_fetch = mk_airing("needs-fetch", "Needs Fetch", None);
+        needs_fetch.cover_url = Some("https://site/needs-fetch.jpg".into());
+        let sid_needs = db.upsert_series(src, &needs_fetch).unwrap();
+
+        // Already fetched: must not show up again.
+        let mut already = mk_airing("already", "Already Fetched", None);
+        already.cover_url = Some("https://site/already.jpg".into());
+        let sid_already = db.upsert_series(src, &already).unwrap();
+        db.update_series_cover(sid_already, "data:image/png;base64,AAAA").unwrap();
+
+        // AniList-linked: list_airing shows the catalog's own cover for
+        // these instead (see db/airing.rs), so fetching this column would
+        // be wasted work.
+        let mut linked = mk_airing("linked", "Linked Show", None);
+        linked.cover_url = Some("https://site/linked.jpg".into());
+        let sid_linked = db.upsert_series(src, &linked).unwrap();
+        db.set_anilist_id(sid_linked, 999).unwrap();
+
+        // No cover at all: nothing to fetch.
+        db.upsert_series(src, &mk_airing("no-cover", "No Cover", None)).unwrap();
+
+        // Not airing: out of scope for this backlog (finished shows are the
+        // followed-only backlog's job, not this one's).
+        let mut finished = mk_airing("finished", "Finished Show", None);
+        finished.cover_url = Some("https://site/finished.jpg".into());
+        finished.is_airing = false;
+        db.upsert_series(src, &finished).unwrap();
+
+        let rows = db.airing_series_needing_cover_fetch(src, 20).unwrap();
+        assert_eq!(rows.len(), 1, "only the unfollowed/unlinked/remote-cover/airing row qualifies");
+        assert_eq!(rows[0].0, sid_needs);
+        assert_eq!(rows[0].2, "https://site/needs-fetch.jpg");
+
+        // The cap is real, not just a LIMIT that happens not to bite here.
+        for i in 0..5 {
+            let mut s = mk_airing(&format!("more-{i}"), &format!("More {i}"), None);
+            s.cover_url = Some(format!("https://site/more-{i}.jpg"));
+            db.upsert_series(src, &s).unwrap();
+        }
+        assert_eq!(db.airing_series_needing_cover_fetch(src, 3).unwrap().len(), 3);
     }
 
     #[test]
