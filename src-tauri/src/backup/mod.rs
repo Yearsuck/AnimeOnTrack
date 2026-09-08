@@ -51,9 +51,30 @@ pub fn validate_restore_bytes(bytes: &[u8]) -> Result<(), String> {
     result
 }
 
-pub fn signature_string(counts: (i64, i64, i64, Option<String>)) -> String {
-    let (series, eps, max_ep, max_seen) = counts;
-    format!("{series}:{eps}:{max_ep}:{}", max_seen.unwrap_or_default())
+/// Render a `SignatureCounts` to the opaque string stored in the
+/// `backup_signature` setting and compared by `is_auto_backup_due`. Field
+/// order is fixed and every field is included, so adding a field to
+/// `SignatureCounts` automatically widens what the auto-backup notices.
+///
+/// The string is compared, never parsed, so its shape is free to change — an
+/// older stored signature simply won't match the new rendering, which makes
+/// the next due check take one backup and settle. That is the safe direction
+/// to fail in: one redundant upload beats never uploading again.
+pub fn signature_string(c: crate::db::SignatureCounts) -> String {
+    format!(
+        "{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
+        c.series,
+        c.episodes,
+        c.max_episode_id,
+        c.max_seen_at.unwrap_or_default(),
+        c.seen_episodes,
+        c.followed,
+        c.watched_externally,
+        c.backlog_want,
+        c.backlog_discarded,
+        c.anilist_linked,
+        c.settings_hash,
+    )
 }
 
 /// Pure decision for the startup/after-refresh auto-backup. `now`/`last_at`
@@ -168,13 +189,72 @@ mod tests {
         std::fs::remove_file(&tmp).ok();
     }
 
+    fn counts() -> crate::db::SignatureCounts {
+        crate::db::SignatureCounts {
+            series: 1,
+            episodes: 2,
+            max_episode_id: 3,
+            max_seen_at: None,
+            seen_episodes: 0,
+            followed: 0,
+            watched_externally: 0,
+            backlog_want: 0,
+            backlog_discarded: 0,
+            anilist_linked: 0,
+            settings_hash: 0,
+        }
+    }
+
     #[test]
     fn signature_string_is_stable_and_distinct() {
-        assert_eq!(signature_string((1, 2, 3, None)), signature_string((1, 2, 3, None)));
-        assert_ne!(
-            signature_string((1, 2, 3, None)),
-            signature_string((1, 2, 3, Some("2026-07-14".into())))
-        );
+        assert_eq!(signature_string(counts()), signature_string(counts()));
+        let mut seen = counts();
+        seen.max_seen_at = Some("2026-07-14".into());
+        assert_ne!(signature_string(counts()), signature_string(seen));
+    }
+
+    /// Every field must reach the rendered string — a field that silently
+    /// doesn't is a whole class of change the auto-backup goes blind to, which
+    /// is exactly the bug this signature was widened to fix.
+    #[test]
+    fn signature_string_reflects_every_field() {
+        let base = signature_string(counts());
+        // One block per field, deliberately spelled out: a field silently
+        // missing from the format string is a whole class of change the
+        // auto-backup goes blind to, which is the bug this was widened to fix.
+        let mut c = counts();
+        c.series += 1;
+        assert_ne!(signature_string(c), base, "series");
+        let mut c = counts();
+        c.episodes += 1;
+        assert_ne!(signature_string(c), base, "episodes");
+        let mut c = counts();
+        c.max_episode_id += 1;
+        assert_ne!(signature_string(c), base, "max_episode_id");
+        let mut c = counts();
+        c.max_seen_at = Some("2026-07-14".into());
+        assert_ne!(signature_string(c), base, "max_seen_at");
+        let mut c = counts();
+        c.seen_episodes += 1;
+        assert_ne!(signature_string(c), base, "seen_episodes");
+        let mut c = counts();
+        c.followed += 1;
+        assert_ne!(signature_string(c), base, "followed");
+        let mut c = counts();
+        c.watched_externally += 1;
+        assert_ne!(signature_string(c), base, "watched_externally");
+        let mut c = counts();
+        c.backlog_want += 1;
+        assert_ne!(signature_string(c), base, "backlog_want");
+        let mut c = counts();
+        c.backlog_discarded += 1;
+        assert_ne!(signature_string(c), base, "backlog_discarded");
+        let mut c = counts();
+        c.anilist_linked += 1;
+        assert_ne!(signature_string(c), base, "anilist_linked");
+        let mut c = counts();
+        c.settings_hash = 42;
+        assert_ne!(signature_string(c), base, "settings_hash");
     }
 
     #[test]

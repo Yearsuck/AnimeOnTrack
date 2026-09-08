@@ -148,6 +148,36 @@ impl Db {
             );
             "#,
         )?;
+        // series_merges: the undo trail for `merge_series_into`.
+        //
+        // A catalog swipe writes a synthetic `anilist-{id}` series row and
+        // pushes its id onto `swipe_history`. The background site-link that
+        // follows a "Ya lo vi" decision can find that the matched site slug is
+        // ALREADY tracked as a real row, and then folds the synthetic row's
+        // flags onto that survivor and deletes the synthetic row. `undo_last_
+        // swipe` popped the synthetic id, found nothing to delete, and silently
+        // did nothing — leaving a real (possibly followed) series permanently
+        // flagged `watched_externally` while the UI reported "Deshecho".
+        //
+        // Each row here records which flags that specific merge actually
+        // *flipped* on the survivor (a flag the survivor already had set is
+        // recorded as 0, so an undo never clears something the merge didn't
+        // set), plus the synthetic row's title so undo can name what it
+        // reverted. Keyed by the now-deleted synthetic id — that's what
+        // `swipe_history` holds. Consumed and deleted by `undo_swipe_decision`.
+        self.conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS series_merges (
+                synthetic_id INTEGER PRIMARY KEY,
+                survivor_id INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                set_followed INTEGER NOT NULL DEFAULT 0,
+                set_watched_externally INTEGER NOT NULL DEFAULT 0,
+                set_backlog_status INTEGER NOT NULL DEFAULT 0,
+                merged_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            "#,
+        )?;
         // Local mirror of AniList's catalog (see anilist.rs / sync_anime_catalog)
         // — browsing and Descubrir's "Catálogo completo" source read from this
         // table, not from AniList live, once synced. `sort_order` is kept as
@@ -204,6 +234,33 @@ impl Db {
         // `db::episodes::airing_season_dates` to answer "aired this season"
         // for airing-site rows with no scraped episode data.
         ensure_column(&self.conn, "anilist_catalog", "start_date", "INTEGER")?;
+        // metadata_version: which generation of the AniList field set this row
+        // was last written with (see `db::catalog::CATALOG_METADATA_VERSION`).
+        // `stale_catalog_ids` used to infer staleness from `title_romaji IS
+        // NULL`, which silently stopped working the moment a *later* column
+        // (`status`/`duration`/`studio`/`start_date`) was added: a row synced
+        // in between has a romaji title and NULL everything else, so it looked
+        // fresh forever and the metadata backfill never re-fetched it. Worse,
+        // a NULL `studio`/`start_date` is legitimate AniList data for plenty
+        // of titles, so no combination of "is this column NULL" checks can
+        // tell "never fetched" from "genuinely has none". An explicit version
+        // stamp can, and it doesn't need rewriting for the next column.
+        ensure_column(&self.conn, "anilist_catalog", "metadata_version", "INTEGER NOT NULL DEFAULT 0")?;
+        // One-time seeding for databases that predate the column: everything
+        // defaults to 0 (= stale), which would put the whole ~22k-row catalog
+        // through a >12h paced backfill on the next launch. A row that already
+        // carries BOTH a romaji title and a `status` was written by a build
+        // that requested the current field set, so stamp it as current and
+        // leave only the genuinely-old rows stale — which is exactly the set
+        // the old marker was missing. Guarded on `metadata_version = 0` so it
+        // never drags a row *back* from a future version.
+        self.conn.execute(
+            "UPDATE anilist_catalog SET metadata_version = 1
+             WHERE metadata_version = 0
+               AND title_romaji IS NOT NULL AND title_romaji != ''
+               AND status IS NOT NULL",
+            [],
+        )?;
         self.conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_catalog_popularity ON anilist_catalog(popularity DESC);
              CREATE INDEX IF NOT EXISTS idx_catalog_genre ON anilist_catalog_genres(genre);",
@@ -233,6 +290,18 @@ impl Db {
         // re-raising — while still resuming normal catch-up once the user
         // shows real forward progress past that point again.
         ensure_column(&self.conn, "series", "sync_watermark_applied", "INTEGER")?;
+        // series.sync_rollback_active: `sync_watermark_applied` alone can't
+        // tell "still sitting at the watermark I rolled back to" apart from
+        // "never rolled back, just haven't needed a push yet" once the
+        // rollback cycle above resyncs `sync_watermark_applied` down to the
+        // row's own (lower) watermark — both look identical on the next
+        // sync (own watermark == applied), and the cascade fired anyway,
+        // undoing the rollback one launch later. This flag is set the
+        // moment a rollback is first detected and only cleared once the
+        // row's own watermark rises past where it stood at that moment —
+        // at which point normal cross-site catch-up resumes immediately,
+        // even if it hasn't reached the old ceiling yet.
+        ensure_column(&self.conn, "series", "sync_rollback_active", "INTEGER NOT NULL DEFAULT 0")?;
 
         // Site-agnostic library (docs/cross-site-library-investigation.md,
         // option C). Identity is canonical (AniList id, else normalized title),
@@ -319,6 +388,7 @@ pub(crate) mod library;
 pub use series::SwipeHistoryRow;
 pub use catalog::CatalogFilter;
 pub use airing::PendingSort;
+pub use stats::SignatureCounts;
 
 #[cfg(test)]
 mod test_support;

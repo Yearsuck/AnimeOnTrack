@@ -308,7 +308,7 @@ impl Db {
     /// Real forward progress past that point resumes normal catch-up.
     pub fn sync_seen_progress_across_sites(&self) -> Result<usize> {
         let mut stmt = self.conn.prepare(
-            "SELECT s.id, s.anilist_id, s.title, s.sync_watermark_applied,
+            "SELECT s.id, s.anilist_id, s.title, s.sync_watermark_applied, s.sync_rollback_active,
                     COALESCE(MAX(CASE WHEN e.seen=1 THEN CAST(e.number AS INTEGER) END), 0) AS own_watermark
              FROM series s LEFT JOIN episodes e ON e.series_id = s.id
              WHERE s.followed=1
@@ -318,17 +318,20 @@ impl Db {
             id: i64,
             key: String,
             applied: Option<i64>,
+            rollback_active: bool,
             own_watermark: i64,
         }
         let rows: Vec<Row> = stmt
             .query_map([], |r| {
                 let anilist_id: Option<i64> = r.get(1)?;
                 let title: String = r.get(2)?;
+                let rollback_active: i64 = r.get(4)?;
                 Ok(Row {
                     id: r.get(0)?,
                     key: canon_key(anilist_id, &title),
                     applied: r.get(3)?,
-                    own_watermark: r.get(4)?,
+                    rollback_active: rollback_active != 0,
+                    own_watermark: r.get(5)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -344,8 +347,45 @@ impl Db {
         let mut advanced = 0usize;
         for row in &rows {
             let ceiling = canonical[&row.key];
-            let rolled_back = row.applied.is_some_and(|applied| row.own_watermark < applied);
-            if ceiling > row.own_watermark && !rolled_back {
+
+            if row.rollback_active {
+                // Already flagged from an earlier cycle: stays suppressed
+                // until the user's own watermark rises past where it stood
+                // when the rollback was first detected (`applied`) — not
+                // just until it reaches the ceiling again. Comparing only
+                // against `applied` (with no separate flag) can't tell
+                // "still sitting at the rolled-back value" apart from
+                // "never rolled back", since resyncing `applied` down to
+                // match makes the two states look identical on the very
+                // next sync — which is exactly how this bug shipped once
+                // already (undid the rollback one launch later).
+                if row.own_watermark > row.applied.unwrap_or(0) {
+                    self.conn.execute(
+                        "UPDATE series SET sync_rollback_active=0 WHERE id=?1",
+                        [row.id],
+                    )?;
+                    // Fall through to normal catch-up below using the now-
+                    // cleared state, same as a row that was never rolled back.
+                } else {
+                    self.conn.execute(
+                        "UPDATE series SET sync_watermark_applied=?2 WHERE id=?1",
+                        (row.id, row.own_watermark),
+                    )?;
+                    continue;
+                }
+            } else if row.applied.is_some_and(|applied| row.own_watermark < applied) {
+                // Freshly detected: latch the flag and the drop point, and
+                // suppress this cycle's cascade — the drop is presumed
+                // deliberate (a manual un-mark) until forward progress says
+                // otherwise.
+                self.conn.execute(
+                    "UPDATE series SET sync_watermark_applied=?2, sync_rollback_active=1 WHERE id=?1",
+                    (row.id, row.own_watermark),
+                )?;
+                continue;
+            }
+
+            if ceiling > row.own_watermark {
                 self.set_seen_cascade(row.id, &ceiling.to_string(), true)?;
                 self.conn.execute(
                     "UPDATE series SET sync_watermark_applied=?2 WHERE id=?1",
@@ -353,10 +393,9 @@ impl Db {
                 )?;
                 advanced += 1;
             } else {
-                // Nothing to raise (already at/above the ceiling), or raising
-                // it would override a manual rollback — either way, resync
-                // bookkeeping to the row's real current watermark so a future
-                // refresh judges it against what it actually is now.
+                // Already at/above the ceiling: resync bookkeeping to the
+                // row's real current watermark so a future advance is
+                // judged against what it actually is now.
                 self.conn.execute(
                     "UPDATE series SET sync_watermark_applied=?2 WHERE id=?1",
                     (row.id, row.own_watermark),
@@ -801,6 +840,17 @@ mod tests {
             db.list_series_episodes(oa).unwrap().iter().filter(|e| e.seen).count(),
             2,
             "A's manual rollback survives a refresh"
+        );
+
+        // A SECOND consecutive sync with no further progress is the actual
+        // regression case: an earlier version reset `sync_watermark_applied`
+        // down to the rolled-back value on the first sync above, which made
+        // the rollback undetectable on this second call and re-raised A.
+        assert_eq!(db.sync_seen_progress_across_sites().unwrap(), 0, "rollback must still be respected on a later sync too");
+        assert_eq!(
+            db.list_series_episodes(oa).unwrap().iter().filter(|e| e.seen).count(),
+            2,
+            "A's manual rollback survives a second refresh cycle"
         );
 
         // Genuine forward progress past the rollback point still resumes

@@ -580,7 +580,15 @@ async fn run_episode_backfill(app: AppHandle) -> Result<(), String> {
         else {
             continue;
         };
-        {
+        // Per-series error isolation, exactly as `refresh()`'s own loop does
+        // it (see the comment there): one series' data problem must never
+        // abort the sweep for every series still queued behind it. A bare
+        // `?` here did precisely that — and worse than in `refresh()`, since
+        // this runs fire-and-forget in the background, so the failure was
+        // invisible apart from one line on stderr and the remaining followed
+        // series simply stayed at zero episodes until the next site switch
+        // happened to reach them.
+        let db_result: Result<(), String> = (|| {
             let db = state.db.lock().unwrap();
             let new_url = format!("{working_mirror}{path}");
             let new_url = (new_url != s.url).then_some(new_url.as_str());
@@ -593,6 +601,10 @@ async fn run_episode_backfill(app: AppHandle) -> Result<(), String> {
             if let Some(n) = db.take_carried_seen_number(s.id).map_err(|e| e.to_string())? {
                 db.set_seen_cascade(s.id, &n.to_string(), true).map_err(|e| e.to_string())?;
             }
+            Ok(())
+        })();
+        if let Err(e) = db_result {
+            eprintln!("[backfill] series {} ({}): DB update failed, skipping to next series: {e}", s.id, s.title);
         }
         tokio::time::sleep(PACED).await;
     }

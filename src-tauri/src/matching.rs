@@ -182,15 +182,30 @@ impl CatalogIndex {
     /// Best fuzzy catalog id for any of `queries`, or `None` when nothing clears
     /// `FUZZY_LINK_THRESHOLD`. Only catalog titles sharing a ≥4-char word with
     /// the query are scored (via `token_index`), so this stays cheap even over
-    /// the whole catalog. Ties break toward the more popular row — remakes and
-    /// shorts reuse a show's words, and the popular entry is the one meant.
+    /// the whole catalog. A candidate whose extracted season number matches the
+    /// query's always outranks one that doesn't, regardless of raw score or
+    /// popularity — `score()`'s `same_franchise` floor treats every season of a
+    /// show as an equally valid ≥0.9 match (by design, for callers that only
+    /// care about franchise identity), which without this tie-break meant a
+    /// "... Temporada 2" query reliably linked to season 1's AniList entry
+    /// instead of season 2's: season 1 is usually both more popular and a
+    /// tighter raw string match (nothing to explain away but the suffix
+    /// itself), while season 2's title diverges more on wording ("2nd Season"
+    /// vs "Temporada 2") despite being the actually-correct target. Only
+    /// applied when both sides have an extractable number — an ambiguous side
+    /// (no season marker at all, or one with no number like "The Final
+    /// Season") doesn't get penalized, since that's not a real signal either
+    /// way. Below that, ties break toward the more popular row, same as
+    /// before — remakes and shorts reuse a show's words, and the popular
+    /// entry is the one meant.
     pub fn fuzzy_lookup(&self, queries: &[&str]) -> Option<i64> {
-        let mut best: Option<(f64, i64, i64)> = None; // (score, popularity, id)
+        let mut best: Option<(bool, f64, i64, i64)> = None; // (season_match, score, popularity, id)
         for q in queries {
             let qn = normalize_title(q);
             if qn.is_empty() {
                 continue;
             }
+            let q_season = extract_season_number(&qn);
             // Candidate positions: union of postings for the query's real words.
             let mut seen: HashSet<u32> = HashSet::new();
             for tok in qn.split_whitespace().filter(|t| t.len() >= MIN_INDEX_TOKEN_LEN) {
@@ -201,14 +216,26 @@ impl CatalogIndex {
             for pos in seen {
                 let (cand_norm, id, pop) = &self.fuzzy_titles[pos as usize];
                 let s = score(&qn, cand_norm);
-                if s >= FUZZY_LINK_THRESHOLD
-                    && best.as_ref().is_none_or(|(bs, bpop, _)| s > *bs || (s == *bs && pop > bpop))
-                {
-                    best = Some((s, *pop, *id));
+                if s < FUZZY_LINK_THRESHOLD {
+                    continue;
+                }
+                let season_match = match (q_season, extract_season_number(cand_norm)) {
+                    (Some(a), Some(b)) => a == b,
+                    _ => true,
+                };
+                let better = match &best {
+                    None => true,
+                    Some((best_match, bs, bpop, _)) => {
+                        (season_match && !best_match)
+                            || (season_match == *best_match && (s > *bs || (s == *bs && pop > bpop)))
+                    }
+                };
+                if better {
+                    best = Some((season_match, s, *pop, *id));
                 }
             }
         }
-        best.map(|(_, _, id)| id)
+        best.map(|(_, _, _, id)| id)
     }
 
     /// First `candidates` entry with an exact normalized hit, so callers pass
@@ -366,6 +393,58 @@ pub(crate) fn strip_season_markers(
         break;
     }
     tokens
+}
+
+/// Best-effort trailing season NUMBER a normalized title encodes: "temporada
+/// 2"/"season 2" -> `Some(2)`, "2nd season" -> `Some(2)`, a bare trailing
+/// roman numeral ("iii") -> `Some(3)`, no season indicator at all -> `Some(1)`
+/// (the convention an unsuffixed title means season 1). Returns `None` only
+/// when a season marker is clearly present but doesn't resolve to a number
+/// ("the final season") — that case must stay ambiguous rather than default
+/// to 1, or a "Final Season" query could wrongly outrank the correct entry
+/// against an unrelated season-1 title that happens to share more surface
+/// text. Used by `CatalogIndex::fuzzy_lookup` to break ties `score()`'s
+/// season-blind `same_franchise` floor can't.
+fn extract_season_number(normalized_title: &str) -> Option<u32> {
+    let tokens: Vec<&str> = normalized_title.split_whitespace().collect();
+    let is_marker = |t: &str| SEASON_MARKERS.contains(&t);
+    let roman_num = |t: &str| ROMAN_NUMERALS.iter().position(|r| *r == t).map(|i| i as u32 + 2);
+    let ordinal_num = |t: &str| -> Option<u32> {
+        let head = t
+            .strip_suffix("st")
+            .or_else(|| t.strip_suffix("nd"))
+            .or_else(|| t.strip_suffix("rd"))
+            .or_else(|| t.strip_suffix("th"))?;
+        (!head.is_empty() && head.chars().all(|c| c.is_ascii_digit()))
+            .then(|| head.parse().ok())
+            .flatten()
+    };
+
+    let &last = tokens.last()?;
+    if let Some(n) = roman_num(last) {
+        return Some(n);
+    }
+    if tokens.len() >= 2 {
+        let prev = tokens[tokens.len() - 2];
+        // "... 2nd Season": ordinal immediately before the marker word.
+        if is_marker(last) {
+            if let Some(n) = ordinal_num(prev) {
+                return Some(n);
+            }
+        }
+        // "... Temporada 2" / "... Part 2": marker word immediately before
+        // a plain integer.
+        if is_ascii_int(last) && is_marker(prev) {
+            if let Ok(n) = last.parse() {
+                return Some(n);
+            }
+        }
+    }
+    if tokens.iter().any(|t| is_marker(t) || roman_num(t).is_some()) {
+        None
+    } else {
+        Some(1)
+    }
 }
 
 /// The "franchise base" of a normalized title: the same title with any
