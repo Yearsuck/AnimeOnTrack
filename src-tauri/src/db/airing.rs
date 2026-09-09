@@ -8,6 +8,23 @@ pub enum PendingSort {
     RemainingDesc,
 }
 
+/// Whether `cover_url` is something the frontend's CSP (`img-src 'self'
+/// data: asset: https://asset.localhost https://*.anilist.co`) will actually
+/// render, rather than silently block — a `data:` URI (fetched by
+/// `refresh()`) or an AniList CDN URL (already resolved through
+/// `anilist_catalog.cover_url` by `list_airing`'s own COALESCE). Anything
+/// else is a scraped site's raw remote thumbnail.
+fn is_csp_displayable_cover(cover_url: Option<&str>) -> bool {
+    let Some(u) = cover_url else { return false };
+    if u.starts_with("data:") {
+        return true;
+    }
+    url::Url::parse(u)
+        .ok()
+        .and_then(|parsed| parsed.host_str().map(|h| h.to_ascii_lowercase()))
+        .is_some_and(|host| host == "anilist.co" || host.ends_with(".anilist.co"))
+}
+
 impl Db {
     /// The **canonical** "En emisión" list — the union of every site's airing
     /// shows, deduped to one entry per canonical identity (`anilist_id`, else
@@ -91,6 +108,21 @@ impl Db {
             // happens to be active — otherwise a stale active-site member
             // silently drags the whole show to the bottom of the list.
             let freshest_next_episode_at = group.iter().filter_map(|m| m.series.next_episode_at).max();
+            // A show airing on several sites is only cover-fetched on
+            // whichever one is currently active (see commands/scan.rs's
+            // airing_series_needing_cover_fetch — WebView2 scraping is
+            // inherently one-active-site-at-a-time), so a representative
+            // picked from a site that's never been active would show a
+            // blank card forever even once a sibling site's copy has a real
+            // photo. Borrow one from any group member before the
+            // active-site pick below discards the rest of the group — the
+            // representative still decides url/id/episodes (its site is the
+            // one you'll actually open), only the cover can come from
+            // elsewhere.
+            let borrowed_cover = group
+                .iter()
+                .find(|m| is_csp_displayable_cover(m.series.cover_url.as_deref()))
+                .and_then(|m| m.series.cover_url.clone());
             // Representative: prefer the active-site member (its episodes are the
             // ones you'll actually open), then a followed member, then stable id.
             let rep = group
@@ -107,6 +139,11 @@ impl Db {
                 })
                 .unwrap();
             let mut series = rep.series;
+            if !is_csp_displayable_cover(series.cover_url.as_deref()) {
+                if let Some(cover) = borrowed_cover {
+                    series.cover_url = Some(cover);
+                }
+            }
             series.followed = followed_any;
             series.next_episode_at = freshest_next_episode_at;
             out.push(series);
@@ -350,6 +387,42 @@ mod tests {
         // Representative prefers the active site (so its episodes open there).
         let op_from_b = from_b.iter().find(|s| s.title.eq_ignore_ascii_case("one piece")).unwrap();
         assert_eq!(op_from_b.id, one_b, "active-site member is the representative");
+    }
+
+    #[test]
+    fn list_airing_borrows_a_displayable_cover_from_a_sibling_site_when_the_representative_has_none() {
+        // The reported bug: covers are only ever fetched for the currently
+        // active site's own rows (refresh() is inherently one-active-site-
+        // at-a-time), but list_airing is cross-site — a show airing on
+        // several sites can pick a representative from whichever site is
+        // active even when THAT site's own copy has never had its cover
+        // fetched, while a sibling site's copy already has a real one. The
+        // card showed the fallback tile forever even after the active
+        // site's own backlog had long since converged.
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("AnimeYT", "https://a", "animeytx").unwrap();
+        let b = db.upsert_source("TioAnime", "https://b", "tioanime").unwrap();
+        let mk = |slug: &str, cover: &str| crate::models::Series {
+            id: 0, slug: slug.into(), title: "Shared Show".into(), url: format!("u-{slug}"),
+            cover_url: Some(cover.into()), is_airing: true, followed: false, next_episode_at: None, site_episode_count: None,
+        };
+        // Unlinked on both sides (no anilist_id) — same franchise_dedup_key
+        // from the identical title is what groups them.
+        let on_a = db.upsert_series(a, &mk("shared-a", "data:image/png;base64,AAAA")).unwrap();
+        let on_b = db.upsert_series(b, &mk("shared-b", "https://tioanime.com/portadas/1.jpg")).unwrap();
+
+        // B is active, so B's own row (blocked cover) is the representative
+        // for url/id purposes — but the displayed cover must come from A.
+        let out = db.list_airing(b).unwrap();
+        assert_eq!(out.len(), 1, "deduped to one canonical entry");
+        assert_eq!(out[0].id, on_b, "active-site row is still the representative for opening episodes");
+        assert_eq!(out[0].cover_url.as_deref(), Some("data:image/png;base64,AAAA"), "cover borrowed from sibling site A");
+
+        // If the representative's OWN cover is already displayable, nothing
+        // is borrowed — its own value wins unchanged.
+        let out_from_a = db.list_airing(a).unwrap();
+        assert_eq!(out_from_a[0].id, on_a);
+        assert_eq!(out_from_a[0].cover_url.as_deref(), Some("data:image/png;base64,AAAA"));
     }
 
     #[test]
