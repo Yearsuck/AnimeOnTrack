@@ -928,7 +928,7 @@ impl Db {
         for row in rows {
             let key = canonical(franchise_key(&row.title));
             let display = franchise_display_title(&row.title);
-            if let Some(parent) = franchise_parent_key(&row.title).map(&canonical) {
+            if let Some(parent) = franchise_parent_key(&row.title).map(canonical) {
                 if parent != key {
                     record_parent_candidate(&mut parent_of, &key, parent);
                 }
@@ -1500,7 +1500,7 @@ impl Db {
         let mut parent_of: HashMap<String, String> = HashMap::new();
         for row in rows {
             let key = canonical(franchise_key(&row.title));
-            if let Some(parent) = franchise_parent_key(&row.title).map(&canonical) {
+            if let Some(parent) = franchise_parent_key(&row.title).map(canonical) {
                 if parent != key {
                     record_parent_candidate(&mut parent_of, &key, parent);
                 }
