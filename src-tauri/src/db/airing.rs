@@ -11,12 +11,13 @@ pub enum PendingSort {
 /// Whether `cover_url` is something the frontend's CSP (`img-src 'self'
 /// data: asset: https://asset.localhost https://*.anilist.co`) will actually
 /// render, rather than silently block — a `data:` URI (fetched by
-/// `refresh()`) or an AniList CDN URL (already resolved through
+/// `refresh()`), a local cached cover (`file:` path served via the `asset:`
+/// protocol), or an AniList CDN URL (already resolved through
 /// `anilist_catalog.cover_url` by `list_airing`'s own COALESCE). Anything
 /// else is a scraped site's raw remote thumbnail.
-fn is_csp_displayable_cover(cover_url: Option<&str>) -> bool {
+pub(crate) fn is_csp_displayable_cover(cover_url: Option<&str>) -> bool {
     let Some(u) = cover_url else { return false };
-    if u.starts_with("data:") {
+    if u.starts_with("data:") || u.starts_with("file:") || u.starts_with("asset:") {
         return true;
     }
     url::Url::parse(u)
@@ -519,5 +520,25 @@ mod tests {
         let x2 = db.upsert_series(b, &mk("x2", "some show")).unwrap();
         assert_eq!(db.set_followed_canonical(x1, true).unwrap(), 2);
         assert!(db.list_followed(b).unwrap().iter().any(|s| s.id == x2));
+    }
+
+    #[test]
+    fn is_csp_displayable_cover_handles_all_supported_schemes() {
+        assert!(!is_csp_displayable_cover(None));
+        assert!(!is_csp_displayable_cover(Some("")));
+        assert!(is_csp_displayable_cover(Some("data:image/jpeg;base64,1234")));
+        assert!(is_csp_displayable_cover(Some("file:covers/abc.jpg")));
+        assert!(is_csp_displayable_cover(Some("file:///C:/Users/app/covers/abc.jpg")));
+        assert!(is_csp_displayable_cover(Some("asset://localhost/covers/abc.jpg")));
+        assert!(is_csp_displayable_cover(Some("https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx123.jpg")));
+        assert!(is_csp_displayable_cover(Some("https://anilist.co/img/cover.jpg")));
+
+        // Scraped remote covers must NOT be considered CSP displayable
+        assert!(!is_csp_displayable_cover(Some("https://i0.wp.com/animeflv.net/cover.jpg")));
+        assert!(!is_csp_displayable_cover(Some("https://cdn.jkdesa.com/cover.jpg")));
+        assert!(!is_csp_displayable_cover(Some("https://animeflv.net/cover.jpg")));
+        assert!(!is_csp_displayable_cover(Some("https://tioanime.com/cover.jpg")));
+        assert!(!is_csp_displayable_cover(Some("https://w7.animeland.tv/cover.jpg")));
+        assert!(!is_csp_displayable_cover(Some("https://wwv.animeytx.net/cover.jpg")));
     }
 }

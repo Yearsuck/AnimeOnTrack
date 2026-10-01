@@ -10,6 +10,7 @@ import {
 } from "../api";
 import { useT } from "../i18n";
 import { createFilterCache } from "../lib/createFilterCache";
+import { resolveCoverUrl } from "../lib/posterFallback";
 import type { CatalogAnime, CatalogFacets, CatalogFilter, CatalogSyncProgress } from "../types";
 
 // decide_catalog_card args for a catalog row. CatalogAnime.id is AniList's
@@ -496,8 +497,9 @@ export function Catalog() {
                       ✓
                     </span>
                   )}
-                  {a.cover_url ? <img src={a.cover_url} alt={a.title} loading="lazy" /> : null}
+                  {a.cover_url ? <img src={resolveCoverUrl(a.cover_url)!} alt={a.title} loading="lazy" /> : null}
                 </div>
+
                 <div className="card-body">
                   <div className="card-title">{a.title}</div>
                   <div className="muted card-sub">

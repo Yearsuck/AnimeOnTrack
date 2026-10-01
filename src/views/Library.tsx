@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listLibrary, openEpisode, reclassifySeries } from "../api";
 import { useT } from "../i18n";
 import { createFilterCache } from "../lib/createFilterCache";
-import { initials } from "../lib/posterFallback";
+import { initials, resolveCoverUrl } from "../lib/posterFallback";
 import { useOutsideClick } from "../lib/useOutsideClick";
 import type { LibraryItem, Series } from "../types";
 
@@ -95,7 +95,8 @@ function LibraryCard({
   // null up-front, a broken remote URL via onError — so the grid never
   // shows a broken <img>.
   const [imgFailed, setImgFailed] = useState(false);
-  const showFallback = !item.series.cover_url || imgFailed;
+  const displayCover = resolveCoverUrl(item.series.cover_url);
+  const showFallback = !displayCover || imgFailed;
 
   // Overflow "⋯" menu (Watching cards only) — reclassify actions
   // (see docs/superpowers/specs/2026-07-11-reversibility-classifications-design.md).
@@ -210,11 +211,12 @@ function LibraryCard({
           </div>
         ) : (
           <img
-            src={item.series.cover_url!}
+            src={displayCover!}
             alt=""
             loading="lazy"
             onError={() => setImgFailed(true)}
           />
+
         )}
       </div>
       <div className="card-body">

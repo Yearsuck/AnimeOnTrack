@@ -4,6 +4,7 @@ import * as THREE from "three";
 import { useT } from "../i18n";
 import { useTheme } from "../theme";
 import { categoryColor, NO_GENRE_KEY } from "../lib/categoryColor";
+import { resolveCoverUrl } from "../lib/posterFallback";
 import type { SeriesGraphNode } from "../types";
 
 // The root node's near-white dark-theme color (#e9ecef) is invisible on the
@@ -574,7 +575,13 @@ export function StatsGraph({
       let obj: THREE.Object3D;
       try {
         if (node.kind === "series") {
-          const hasCover = !!node.coverUrl && node.coverUrl.startsWith("data:");
+          // Only locally-held images can be textured (a remote URL is blocked
+          // by the CSP): a `data:` URI, or a cached `file:` cover served
+          // through the asset protocol. If the latter lacks the CORS header
+          // WebGL needs, onError below swaps in the fallback disc.
+          const coverSrc =
+            node.coverUrl && /^(data|file):/.test(node.coverUrl) ? resolveCoverUrl(node.coverUrl) : null;
+          const hasCover = !!coverSrc;
           const strokeColor = theme === "light" ? "rgba(23, 34, 46, 0.55)" : "rgba(255, 255, 255, 0.35)";
           const fallbackTexture = () =>
             new THREE.CanvasTexture(
@@ -587,8 +594,8 @@ export function StatsGraph({
           // and left an invisible sprite. Wiring onError swaps in the same
           // fallback disc an absent cover would have used.
           material.map = hasCover
-            ? new THREE.TextureLoader().load(
-                node.coverUrl as string,
+            ? new THREE.TextureLoader().setCrossOrigin("anonymous").load(
+                coverSrc as string,
                 undefined,
                 undefined,
                 () => {
