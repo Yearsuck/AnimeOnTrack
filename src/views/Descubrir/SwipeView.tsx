@@ -23,6 +23,8 @@ import { DeckPanel } from "./DeckPanel";
 import { HistoryRow } from "./HistoryRow";
 import { TasteChips } from "./TasteChips";
 import { useLinkQueue } from "./useLinkQueue";
+import { resolveCoverUrl } from "../../lib/posterFallback";
+
 
 export function SwipeView() {
   const t = useT();
@@ -378,8 +380,12 @@ export function SwipeView() {
               }}
             >
               <span className="chip">{card.kind}</span>
-              {card.poster_url ? <img src={card.poster_url} alt={card.title} /> : null}
+              {(() => {
+                const src = resolveCoverUrl(card.poster_url);
+                return src ? <img src={src} alt={card.title} /> : null;
+              })()}
             </div>
+
             <div className="card-body">
               <div className="card-title swipe-card-title">
                 {card.title}

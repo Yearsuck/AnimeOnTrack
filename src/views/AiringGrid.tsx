@@ -1,27 +1,24 @@
 import { useEffect, useMemo, useState } from "react";
 import { listAiringSeason, setFollowed } from "../api";
 import { useT } from "../i18n";
-import { initials } from "../lib/posterFallback";
+import { initials, resolveCoverUrl } from "../lib/posterFallback";
 import type { AiringItem, Series } from "../types";
 import { AiringSpotlight } from "./AiringSpotlight";
 
-// A series' cover_url is only ever a data: URI (fetched and CSP-allowed) for
-// series the refresh cycle actually touches — followed series, plus anything
-// linked to an AniList catalog entry. An airing series that's neither still
-// carries the site's raw remote thumbnail, which the app's CSP silently
-// blocks. Same degrade-to-initials pattern as Library.tsx's LibraryCard:
-// null cover shows the fallback up-front, a blocked/broken remote URL shows
-// it via onError — the grid never sits on a permanently broken <img>.
+// A series' cover_url is a data: URI (fetched via webview), a cached local file:
+// path (served via asset protocol), or an AniList CDN URL. Unfetched series still
+// carry the site's raw remote thumbnail, which CSP blocks.
 function AiringPoster({ title, coverUrl }: { title: string; coverUrl: string | null }) {
   const [failed, setFailed] = useState(false);
-  if (!coverUrl || failed) {
+  const src = resolveCoverUrl(coverUrl);
+  if (!src || failed) {
     return (
       <div className="poster-fallback" aria-hidden="true">
         {initials(title)}
       </div>
     );
   }
-  return <img src={coverUrl} alt={title} loading="lazy" onError={() => setFailed(true)} />;
+  return <img src={src} alt={title} loading="lazy" onError={() => setFailed(true)} />;
 }
 
 // Human label for the next-episode countdown the backend sorting is based

@@ -13,6 +13,7 @@ mod player;
 mod recommend;
 mod scraper_engine;
 mod swipe;
+mod cover_cache;
 
 use commands::AppState;
 use std::sync::Mutex;

@@ -2,13 +2,15 @@ import { useRef, useState } from "react";
 import type { Series } from "../../types";
 import { useOutsideClick } from "../../lib/useOutsideClick";
 import { listasInitials } from "./helpers";
+import { resolveCoverUrl } from "../../lib/posterFallback";
 
 // ---- Shared Listas card bits (poster+initials fallback, status chip, and an
 // outside-click overflow menu — same visual language as the Library cards). ----
 
 export function PosterThumb({ series }: { series: Series }) {
   const [failed, setFailed] = useState(false);
-  const showFallback = !series.cover_url || failed;
+  const src = resolveCoverUrl(series.cover_url);
+  const showFallback = !src || failed;
   return (
     <div className="listas-poster">
       {showFallback ? (
@@ -16,11 +18,12 @@ export function PosterThumb({ series }: { series: Series }) {
           {listasInitials(series.title)}
         </div>
       ) : (
-        <img src={series.cover_url!} alt="" loading="lazy" onError={() => setFailed(true)} />
+        <img src={src} alt="" loading="lazy" onError={() => setFailed(true)} />
       )}
     </div>
   );
 }
+
 
 export function OverflowMenu({
   label,

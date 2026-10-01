@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, useCallback } from "react";
 import { useT } from "../i18n";
+import { resolveCoverUrl } from "../lib/posterFallback";
 import type { AiringItem } from "../types";
 
 type AiringSpotlightProps = {
@@ -94,34 +95,42 @@ export function AiringSpotlight({ items, onOpenSeries }: AiringSpotlightProps) {
         className="spotlight-track"
         style={{ transform: `translateX(-${currentIndex * (100 / featuredItems.length)}%)` }}
       >
-        {featuredItems.map((item) => (
-          <div key={item.series.id} className="spotlight-slide">
-            {item.series.cover_url && !failedIds.has(item.series.id) && (
-              <img
-                className="spotlight-bg"
-                src={highResCover(item.series.cover_url)}
-                alt=""
-                aria-hidden="true"
-                onError={() =>
-                  setFailedIds((prev) => (prev.has(item.series.id) ? prev : new Set(prev).add(item.series.id)))
-                }
-              />
-            )}
-            <div className="spotlight-scrim" />
-            <div className="spotlight-content">
-              <h3 className="spotlight-title">{item.series.title}</h3>
-              <button
-                className="btn btn-primary spotlight-btn"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onOpenSeries(item.series);
-                }}
-              >
-                {t("spotlight.watchBtn")}
-              </button>
+        {featuredItems.map((item) => {
+          // highResCover re-serialises through `new URL`, which mangles a cached
+          // `file:` path containing spaces (%20, then double-encoded) — only
+          // remote http(s) thumbnails go through it.
+          const rawCover = item.series.cover_url ?? "";
+          const bgSrc = resolveCoverUrl(/^https?:/i.test(rawCover) ? highResCover(rawCover) : rawCover);
+          return (
+            <div key={item.series.id} className="spotlight-slide">
+              {bgSrc && !failedIds.has(item.series.id) && (
+                <img
+                  className="spotlight-bg"
+                  src={bgSrc}
+                  alt=""
+                  aria-hidden="true"
+                  onError={() =>
+                    setFailedIds((prev) => (prev.has(item.series.id) ? prev : new Set(prev).add(item.series.id)))
+                  }
+                />
+              )}
+              <div className="spotlight-scrim" />
+
+              <div className="spotlight-content">
+                <h3 className="spotlight-title">{item.series.title}</h3>
+                <button
+                  className="btn btn-primary spotlight-btn"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onOpenSeries(item.series);
+                  }}
+                >
+                  {t("spotlight.watchBtn")}
+                </button>
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       <div className="spotlight-controls">

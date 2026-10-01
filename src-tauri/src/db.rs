@@ -443,6 +443,7 @@ pub(crate) mod library;
 pub use series::SwipeHistoryRow;
 pub use catalog::CatalogFilter;
 pub use airing::PendingSort;
+pub(crate) use airing::is_csp_displayable_cover;
 pub use stats::SignatureCounts;
 
 #[cfg(test)]
