@@ -188,12 +188,12 @@ impl Db {
     /// (which only acts on linked rows), so a long-finished unlinked show
     /// keeps showing as airing forever.
     ///
-    /// Matching is exact-only first (see `matching::CatalogIndex`), tried on
-    /// the site title then the franchise base name, then a strict fuzzy
-    /// fallback so cross-language and season-suffix title variants ("…2nd
-    /// Season" vs "…Temporada 2") still resolve to the same AniList id —
-    /// otherwise the same show, unlinked on one site, becomes a second
-    /// canonical entry and shows up twice in the "En emisión"/library
+    /// Matching is exact-only first (both normalized and squashed punctuation/spacing
+    /// variants — see `matching::CatalogIndex`), tried on the site title then the
+    /// franchise base name, then a strict fuzzy fallback so cross-language and
+    /// season-suffix title variants ("…2nd Season" vs "…Temporada 2") still resolve
+    /// to the same AniList id — otherwise the same show, unlinked on one site,
+    /// becomes a second canonical entry and shows up twice in the "En emisión"/library
     /// unions. Returns how many series were newly linked.
     pub fn link_series_to_catalog(&self) -> Result<i64> {
         let index = crate::matching::CatalogIndex::build(&self.catalog_titles_for_index()?);
@@ -257,6 +257,31 @@ impl Db {
         )?;
         let ids = stmt
             .query_map([CATALOG_METADATA_VERSION], |r| r.get::<_, i64>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(ids)
+    }
+
+    /// AniList ids of catalog rows whose `status` needs refreshing:
+    /// (a) linked to a series with `is_airing = 1`, or
+    /// (b) status in `('RELEASING', 'NOT_YET_RELEASED')`, or
+    /// (c) status = `'FINISHED'` but `start_date` within the last 120 days.
+    ///
+    /// Capped at 500 rows and ordered linked-first, then by popularity, so
+    /// shows the user actually follows/watches take priority.
+    pub fn stale_status_ids(&self) -> Result<Vec<i64>> {
+        let cutoff = (chrono::Utc::now() - chrono::Duration::days(120)).timestamp();
+        let mut stmt = self.conn.prepare(
+            "SELECT c.id FROM anilist_catalog c
+             WHERE EXISTS (SELECT 1 FROM series s WHERE s.anilist_id = c.id AND s.is_airing = 1)
+                OR c.status IN ('RELEASING', 'NOT_YET_RELEASED')
+                OR (c.status = 'FINISHED' AND c.start_date IS NOT NULL AND c.start_date >= ?1)
+             ORDER BY EXISTS (SELECT 1 FROM series s WHERE s.anilist_id = c.id) DESC,
+                      COALESCE(c.popularity, 0) DESC,
+                      c.id
+             LIMIT 500",
+        )?;
+        let ids = stmt
+            .query_map([cutoff], |r| r.get::<_, i64>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(ids)
     }
@@ -2097,5 +2122,206 @@ mod tests {
         let sid = db.upsert_series(src, &mk_airing("obscure", "Totally Unmatched Title", None)).unwrap();
 
         assert_eq!(db.catalog_info_for_series(sid).unwrap(), None);
+    }
+
+    #[test]
+    fn link_series_to_catalog_links_squashed_spacing_and_punctuation_variants() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("TioAnime", "t", "tioanime").unwrap();
+
+        // Seed catalog with target titles differing only by punctuation / whitespace
+        db.upsert_catalog_anime(&catalog_anime(184356, "Dogul Wang", &["Action"]), 0).unwrap();
+        db.upsert_catalog_anime(
+            &catalog_anime(199066, "Hanaori-san wa Tensei Shite mo Kenka ga Shitai", &["Romance"]),
+            1,
+        )
+        .unwrap();
+        db.upsert_catalog_anime(&catalog_anime(300, "Let's Go Kaiki-gumi", &["Comedy"]), 2).unwrap();
+        db.upsert_catalog_anime(&catalog_anime(400, "Hime Kishi wa Barbaroi no Yome", &["Fantasy"]), 3).unwrap();
+        db.upsert_catalog_anime(&catalog_anime(500, "Ichijouma Mankitsu Gurashi!", &["Slice of Life"]), 4).unwrap();
+        db.upsert_catalog_anime(
+            &catalog_anime(600, "Taiari deshita: Ojousama wa Kakutou Game nante Shinai", &["Comedy"]),
+            5,
+        )
+        .unwrap();
+
+        let test_cases = [
+            ("dogulwang", "Dogulwang", 184356),
+            ("hanaori", "Hanaori-san wa Tensei shitemo Kenka ga Shitai", 199066),
+            ("kaiki", "Let’s Go Kaiki-gumi", 300), // curly apostrophe
+            ("himekishi", "Himekishi wa Barbaroi no Yome", 400),
+            ("ichijouma", "Ichijouma Mankitsugurashi!", 500),
+            ("taiari", "Tai-Ari deshita. Ojousama wa Kakutou Game nante Shinai", 600),
+        ];
+
+        let mut sids = Vec::new();
+        for (slug, title, _) in &test_cases {
+            let sid = db
+                .upsert_series(
+                    src,
+                    &crate::models::Series {
+                        id: 0,
+                        slug: (*slug).into(),
+                        title: (*title).into(),
+                        url: format!("https://tioanime.example/series/{slug}"),
+                        cover_url: None,
+                        is_airing: true,
+                        followed: true,
+                        next_episode_at: None,
+                        site_episode_count: None,
+                    },
+                )
+                .unwrap();
+            db.set_followed(sid, true).unwrap();
+            sids.push(sid);
+        }
+
+        let linked = db.link_series_to_catalog().unwrap();
+        assert_eq!(linked, 6);
+
+        for (sid, (_, _, expected_id)) in sids.iter().zip(test_cases.iter()) {
+            let actual_id = db
+                .conn
+                .query_row(
+                    "SELECT anilist_id FROM series WHERE id=?1",
+                    [sid],
+                    |r| r.get::<_, Option<i64>>(0),
+                )
+                .unwrap();
+            assert_eq!(actual_id, Some(*expected_id));
+        }
+    }
+
+    #[test]
+    fn link_series_to_catalog_short_title_stays_unlinked() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("TioAnime", "t", "tioanime").unwrap();
+        db.upsert_catalog_anime(&catalog_anime(700, "Hero", &["Action"]), 0).unwrap();
+
+        // "He ro" squashes to "hero" (4 chars < 6), must not match
+        let sid = db
+            .upsert_series(
+                src,
+                &crate::models::Series {
+                    id: 0,
+                    slug: "he-ro".into(),
+                    title: "He ro".into(),
+                    url: "https://tioanime.example/series/he-ro".into(),
+                    cover_url: None,
+                    is_airing: true,
+                    followed: true,
+                    next_episode_at: None,
+                    site_episode_count: None,
+                },
+            )
+            .unwrap();
+        db.set_followed(sid, true).unwrap();
+
+        let linked = db.link_series_to_catalog().unwrap();
+        assert_eq!(linked, 0);
+        let actual_id = db
+            .conn
+            .query_row(
+                "SELECT anilist_id FROM series WHERE id=?1",
+                [sid],
+                |r| r.get::<_, Option<i64>>(0),
+            )
+            .unwrap();
+        assert_eq!(actual_id, None, "short squashed key (< 6 chars) must stay unlinked");
+    }
+
+    #[test]
+    fn stale_status_ids_selects_airing_linked_releasing_and_recent_finished() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("TestSite", "https://site.example", "testsite").unwrap();
+        let now = chrono::Utc::now().timestamp();
+
+        // 1. Linked to a series with is_airing=1 (even if status is FINISHED and start_date is old)
+        let mut anime1 = catalog_anime_with_popularity(1, "AiringLinked", &[], Some(100));
+        anime1.status = Some("FINISHED".into());
+        anime1.start_date = Some(now - 300 * 86400); // 300 days ago
+        db.upsert_catalog_anime(&anime1, 0).unwrap();
+        let mut s1 = mk_airing("s1", "AiringLinked", None);
+        s1.is_airing = true;
+        let sid1 = db.upsert_series(src, &s1).unwrap();
+        db.set_anilist_id(sid1, 1).unwrap();
+
+        // 2. Unlinked RELEASING
+        let mut anime2 = catalog_anime_with_popularity(2, "Releasing", &[], Some(200));
+        anime2.status = Some("RELEASING".into());
+        db.upsert_catalog_anime(&anime2, 1).unwrap();
+
+        // 3. Unlinked NOT_YET_RELEASED
+        let mut anime3 = catalog_anime_with_popularity(3, "Upcoming", &[], Some(300));
+        anime3.status = Some("NOT_YET_RELEASED".into());
+        db.upsert_catalog_anime(&anime3, 2).unwrap();
+
+        // 4. Unlinked FINISHED within last 120 days (e.g. 60 days ago)
+        let mut anime4 = catalog_anime_with_popularity(4, "RecentFinished", &[], Some(400));
+        anime4.status = Some("FINISHED".into());
+        anime4.start_date = Some(now - 60 * 86400);
+        db.upsert_catalog_anime(&anime4, 3).unwrap();
+
+        // 5. Excluded: Unlinked FINISHED older than 120 days (e.g. 150 days ago)
+        let mut anime5 = catalog_anime_with_popularity(5, "OldFinished", &[], Some(500));
+        anime5.status = Some("FINISHED".into());
+        anime5.start_date = Some(now - 150 * 86400);
+        db.upsert_catalog_anime(&anime5, 4).unwrap();
+
+        // 6. Excluded: Linked to series with is_airing=0, FINISHED and old start_date
+        let mut anime6 = catalog_anime_with_popularity(6, "NonAiringLinkedOld", &[], Some(600));
+        anime6.status = Some("FINISHED".into());
+        anime6.start_date = Some(now - 200 * 86400);
+        db.upsert_catalog_anime(&anime6, 5).unwrap();
+        let mut s6 = mk_airing("s6", "NonAiringLinkedOld", None);
+        s6.is_airing = false;
+        let sid6 = db.upsert_series(src, &s6).unwrap();
+        db.set_anilist_id(sid6, 6).unwrap();
+
+        // 7. Excluded: Unlinked CANCELLED
+        let mut anime7 = catalog_anime_with_popularity(7, "Cancelled", &[], Some(700));
+        anime7.status = Some("CANCELLED".into());
+        db.upsert_catalog_anime(&anime7, 6).unwrap();
+
+        let ids = db.stale_status_ids().unwrap();
+        assert!(ids.contains(&1), "must include linked airing row");
+        assert!(ids.contains(&2), "must include RELEASING row");
+        assert!(ids.contains(&3), "must include NOT_YET_RELEASED row");
+        assert!(ids.contains(&4), "must include FINISHED within 120 days");
+        assert!(!ids.contains(&5), "must exclude old FINISHED row");
+        assert!(!ids.contains(&6), "must exclude non-airing old FINISHED row");
+        assert!(!ids.contains(&7), "must exclude CANCELLED row");
+    }
+
+    #[test]
+    fn stale_status_ids_orders_linked_first_and_respects_500_cap() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("TestSite", "https://site.example", "testsite").unwrap();
+
+        // Create an unlinked RELEASING row with huge popularity
+        let mut high_pop = catalog_anime_with_popularity(1001, "HighPopUnlinked", &[], Some(100_000));
+        high_pop.status = Some("RELEASING".into());
+        db.upsert_catalog_anime(&high_pop, 0).unwrap();
+
+        // Create a linked row with low popularity
+        let mut low_pop = catalog_anime_with_popularity(1002, "LowPopLinked", &[], Some(10));
+        low_pop.status = Some("RELEASING".into());
+        db.upsert_catalog_anime(&low_pop, 1).unwrap();
+        let s = mk_airing("s1002", "LowPopLinked", None);
+        let sid = db.upsert_series(src, &s).unwrap();
+        db.set_anilist_id(sid, 1002).unwrap();
+
+        let ids = db.stale_status_ids().unwrap();
+        assert_eq!(ids[0], 1002, "linked row must come first despite lower popularity");
+        assert_eq!(ids[1], 1001);
+
+        // Populate > 500 rows and assert cap
+        for i in 1..=550 {
+            let mut a = catalog_anime_with_popularity(2000 + i, &format!("Batch{i}"), &[], Some(i));
+            a.status = Some("RELEASING".into());
+            db.upsert_catalog_anime(&a, i).unwrap();
+        }
+        let capped_ids = db.stale_status_ids().unwrap();
+        assert_eq!(capped_ids.len(), 500, "must be capped at 500 rows");
     }
 }

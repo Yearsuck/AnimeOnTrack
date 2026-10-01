@@ -1,6 +1,7 @@
 import { useT } from "../../i18n";
 import type { SwipeHistoryItem } from "../../types";
 import { DECISION_BADGE } from "./constants";
+import { resolveCoverUrl } from "../../lib/posterFallback";
 
 // One row of the swipe-history strip: poster, title, current-decision badge,
 // quick re-classify buttons, and a "return to deck" undo for this one card.
@@ -14,9 +15,11 @@ export function HistoryRow({
   onReturn: (item: SwipeHistoryItem) => void;
 }) {
   const t = useT();
+  const posterSrc = resolveCoverUrl(item.poster_url);
   return (
     <div className="swipe-history-row">
-      {item.poster_url && <img src={item.poster_url} alt="" />}
+      {posterSrc && <img src={posterSrc} alt="" />}
+
       <div className="swipe-history-main">
         <div className="swipe-history-title" title={item.title}>
           {item.title}

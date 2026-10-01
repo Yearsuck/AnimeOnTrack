@@ -210,16 +210,19 @@ impl Db {
         // for that series, forever, flatly contradicting its own "drops out
         // of it for good the first time this succeeds" comment.
         //
-        // So: an already-stored `data:` URI wins over an incoming non-`data:`
-        // value (a remote thumbnail, or NULL from a caller that has no cover
-        // at all). An incoming `data:` value still overwrites — that's a
-        // freshly fetched image, strictly newer than what's stored. The
+        // So: an already-stored `data:` URI (or a `file:` path into the
+        // on-disk cover cache, see `cover_cache`) wins over an incoming
+        // non-local value (a remote thumbnail, or NULL from a caller that
+        // has no cover at all). An incoming `data:`/`file:` value still
+        // overwrites — that's a freshly fetched image, strictly newer than
+        // what's stored. A `file:` whose file has gone missing is repaired
+        // separately by `heal_missing_cached_covers`. The
         // dedicated `update_series_cover` remains the way to set one.
         self.conn.execute(
             "UPDATE series SET slug=?2, title=?3, url=?4,
                 cover_url = CASE
-                    WHEN substr(COALESCE(cover_url, ''), 1, 5) = 'data:'
-                     AND substr(COALESCE(?5, ''), 1, 5) <> 'data:'
+                    WHEN substr(COALESCE(cover_url, ''), 1, 5) IN ('data:', 'file:')
+                     AND substr(COALESCE(?5, ''), 1, 5) NOT IN ('data:', 'file:')
                     THEN cover_url ELSE ?5 END,
                 is_airing=?6, next_episode_at=?7, site_episode_count=?8
              WHERE id=?1",
@@ -595,18 +598,63 @@ impl Db {
     /// cover backlog is: a row drops out for good the first time this
     /// succeeds, so it converges over several refresh cycles instead of
     /// needing to happen all at once.
+    ///
+    /// The window is random, not `ORDER BY id`: a cover that fails for good
+    /// (404, non-image body, over the size cap) stays remote and so is
+    /// selected again every cycle, and with a fixed order `limit` such rows
+    /// would pin the window to the same ids forever and starve every later
+    /// series. Shuffling lets the whole backlog drain over a few cycles.
     pub fn airing_series_needing_cover_fetch(&self, source_id: i64, limit: i64) -> Result<Vec<(i64, String, String)>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, title, cover_url FROM series
              WHERE source_id=?1 AND is_airing=1 AND anilist_id IS NULL
-               AND cover_url IS NOT NULL AND cover_url NOT LIKE 'data:%'
-             ORDER BY id
+               AND cover_url IS NOT NULL
+               AND cover_url NOT LIKE 'data:%'
+               AND cover_url NOT LIKE 'file:%'
+               AND cover_url NOT LIKE 'asset:%'
+             ORDER BY RANDOM()
              LIMIT ?2",
         )?;
         let rows = stmt
             .query_map((source_id, limit), |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
+    }
+
+    /// Clear `file:` covers of `source_id` whose cached file no longer exists (the user
+    /// emptied `AppData\covers`, or the DB was restored onto another
+    /// machine/user — the stored path is absolute and covers are not part
+    /// of the Drive backup). `upsert_series` only protects a `file:` cover
+    /// from a *remote* overwrite, so once cleared the next listing upsert
+    /// puts the site's thumbnail back and the cover step re-downloads it.
+    ///
+    /// Only series named in `listed_slugs` (the slugs of a listing scan that
+    /// just succeeded) are touched: a series absent from it — finished, or
+    /// the scan failed — would not get its remote URL back and clearing its
+    /// cover would lose it for good. Returns how many rows were cleared.
+    pub fn heal_missing_cached_covers(
+        &self,
+        source_id: i64,
+        listed_slugs: &std::collections::HashSet<&str>,
+    ) -> Result<usize> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, slug, cover_url FROM series WHERE source_id=?1 AND cover_url LIKE 'file:%'",
+        )?;
+        let rows: Vec<(i64, String, String)> = stmt
+            .query_map([source_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut cleared = 0;
+        for (id, slug, url) in rows {
+            if !listed_slugs.contains(slug.as_str()) {
+                continue;
+            }
+            let path = url.strip_prefix("file:").unwrap_or(&url);
+            if !std::path::Path::new(path).is_file() {
+                self.conn.execute("UPDATE series SET cover_url=NULL WHERE id=?1", [id])?;
+                cleared += 1;
+            }
+        }
+        Ok(cleared)
     }
 
     /// Replace a series' cover with a fetched base64 data URI.
@@ -2387,5 +2435,89 @@ mod tests {
         ).unwrap();
         assert_eq!(anilist_id, Some(42));
         assert_eq!(watched, 1);
+    }
+
+    #[test]
+    fn upsert_series_never_clobbers_a_cached_file_cover_with_a_remote_url() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let mk = |cover: &str| crate::models::Series {
+            id: 0, slug: "s".into(), title: "S".into(), url: "https://x/s".into(),
+            cover_url: Some(cover.into()), is_airing: true, followed: false,
+            next_episode_at: None, site_episode_count: None,
+        };
+        let id = db.upsert_series(src, &mk("https://cdn/x.jpg")).unwrap();
+        db.update_series_cover(id, "file:C:/covers/abc.jpg").unwrap();
+        // The next scan re-upserts the card with the remote thumbnail.
+        db.upsert_series(src, &mk("https://cdn/x.jpg")).unwrap();
+        let cover: Option<String> = db.conn
+            .query_row("SELECT cover_url FROM series WHERE id=?1", [id], |r| r.get(0)).unwrap();
+        assert_eq!(cover.as_deref(), Some("file:C:/covers/abc.jpg"));
+    }
+
+    #[test]
+    fn heal_missing_cached_covers_clears_only_dead_file_paths() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let mk = |slug: &str, cover: &str| crate::models::Series {
+            id: 0, slug: slug.into(), title: slug.into(), url: format!("https://x/{slug}"),
+            cover_url: Some(cover.into()), is_airing: true, followed: false,
+            next_episode_at: None, site_episode_count: None,
+        };
+        let live_file = std::env::temp_dir().join("aot-heal-test-cover.jpg");
+        std::fs::write(&live_file, b"x").unwrap();
+        let live_url = format!("file:{}", live_file.display().to_string().replace('\\', "/"));
+        let dead = db.upsert_series(src, &mk("dead", "https://cdn/d.jpg")).unwrap();
+        db.update_series_cover(dead, "file:C:/definitely/not/here/abc.jpg").unwrap();
+        let live = db.upsert_series(src, &mk("live", "https://cdn/l.jpg")).unwrap();
+        db.update_series_cover(live, &live_url).unwrap();
+        let data = db.upsert_series(src, &mk("data", "https://cdn/x.jpg")).unwrap();
+        db.update_series_cover(data, "data:image/png;base64,AAAA").unwrap();
+
+        // `unlisted` has a dead file: cover too, but is not in the listing
+        // (finished / scan failed): it must be left alone.
+        let unlisted = db.upsert_series(src, &mk("unlisted", "https://cdn/u.jpg")).unwrap();
+        db.update_series_cover(unlisted, "file:C:/definitely/not/here/u.jpg").unwrap();
+
+        let listed: std::collections::HashSet<&str> = ["dead", "live", "data"].into_iter().collect();
+        assert_eq!(db.heal_missing_cached_covers(src, &listed).unwrap(), 1);
+        let get = |id: i64| -> Option<String> {
+            db.conn.query_row("SELECT cover_url FROM series WHERE id=?1", [id], |r| r.get(0)).unwrap()
+        };
+        assert_eq!(get(dead), None);
+        assert_eq!(get(live).as_deref(), Some(live_url.as_str()));
+        assert_eq!(get(data).as_deref(), Some("data:image/png;base64,AAAA"));
+        assert_eq!(get(unlisted).as_deref(), Some("file:C:/definitely/not/here/u.jpg"));
+        let _ = std::fs::remove_file(live_file);
+    }
+
+    #[test]
+    fn airing_series_needing_cover_fetch_filters_cached_and_data_covers() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let make = |slug: &str, cover: Option<&str>| crate::models::Series {
+            id: 0,
+            slug: slug.into(),
+            title: slug.into(),
+            url: format!("https://example.com/{slug}"),
+            cover_url: cover.map(|c| c.to_string()),
+            is_airing: true,
+            followed: false,
+            next_episode_at: None,
+            site_episode_count: None,
+        };
+
+        // Needs fetch: remote un-cached cover
+        db.upsert_series(src, &make("remote", Some("https://example.com/cover.jpg"))).unwrap();
+        // Already cached as file:
+        db.upsert_series(src, &make("cached-file", Some("file:covers/abc.jpg"))).unwrap();
+        // Already cached as data:
+        db.upsert_series(src, &make("cached-data", Some("data:image/jpeg;base64,123"))).unwrap();
+        // Null cover
+        db.upsert_series(src, &make("null-cover", None)).unwrap();
+
+        let needing = db.airing_series_needing_cover_fetch(src, 60).unwrap();
+        assert_eq!(needing.len(), 1);
+        assert_eq!(needing[0].1, "remote");
     }
 }

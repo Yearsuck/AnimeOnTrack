@@ -4,6 +4,7 @@ import { useT } from "../i18n";
 import type { PendingItem, Series } from "../types";
 import { countdownLabel } from "./AiringGrid";
 import { parseReleasedAtToUnixSeconds } from "../lib/parseReleasedAt";
+import { resolveCoverUrl } from "../lib/posterFallback";
 
 const REMOVE_MS = 220;
 type PendingSort = "remaining_asc" | "remaining_desc";
@@ -124,8 +125,12 @@ export function Pending({
           return (
             <div key={seriesId} className="series-block">
               <div className="series-head clickable" onClick={() => onOpenSeries(series)}>
-                {series.cover_url && <img src={series.cover_url} alt="" />}
+                {(() => {
+                  const src = resolveCoverUrl(series.cover_url);
+                  return src ? <img src={src} alt="" /> : null;
+                })()}
                 <div>
+
                   <div className="name">{series.title}</div>
                   <div className="count">
                     {t(eps.length === 1 ? "pending.new" : "pending.newPlural", { count: eps.length })}

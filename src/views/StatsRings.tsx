@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useT } from "../i18n";
 import { categoryColor } from "../lib/categoryColor";
+import { resolveCoverUrl } from "../lib/posterFallback";
 import { useStatsShape, type Shape } from "../lib/statsShape";
 import type { GenreCard, GenreCardSeries } from "../types";
 import { useFormatNumber } from "../lib/formatNumber";
@@ -191,7 +192,7 @@ function GenreCardComponent({
               <div key={series.title} className="genrecard-thumb" role="listitem">
                 {series.cover_url ? (
                   <img
-                    src={series.cover_url}
+                    src={resolveCoverUrl(series.cover_url) ?? undefined}
                     alt=""
                     loading="lazy"
                     onError={(e) => {

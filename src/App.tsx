@@ -18,6 +18,7 @@ import {
   maybeSyncCatalogIncremental,
   linkSeriesToCatalog,
   backfillCatalogMetadata,
+  refreshCatalogStatus,
 } from "./api";
 import { useT } from "./i18n";
 import type { Series } from "./types";
@@ -107,8 +108,11 @@ export default function App() {
           // up where it left off on the next launch.
           await backfillCatalogMetadata().catch(() => {});
           // Local and instant, but it needs the backfilled romaji titles to
-          // match well, so it runs last.
+          // match well, so it goes right after the backfill.
           await linkSeriesToCatalog().catch(() => {});
+          // Paced AniList refresh of airing/recent statuses (~20s of
+          // requests, once per 6h): last so it never delays the linking.
+          await refreshCatalogStatus().catch(() => {});
         })();
       } catch {
         setView("onboarding");

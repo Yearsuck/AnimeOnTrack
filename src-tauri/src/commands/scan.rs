@@ -678,6 +678,36 @@ async fn run_episode_backfill(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Try direct image cache download first. Only on Cloudflare bot/WAF blocks (403/503),
+/// fall back to WebView2 canvas grab (`fetch_cover_image`).
+async fn fetch_single_cover_with_fallback(
+    app: &AppHandle,
+    remote: &str,
+    id: i64,
+    title: &str,
+    context: &str,
+) -> Option<String> {
+    match crate::cover_cache::cache_cover_image(app, remote).await {
+        Ok(path) => {
+            let normalized = path.display().to_string().replace('\\', "/");
+            Some(format!("file:{normalized}"))
+        }
+        Err(err) if err.should_fallback_to_webview() => {
+            match fetch_cover_image(app, remote).await {
+                Ok(data_uri) => Some(data_uri),
+                Err(e) => {
+                    eprintln!("[cover] series {id} ({title}): {context} webview fallback failed: {e}");
+                    None
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("[cover] series {id} ({title}): {context} direct download failed: {e}");
+            None
+        }
+    }
+}
+
 /// For each followed series: decide (from one fresh airing-listing fetch)
 /// whether its episode page can even have changed, and scrape only the ones
 /// that can (falling back across mirrors), inserting new episodes. Returns
@@ -717,6 +747,18 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
         match scrape_airing_listing(&app, &mirrors, a.as_ref()).await {
             Ok((series, _working_mirror)) => {
                 let db = state.db.lock().unwrap();
+                // Drop `file:` covers whose cached file vanished (cleared
+                // AppData, DB restored on another machine) so the upsert
+                // below puts the remote thumbnail back and the cover step
+                // re-downloads it. Only for series in THIS successful
+                // listing: anything else has no remote URL to come back
+                // from, so clearing it would lose the cover for good.
+                let listed: std::collections::HashSet<&str> = series.iter().map(|s| s.slug.as_str()).collect();
+                match db.heal_missing_cached_covers(src, &listed) {
+                    Ok(0) => {}
+                    Ok(n) => eprintln!("[cover] cleared {n} cached cover(s) whose file is missing"),
+                    Err(e) => eprintln!("[cover] heal_missing_cached_covers failed: {e}"),
+                }
                 for s in &series {
                     db.upsert_series(src, s).map_err(|e| e.to_string())?;
                 }
@@ -770,6 +812,10 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
     // collects those so a bounded pass after the main loop can clear it.
     let mut to_fetch: Vec<Series> = Vec::new();
     let mut cover_backlog: Vec<Series> = Vec::new();
+    // Series whose cover was already attempted (direct + WebView2 fallback)
+    // earlier in this refresh, so the airing-listing phases below never
+    // retry the same URL — a second WebView2 grab of one image per cycle.
+    let mut cover_attempted: std::collections::HashSet<i64> = std::collections::HashSet::new();
     let mut idx = 0usize;
     for s in followed {
         let db_max_number = max_numbers.get(&s.id).copied().unwrap_or(0);
@@ -789,7 +835,7 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
         } else {
             idx += 1;
             emit_refresh_progress(&app, idx, total_series, &s.title);
-            if s.cover_url.as_deref().is_some_and(|u| !u.starts_with("data:")) {
+            if s.cover_url.as_deref().is_some_and(|u| !crate::db::is_csp_displayable_cover(Some(u))) {
                 cover_backlog.push(s);
             }
         }
@@ -890,25 +936,16 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
             // One cover fetch per followed series per refresh — never in
             // bulk, never concurrent with another cover fetch (this inner
             // loop is sequential). Skip once it's already a fetched data:
-            // URI; a failure here just leaves the remote (broken) url in
-            // place to retry next time, it never blocks episode updates.
+            // URI or local file: path; a failure here just leaves the remote
+            // (broken) url in place to retry next time, it never blocks episode updates.
             // fetch_cover_image itself is timeout-bounded end to end — see
             // its doc comment — so this can never stall the whole cycle.
             if let Some(remote) = &s.cover_url {
-                if !remote.starts_with("data:") {
-                    match fetch_cover_image(&app, remote).await {
-                        Ok(data_uri) => {
-                            let db = state.db.lock().unwrap();
-                            let _ = db.update_series_cover(s.id, &data_uri);
-                        }
-                        // Kept permanently, same reasoning as the `[scrape]
-                        // fetch timing` line: a cover that never gets past
-                        // this stage leaves a stale remote url in place
-                        // silently forever otherwise, which is exactly how
-                        // this readiness check's JSON-string double-decode
-                        // bug (see `fetch_cover_image_inner`'s ready-poll)
-                        // went unnoticed for as long as it did.
-                        Err(e) => eprintln!("[cover] series {} ({}): fetch failed: {e}", s.id, s.title),
+                if !crate::db::is_csp_displayable_cover(Some(remote)) {
+                    cover_attempted.insert(s.id);
+                    if let Some(cover) = fetch_single_cover_with_fallback(&app, remote, s.id, &s.title, "followed").await {
+                        let db = state.db.lock().unwrap();
+                        let _ = db.update_series_cover(s.id, &cover);
                     }
                 }
             }
@@ -936,36 +973,83 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
     for (i, s) in cover_backlog.iter().enumerate() {
         emit_refresh_progress(&app, i, backlog_total, &format!("Descargando carátulas: {}", s.title));
         if let Some(remote) = &s.cover_url {
-            match fetch_cover_image(&app, remote).await {
-                Ok(data_uri) => {
+            if !crate::db::is_csp_displayable_cover(Some(remote)) {
+                cover_attempted.insert(s.id);
+                if let Some(cover) = fetch_single_cover_with_fallback(&app, remote, s.id, &s.title, "backlog").await {
                     let db = state.db.lock().unwrap();
-                    let _ = db.update_series_cover(s.id, &data_uri);
+                    let _ = db.update_series_cover(s.id, &cover);
                 }
-                Err(e) => eprintln!("[cover] series {} ({}): backlog fetch failed: {e}", s.id, s.title),
             }
         }
     }
 
-    // Covers for currently-airing series that aren't followed (and aren't
-    // AniList-linked, which already display fine via the catalog's own
-    // cover) — the loops above never touch these at all, since both are
-    // scoped to `list_followed`. Capped per cycle: see
-    // `airing_series_needing_cover_fetch`'s doc comment for why this can't
-    // just fetch all of them in one pass.
-    const MAX_AIRING_COVERS_PER_CYCLE: i64 = 20;
-    let airing_cover_backlog = {
+    // Covers for currently-airing series (unfollowed + followed, not AniList-linked
+    // which already display fine via the catalog's own cover).
+    // Restructured in two phases:
+    // Phase A: direct reqwest downloads, max 4 concurrent via Semaphore;
+    //          collect rows whose failure a browser could get past
+    //          (`should_fallback_to_webview`: Cloudflare 403/503, 404/429, HTML body...).
+    // Phase B: strictly sequential WebView2 fallback for those CF-blocked ones,
+    //          capped at 20 per refresh cycle.
+    const AIRING_COVER_BATCH_LIMIT: i64 = 60;
+    const AIRING_WEBVIEW_FALLBACK_CAP: usize = 20;
+
+    let airing_needing = {
         let db = state.db.lock().unwrap();
-        db.airing_series_needing_cover_fetch(src, MAX_AIRING_COVERS_PER_CYCLE)
+        db.airing_series_needing_cover_fetch(src, AIRING_COVER_BATCH_LIMIT)
             .map_err(|e| e.to_string())?
     };
-    for (id, title, remote) in &airing_cover_backlog {
+
+    let mut cf_blocked: Vec<(i64, String, String)> = Vec::new();
+    let airing_needing: Vec<(i64, String, String)> =
+        airing_needing.into_iter().filter(|(id, _, _)| !cover_attempted.contains(id)).collect();
+    if !airing_needing.is_empty() {
+        let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(4));
+        let mut tasks = Vec::with_capacity(airing_needing.len());
+
+        for (id, title, remote) in airing_needing {
+            let sem = sem.clone();
+            let app_handle = app.clone();
+            tasks.push(tauri::async_runtime::spawn(async move {
+                let _permit = sem.acquire().await.ok();
+                let res = crate::cover_cache::cache_cover_image(&app_handle, &remote).await;
+                (id, title, remote, res)
+            }));
+        }
+
+        for task in tasks {
+            if let Ok((id, title, remote, res)) = task.await {
+                emit_refresh_progress(&app, total_series, total_series, &format!("Descargando carátulas: {title}"));
+                match res {
+                    Ok(path) => {
+                        let normalized = path.display().to_string().replace('\\', "/");
+                        let file_url = format!("file:{normalized}");
+                        let db = state.db.lock().unwrap();
+                        let _ = db.update_series_cover(id, &file_url);
+                    }
+                    Err(err) if err.should_fallback_to_webview() => {
+                        cf_blocked.push((id, title, remote));
+                    }
+                    Err(err) => {
+                        eprintln!("[cover] airing series {id} ({title}): direct download failed: {err}");
+                    }
+                }
+            }
+        }
+    }
+
+    // Phase B: strictly sequential WebView2 fallback for Cloudflare-blocked covers,
+    // capped at 20 per refresh to avoid tripping Cloudflare rate limits.
+    for (id, title, remote) in cf_blocked.into_iter().take(AIRING_WEBVIEW_FALLBACK_CAP) {
         emit_refresh_progress(&app, total_series, total_series, &format!("Descargando carátulas: {title}"));
-        match fetch_cover_image(&app, remote).await {
+        match fetch_cover_image(&app, &remote).await {
             Ok(data_uri) => {
                 let db = state.db.lock().unwrap();
-                let _ = db.update_series_cover(*id, &data_uri);
+                let _ = db.update_series_cover(id, &data_uri);
             }
-            Err(e) => eprintln!("[cover] series {id} ({title}): airing-listing fetch failed: {e}"),
+            Err(e) => {
+                eprintln!("[cover] airing series {id} ({title}): webview fallback failed: {e}");
+            }
         }
     }
 

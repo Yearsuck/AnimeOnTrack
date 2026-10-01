@@ -142,6 +142,9 @@ pub struct CatalogTitleRow {
 /// the site title (see `lookup`), each of which is still an exact match.
 pub struct CatalogIndex {
     by_normalized_title: HashMap<String, (i64, i64)>,
+    /// Exact squashed-title -> (id, popularity) table for matching titles
+    /// that differ from catalog entries only by whitespace or punctuation.
+    by_squashed_title: HashMap<String, (i64, i64)>,
     /// Parallel arrays for the fuzzy fallback: every catalog title's normalized
     /// form with its `(id, popularity)`. Indexed by position.
     fuzzy_titles: Vec<(String, i64, i64)>,
@@ -164,9 +167,44 @@ const FUZZY_LINK_THRESHOLD: f64 = 0.84;
 /// match everything. Distinctive words are longer.
 const MIN_INDEX_TOKEN_LEN: usize = 4;
 
+/// Minimum key length for the squashed exact-match tier in `CatalogIndex`.
+/// Titles whose squashed key is shorter than this (e.g. "Nana", "Given", "Hero",
+/// "K") are excluded from squashed matching to prevent false links on short,
+/// ambiguous names.
+pub const MIN_SQUASHED_KEY_LEN: usize = 6;
+
+/// Fold Unicode apostrophes and quotation marks to ASCII single/double quotes,
+/// so variant quotes (curly ’, ‘, modifier letter apostrophes ʼ, fullwidth ＇, “ ”)
+/// don't prevent titles differing only by punctuation from matching.
+pub(crate) fn fold_quotes(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            // Single quotes / apostrophes / modifier letter apostrophes / primes / accents
+            '\'' | '‘' | '’' | '‚' | '‛' | '′' | '‵' | 'ʻ' | 'ʼ' | 'ʽ' | 'ʾ' | 'ʿ' | 'ˈ'
+            | 'ˊ' | 'ˋ' | '´' | '`' | '＇' | '❛' | '❜' => '\'',
+            // Double quotes / primes / guillemets / ornaments
+            '"' | '“' | '”' | '„' | '‟' | '″' | '‶' | '«' | '»' | '＂' | '❝' | '❞' => '"',
+            other => other,
+        })
+        .collect()
+}
+
+/// Squashed normalization: `normalize_title` with all whitespace removed,
+/// plus Unicode apostrophes/quotes folded. Used as a second-tier exact lookup
+/// in `CatalogIndex` to bridge titles differing only by spacing or punctuation
+/// (e.g. "Dogulwang" vs "Dogul Wang", "Let’s Go" vs "Let's Go").
+pub fn squashed_title(s: &str) -> String {
+    let folded = fold_quotes(s);
+    normalize_title(&folded)
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect()
+}
+
 impl CatalogIndex {
     pub fn build(rows: &[CatalogTitleRow]) -> Self {
         let mut by_normalized_title: HashMap<String, (i64, i64)> = HashMap::new();
+        let mut by_squashed_title: HashMap<String, (i64, i64)> = HashMap::new();
         let mut fuzzy_titles: Vec<(String, i64, i64)> = Vec::new();
         let mut token_index: HashMap<String, Vec<u32>> = HashMap::new();
         for row in rows {
@@ -189,6 +227,20 @@ impl CatalogIndex {
                     })
                     .or_insert((row.id, row.popularity));
 
+                let squashed = squashed_title(title);
+                if squashed.chars().count() >= MIN_SQUASHED_KEY_LEN {
+                    by_squashed_title
+                        .entry(squashed)
+                        .and_modify(|existing| {
+                            if row.popularity > existing.1
+                                || (row.popularity == existing.1 && row.id < existing.0)
+                            {
+                                *existing = (row.id, row.popularity);
+                            }
+                        })
+                        .or_insert((row.id, row.popularity));
+                }
+
                 let pos = fuzzy_titles.len() as u32;
                 for tok in key.split_whitespace().filter(|t| t.len() >= MIN_INDEX_TOKEN_LEN) {
                     let postings = token_index.entry(tok.to_string()).or_default();
@@ -199,7 +251,7 @@ impl CatalogIndex {
                 fuzzy_titles.push((key, row.id, row.popularity));
             }
         }
-        Self { by_normalized_title, fuzzy_titles, token_index }
+        Self { by_normalized_title, by_squashed_title, fuzzy_titles, token_index }
     }
 
     /// Best fuzzy catalog id for any of `queries`, or `None` when nothing clears
@@ -264,13 +316,32 @@ impl CatalogIndex {
     /// First `candidates` entry with an exact normalized hit, so callers pass
     /// their forms most-specific first (the raw site title, then progressively
     /// reduced ones like the franchise base name).
+    ///
+    /// Lookup tiers:
+    /// 1. Normal exact normalized key (`normalize_title`).
+    /// 2. Squashed exact key (`squashed_title`), with all whitespace removed
+    ///    and Unicode apostrophes/quotes folded, consulted AFTER normal exact
+    ///    and BEFORE fuzzy lookup. Squashed keys shorter than 6 characters
+    ///    are rejected to prevent over-eager links on short/ambiguous titles.
     pub fn lookup(&self, candidates: &[&str]) -> Option<i64> {
-        candidates.iter().find_map(|candidate| {
+        // Tier 1: exact normalized match across candidates.
+        if let Some(id) = candidates.iter().find_map(|candidate| {
             let key = normalize_title(candidate);
             if key.is_empty() {
                 return None;
             }
             self.by_normalized_title.get(&key).map(|(id, _)| *id)
+        }) {
+            return Some(id);
+        }
+
+        // Tier 2: squashed exact match across candidates.
+        candidates.iter().find_map(|candidate| {
+            let key = squashed_title(candidate);
+            if key.chars().count() < MIN_SQUASHED_KEY_LEN {
+                return None;
+            }
+            self.by_squashed_title.get(&key).map(|(id, _)| *id)
         })
     }
 
@@ -1055,5 +1126,135 @@ mod tests {
         assert!(!distinct_extension("attack on titan", "attack on titan final season"));
         // …and not when neither is a prefix of the other.
         assert!(!distinct_extension("fate zero", "fate stay night"));
+    }
+
+    #[test]
+    fn squashed_title_folds_quotes_and_removes_whitespace() {
+        assert_eq!(squashed_title("Dogul Wang"), "dogulwang");
+        assert_eq!(squashed_title("Dogulwang"), "dogulwang");
+        assert_eq!(squashed_title("Let’s Go Kaiki-gumi"), "letsgokaikigumi");
+        assert_eq!(squashed_title("Let's Go Kaiki-gumi"), "letsgokaikigumi");
+        assert_eq!(
+            squashed_title("Hanaori-san wa Tensei shitemo Kenka ga Shitai"),
+            "hanaorisanwatenseishitemokenkagashitai"
+        );
+        assert_eq!(
+            squashed_title("Hanaori-san wa Tensei Shite mo Kenka ga Shitai"),
+            "hanaorisanwatenseishitemokenkagashitai"
+        );
+        assert_eq!(
+            squashed_title("Himekishi wa Barbaroi no Yome"),
+            "himekishiwabarbaroinoyome"
+        );
+        assert_eq!(
+            squashed_title("Hime Kishi wa Barbaroi no Yome"),
+            "himekishiwabarbaroinoyome"
+        );
+        assert_eq!(
+            squashed_title("Ichijouma Mankitsugurashi!"),
+            "ichijoumamankitsugurashi"
+        );
+        assert_eq!(
+            squashed_title("Ichijouma Mankitsu Gurashi!"),
+            "ichijoumamankitsugurashi"
+        );
+        assert_eq!(
+            squashed_title("Tai-Ari deshita. Ojousama wa Kakutou Game nante Shinai"),
+            "taiarideshitaojousamawakakutougamenanteshinai"
+        );
+        assert_eq!(
+            squashed_title("Taiari deshita: Ojousama wa Kakutou Game nante Shinai"),
+            "taiarideshitaojousamawakakutougamenanteshinai"
+        );
+    }
+
+    #[test]
+    fn catalog_index_squashed_lookup_matches_airing_diff_examples() {
+        let rows = vec![
+            catalog_row(184356, 12000, &["Dogul Wang"]),
+            catalog_row(199066, 8000, &["Hanaori-san wa Tensei Shite mo Kenka ga Shitai"]),
+            catalog_row(300, 5000, &["Let's Go Kaiki-gumi"]),
+            catalog_row(400, 7000, &["Hime Kishi wa Barbaroi no Yome"]),
+            catalog_row(500, 6000, &["Ichijouma Mankitsu Gurashi!"]),
+            catalog_row(600, 9000, &["Taiari deshita: Ojousama wa Kakutou Game nante Shinai"]),
+        ];
+        let index = CatalogIndex::build(&rows);
+
+        // 1. Dogulwang -> Dogul Wang (id 184356)
+        assert_eq!(index.lookup(&["Dogulwang"]), Some(184356));
+
+        // 2. Hanaori-san wa Tensei shitemo Kenka ga Shitai -> ... Shite mo ... (199066)
+        assert_eq!(
+            index.lookup(&["Hanaori-san wa Tensei shitemo Kenka ga Shitai"]),
+            Some(199066)
+        );
+
+        // 3. "Let’s Go Kaiki-gumi" (curly apostrophe) -> "Let's Go Kaiki-gumi"
+        assert_eq!(index.lookup(&["Let’s Go Kaiki-gumi"]), Some(300));
+
+        // 4. Himekishi wa Barbaroi no Yome
+        assert_eq!(index.lookup(&["Himekishi wa Barbaroi no Yome"]), Some(400));
+
+        // 5. Ichijouma Mankitsugurashi!
+        assert_eq!(index.lookup(&["Ichijouma Mankitsugurashi!"]), Some(500));
+
+        // 6. Tai-Ari deshita. Ojousama wa Kakutou Game nante Shinai
+        assert_eq!(
+            index.lookup(&["Tai-Ari deshita. Ojousama wa Kakutou Game nante Shinai"]),
+            Some(600)
+        );
+    }
+
+    #[test]
+    fn catalog_index_squashed_lookup_rejects_keys_shorter_than_6_chars() {
+        let rows = vec![
+            catalog_row(10, 1000, &["Hero"]),
+            catalog_row(20, 2000, &["Given"]),
+            catalog_row(30, 3000, &["K"]),
+        ];
+        let index = CatalogIndex::build(&rows);
+
+        // Short / ambiguous variations (< 6 chars) must stay unlinked under squashed lookup:
+        // "He ro" (squashes to "hero", 4 chars < 6)
+        assert_eq!(index.lookup(&["He ro"]), None);
+        // "Gi ven" (squashes to "given", 5 chars < 6)
+        assert_eq!(index.lookup(&["Gi ven"]), None);
+
+        // Exact match in Tier 1 still works for short titles (unchanged behaviour)
+        assert_eq!(index.lookup(&["Hero"]), Some(10));
+        assert_eq!(index.lookup(&["Given"]), Some(20));
+        assert_eq!(index.lookup(&["K"]), Some(30));
+    }
+
+    #[test]
+    fn catalog_index_squashed_lookup_respects_popularity_and_lowest_id_tiebreak() {
+        // Remakes/collisions in squashed space: higher popularity wins
+        let rows_pop = vec![
+            catalog_row(1, 100, &["Dogul Wang"]),
+            catalog_row(2, 5000, &["Dogulwang"]),
+        ];
+        let index_pop = CatalogIndex::build(&rows_pop);
+        assert_eq!(index_pop.lookup(&["Dogu lwang"]), Some(2));
+
+        // Equal popularity: lowest id wins
+        let rows_id = vec![
+            catalog_row(42, 1000, &["Dogul Wang"]),
+            catalog_row(15, 1000, &["Dogulwang"]),
+        ];
+        let index_id = CatalogIndex::build(&rows_id);
+        assert_eq!(index_id.lookup(&["Dogu lwang"]), Some(15));
+    }
+
+    #[test]
+    fn catalog_index_lookup_consults_exact_tier_before_squashed_tier() {
+        // Row 1 has an exact normalized match with lower popularity.
+        // Row 2 squashes to the same key but has much higher popularity.
+        // Exact normalized tier must win over squashed tier.
+        let rows = vec![
+            catalog_row(10, 100, &["Dogulwang"]),
+            catalog_row(20, 999_999, &["Dogul Wang"]),
+        ];
+        let index = CatalogIndex::build(&rows);
+        assert_eq!(index.lookup(&["Dogulwang"]), Some(10));
     }
 }

@@ -10,6 +10,7 @@ import {
 import { useT } from "../i18n";
 import { isUnlinkedCatalogRow } from "../lib/catalogLink";
 import { parseReleasedAtToUnixSeconds } from "../lib/parseReleasedAt";
+import { resolveCoverUrl } from "../lib/posterFallback";
 import { countdownLabel } from "./AiringGrid";
 import type { CatalogAnime, Episode, Series } from "../types";
 
@@ -71,6 +72,9 @@ export function SeriesDetail({
   // comes from AniList, not the scraped site — the site only still supplies
   // episode links and the "is it airing" signal (see `listEpisodes` below).
   const [catalogInfo, setCatalogInfo] = useState<CatalogAnime | null>(null);
+  // AniList's CDN cover wins; otherwise the series' own (possibly a cached
+  // local `file:` path, which the raw <img> would be blocked from loading).
+  const detailCover = resolveCoverUrl(catalogInfo?.cover_url ?? series.cover_url);
   const rowRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   // Guards the link-on-open trigger against React StrictMode's dev-only
   // double-invoke (same pattern as App.tsx's startup effect) — otherwise
@@ -170,12 +174,8 @@ export function SeriesDetail({
       </button>
 
       <div className="page-head detail-head">
-        {(catalogInfo?.cover_url ?? series.cover_url) && (
-          <img
-            className="detail-cover"
-            src={catalogInfo?.cover_url ?? series.cover_url ?? undefined}
-            alt=""
-          />
+        {detailCover && (
+          <img className="detail-cover" src={detailCover} alt="" />
         )}
         <div className="detail-main">
           <h2 className="page-title detail-title">{series.title}</h2>

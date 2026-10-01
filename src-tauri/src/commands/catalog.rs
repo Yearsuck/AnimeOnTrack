@@ -277,6 +277,66 @@ pub async fn backfill_catalog_metadata(app: AppHandle, state: State<'_, AppState
     Ok(done)
 }
 
+/// Pure throttle check for `refresh_catalog_status`: run once per 6 hours,
+/// or immediately if never run / persisted timestamp is unparseable.
+pub fn should_refresh_catalog_status(last_at: Option<&str>, now: chrono::DateTime<chrono::Utc>) -> bool {
+    const STATUS_REFRESH_COOLDOWN_SECS: i64 = 6 * 60 * 60;
+    match last_at.and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok()) {
+        Some(last) => (now - last.with_timezone(&chrono::Utc)).num_seconds() >= STATUS_REFRESH_COOLDOWN_SECS,
+        None => true,
+    }
+}
+
+/// Keep AniList catalog `status` fresh for shows the user cares about (airing,
+/// releasing, or recently finished). Batches candidate ids (from `db.stale_status_ids()`)
+/// through AniList's GraphQL API, preserving existing `sort_order`, with ~2100ms
+/// pacing between batches. Throttled via settings key `catalog_status_refreshed_at`
+/// to run at most once every 6 hours. After updating catalog rows, runs
+/// `sync_finished_status_from_catalog()` so linked series have their `is_airing`
+/// flag corrected when AniList reports them as finished.
+#[tauri::command]
+pub async fn refresh_catalog_status(state: State<'_, AppState>) -> Result<Option<i64>, String> {
+    const PACED_SLEEP: std::time::Duration = std::time::Duration::from_millis(2100);
+
+    let last_at = {
+        let db = state.db.lock().unwrap();
+        db.get_setting("catalog_status_refreshed_at").map_err(|e| e.to_string())?
+    };
+    if !should_refresh_catalog_status(last_at.as_deref(), chrono::Utc::now()) {
+        return Ok(None);
+    }
+
+    let stale_ids = {
+        let db = state.db.lock().unwrap();
+        db.stale_status_ids().map_err(|e| e.to_string())?
+    };
+
+    let mut done = 0i64;
+    for batch in stale_ids.chunks(crate::anilist::MAX_IDS_PER_REQUEST) {
+        let fetched = crate::anilist::fetch_by_ids(batch).await.map_err(|e| e.to_string())?;
+        {
+            let db = state.db.lock().unwrap();
+            let mut items = Vec::with_capacity(fetched.len());
+            for anime in &fetched {
+                let sort_order = db.catalog_sort_order(anime.id).map_err(|e| e.to_string())?;
+                items.push((anime, sort_order));
+            }
+            db.upsert_catalog_anime_batch(&items).map_err(|e| e.to_string())?;
+        }
+        done += batch.len() as i64;
+        tokio::time::sleep(PACED_SLEEP).await;
+    }
+
+    {
+        let db = state.db.lock().unwrap();
+        db.set_setting("catalog_status_refreshed_at", &chrono::Utc::now().to_rfc3339())
+            .map_err(|e| e.to_string())?;
+        db.sync_finished_status_from_catalog().map_err(|e| e.to_string())?;
+    }
+
+    Ok(Some(done))
+}
+
 async fn run_catalog_sync(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -472,5 +532,42 @@ mod auto_sync_tests {
             "a successful sync must still hold the cooldown"
         );
         assert!(should_auto_sync_catalog(stamp.as_deref(), t1 + Duration::hours(13)));
+    }
+}
+
+#[cfg(test)]
+mod status_refresh_tests {
+    use super::should_refresh_catalog_status;
+    use chrono::{Duration, Utc};
+
+    #[test]
+    fn never_refreshed_should_run() {
+        assert!(should_refresh_catalog_status(None, Utc::now()));
+    }
+
+    #[test]
+    fn corrupt_timestamp_should_run() {
+        assert!(should_refresh_catalog_status(Some("not-a-date"), Utc::now()));
+    }
+
+    #[test]
+    fn recent_refresh_under_6h_should_skip() {
+        let now = Utc::now();
+        let last = (now - Duration::hours(3)).to_rfc3339();
+        assert!(!should_refresh_catalog_status(Some(&last), now));
+    }
+
+    #[test]
+    fn past_6h_should_run_again() {
+        let now = Utc::now();
+        let last = (now - Duration::hours(7)).to_rfc3339();
+        assert!(should_refresh_catalog_status(Some(&last), now));
+    }
+
+    #[test]
+    fn boundary_at_6h_should_run() {
+        let now = Utc::now();
+        let last = (now - Duration::hours(6)).to_rfc3339();
+        assert!(should_refresh_catalog_status(Some(&last), now));
     }
 }

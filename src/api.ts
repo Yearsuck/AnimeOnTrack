@@ -211,6 +211,9 @@ export const uninstallApp = () => invoke<void>("uninstall_app");
 export const backfillCatalogMetadata = () =>
   invoke<number>("backfill_catalog_metadata");
 
+export const refreshCatalogStatus = () =>
+  invoke<number | null>("refresh_catalog_status");
+
 export const getCatalogInfoForSeries = (seriesId: number) =>
   invoke<CatalogAnime | null>("get_catalog_info_for_series", { seriesId });
 
