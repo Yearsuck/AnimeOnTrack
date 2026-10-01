@@ -200,6 +200,7 @@ pub fn run() {
             commands::sync_anime_catalog,
             commands::maybe_sync_catalog_incremental,
             commands::backfill_catalog_metadata,
+            commands::refresh_catalog_status,
             commands::link_series_to_catalog,
             commands::import_library_to_active_site,
             commands::get_catalog_info_for_series,
