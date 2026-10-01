@@ -188,12 +188,12 @@ impl Db {
     /// (which only acts on linked rows), so a long-finished unlinked show
     /// keeps showing as airing forever.
     ///
-    /// Matching is exact-only first (see `matching::CatalogIndex`), tried on
-    /// the site title then the franchise base name, then a strict fuzzy
-    /// fallback so cross-language and season-suffix title variants ("…2nd
-    /// Season" vs "…Temporada 2") still resolve to the same AniList id —
-    /// otherwise the same show, unlinked on one site, becomes a second
-    /// canonical entry and shows up twice in the "En emisión"/library
+    /// Matching is exact-only first (both normalized and squashed punctuation/spacing
+    /// variants — see `matching::CatalogIndex`), tried on the site title then the
+    /// franchise base name, then a strict fuzzy fallback so cross-language and
+    /// season-suffix title variants ("…2nd Season" vs "…Temporada 2") still resolve
+    /// to the same AniList id — otherwise the same show, unlinked on one site,
+    /// becomes a second canonical entry and shows up twice in the "En emisión"/library
     /// unions. Returns how many series were newly linked.
     pub fn link_series_to_catalog(&self) -> Result<i64> {
         let index = crate::matching::CatalogIndex::build(&self.catalog_titles_for_index()?);
@@ -2097,5 +2097,111 @@ mod tests {
         let sid = db.upsert_series(src, &mk_airing("obscure", "Totally Unmatched Title", None)).unwrap();
 
         assert_eq!(db.catalog_info_for_series(sid).unwrap(), None);
+    }
+
+    #[test]
+    fn link_series_to_catalog_links_squashed_spacing_and_punctuation_variants() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("TioAnime", "t", "tioanime").unwrap();
+
+        // Seed catalog with target titles differing only by punctuation / whitespace
+        db.upsert_catalog_anime(&catalog_anime(184356, "Dogul Wang", &["Action"]), 0).unwrap();
+        db.upsert_catalog_anime(
+            &catalog_anime(199066, "Hanaori-san wa Tensei Shite mo Kenka ga Shitai", &["Romance"]),
+            1,
+        )
+        .unwrap();
+        db.upsert_catalog_anime(&catalog_anime(300, "Let's Go Kaiki-gumi", &["Comedy"]), 2).unwrap();
+        db.upsert_catalog_anime(&catalog_anime(400, "Hime Kishi wa Barbaroi no Yome", &["Fantasy"]), 3).unwrap();
+        db.upsert_catalog_anime(&catalog_anime(500, "Ichijouma Mankitsu Gurashi!", &["Slice of Life"]), 4).unwrap();
+        db.upsert_catalog_anime(
+            &catalog_anime(600, "Taiari deshita: Ojousama wa Kakutou Game nante Shinai", &["Comedy"]),
+            5,
+        )
+        .unwrap();
+
+        let test_cases = [
+            ("dogulwang", "Dogulwang", 184356),
+            ("hanaori", "Hanaori-san wa Tensei shitemo Kenka ga Shitai", 199066),
+            ("kaiki", "Let’s Go Kaiki-gumi", 300), // curly apostrophe
+            ("himekishi", "Himekishi wa Barbaroi no Yome", 400),
+            ("ichijouma", "Ichijouma Mankitsugurashi!", 500),
+            ("taiari", "Tai-Ari deshita. Ojousama wa Kakutou Game nante Shinai", 600),
+        ];
+
+        let mut sids = Vec::new();
+        for (slug, title, _) in &test_cases {
+            let sid = db
+                .upsert_series(
+                    src,
+                    &crate::models::Series {
+                        id: 0,
+                        slug: (*slug).into(),
+                        title: (*title).into(),
+                        url: format!("https://tioanime.example/series/{slug}"),
+                        cover_url: None,
+                        is_airing: true,
+                        followed: true,
+                        next_episode_at: None,
+                        site_episode_count: None,
+                    },
+                )
+                .unwrap();
+            db.set_followed(sid, true).unwrap();
+            sids.push(sid);
+        }
+
+        let linked = db.link_series_to_catalog().unwrap();
+        assert_eq!(linked, 6);
+
+        for (sid, (_, _, expected_id)) in sids.iter().zip(test_cases.iter()) {
+            let actual_id = db
+                .conn
+                .query_row(
+                    "SELECT anilist_id FROM series WHERE id=?1",
+                    [sid],
+                    |r| r.get::<_, Option<i64>>(0),
+                )
+                .unwrap();
+            assert_eq!(actual_id, Some(*expected_id));
+        }
+    }
+
+    #[test]
+    fn link_series_to_catalog_short_title_stays_unlinked() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("TioAnime", "t", "tioanime").unwrap();
+        db.upsert_catalog_anime(&catalog_anime(700, "Hero", &["Action"]), 0).unwrap();
+
+        // "He ro" squashes to "hero" (4 chars < 6), must not match
+        let sid = db
+            .upsert_series(
+                src,
+                &crate::models::Series {
+                    id: 0,
+                    slug: "he-ro".into(),
+                    title: "He ro".into(),
+                    url: "https://tioanime.example/series/he-ro".into(),
+                    cover_url: None,
+                    is_airing: true,
+                    followed: true,
+                    next_episode_at: None,
+                    site_episode_count: None,
+                },
+            )
+            .unwrap();
+        db.set_followed(sid, true).unwrap();
+
+        let linked = db.link_series_to_catalog().unwrap();
+        assert_eq!(linked, 0);
+        let actual_id = db
+            .conn
+            .query_row(
+                "SELECT anilist_id FROM series WHERE id=?1",
+                [sid],
+                |r| r.get::<_, Option<i64>>(0),
+            )
+            .unwrap();
+        assert_eq!(actual_id, None, "short squashed key (< 6 chars) must stay unlinked");
     }
 }
