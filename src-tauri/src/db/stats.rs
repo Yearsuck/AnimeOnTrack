@@ -2958,7 +2958,7 @@ mod tests {
         }).unwrap();
         // Manually backdate seen_at to >90 days ago
         db.conn.execute(
-            "UPDATE episodes SET seen_at = datetime('now', 'localtime', '-100 days') WHERE series_id=?1",
+            "UPDATE episodes SET seen_at = datetime('now', '-100 days') WHERE series_id=?1",
             [dusty],
         ).unwrap();
 
@@ -3004,7 +3004,7 @@ mod tests {
             url: "https://site/dusty-1".into(), released_at: None, seen: true,
         }).unwrap();
         db.conn.execute(
-            "UPDATE episodes SET seen_at = datetime('now', 'localtime', '-100 days') WHERE series_id=?1",
+            "UPDATE episodes SET seen_at = datetime('now', '-100 days') WHERE series_id=?1",
             [dusty_a],
         ).unwrap();
 
@@ -3015,7 +3015,7 @@ mod tests {
             url: "https://site/dusty-1".into(), released_at: None, seen: true,
         }).unwrap();
         db.conn.execute(
-            "UPDATE episodes SET seen_at = datetime('now', 'localtime', '-120 days') WHERE series_id=?1",
+            "UPDATE episodes SET seen_at = datetime('now', '-120 days') WHERE series_id=?1",
             [dusty_b],
         ).unwrap();
 
