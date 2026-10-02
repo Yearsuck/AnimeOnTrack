@@ -36,6 +36,10 @@ Cargo requires `%USERPROFILE%\.cargo\bin` on `PATH` in a fresh shell (rustup too
 
 The app's SQLite DB lives at `%APPDATA%\com.animeontrack.app\animeontrack.sqlite` (pre-0.5.5 installs: `%APPDATA%\com.ernes.aot-scaffold\`) — useful to inspect directly with `sqlite3` when debugging state (mirrors list, cover_url values, followed flags, catalog rows) without going through the UI.
 
+### Debug sandbox (reproduce bugs without touching your data)
+
+`node tools/sandbox/start.mjs [--fresh|--release]` runs the app on a **copy** of the real DB under a separate Tauri identifier (own data dir and WebView2 profile), with the WebView2 remote-debugging port open; `tools/sandbox/cdp.mjs` then calls any Tauri command, evals JS, or probes whether the UI/IPC is responsive. See `tools/sandbox/README.md` — notably, `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` *replaces* Tauri's default WebView2 args, and omitting them makes the release app's IPC stall (a tooling artifact that looks like a real hang). A Windows *application hang* (event 1002) never writes `panic.log`; debug it with `cdb -pv -p <pid> -c "~*kn 28; q"` and local symbols.
+
 ### CI/CD (GitHub Actions)
 
 - **`.github/workflows/ci.yml`** — on every push/PR to `main`/`develop`: a `Rust` matrix job on `windows-latest`, `macos-latest` and `ubuntu-latest` (build + `cargo test` everywhere; clippy `-D warnings` gates **Windows only**) plus a `Frontend` job (`tsc`, `npm run build`). Windows is the primary platform (WebView2 scraper); mac/linux only prove it still compiles. CI uses the *latest stable* Rust, which can be newer than the local toolchain and flag lints local `clippy` does not (e.g. `needless_borrows_for_generic_args` on 1.99 vs 1.96) — if CI clippy is red on code you did not touch, check the base before blaming the change. Concurrency `cancel-in-progress` cancels superseded runs.
