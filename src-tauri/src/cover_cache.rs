@@ -158,6 +158,76 @@ pub fn validate_response_size(size: usize, max: usize) -> Result<()> {
     }
 }
 
+/// Read width and height from image headers (PNG, JPEG, GIF).
+pub fn image_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") && bytes.len() >= 24 {
+        let w = u32::from_be_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]);
+        let h = u32::from_be_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]);
+        return Some((w, h));
+    }
+    if (bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a")) && bytes.len() >= 10 {
+        let w = u16::from_le_bytes([bytes[6], bytes[7]]) as u32;
+        let h = u16::from_le_bytes([bytes[8], bytes[9]]) as u32;
+        return Some((w, h));
+    }
+    if bytes.starts_with(b"\xFF\xD8\xFF") {
+        let mut pos = 2;
+        while pos + 4 <= bytes.len() {
+            // Segments start with 0xFF; skip fill bytes and the standalone
+            // markers (TEM, RSTn, SOI, EOI) that carry no length field.
+            if bytes[pos] != 0xFF {
+                pos += 1;
+                continue;
+            }
+            let marker = bytes[pos + 1];
+            if marker == 0xFF {
+                pos += 1;
+                continue;
+            }
+            if marker == 0x01 || (0xD0..=0xD9).contains(&marker) {
+                pos += 2;
+                continue;
+            }
+            let len = u16::from_be_bytes([bytes[pos + 2], bytes[pos + 3]]) as usize;
+            if matches!(marker, 0xC0..=0xC3 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF) {
+                if pos + 9 <= bytes.len() {
+                    let h = u16::from_be_bytes([bytes[pos + 5], bytes[pos + 6]]) as u32;
+                    let w = u16::from_be_bytes([bytes[pos + 7], bytes[pos + 8]]) as u32;
+                    return Some((w, h));
+                }
+                break;
+            }
+            pos += 2 + len;
+        }
+    }
+    None
+}
+
+pub fn is_placeholder_image(bytes: &[u8]) -> bool {
+    if let Some((w, h)) = image_dimensions(bytes) {
+        std::cmp::min(w, h) < 64
+    } else {
+        false
+    }
+}
+
+pub fn is_placeholder_data_uri(uri: &str) -> bool {
+    let prefix = "data:image/";
+    if !uri.starts_with(prefix) { return false; }
+    if let Some(idx) = uri.find(";base64,") {
+        let b64 = &uri.as_bytes()[idx + 8..];
+        let mut limit = std::cmp::min(b64.len(), 5500);
+        limit -= limit % 4; // ensure multiple of 4 for decoding
+        if limit == 0 { return false; }
+        use base64::Engine;
+        // Bytes, not a str slice: a str slice panics on a non-ASCII boundary.
+        if let Ok(bytes) = base64::prelude::BASE64_STANDARD.decode(&b64[..limit]) {
+            return is_placeholder_image(&bytes);
+        }
+    }
+    false
+}
+
 /// Fetch an image from `image_url` and persist it into `covers_dir/<hash>.<ext>`.
 ///
 /// Sends a browser User-Agent and a Referer header pointing to the image's site origin.
@@ -249,6 +319,10 @@ pub async fn fetch_and_cache_cover_to_dir(
 
     if bytes.is_empty() {
         return Err(DownloadError::Other("downloaded cover is 0 bytes".to_string()));
+    }
+
+    if is_placeholder_image(&bytes) {
+        return Err(DownloadError::Other("downloaded cover is a placeholder (too small)".to_string()));
     }
 
     // Ensure directory exists and write file
@@ -429,5 +503,52 @@ mod tests {
 
         let res3 = fetch_and_cache_cover_to_dir(dummy, "http://localhost/cover.jpg").await;
         assert!(matches!(res3, Err(DownloadError::InvalidUrl(_))));
+    }
+
+    #[test]
+    fn edge_fixture_is_placeholder() {
+        let bytes = include_bytes!("../tests/fixtures/edge-logo-48.jpg");
+        assert_eq!(image_dimensions(bytes), Some((48, 48)));
+        assert!(is_placeholder_image(bytes));
+
+        use base64::Engine;
+        let b64 = base64::prelude::BASE64_STANDARD.encode(bytes);
+        let uri = format!("data:image/jpeg;base64,{}", b64);
+        assert!(is_placeholder_data_uri(&uri));
+    }
+
+    #[test]
+    fn hand_built_png_is_not_placeholder() {
+        // Hand built minimal PNG header: 200x300
+        let mut bytes = vec![];
+        bytes.extend_from_slice(b"\x89PNG\r\n\x1a\n");
+        bytes.extend_from_slice(&[0; 8]);
+        bytes.extend_from_slice(&200u32.to_be_bytes()); // 16..20
+        bytes.extend_from_slice(&300u32.to_be_bytes()); // 20..24
+        assert_eq!(image_dimensions(&bytes), Some((200, 300)));
+        assert!(!is_placeholder_image(&bytes));
+    }
+
+    #[test]
+    fn jpeg_walk_skips_fill_bytes_and_reads_a_large_frame() {
+        // SOI, 0xFF fill, APP0 (len 4), then SOF0 800x600.
+        let bytes = [
+            0xFF, 0xD8, 0xFF, 0xFF, 0xE0, 0x00, 0x04, 0x00, 0x00, 0xFF, 0xC0, 0x00, 0x11, 0x08, 0x02, 0x58, 0x03, 0x20,
+        ];
+        assert_eq!(image_dimensions(&bytes), Some((800, 600)));
+        assert!(!is_placeholder_image(&bytes));
+    }
+
+    #[test]
+    fn non_ascii_data_uri_does_not_panic() {
+        let uri = format!("data:image/jpeg;base64,{}", "é".repeat(4000));
+        assert!(!is_placeholder_data_uri(&uri));
+    }
+
+    #[test]
+    fn garbage_bytes_return_none() {
+        let garbage = b"not an image file at all";
+        assert_eq!(image_dimensions(garbage), None);
+        assert!(!is_placeholder_image(garbage));
     }
 }
