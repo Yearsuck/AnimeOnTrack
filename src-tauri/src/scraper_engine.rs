@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Result};
-use std::sync::LazyLock;
-use std::time::Duration;
+use std::collections::VecDeque;
+use std::sync::{LazyLock, Mutex};
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
 /// Process-wide cap on concurrent scraper windows, shared by every caller
@@ -28,6 +29,114 @@ static SCRAPE_PERMITS: LazyLock<tokio::sync::Semaphore> =
 /// see `build_webview_window_with_timeout`'s doc comment for why this needs
 /// a dedicated-thread timeout rather than an `async` one.
 const WINDOW_BUILD_TIMEOUT: Duration = Duration::from_secs(20);
+
+// ── Window-activity ring ──────────────────────────────────────────────────────
+//
+// A small, bounded audit trail of the last 8 window events (build start, build
+// ok, build failed, window closed). Capacity 8 is enough to cover one full
+// SCRAPE_CONCURRENCY=4 cycle (open × 4 + close × 4) with room to spare.
+//
+// The watchdog reads this when it detects a stall so the hang.log entry
+// carries evidence about which build or close the main thread was stuck on,
+// rather than just a timestamp.
+
+/// Maximum number of activity entries retained in the ring. Older entries are
+/// silently dropped when the ring is full so memory use is bounded regardless
+/// of how long the app runs.
+const ACTIVITY_RING_CAP: usize = 8;
+
+/// Ring buffer of recent window events, protected by a plain `std::sync::Mutex`
+/// (not tokio's) because `note_window_activity` is called from both async
+/// tasks and the synchronous watchdog thread.
+static WINDOW_ACTIVITY: LazyLock<Mutex<VecDeque<String>>> =
+    LazyLock::new(|| Mutex::new(VecDeque::with_capacity(ACTIVITY_RING_CAP)));
+
+/// Push a window-lifecycle event into the activity ring, dropping the oldest
+/// entry when the ring is already at capacity.
+///
+/// Call this at every observable window lifecycle point (build start, build ok,
+/// build error, window close) so the watchdog has breadcrumbs to report if the
+/// main thread gets stuck during one of those operations.
+///
+/// `msg` should be a short, human-readable description — the target host on
+/// build-start (not the full URL, which can be very long), or a status word
+/// like "build ok" / "build timeout". A millisecond timestamp is prepended
+/// automatically so entries are sortable without a real logger.
+pub(crate) fn note_window_activity(msg: &str) {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let entry = format!("[{ms}ms] {msg}");
+    if let Ok(mut ring) = WINDOW_ACTIVITY.lock() {
+        if ring.len() == ACTIVITY_RING_CAP {
+            ring.pop_front();
+        }
+        ring.push_back(entry);
+    }
+}
+
+/// Join all activity ring entries with a semicolon, or return `"none"` when
+/// the ring is empty. Called by the watchdog when it writes a stall log line.
+pub fn describe_window_activity() -> String {
+    match WINDOW_ACTIVITY.lock() {
+        Ok(ring) if ring.is_empty() => "none".to_string(),
+        Ok(ring) => ring.iter().cloned().collect::<Vec<_>>().join("; "),
+        Err(_) => "none".to_string(),
+    }
+}
+
+// ── Window-build spacing ──────────────────────────────────────────────────────
+//
+// `WebviewWindowBuilder::build()` posts work to the main thread's GUI event
+// loop. Under rapid window churn (many windows opening and closing in quick
+// succession) the event loop can become overwhelmed, which is the leading
+// suspect for the observed indefinite hangs. A minimum gap of 250 ms between
+// consecutive build-start moments reduces that churn without meaningfully
+// slowing down a normal refresh cycle (at SCRAPE_CONCURRENCY=4, 250 ms × 4
+// = 1 s of extra spacing per batch, well inside the per-fetch 150 s budget).
+
+/// Instant of the last build start, shared across all callers (both
+/// `fetch_html_with_script_inner` and `fetch_cover_image_inner`). Protected
+/// by a `tokio::sync::Mutex` so it can be awaited without blocking a tokio
+/// worker thread while the sleep runs inside the async fn.
+static LAST_BUILD_START: LazyLock<tokio::sync::Mutex<Option<Instant>>> =
+    LazyLock::new(|| tokio::sync::Mutex::new(None));
+
+/// Minimum gap between consecutive window build starts.
+const BUILD_SPACING: Duration = Duration::from_millis(250);
+
+/// Compute how much time still needs to elapse before the next build is
+/// allowed, given the previous build's start instant and the current instant.
+///
+/// Pure, testable function: takes instants as arguments rather than reading
+/// `LAST_BUILD_START` directly so it can be called from unit tests.
+///
+/// Returns `Duration::ZERO` when `last` is `None` (no previous build) or
+/// when enough time has already passed.
+fn remaining_spacing(last: Option<Instant>, now: Instant, min_gap: Duration) -> Duration {
+    let Some(last) = last else { return Duration::ZERO };
+    let elapsed = now.duration_since(last);
+    min_gap.saturating_sub(elapsed)
+}
+
+/// Enforce the minimum inter-build gap. Must be `await`ed immediately before
+/// every `build_webview_window_with_timeout` call.
+///
+/// Locks `LAST_BUILD_START`, computes the remaining wait (if any), sleeps for
+/// that duration, then records `Instant::now()` as the new last-build-start.
+/// The lock is held for the duration of the sleep so that two concurrent
+/// callers both see each other's reservation and don't both start at the same
+/// time — this is intentional back-pressure, not a bug.
+async fn space_window_builds() {
+    let mut guard = LAST_BUILD_START.lock().await;
+    let wait = remaining_spacing(*guard, Instant::now(), BUILD_SPACING);
+    if wait > Duration::ZERO {
+        tokio::time::sleep(wait).await;
+    }
+    *guard = Some(Instant::now());
+}
 
 /// Result of scraping a page: just the rendered HTML. Cover images are NOT
 /// fetched here (see `fetch_cover_image`) — doing it in bulk for every series
@@ -185,10 +294,25 @@ async fn fetch_html_with_script_inner(
     let _permit = SCRAPE_PERMITS.acquire().await?;
     emit_stage(app, "opening");
     let label = format!("scraper-{}", uuid_like());
-    let parsed_url = url.parse().map_err(|_| anyhow!("bad url: {url}"))?;
+    let parsed_url: url::Url = url.parse().map_err(|_| anyhow!("bad url: {url}"))?;
+
+    // Record the target host (not the full URL — it can be very long) so
+    // the watchdog has a breadcrumb if the build call hangs on the main
+    // thread.  Extract before moving `parsed_url` into the closure.
+    let host_for_log = parsed_url
+        .host_str()
+        .unwrap_or("unknown")
+        .to_string();
+
+    // Enforce the minimum gap between consecutive window build-starts to
+    // reduce main-thread event-loop pressure under rapid window churn.
+    space_window_builds().await;
+    // Logged after the wait so the timestamp is the real build start.
+    note_window_activity(&format!("scraper build start: {host_for_log}"));
+
     let build_started = std::time::Instant::now();
     let app_for_build = app.clone();
-    let window = build_webview_window_with_timeout(
+    let build_result = build_webview_window_with_timeout(
         app,
         move || {
             WebviewWindowBuilder::new(&app_for_build, &label, WebviewUrl::External(parsed_url))
@@ -207,11 +331,25 @@ async fn fetch_html_with_script_inner(
                 .build()
         },
         WINDOW_BUILD_TIMEOUT,
-    )?;
+    );
     let window_build_ms = build_started.elapsed().as_millis();
+
+    let window = match build_result {
+        Ok(w) => {
+            note_window_activity(&format!("scraper build ok: {host_for_log}"));
+            w
+        }
+        Err(e) => {
+            note_window_activity(&format!("scraper build failed: {host_for_log}"));
+            return Err(e);
+        }
+    };
 
     let result = extract_when_ready(app, &window, window_build_ms, total_started, extra_script).await;
     window.close().ok();
+    // After close(): if the close call itself is what hangs, the log must not
+    // claim the window was already closed.
+    note_window_activity(&format!("scraper window closed: {host_for_log}"));
     result
 }
 
@@ -363,9 +501,23 @@ async fn fetch_cover_image_inner(app: &AppHandle, image_url: &str) -> Result<Str
     }
     let _permit = SCRAPE_PERMITS.acquire().await?;
     let label = format!("cover-{}", uuid_like());
-    let parsed_url = image_url.parse().map_err(|_| anyhow!("bad image url: {image_url}"))?;
+    let parsed_url: url::Url = image_url.parse().map_err(|_| anyhow!("bad image url: {image_url}"))?;
+
+    // Record the target host (not the full image URL) before moving
+    // `parsed_url` into the closure, same pattern as fetch_html_with_script_inner.
+    let host_for_log = parsed_url
+        .host_str()
+        .unwrap_or("unknown")
+        .to_string();
+
+    // Same back-pressure as the scraper path: space out build-start moments
+    // to avoid overwhelming the main thread's event loop with back-to-back
+    // WebviewWindowBuilder::build() calls.
+    space_window_builds().await;
+    note_window_activity(&format!("cover build start: {host_for_log}"));
+
     let app_for_build = app.clone();
-    let window = build_webview_window_with_timeout(
+    let build_result = build_webview_window_with_timeout(
         app,
         move || {
             WebviewWindowBuilder::new(&app_for_build, &label, WebviewUrl::External(parsed_url))
@@ -375,7 +527,18 @@ async fn fetch_cover_image_inner(app: &AppHandle, image_url: &str) -> Result<Str
                 .build()
         },
         WINDOW_BUILD_TIMEOUT,
-    )?;
+    );
+
+    let window = match build_result {
+        Ok(w) => {
+            note_window_activity(&format!("cover build ok: {host_for_log}"));
+            w
+        }
+        Err(e) => {
+            note_window_activity(&format!("cover build failed: {host_for_log}"));
+            return Err(e);
+        }
+    };
 
     const READY_PROBE: &str = "JSON.stringify(!!document.images[0] \
 && document.images[0].complete && document.images[0].naturalWidth > 0)";
@@ -416,6 +579,7 @@ async fn fetch_cover_image_inner(app: &AppHandle, image_url: &str) -> Result<Str
             .and_then(|json| serde_json::from_str::<String>(&json).map_err(|e| anyhow!("decode failed: {e}")))
     };
     window.close().ok();
+    note_window_activity(&format!("cover window closed: {host_for_log}"));
     result
 }
 
@@ -485,6 +649,11 @@ fn uuid_like() -> u128 {
 mod tests {
     use super::*;
 
+    /// The activity ring is process-global and `cargo test` runs tests in
+    /// parallel threads, so every test that clears or fills it holds this
+    /// lock for its whole body.
+    static RING_TEST_LOCK: Mutex<()> = Mutex::new(());
+
     #[test]
     fn allows_ordinary_https_and_http_mirrors() {
         assert!(is_safe_external_url("https://example.com/directorio"));
@@ -524,5 +693,103 @@ mod tests {
     fn rejects_unparseable_urls() {
         assert!(!is_safe_external_url("not a url at all"));
         assert!(!is_safe_external_url(""));
+    }
+
+    // ── Activity ring ─────────────────────────────────────────────────────────
+
+    /// Drive `note_window_activity` directly and verify that the ring keeps
+    /// only the last 8 entries and that the newest entry ends up last.
+    #[test]
+    fn activity_ring_keeps_only_last_8_newest_last() {
+        let _serial = RING_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // Reset the global ring so this test is independent of others.
+        // The ring is a `LazyLock<Mutex<VecDeque>>` — we can lock it and
+        // clear it without any unsafe code.
+        {
+            let mut ring = WINDOW_ACTIVITY.lock().unwrap();
+            ring.clear();
+        }
+
+        // Push 10 entries; the ring should cap at 8 and drop the first two.
+        for i in 0..10usize {
+            note_window_activity(&format!("entry-{i}"));
+        }
+
+        let description = describe_window_activity();
+        // The last entry must be present (newest).
+        assert!(
+            description.contains("entry-9"),
+            "newest entry missing: {description}"
+        );
+        // The first two must have been evicted.
+        assert!(
+            !description.contains("entry-0"),
+            "oldest entry should have been evicted: {description}"
+        );
+        assert!(
+            !description.contains("entry-1"),
+            "second-oldest entry should have been evicted: {description}"
+        );
+
+        // Verify the count by splitting on the semicolon separator.
+        let count = description.split(';').count();
+        assert_eq!(count, 8, "ring should hold exactly 8 entries, got {count}");
+    }
+
+    #[test]
+    fn describe_window_activity_empty_returns_none_string() {
+        let _serial = RING_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        {
+            let mut ring = WINDOW_ACTIVITY.lock().unwrap();
+            ring.clear();
+        }
+        assert_eq!(describe_window_activity(), "none");
+    }
+
+    // ── Window-build spacing ──────────────────────────────────────────────────
+
+    #[test]
+    fn remaining_spacing_zero_when_no_previous_build() {
+        // With no previous build, there is nothing to wait for.
+        let now = Instant::now();
+        let wait = remaining_spacing(None, now, Duration::from_millis(250));
+        assert_eq!(wait, Duration::ZERO);
+    }
+
+    #[test]
+    fn remaining_spacing_zero_when_gap_already_elapsed() {
+        // Simulate a last build that started 300 ms ago; the 250 ms gap has
+        // already passed so no wait is needed.
+        let last = Instant::now() - Duration::from_millis(300);
+        let now = Instant::now();
+        let wait = remaining_spacing(Some(last), now, Duration::from_millis(250));
+        assert_eq!(wait, Duration::ZERO, "gap already elapsed, expected no wait");
+    }
+
+    #[test]
+    fn remaining_spacing_returns_correct_remainder() {
+        // Last build 50 ms ago, min gap 250 ms → should still wait ~200 ms.
+        // We allow a ±20 ms tolerance to absorb OS scheduling jitter without
+        // making the test flaky.
+        let last = Instant::now() - Duration::from_millis(50);
+        let now = Instant::now();
+        let wait = remaining_spacing(Some(last), now, Duration::from_millis(250));
+        // Wait must be positive but not more than the full gap.
+        assert!(
+            wait > Duration::ZERO && wait <= Duration::from_millis(250),
+            "expected ~200ms wait, got {wait:?}"
+        );
+    }
+
+    #[test]
+    fn remaining_spacing_zero_when_exactly_at_gap() {
+        // last = exactly `min_gap` ago → elapsed == min_gap, saturating_sub gives 0.
+        let min_gap = Duration::from_millis(250);
+        let last = Instant::now() - min_gap;
+        let now = Instant::now();
+        let wait = remaining_spacing(Some(last), now, min_gap);
+        // May be ZERO or a tiny positive value due to sub-millisecond elapsed;
+        // crucially it must never exceed min_gap.
+        assert!(wait <= min_gap, "wait must not exceed the gap: {wait:?}");
     }
 }
