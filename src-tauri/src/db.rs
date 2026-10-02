@@ -31,6 +31,11 @@ impl Db {
     /// Open a DB at `path` (":memory:" for tests) and ensure schema exists.
     pub fn open(path: &str) -> Result<Self> {
         let conn = Connection::open(path)?;
+        // Wait (up to 5 s) instead of failing instantly with SQLITE_BUSY when
+        // another connection holds a lock. It matters when the UI-hang
+        // watchdog relaunches the app: the new process opens the database
+        // while the dying one may still hold it for a moment.
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
         let db = Db { conn };
         db.init_schema()?;
         Ok(db)
