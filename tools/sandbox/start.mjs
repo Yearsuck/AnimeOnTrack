@@ -73,10 +73,9 @@ if (!existsSync(sandboxDb)) {
 // Passed as a file, not inline JSON: `spawn(..., { shell: true })` does not quote arguments, so
 // cmd/npm.cmd on Windows would strip the double quotes of an inline JSON string.
 const configPath = join(sandboxDir, 'tauri-sandbox-config.json');
-writeFileSync(configPath, JSON.stringify({
-  identifier: SANDBOX_ID,
-  app: { security: { assetProtocol: { enable: true, scope: [`$APPDATA/${SANDBOX_ID}/covers/**`] } } },
-}));
+// Only the identifier is overridden: `$APPDATA` in the asset-protocol scope of tauri.conf.json already
+// resolves to <Roaming>/<identifier>, so the sandbox's covers dir is covered by the very same scope.
+writeFileSync(configPath, JSON.stringify({ identifier: SANDBOX_ID }));
 
 const port = process.env.CDP_PORT || '9222';
 // NB: this variable REPLACES Tauri's own default WebView2 arguments instead of adding to
