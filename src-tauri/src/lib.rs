@@ -14,6 +14,7 @@ mod recommend;
 mod scraper_engine;
 mod swipe;
 mod cover_cache;
+mod ui_watchdog;
 
 use commands::AppState;
 use std::sync::Mutex;
@@ -140,6 +141,15 @@ pub fn run() {
                 catalog_sync_running: std::sync::atomic::AtomicBool::new(false),
                 backup_running: std::sync::atomic::AtomicBool::new(false),
             });
+
+            // Start the main-thread liveness watchdog. It posts a tiny
+            // closure via run_on_main_thread every 2 s; if the main thread
+            // does not acknowledge within 25 s the stall is logged to
+            // hang.log (and the process is relaunched if the relaunch guard
+            // allows it). Must be started after AppState is managed so the
+            // app handle is fully set up. `dir` is still in scope here
+            // (only borrowed, not moved) so .clone() is safe.
+            ui_watchdog::start(app.handle().clone(), dir.clone());
 
             // Opportunistic startup cloud backup: silently does nothing
             // unless Google credentials are configured, Drive is connected,
