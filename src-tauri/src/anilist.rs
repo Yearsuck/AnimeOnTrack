@@ -39,6 +39,7 @@ const ENDPOINT: &str = "https://graphql.anilist.co";
 /// the main crawl, with no compiler or test signal tying the two together.
 const MEDIA_FIELDS: &str = r#"id
       title { romaji english }
+      synonyms
       coverImage { large }
       format
       genres
@@ -117,6 +118,9 @@ pub struct CatalogAnime {
     /// which one `title` actually is.
     #[serde(default)]
     pub title_english: Option<String>,
+    /// Alternative titles AniList lists, used only for matching.
+    #[serde(default)]
+    pub synonyms: Vec<String>,
     pub cover_url: Option<String>,
     pub format: Option<String>,
     pub genres: Vec<String>,
@@ -193,6 +197,8 @@ struct PageInfo {
 struct MediaEntry {
     id: i64,
     title: MediaTitle,
+    #[serde(default)]
+    synonyms: Option<Vec<Option<String>>>,
     #[serde(rename = "coverImage")]
     cover_image: Option<CoverImage>,
     format: Option<String>,
@@ -258,11 +264,19 @@ struct CoverImage {
 impl From<MediaEntry> for CatalogAnime {
     fn from(m: MediaEntry) -> Self {
         let title = m.title.english.clone().or_else(|| m.title.romaji.clone()).unwrap_or_default();
+        let mut synonyms = Vec::new();
+        for s in m.synonyms.into_iter().flatten().flatten() {
+            let trimmed = s.trim().to_string();
+            if !trimmed.is_empty() && !synonyms.contains(&trimmed) {
+                synonyms.push(trimmed);
+            }
+        }
         CatalogAnime {
             id: m.id,
             title,
             title_romaji: m.title.romaji,
             title_english: m.title.english,
+            synonyms,
             cover_url: m.cover_image.and_then(|c| c.large),
             format: m.format,
             genres: m.genres,
@@ -730,5 +744,47 @@ mod tests {
         assert!(vars.get("status").is_none());
         assert_eq!(vars["page"], serde_json::json!(1));
         assert_eq!(vars["perPage"], serde_json::json!(50));
+    }
+
+    #[test]
+    fn synonyms_deserialize_and_dedup() {
+        let json = serde_json::json!({
+            "id": 1,
+            "title": { "romaji": "Test", "english": null },
+            "synonyms": ["Bai Ri Cheng Wang", "  ", "Bai Ri Cheng Wang"],
+            "coverImage": { "large": null },
+            "format": null,
+            "genres": [],
+            "episodes": null,
+            "duration": null,
+            "averageScore": null,
+            "popularity": null,
+            "siteUrl": "https://url",
+            "status": null,
+            "studios": null,
+            "startDate": null
+        });
+        let entry: MediaEntry = serde_json::from_value(json).unwrap();
+        let mapped = CatalogAnime::from(entry);
+        assert_eq!(mapped.synonyms, vec!["Bai Ri Cheng Wang"]);
+
+        let json_empty = serde_json::json!({
+            "id": 2,
+            "title": { "romaji": "Test", "english": null },
+            "coverImage": { "large": null },
+            "format": null,
+            "genres": [],
+            "episodes": null,
+            "duration": null,
+            "averageScore": null,
+            "popularity": null,
+            "siteUrl": "https://url",
+            "status": null,
+            "studios": null,
+            "startDate": null
+        });
+        let entry_empty: MediaEntry = serde_json::from_value(json_empty).unwrap();
+        let mapped_empty = CatalogAnime::from(entry_empty);
+        assert!(mapped_empty.synonyms.is_empty());
     }
 }
