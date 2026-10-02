@@ -41,6 +41,19 @@ pub struct CatalogFilter {
     pub studio: Option<String>,
 }
 
+/// The query behind `Db::stale_status_ids`, shared with its regression test so the
+/// plan that is asserted is the plan that runs. It correlates on `series.anilist_id`
+/// once per catalog row, so it depends on `idx_series_anilist_id` (see `db.rs`):
+/// without the index it took ~220 s on a real library while holding the DB mutex.
+const STALE_STATUS_IDS_SQL: &str = "SELECT c.id FROM anilist_catalog c
+     WHERE EXISTS (SELECT 1 FROM series s WHERE s.anilist_id = c.id AND s.is_airing = 1)
+        OR c.status IN ('RELEASING', 'NOT_YET_RELEASED')
+        OR (c.status = 'FINISHED' AND c.start_date IS NOT NULL AND c.start_date >= ?1)
+     ORDER BY EXISTS (SELECT 1 FROM series s WHERE s.anilist_id = c.id) DESC,
+              COALESCE(c.popularity, 0) DESC,
+              c.id
+     LIMIT 500";
+
 impl Db {
     /// `(title, title_romaji, title_english)` for a synced catalog entry —
     /// `link_catalog_series` tries `title_romaji.unwrap_or(title)` first,
@@ -270,16 +283,7 @@ impl Db {
     /// shows the user actually follows/watches take priority.
     pub fn stale_status_ids(&self) -> Result<Vec<i64>> {
         let cutoff = (chrono::Utc::now() - chrono::Duration::days(120)).timestamp();
-        let mut stmt = self.conn.prepare(
-            "SELECT c.id FROM anilist_catalog c
-             WHERE EXISTS (SELECT 1 FROM series s WHERE s.anilist_id = c.id AND s.is_airing = 1)
-                OR c.status IN ('RELEASING', 'NOT_YET_RELEASED')
-                OR (c.status = 'FINISHED' AND c.start_date IS NOT NULL AND c.start_date >= ?1)
-             ORDER BY EXISTS (SELECT 1 FROM series s WHERE s.anilist_id = c.id) DESC,
-                      COALESCE(c.popularity, 0) DESC,
-                      c.id
-             LIMIT 500",
-        )?;
+        let mut stmt = self.conn.prepare(STALE_STATUS_IDS_SQL)?;
         let ids = stmt
             .query_map([cutoff], |r| r.get::<_, i64>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -2291,6 +2295,70 @@ mod tests {
         assert!(!ids.contains(&5), "must exclude old FINISHED row");
         assert!(!ids.contains(&6), "must exclude non-airing old FINISHED row");
         assert!(!ids.contains(&7), "must exclude CANCELLED row");
+    }
+
+    /// Regression: `stale_status_ids` correlates on `series.anilist_id` once per
+    /// catalog row. Without an index on that column it scanned `series` for each
+    /// of the ~22k catalog rows (twice), ~220 s on a real library, all while
+    /// holding the DB mutex that the UI's synchronous commands need: the window
+    /// froze. The plan must use the index, and a realistically sized library
+    /// must answer in well under a second.
+    #[test]
+    fn stale_status_ids_uses_the_series_anilist_index_and_is_fast_at_real_size() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("TestSite", "https://site.example", "testsite").unwrap();
+
+        // The plan: no full scan of `series` inside the correlated subqueries.
+        let plan: Vec<String> = db
+            .conn
+            .prepare(&format!("EXPLAIN QUERY PLAN {STALE_STATUS_IDS_SQL}"))
+            .unwrap()
+            .query_map([0i64], |r| r.get::<_, String>(3))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(
+            plan.iter().any(|d| d.contains("idx_series_anilist_id")),
+            "correlated subquery must use idx_series_anilist_id, plan was: {plan:?}"
+        );
+        // A full scan of `series` (any SQLite wording: "SCAN s", "SCAN TABLE s", with or without
+        // an alias suffix) would be the quadratic behaviour. Scans of `c` are expected.
+        assert!(
+            !plan.iter().any(|d| {
+                let d = d.trim();
+                d.starts_with("SCAN") && !d.contains(" c") && !d.contains("INDEX") && (d.ends_with(" s") || d.contains("TABLE s") || d.contains("series"))
+            }),
+            "series must not be fully scanned per catalog row, plan was: {plan:?}"
+        );
+
+        // Real-library size: 22k catalog rows, 6k series, ~100 airing and linked.
+        let tx = db.conn.unchecked_transaction().unwrap();
+        for i in 1..=22_000i64 {
+            tx.execute(
+                "INSERT INTO anilist_catalog (id, title, cover_url, format, episodes, average_score, url, sort_order, popularity, status)
+                 VALUES (?1, ?2, NULL, 'TV', 12, 70, ?3, ?1, ?4, ?5)",
+                (i, format!("Title {i}"), format!("https://anilist.co/anime/{i}"), i % 5000,
+                 if i % 200 == 0 { "RELEASING" } else { "FINISHED" }),
+            )
+            .unwrap();
+        }
+        for i in 0..6_000i64 {
+            let linked = if i % 3 == 0 { Some(i + 1) } else { None };
+            tx.execute(
+                "INSERT INTO series (source_id, slug, title, url, is_airing, anilist_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                (src, format!("s{i}"), format!("S {i}"), format!("https://x/{i}"), (i % 60 == 0) as i64, linked),
+            )
+            .unwrap();
+        }
+        tx.commit().unwrap();
+
+        let started = std::time::Instant::now();
+        let ids = db.stale_status_ids().unwrap();
+        let took = started.elapsed();
+        assert!(!ids.is_empty() && ids.len() <= 500);
+        // Without the index this takes minutes; allow generous slack for slow CI debug builds.
+        assert!(took < std::time::Duration::from_secs(5), "stale_status_ids took {took:?}");
     }
 
     #[test]

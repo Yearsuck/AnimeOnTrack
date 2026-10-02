@@ -69,7 +69,10 @@ if (mode === 'probe') {
   let bad = 0;
   for (let n = 0; n < iterations; n++) {
     const renderer = await call('document.title');
-    const command = await call("window.__TAURI_INTERNALS__.invoke('get_active_site', {})");
+    // `pending_count` is a synchronous command (runs on the main thread) that takes the DB mutex, so it
+    // times out when something holds that mutex for long — the way a slow query froze the UI. A command
+    // that does not touch the DB (e.g. get_active_site) would report a healthy app in that situation.
+    const command = await call("window.__TAURI_INTERNALS__.invoke('pending_count', {})");
     if (/TIMEOUT|ERR/.test(renderer + command)) bad++;
     console.log(new Date().toTimeString().slice(0, 8), `renderer=${renderer} syncCommand=${command}`);
     await new Promise((resolve) => setTimeout(resolve, 3000));

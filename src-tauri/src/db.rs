@@ -96,6 +96,16 @@ impl Db {
              WHERE slug LIKE 'anilist-%' AND anilist_id IS NULL",
             [],
         )?;
+        // Several catalog queries correlate on `series.anilist_id = c.id` for every
+        // catalog row (`stale_status_ids`, `stale_catalog_ids`). Without this index
+        // each of the ~22k catalog rows scanned the whole `series` table, twice:
+        // `stale_status_ids` took ~220 s on a real library WHILE HOLDING the DB
+        // mutex, so the UI (sync commands run on the main thread and wait for
+        // that mutex) froze with Windows reporting "not responding". Indexed it
+        // is a few milliseconds.
+        self.conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_series_anilist_id ON series(anilist_id);",
+        )?;
         // watched_externally: set by decide_catalog_card's "seen" decision —
         // "I've watched this outside the app, don't show it to me again,
         // don't put it in my backlog." No episode data backs this (AniList
