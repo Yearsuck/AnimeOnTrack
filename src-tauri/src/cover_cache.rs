@@ -6,6 +6,11 @@ use std::time::Duration;
 use tauri::{AppHandle, Manager};
 use url::Url;
 
+/// Name of the cover cache folder under the app data dir. The asset-protocol
+/// scope in `tauri.conf.json` must stay `$APPDATA/<this>/**` (see the
+/// `asset_scope_matches_the_covers_dir_under_the_app_data_dir` test).
+const COVERS_SUBDIR: &str = "covers";
+
 /// Cap on downloaded cover image size: 5MB.
 pub const MAX_COVER_BYTES: usize = 5 * 1024 * 1024;
 
@@ -273,7 +278,7 @@ pub async fn fetch_and_cache_cover_to_dir(
 /// Return the `<app_data_dir>/covers` path for the current application.
 pub fn covers_dir(app: &AppHandle) -> Result<PathBuf> {
     let app_data = app.path().app_data_dir().context("resolve app data dir")?;
-    Ok(app_data.join("covers"))
+    Ok(app_data.join(COVERS_SUBDIR))
 }
 
 /// Download and cache `image_url` into `<app_data_dir>/covers/<hash>.<ext>`.
@@ -299,6 +304,25 @@ mod tests {
         assert!(!DownloadError::InvalidUrl("http://127.0.0.1/x".into()).should_fallback_to_webview());
         assert!(!DownloadError::TooLarge(10_000_000).should_fallback_to_webview());
         assert!(!DownloadError::Io(std::io::Error::other("disk")).should_fallback_to_webview());
+    }
+
+    /// Regression: `$APPDATA` in a Tauri scope is ALREADY `<Roaming>/<identifier>`
+    /// (tauri `path/desktop.rs`: `app_data_dir = data_dir().join(identifier)`),
+    /// not the Roaming folder. The scope was once written as
+    /// `$APPDATA/com.animeontrack.app/covers/**`, which resolves to
+    /// `<Roaming>/com.animeontrack.app/com.animeontrack.app/covers/**`, matches
+    /// nothing, and made the asset protocol answer 403 to every cached cover
+    /// (no `file:` cover ever rendered). It must match `covers_dir()`.
+    #[test]
+    fn asset_scope_matches_the_covers_dir_under_the_app_data_dir() {
+        let conf: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).expect("tauri.conf.json is valid JSON");
+        let scope = &conf["app"]["security"]["assetProtocol"]["scope"];
+        assert_eq!(
+            scope,
+            &serde_json::json!([format!("$APPDATA/{COVERS_SUBDIR}/**")]),
+            "scope must be exactly the covers dir under $APPDATA (covers_dir() = <app_data_dir>/COVERS_SUBDIR)"
+        );
     }
 
     #[test]
