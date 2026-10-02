@@ -580,43 +580,49 @@ impl Db {
         Ok(())
     }
 
-    /// Up to `limit` currently-airing series on `source_id` whose cover has
-    /// never been fetched: not AniList-linked (`list_airing` already shows
-    /// those via the catalog's own `data:`-compatible-by-CSP cover instead
-    /// of this column, see `db/airing.rs`) and not already a `data:` URI.
+    /// Up to `limit` currently-airing series across **every** site whose cover
+    /// has never been fetched: not AniList-linked (`list_airing` already shows
+    /// those via the catalog's own `data:`-compatible-by-CSP cover instead of
+    /// this column, see `db/airing.rs`) and not already a `data:`, `file:`, or
+    /// `asset:` URI.
+    ///
+    /// Spans every site because the direct reqwest download
+    /// (`cover_cache::cache_cover_image`) needs no site state — it speaks
+    /// directly to the image CDN, not through the site's Cloudflare session.
+    /// Only the WebView2 canvas fallback is site-sensitive (Cloudflare cookies
+    /// live per domain and a fetch can burn up to 30 s), so callers must
+    /// limit that path to the active site.
     ///
     /// This is `refresh()`'s only path to ever converting a cover for an
     /// airing series that ISN'T followed — the main fetch/backlog loops are
     /// both scoped to `list_followed`, so an unfollowed, unlinked airing
     /// series' cover was permanently stuck on the site's raw remote URL,
-    /// which the app's CSP silently blocks (confirmed live: 279 of 308
-    /// currently-airing series across one real library). `limit` bounds
-    /// this to a modest number of fetches per refresh cycle rather than
-    /// bulk-fetching the whole airing listing's covers at once, which reads
-    /// to Cloudflare as scraping abuse regardless of having a valid session
-    /// — see CLAUDE.md. Self-limiting the same way the followed-series
-    /// cover backlog is: a row drops out for good the first time this
-    /// succeeds, so it converges over several refresh cycles instead of
-    /// needing to happen all at once.
+    /// which the app's CSP silently blocks. `limit` bounds this to a modest
+    /// number of fetches per refresh cycle rather than bulk-fetching the whole
+    /// airing listing's covers at once, which reads to Cloudflare as scraping
+    /// abuse regardless of having a valid session — see CLAUDE.md.
     ///
     /// The window is random, not `ORDER BY id`: a cover that fails for good
     /// (404, non-image body, over the size cap) stays remote and so is
     /// selected again every cycle, and with a fixed order `limit` such rows
     /// would pin the window to the same ids forever and starve every later
     /// series. Shuffling lets the whole backlog drain over a few cycles.
-    pub fn airing_series_needing_cover_fetch(&self, source_id: i64, limit: i64) -> Result<Vec<(i64, String, String)>> {
+    ///
+    /// Returns `(id, title, cover_url, source_id)` so the caller can apply
+    /// the WebView2 fallback only to rows belonging to the active site.
+    pub fn airing_series_needing_cover_fetch(&self, limit: i64) -> Result<Vec<(i64, String, String, i64)>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, title, cover_url FROM series
-             WHERE source_id=?1 AND is_airing=1 AND anilist_id IS NULL
+            "SELECT id, title, cover_url, source_id FROM series
+             WHERE is_airing=1 AND anilist_id IS NULL
                AND cover_url IS NOT NULL
                AND cover_url NOT LIKE 'data:%'
                AND cover_url NOT LIKE 'file:%'
                AND cover_url NOT LIKE 'asset:%'
              ORDER BY RANDOM()
-             LIMIT ?2",
+             LIMIT ?1",
         )?;
         let rows = stmt
-            .query_map((source_id, limit), |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .query_map([limit], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -1280,9 +1286,10 @@ mod tests {
         finished.is_airing = false;
         db.upsert_series(src, &finished).unwrap();
 
-        let rows = db.airing_series_needing_cover_fetch(src, 20).unwrap();
+        let rows = db.airing_series_needing_cover_fetch(20).unwrap();
         assert_eq!(rows.len(), 1, "only the unfollowed/unlinked/remote-cover/airing row qualifies");
         assert_eq!(rows[0].0, sid_needs);
+        // Tuple is now (id, title, cover_url, source_id); .2 is still cover_url.
         assert_eq!(rows[0].2, "https://site/needs-fetch.jpg");
 
         // The cap is real, not just a LIMIT that happens not to bite here.
@@ -1291,7 +1298,7 @@ mod tests {
             s.cover_url = Some(format!("https://site/more-{i}.jpg"));
             db.upsert_series(src, &s).unwrap();
         }
-        assert_eq!(db.airing_series_needing_cover_fetch(src, 3).unwrap().len(), 3);
+        assert_eq!(db.airing_series_needing_cover_fetch(3).unwrap().len(), 3);
     }
 
     #[test]
@@ -2516,8 +2523,64 @@ mod tests {
         // Null cover
         db.upsert_series(src, &make("null-cover", None)).unwrap();
 
-        let needing = db.airing_series_needing_cover_fetch(src, 60).unwrap();
+        let needing = db.airing_series_needing_cover_fetch(60).unwrap();
         assert_eq!(needing.len(), 1);
+        // Tuple is now (id, title, cover_url, source_id); title == slug in
+        // these fixtures, so the assertion is unchanged in substance.
         assert_eq!(needing[0].1, "remote");
+        assert_eq!(needing[0].3, src);
+    }
+
+    #[test]
+    fn airing_series_needing_cover_fetch_spans_all_sites() {
+        // Two sources (different site_ids). Rows with http covers on both
+        // must appear; each tuple must carry the right source_id.
+        // A linked row (anilist_id set), a data: cover, a file: cover, and
+        // a not-airing row must NOT be returned.
+        let db = Db::open(":memory:").unwrap();
+        let src_a = db.upsert_source("AnimeYT", "https://animeytx.net", "animeytx").unwrap();
+        let src_b = db.upsert_source("TioAnime", "https://tioanime.com", "tioanime").unwrap();
+
+        let make = |slug: &str, cover: &str, is_airing: bool| crate::models::Series {
+            id: 0,
+            slug: slug.into(),
+            title: slug.into(),
+            url: format!("https://example.com/{slug}"),
+            cover_url: Some(cover.to_string()),
+            is_airing,
+            followed: false,
+            next_episode_at: None,
+            site_episode_count: None,
+        };
+
+        // Both of these should be returned — one per site.
+        let id_a = db.upsert_series(src_a, &make("show-a", "https://cdn.a/a.jpg", true)).unwrap();
+        let id_b = db.upsert_series(src_b, &make("show-b", "https://cdn.b/b.jpg", true)).unwrap();
+
+        // Linked row — anilist_id IS NOT NULL, must be excluded.
+        let id_linked = db.upsert_series(src_a, &make("show-linked", "https://cdn.a/l.jpg", true)).unwrap();
+        db.set_anilist_id(id_linked, 999).unwrap();
+
+        // Already-fetched covers — must be excluded.
+        db.upsert_series(src_a, &make("show-data", "data:image/png;base64,AAAA", true)).unwrap();
+        db.upsert_series(src_b, &make("show-file", "file:C:/covers/x.jpg", true)).unwrap();
+
+        // Not airing — must be excluded.
+        let mut not_air = make("show-not-airing", "https://cdn.a/na.jpg", false);
+        not_air.slug = "show-not-airing".into();
+        db.upsert_series(src_a, &not_air).unwrap();
+
+        let needing = db.airing_series_needing_cover_fetch(60).unwrap();
+
+        let ids: std::collections::HashSet<i64> = needing.iter().map(|(id, _, _, _)| *id).collect();
+        assert!(ids.contains(&id_a), "show-a (site animeytx) must be selected");
+        assert!(ids.contains(&id_b), "show-b (site tioanime) must be selected");
+        assert!(!ids.contains(&id_linked), "linked row must not be selected");
+        assert_eq!(needing.len(), 2, "only the two unlinked airing remote-cover rows");
+
+        // Each tuple carries its own source_id.
+        let src_for = |id: i64| needing.iter().find(|(i, _, _, _)| *i == id).unwrap().3;
+        assert_eq!(src_for(id_a), src_a);
+        assert_eq!(src_for(id_b), src_b);
     }
 }

@@ -4,7 +4,26 @@ import { useT } from "../i18n";
 import type { PendingItem, Series } from "../types";
 import { countdownLabel } from "./AiringGrid";
 import { parseReleasedAtToUnixSeconds } from "../lib/parseReleasedAt";
-import { resolveCoverUrl } from "../lib/posterFallback";
+import { initials, resolveCoverUrl, useCoverFailure } from "../lib/posterFallback";
+
+// A series' cover_url on the Pendientes list can be a remote URL still waiting
+// for its first cover-cache download — the app's CSP blocks such URLs silently,
+// so without this component the browser would show its broken-image icon.
+// Mirrors AiringGrid's AiringPoster: tracks a per-image failed state and falls
+// back to the same initials tile (poster-fallback CSS class) used everywhere else.
+function PendingPoster({ title, coverUrl }: { title: string; coverUrl: string | null }) {
+  const [failed, markFailed] = useCoverFailure(coverUrl);
+  const src = resolveCoverUrl(coverUrl);
+  if (!src || failed) {
+    return (
+      <div className="poster-fallback" aria-hidden="true">
+        {initials(title)}
+      </div>
+    );
+  }
+  return <img src={src} alt="" onError={markFailed} />;
+}
+
 
 const REMOVE_MS = 220;
 type PendingSort = "remaining_asc" | "remaining_desc";
@@ -125,10 +144,7 @@ export function Pending({
           return (
             <div key={seriesId} className="series-block">
               <div className="series-head clickable" onClick={() => onOpenSeries(series)}>
-                {(() => {
-                  const src = resolveCoverUrl(series.cover_url);
-                  return src ? <img src={src} alt="" /> : null;
-                })()}
+                <PendingPoster title={series.title} coverUrl={series.cover_url} />
                 <div>
 
                   <div className="name">{series.title}</div>

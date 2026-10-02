@@ -136,6 +136,11 @@ export default function App() {
       // button, and on the Pendientes tab the whole point is seeing the new
       // episodes appear, not just the count next to the tab change.
       await onPendingDataChanged();
+      // On the airing tab, bump the signal once more after refresh() so the
+      // grid picks up covers that were downloaded during this refresh cycle
+      // (the pre-refresh bump above only gets the airing-listing update;
+      // covers are written during refresh(), which runs after that).
+      if (view === "airing") setAiringRefreshSignal((n) => n + 1);
       if (view !== "airing") navigate("pending");
     }
   }

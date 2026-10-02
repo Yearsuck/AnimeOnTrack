@@ -755,6 +755,16 @@ textarea.input {
   box-shadow: var(--shadow-sm);
   flex-shrink: 0;
 }
+/* Initials tile shown instead of the poster when the cover is missing or blocked: same box as the
+ * <img> above (the generic .poster-fallback is 100% x 100%, which in this flex row would swell and
+ * squeeze the name/count). */
+.series-head .poster-fallback {
+  width: 110px;
+  height: 156px;
+  flex-shrink: 0;
+  border-radius: 8px;
+  box-shadow: var(--shadow-sm);
+}
 .series-head .name {
   font-weight: var(--fw-bold);
   font-size: var(--fs-lg);

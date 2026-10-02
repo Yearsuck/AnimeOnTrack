@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { listAiringSeason, setFollowed } from "../api";
 import { useT } from "../i18n";
-import { initials, resolveCoverUrl } from "../lib/posterFallback";
+import { initials, resolveCoverUrl, useCoverFailure } from "../lib/posterFallback";
 import type { AiringItem, Series } from "../types";
 import { AiringSpotlight } from "./AiringSpotlight";
 
@@ -9,7 +9,7 @@ import { AiringSpotlight } from "./AiringSpotlight";
 // path (served via asset protocol), or an AniList CDN URL. Unfetched series still
 // carry the site's raw remote thumbnail, which CSP blocks.
 function AiringPoster({ title, coverUrl }: { title: string; coverUrl: string | null }) {
-  const [failed, setFailed] = useState(false);
+  const [failed, markFailed] = useCoverFailure(coverUrl);
   const src = resolveCoverUrl(coverUrl);
   if (!src || failed) {
     return (
@@ -18,7 +18,7 @@ function AiringPoster({ title, coverUrl }: { title: string; coverUrl: string | n
       </div>
     );
   }
-  return <img src={src} alt={title} loading="lazy" onError={() => setFailed(true)} />;
+  return <img src={src} alt={title} loading="lazy" onError={markFailed} />;
 }
 
 // Human label for the next-episode countdown the backend sorting is based
