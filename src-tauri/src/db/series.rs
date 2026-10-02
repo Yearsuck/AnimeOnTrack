@@ -663,6 +663,29 @@ impl Db {
         Ok(cleared)
     }
 
+    /// Clear covers that are stored as data URIs but are actually tiny placeholder
+    /// images (like the Edge error icon), returning how many were cleared.
+    /// Runs a cheap length filter first to avoid loading huge data URIs.
+    pub fn clear_placeholder_covers(&self) -> Result<usize> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, cover_url FROM series
+             WHERE cover_url LIKE 'data:image%' AND length(cover_url) < 20000"
+        )?;
+        let rows: Vec<(i64, String)> = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        let tx = self.conn.unchecked_transaction()?;
+        let mut cleared = 0;
+        for (id, url) in rows {
+            if crate::cover_cache::is_placeholder_data_uri(&url) {
+                tx.execute("UPDATE series SET cover_url=NULL WHERE id=?1", [id])?;
+                cleared += 1;
+            }
+        }
+        tx.commit()?;
+        Ok(cleared)
+    }
+
     /// Replace a series' cover with a fetched base64 data URI.
     pub fn update_series_cover(&self, series_id: i64, cover_url: &str) -> Result<()> {
         self.conn.execute(
@@ -2582,5 +2605,48 @@ mod tests {
         let src_for = |id: i64| needing.iter().find(|(i, _, _, _)| *i == id).unwrap().3;
         assert_eq!(src_for(id_a), src_a);
         assert_eq!(src_for(id_b), src_b);
+    }
+
+    #[test]
+    fn clear_placeholder_covers_clears_edge_and_leaves_real_and_null() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let mk = |slug: &str, cover: Option<&str>| crate::models::Series {
+            id: 0, slug: slug.into(), title: slug.into(), url: format!("https://x/{slug}"),
+            cover_url: cover.map(|c| c.to_string()), is_airing: true, followed: false,
+            next_episode_at: None, site_episode_count: None,
+        };
+
+        // Edge placeholder
+        let edge_bytes = include_bytes!("../../tests/fixtures/edge-logo-48.jpg");
+        use base64::Engine;
+        let edge_b64 = base64::prelude::BASE64_STANDARD.encode(edge_bytes);
+        let edge_uri = format!("data:image/jpeg;base64,{}", edge_b64);
+        let id_edge = db.upsert_series(src, &mk("edge", Some(&edge_uri))).unwrap();
+
+        // Real size cover (200x300 PNG)
+        let mut real_bytes = vec![];
+        real_bytes.extend_from_slice(b"\x89PNG\r\n\x1a\n");
+        real_bytes.extend_from_slice(&[0; 8]);
+        real_bytes.extend_from_slice(&200u32.to_be_bytes()); // 16..20
+        real_bytes.extend_from_slice(&300u32.to_be_bytes()); // 20..24
+        // Pad to ensure it decodes as base64 without error
+        real_bytes.extend(vec![0; 40]);
+        let real_b64 = base64::prelude::BASE64_STANDARD.encode(&real_bytes);
+        let real_uri = format!("data:image/png;base64,{}", real_b64);
+        let id_real = db.upsert_series(src, &mk("real", Some(&real_uri))).unwrap();
+
+        // Null cover
+        let id_null = db.upsert_series(src, &mk("null", None)).unwrap();
+
+        assert_eq!(db.clear_placeholder_covers().unwrap(), 1);
+
+        let get = |id: i64| -> Option<String> {
+            db.conn.query_row("SELECT cover_url FROM series WHERE id=?1", [id], |r| r.get(0)).unwrap()
+        };
+
+        assert_eq!(get(id_edge), None);
+        assert_eq!(get(id_real).as_deref(), Some(real_uri.as_str()));
+        assert_eq!(get(id_null), None);
     }
 }

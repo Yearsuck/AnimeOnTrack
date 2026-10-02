@@ -540,8 +540,10 @@ async fn fetch_cover_image_inner(app: &AppHandle, image_url: &str) -> Result<Str
         }
     };
 
+    // Error pages carry their own icon; ensure the page IS the image we wanted.
     const READY_PROBE: &str = "JSON.stringify(!!document.images[0] \
-&& document.images[0].complete && document.images[0].naturalWidth > 0)";
+&& document.images[0].complete && document.images[0].naturalWidth > 0 \
+&& document.contentType.startsWith('image/') && document.images[0].src.split('#')[0] === location.href.split('#')[0])";
     let mut ready = false;
     for _ in 0..20 {
         tokio::time::sleep(Duration::from_millis(150)).await;

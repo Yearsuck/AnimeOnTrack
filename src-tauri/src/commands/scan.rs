@@ -694,7 +694,14 @@ async fn fetch_single_cover_with_fallback(
         }
         Err(err) if err.should_fallback_to_webview() => {
             match fetch_cover_image(app, remote).await {
-                Ok(data_uri) => Some(data_uri),
+                Ok(data_uri) => {
+                    if crate::cover_cache::is_placeholder_data_uri(&data_uri) {
+                        eprintln!("[cover] series {id} ({title}): {context} webview fallback returned a placeholder");
+                        None
+                    } else {
+                        Some(data_uri)
+                    }
+                }
                 Err(e) => {
                     eprintln!("[cover] series {id} ({title}): {context} webview fallback failed: {e}");
                     None
@@ -758,6 +765,11 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
                     Ok(0) => {}
                     Ok(n) => eprintln!("[cover] cleared {n} cached cover(s) whose file is missing"),
                     Err(e) => eprintln!("[cover] heal_missing_cached_covers failed: {e}"),
+                }
+                match db.clear_placeholder_covers() {
+                    Ok(0) => {}
+                    Ok(n) => eprintln!("[cover] cleared {n} placeholder data uri(s) across all sites"),
+                    Err(e) => eprintln!("[cover] clear_placeholder_covers failed: {e}"),
                 }
                 for s in &series {
                     db.upsert_series(src, s).map_err(|e| e.to_string())?;
@@ -1084,8 +1096,12 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
         emit_refresh_progress(&app, total_series, total_series, &format!("Descargando carátulas: {title}"));
         match fetch_cover_image(&app, &remote).await {
             Ok(data_uri) => {
-                let db = state.db.lock().unwrap();
-                let _ = db.update_series_cover(id, &data_uri);
+                if crate::cover_cache::is_placeholder_data_uri(&data_uri) {
+                    eprintln!("[cover] airing series {id} ({title}): webview fallback returned a placeholder");
+                } else {
+                    let db = state.db.lock().unwrap();
+                    let _ = db.update_series_cover(id, &data_uri);
+                }
             }
             Err(e) => {
                 eprintln!("[cover] airing series {id} ({title}): webview fallback failed: {e}");
