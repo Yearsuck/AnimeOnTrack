@@ -1,6 +1,9 @@
 use super::*;
 use rusqlite::types::Value;
 
+/// (franchise key, season) -> linked series (id, title, anilist_id).
+type SiblingIndex = std::collections::HashMap<(String, i64), Vec<(i64, String, i64)>>;
+
 /// Which generation of AniList fields `upsert_catalog_anime` writes.
 ///
 /// Bump this by one whenever a new AniList-sourced column is added to
@@ -188,55 +191,215 @@ impl Db {
         Ok(rows)
     }
 
-    /// Resolve engaged-but-unlinked series to their AniList catalog row using
-    /// only the local catalog — no network, no scraping.
-    ///
-    /// Every followed series on this database has `anilist_id IS NULL` until
-    /// something sets it: the existing `link_catalog_series` runs the other
-    /// direction (catalog entry -> find it on the site) and only when the
-    /// user swipes a catalog card. Without a link, a series has no real
-    /// per-episode duration and no real episode total, so the stats screen
-    /// falls back to format-based estimates — and, more visibly, its
-    /// `is_airing` can never be corrected by `sync_finished_status_from_catalog`
-    /// (which only acts on linked rows), so a long-finished unlinked show
-    /// keeps showing as airing forever.
-    ///
-    /// Matching is exact-only first (both normalized and squashed punctuation/spacing
-    /// variants — see `matching::CatalogIndex`), tried on the site title then the
-    /// franchise base name, then a strict fuzzy fallback so cross-language and
-    /// season-suffix title variants ("…2nd Season" vs "…Temporada 2") still resolve
-    /// to the same AniList id — otherwise the same show, unlinked on one site,
-    /// becomes a second canonical entry and shows up twice in the "En emisión"/library
-    /// unions. Returns how many series were newly linked.
+    /// Linked series grouped by (franchise key, season), built once per run so
+    /// the sibling step is a hash lookup instead of re-normalising every linked
+    /// title for every candidate (that O(n*m) loop cost seconds at real size
+    /// while the DB mutex was held).
+    fn sibling_index(linked: &[(i64, String, i64)]) -> SiblingIndex {
+        let mut map: SiblingIndex = std::collections::HashMap::new();
+        for (id, title, anilist_id) in linked {
+            let norm = crate::matching::normalize_title(title);
+            // Ambiguous seasons ("The Final Season") must not pool with season 1.
+            let Some(season) = crate::matching::extract_season_number(&norm) else { continue };
+            map.entry((crate::matching::franchise_dedup_key(title), season as i64))
+                .or_default()
+                .push((*id, title.clone(), *anilist_id));
+        }
+        map
+    }
+
+    fn resolve_catalog_link(
+        &self,
+        title: &str,
+        ignore_series_id: i64,
+        index: &crate::matching::CatalogIndex,
+        catalog_titles: &std::collections::HashMap<i64, Vec<String>>,
+        siblings: &SiblingIndex,
+    ) -> Result<Option<i64>> {
+        // A live-action adaptation is a different work: it may only link to an
+        // entry that is itself live action, never to the anime (fuzzy matching
+        // would otherwise pick the anime again on every run).
+        let live = crate::matching::is_live_action(title);
+        let is_consistent = |id: i64| -> bool {
+            if let Some(titles) = catalog_titles.get(&id) {
+                if live && !titles.iter().any(|t| crate::matching::is_live_action(t)) {
+                    return false;
+                }
+                let refs: Vec<&str> = titles.iter().map(String::as_str).collect();
+                crate::matching::season_consistent(title, &refs)
+            } else {
+                false
+            }
+        };
+
+        if let Some(id) = index.lookup(&[title]) {
+            if is_consistent(id) { return Ok(Some(id)); }
+        }
+        if let Some(id) = index.fuzzy_lookup(&[title]) {
+            if is_consistent(id) { return Ok(Some(id)); }
+        }
+
+        let norm = crate::matching::normalize_title(title);
+        let s = crate::matching::extract_season_number(&norm);
+        // Only a clearly season-1 title may fall back to its base ("X (2011)",
+        // "X Part 1"); an ambiguous one ("X The Final Season") must stay unlinked
+        // rather than join season 1.
+        if s == Some(1) && !live {
+            let base = crate::db::stats::franchise_base_title(title);
+            if base != title {
+                if let Some(id) = index.lookup(&[&base]) {
+                    if is_consistent(id) { return Ok(Some(id)); }
+                }
+                if let Some(id) = index.fuzzy_lookup(&[&base]) {
+                    if is_consistent(id) { return Ok(Some(id)); }
+                }
+            }
+        }
+
+        let Some(season) = s.filter(|_| !live) else {
+            return Ok(None);
+        };
+        let key = (crate::matching::franchise_dedup_key(title), season as i64);
+        let mut candidate_ids = std::collections::HashSet::new();
+        for (sib_id, sib_title, sib_anilist_id) in siblings.get(&key).into_iter().flatten() {
+            if *sib_id == ignore_series_id { continue; }
+            if let Some(titles) = catalog_titles.get(sib_anilist_id) {
+                let refs: Vec<&str> = titles.iter().map(String::as_str).collect();
+                if crate::matching::season_consistent(sib_title, &refs) {
+                    candidate_ids.insert(*sib_anilist_id);
+                }
+            }
+        }
+        if candidate_ids.len() == 1 {
+            return Ok(Some(candidate_ids.into_iter().next().unwrap()));
+        }
+
+        Ok(None) // If siblings disagree, do not link. a wrong automatic link is worse than none.
+    }
+
+    /// Re-resolve every link that contradicts the series' own season (a
+    /// "... Temporada 5" row linked to the plain season-1 entry, typically
+    /// because the season-5 entry was not in the catalog yet when it linked and
+    /// links were never revisited). Relinks to the right entry when one can be
+    /// found, otherwise clears the link: a wrong link also makes the status sync
+    /// trust the wrong season's AniList status. Idempotent. Returns how many
+    /// rows changed. `link_series_to_catalog` runs this first (sharing its
+    /// index); this standalone form exists for the tests.
+    #[cfg(test)]
+    pub fn repair_season_mislinks(&self) -> Result<usize> {
+        let rows = self.catalog_titles_for_index()?;
+        let index = crate::matching::CatalogIndex::build(&rows);
+        let catalog_titles: std::collections::HashMap<i64, Vec<String>> =
+            rows.into_iter().map(|row| (row.id, row.titles)).collect();
+        self.repair_season_mislinks_with(&index, &catalog_titles)
+    }
+
+    /// Same as `repair_season_mislinks` but reuses an index the caller already
+    /// built (building it over ~22k titles is the expensive part, and this
+    /// runs inside a command that holds the DB mutex).
+    fn repair_season_mislinks_with(
+        &self,
+        index: &crate::matching::CatalogIndex,
+        catalog_titles: &std::collections::HashMap<i64, Vec<String>>,
+    ) -> Result<usize> {
+        let mut to_repair = Vec::new();
+        let mut live_action_mislinks = Vec::new();
+
+        let mut stmt = self.conn.prepare("SELECT id, title, anilist_id FROM series WHERE anilist_id IS NOT NULL")?;
+        let rows = stmt.query_map([], |r| {
+            let id: i64 = r.get(0)?;
+            let title: String = r.get(1)?;
+            let anilist_id: i64 = r.get(2)?;
+            Ok((id, title, anilist_id))
+        })?;
+
+        let mut linked_series = Vec::new();
+        for row in rows {
+            let (id, title, anilist_id) = row?;
+            linked_series.push((id, title.clone(), anilist_id));
+
+            // A live-action adaptation linked to the anime is a different work:
+            // clear it (never re-resolve, fuzzy matching would pick the anime again).
+            if crate::matching::is_live_action(&title) {
+                let entry_is_live = catalog_titles
+                    .get(&anilist_id)
+                    .is_some_and(|t| t.iter().any(|x| crate::matching::is_live_action(x)));
+                if !entry_is_live {
+                    live_action_mislinks.push(id);
+                    continue;
+                }
+            }
+
+            let norm = crate::matching::normalize_title(&title);
+            let s = crate::matching::extract_season_number(&norm);
+            if s.unwrap_or(0) >= 2 {
+                // Clear only on positive evidence. An absent catalog row is
+                // unknown, and so is an entry with a different subtitle ("Kaguya-sama
+                // Temporada 3" -> "...: Ultra Romantic", which carries no number).
+                // Evidence = the entry is the plain-titled show (same franchise key,
+                // so it is season 1) or it explicitly names another season.
+                let contradicts = catalog_titles.get(&anilist_id).is_some_and(|titles| {
+                    let refs: Vec<&str> = titles.iter().map(String::as_str).collect();
+                    if crate::matching::season_consistent(&title, &refs) {
+                        return false;
+                    }
+                    let key = crate::matching::franchise_dedup_key(&title);
+                    refs.iter().any(|t| {
+                        crate::matching::franchise_dedup_key(t) == key
+                            || crate::matching::extract_season_number(&crate::matching::normalize_title(t))
+                                .is_some_and(|n| n >= 2)
+                    })
+                });
+                if contradicts {
+                    to_repair.push((id, title));
+                }
+            }
+        }
+
+        if to_repair.is_empty() && live_action_mislinks.is_empty() {
+            return Ok(0);
+        }
+
+        let mut changed = 0;
+        for id in live_action_mislinks {
+            self.conn.execute("UPDATE series SET anilist_id = NULL WHERE id = ?1", [id])?;
+            changed += 1;
+        }
+        let siblings = Self::sibling_index(&linked_series);
+        for (id, title) in to_repair {
+            if let Some(new_id) = self.resolve_catalog_link(&title, id, index, catalog_titles, &siblings)? {
+                self.set_anilist_id(id, new_id)?;
+            } else {
+                self.conn.execute("UPDATE series SET anilist_id = NULL WHERE id = ?1", [id])?;
+            }
+            changed += 1;
+        }
+
+        if changed > 0 {
+            eprintln!("[link] repaired {} season mislinks", changed);
+        }
+
+        Ok(changed)
+    }
+
     pub fn link_series_to_catalog(&self) -> Result<i64> {
-        let index = crate::matching::CatalogIndex::build(&self.catalog_titles_for_index()?);
+        let rows = self.catalog_titles_for_index()?;
+        let index = crate::matching::CatalogIndex::build(&rows);
+        let catalog_titles: std::collections::HashMap<i64, Vec<String>> =
+            rows.into_iter().map(|row| (row.id, row.titles)).collect();
+
+        self.repair_season_mislinks_with(&index, &catalog_titles)?;
+
+        // Snapshot AFTER the repair so the sibling step sees the corrected links.
+        let mut stmt = self.conn.prepare("SELECT id, title, anilist_id FROM series WHERE anilist_id IS NOT NULL")?;
+        let linked_series: Vec<(i64, String, i64)> = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<rusqlite::Result<_>>()?;
+
+        let siblings = Self::sibling_index(&linked_series);
         let mut linked = 0i64;
         for (series_id, title) in self.series_needing_catalog_link()? {
-            let base = crate::db::stats::franchise_base_title(&title);
-            // Try the full site title first — exact, then fuzzy — before
-            // ever falling back to the franchise base name. This order
-            // matters specifically for season-N titles: "... Temporada 2"
-            // has no exact hit (AniList stores "... 2nd Season"), but its
-            // base "..." (season markers stripped) exact-matches season
-            // 1's own entry every time. Trying the base *before* fuzzy-
-            // matching the full title meant a season-2+ site row always
-            // linked to season 1's AniList id, even when the correct
-            // season-2 entry was already synced locally — fuzzy scoring
-            // (tuned to clear its threshold on exactly this "Temporada N"
-            // vs "Nth Season" shape) finds it first now. The base name is
-            // reserved for what it's actually meant for: an arc split
-            // ("One Piece: Arco de Elbaph") that has no AniList entry of
-            // its own and must fall back to the parent show.
-            if let Some(anilist_id) = index.lookup(&[&title]).or_else(|| index.fuzzy_lookup(&[&title])) {
-                self.set_anilist_id(series_id, anilist_id)?;
+            if let Some(new_id) = self.resolve_catalog_link(&title, series_id, &index, &catalog_titles, &siblings)? {
+                self.set_anilist_id(series_id, new_id)?;
                 linked += 1;
-                continue;
-            }
-            if base != title {
-                if let Some(anilist_id) = index.lookup(&[&base]).or_else(|| index.fuzzy_lookup(&[&base])) {
-                    self.set_anilist_id(series_id, anilist_id)?;
-                    linked += 1;
-                }
             }
         }
         Ok(linked)
@@ -1634,6 +1797,157 @@ mod tests {
             db.conn.query_row("SELECT anilist_id FROM series WHERE id=?1", [sid], |r| r.get::<_, Option<i64>>(0)).unwrap(),
             Some(21)
         );
+    }
+
+    fn series_with(db: &Db, src: i64, slug: &str, title: &str) -> i64 {
+        let sid = db.upsert_series(src, &crate::models::Series {
+            id: 0, slug: slug.into(), title: title.into(),
+            url: format!("https://example/series/{slug}"),
+            cover_url: None, is_airing: true, followed: true,
+            next_episode_at: None, site_episode_count: None,
+        }).unwrap();
+        db.set_followed(sid, true).unwrap();
+        sid
+    }
+
+    fn linked_id(db: &Db, sid: i64) -> Option<i64> {
+        db.conn.query_row("SELECT anilist_id FROM series WHERE id=?1", [sid], |r| r.get(0)).unwrap()
+    }
+
+    #[test]
+    fn link_never_falls_back_to_season_one_for_a_season_n_title() {
+        // Real bug: animeytx "Kanojo, Okarishimasu Temporada 5" got linked to the
+        // plain season-1 entry (FINISHED), so a show airing now was marked finished.
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        db.upsert_catalog_anime(&catalog_anime(113813, "Kanojo, Okarishimasu", &[]), 0).unwrap();
+        let s5 = series_with(&db, src, "k5", "Kanojo, Okarishimasu Temporada 5");
+        let s1 = series_with(&db, src, "k1", "Kanojo, Okarishimasu");
+
+        db.link_series_to_catalog().unwrap();
+        assert_eq!(linked_id(&db, s5), None, "a season-5 title must stay unlinked rather than join season 1");
+        assert_eq!(linked_id(&db, s1), Some(113813), "the plain title still links to season 1");
+    }
+
+    #[test]
+    fn link_does_not_attach_a_live_action_title_to_the_anime() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        db.upsert_catalog_anime(&catalog_anime(21, "One Piece", &[]), 0).unwrap();
+        let live = series_with(&db, src, "op-live", "One Piece: Live Action (2023)");
+        let arc = series_with(&db, src, "op-arc", "One Piece: Arco de Elbaph");
+
+        db.link_series_to_catalog().unwrap();
+        assert_eq!(linked_id(&db, live), None, "live action is a different work");
+        assert_eq!(linked_id(&db, arc), Some(21), "arcs still fall back to the parent show");
+    }
+
+    #[test]
+    fn repair_moves_a_wrong_season_link_to_the_right_entry_once_it_exists() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        db.upsert_catalog_anime(&catalog_anime(113813, "Kanojo, Okarishimasu", &[]), 0).unwrap();
+        let s5 = series_with(&db, src, "k5", "Kanojo, Okarishimasu Temporada 5");
+        db.set_anilist_id(s5, 113813).unwrap(); // the stale wrong link
+
+        // Season 5 enters the catalog later.
+        db.upsert_catalog_anime(&catalog_anime(199029, "Kanojo, Okarishimasu 5th Season", &[]), 1).unwrap();
+
+        assert_eq!(db.repair_season_mislinks().unwrap(), 1);
+        assert_eq!(linked_id(&db, s5), Some(199029));
+        assert_eq!(db.repair_season_mislinks().unwrap(), 0, "idempotent");
+    }
+
+    #[test]
+    fn repair_unlinks_a_live_action_row_attached_to_the_anime() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        db.upsert_catalog_anime(&catalog_anime(21, "One Piece", &[]), 0).unwrap();
+        let live = series_with(&db, src, "op-live", "One Piece: Live Action");
+        db.set_anilist_id(live, 21).unwrap();
+        let anime = series_with(&db, src, "op", "One Piece");
+        db.set_anilist_id(anime, 21).unwrap();
+
+        assert_eq!(db.repair_season_mislinks().unwrap(), 1);
+        assert_eq!(linked_id(&db, live), None);
+        assert_eq!(linked_id(&db, anime), Some(21));
+    }
+
+    #[test]
+    fn an_ambiguous_final_season_title_never_joins_season_one() {
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        let b = db.upsert_source("Gogo", "g", "gogoanime").unwrap();
+        db.upsert_catalog_anime(&catalog_anime(16498, "Attack on Titan", &[]), 0).unwrap();
+        let plain = series_with(&db, a, "aot", "Attack on Titan");
+        let fin = series_with(&db, b, "aot-final", "Attack on Titan The Final Season");
+
+        db.link_series_to_catalog().unwrap();
+        assert_eq!(linked_id(&db, plain), Some(16498));
+        assert_eq!(linked_id(&db, fin), None, "via base fallback or sibling it would join season 1");
+    }
+
+    #[test]
+    fn repair_keeps_a_link_whose_catalog_row_is_absent_or_final_season() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        db.upsert_catalog_anime(&catalog_anime(110277, "Attack on Titan: The Final Season", &[]), 0).unwrap();
+        let s4 = series_with(&db, src, "aot4", "Shingeki no Kyojin Temporada 4");
+        db.set_anilist_id(s4, 110277).unwrap();
+        let orphan = series_with(&db, src, "x3", "Some Show Temporada 3");
+        db.set_anilist_id(orphan, 999_999).unwrap(); // catalog row not loaded
+
+        assert_eq!(db.repair_season_mislinks().unwrap(), 0);
+        assert_eq!(linked_id(&db, s4), Some(110277));
+        assert_eq!(linked_id(&db, orphan), Some(999_999));
+    }
+
+    #[test]
+    fn repair_keeps_a_link_to_a_subtitled_sequel_entry() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        db.upsert_catalog_anime(&catalog_anime(101921, "Kaguya-sama: Ultra Romantic", &[]), 0).unwrap();
+        let s3 = series_with(&db, src, "k3", "Kaguya-sama wa Kokurasetai Temporada 3");
+        db.set_anilist_id(s3, 101921).unwrap();
+
+        assert_eq!(db.repair_season_mislinks().unwrap(), 0);
+        assert_eq!(linked_id(&db, s3), Some(101921));
+    }
+
+    #[test]
+    fn repair_clears_a_wrong_season_link_when_no_right_entry_exists() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        db.upsert_catalog_anime(&catalog_anime(113813, "Kanojo, Okarishimasu", &[]), 0).unwrap();
+        let s5 = series_with(&db, src, "k5", "Kanojo, Okarishimasu Temporada 5");
+        db.set_anilist_id(s5, 113813).unwrap();
+
+        assert_eq!(db.repair_season_mislinks().unwrap(), 1);
+        assert_eq!(linked_id(&db, s5), None, "a wrong link is worse than none");
+        // and a correct link is never touched
+        let ok = series_with(&db, src, "k1", "Kanojo, Okarishimasu");
+        db.set_anilist_id(ok, 113813).unwrap();
+        assert_eq!(db.repair_season_mislinks().unwrap(), 0);
+        assert_eq!(linked_id(&db, ok), Some(113813));
+    }
+
+    #[test]
+    fn a_sibling_on_another_site_with_the_same_season_lends_its_link() {
+        // Site A's title matches the catalog entry; site B's spelling of the SAME
+        // season matches nothing by itself, but shares franchise key and season.
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        let b = db.upsert_source("Gogo", "g", "gogoanime").unwrap();
+        db.upsert_catalog_anime(&catalog_anime(500, "Pretty Name 2nd Season", &[]), 0).unwrap();
+        let site_a = series_with(&db, a, "pn-a", "Pretty Name 2nd Season");
+        db.set_anilist_id(site_a, 500).unwrap();
+        let site_b = series_with(&db, b, "pn-b", "Pretty Name Temporada 2");
+        // a different season of the same franchise must NOT inherit it
+        let other = series_with(&db, b, "pn-b3", "Pretty Name Temporada 3");
+
+        db.link_series_to_catalog().unwrap();
+        assert_eq!(linked_id(&db, site_b), Some(500));
+        assert_eq!(linked_id(&db, other), None, "season 3 must not borrow season 2's link");
     }
 
     #[test]
