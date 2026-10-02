@@ -125,6 +125,12 @@ pub struct CatalogTitleRow {
     /// AniList's display title plus its romaji/english variants when stored.
     /// All are indexed, so a site row matches whichever spelling it uses.
     pub titles: Vec<String>,
+    /// Alternative titles AniList lists. Indexed for exact/squashed lookups
+    /// only, and never over a key a primary title owns: a popular remake that
+    /// lists the original's name as a synonym must not steal it, and synonyms
+    /// add no fuzzy candidates (too noisy). Kept apart from `titles`, which
+    /// season checks read.
+    pub synonyms: Vec<String>,
     /// Tiebreaker when several catalog rows normalize to the same title —
     /// remakes, shorts and specials routinely share a show's exact name, and
     /// the popular one is the entry a user means. Missing popularity reads
@@ -249,6 +255,18 @@ impl CatalogIndex {
                     }
                 }
                 fuzzy_titles.push((key, row.id, row.popularity));
+            }
+        }
+        for row in rows {
+            for syn in &row.synonyms {
+                let key = normalize_title(syn);
+                if !key.is_empty() {
+                    by_normalized_title.entry(key).or_insert((row.id, row.popularity));
+                }
+                let squashed = squashed_title(syn);
+                if squashed.chars().count() >= MIN_SQUASHED_KEY_LEN {
+                    by_squashed_title.entry(squashed).or_insert((row.id, row.popularity));
+                }
             }
         }
         Self { by_normalized_title, by_squashed_title, fuzzy_titles, token_index }
@@ -815,8 +833,27 @@ mod tests {
         CatalogTitleRow {
             id,
             titles: titles.iter().map(|t| t.to_string()).collect(),
+            synonyms: Vec::new(),
             popularity,
         }
+    }
+
+    #[test]
+    fn a_synonym_never_steals_a_key_a_primary_title_owns() {
+        // A popular remake lists the original's name as a synonym.
+        let mut remake = catalog_row(1, 9000, &["Remake"]);
+        remake.synonyms = vec!["Original Show".into()];
+        let original = catalog_row(2, 10, &["Original Show"]);
+        let index = CatalogIndex::build(&[remake, original]);
+        assert_eq!(index.lookup(&["Original Show"]), Some(2));
+    }
+
+    #[test]
+    fn a_synonym_matches_when_no_primary_title_does() {
+        let mut row = catalog_row(1, 10, &["Hyakunichi Kakumei"]);
+        row.synonyms = vec!["Bai Ri Cheng Wang".into()];
+        let index = CatalogIndex::build(&[row]);
+        assert_eq!(index.lookup(&["Bai Ri Cheng Wang"]), Some(1));
     }
 
     #[test]

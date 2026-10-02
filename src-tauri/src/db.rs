@@ -217,6 +217,11 @@ impl Db {
                 genre TEXT NOT NULL,
                 PRIMARY KEY(anilist_id, genre)
             );
+            CREATE TABLE IF NOT EXISTS anilist_catalog_synonyms (
+                anilist_id INTEGER NOT NULL REFERENCES anilist_catalog(id),
+                synonym TEXT NOT NULL,
+                PRIMARY KEY(anilist_id, synonym)
+            );
             "#,
         )?;
         ensure_column(&self.conn, "anilist_catalog", "popularity", "INTEGER")?;

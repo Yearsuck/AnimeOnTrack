@@ -18,7 +18,8 @@ type SiblingIndex = std::collections::HashMap<(String, i64), Vec<(i64, String, i
 /// Version 1 = id, title, title_romaji, title_english, cover_url, format,
 /// episodes, average_score, popularity, url, status, duration, studio,
 /// start_date, genres.
-pub const CATALOG_METADATA_VERSION: i64 = 1;
+/// Version 2 = synonyms.
+pub const CATALOG_METADATA_VERSION: i64 = 2;
 
 /// Filters for browsing the locally-synced AniList catalog (`Catalog.tsx`'s
 /// search/filter bar). All fields are optional/empty-by-default so
@@ -115,6 +116,13 @@ impl Db {
                 (anime.id, genre),
             )?;
         }
+        self.conn.execute("DELETE FROM anilist_catalog_synonyms WHERE anilist_id=?1", [anime.id])?;
+        for synonym in &anime.synonyms {
+            self.conn.execute(
+                "INSERT OR IGNORE INTO anilist_catalog_synonyms(anilist_id, synonym) VALUES(?1, ?2)",
+                (anime.id, synonym),
+            )?;
+        }
         Ok(())
     }
 
@@ -148,7 +156,7 @@ impl Db {
         let mut stmt = self
             .conn
             .prepare("SELECT id, title, title_romaji, title_english, popularity FROM anilist_catalog")?;
-        let rows = stmt
+        let mut rows = stmt
             .query_map([], |r| {
                 let id: i64 = r.get(0)?;
                 let title: String = r.get(1)?;
@@ -161,10 +169,33 @@ impl Db {
                 Ok(crate::matching::CatalogTitleRow {
                     id,
                     titles,
+                    synonyms: Vec::new(),
                     popularity: popularity.unwrap_or(0),
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        let mut syn_stmt = self.conn.prepare("SELECT anilist_id, synonym FROM anilist_catalog_synonyms")?;
+        let mut syn_map: std::collections::HashMap<i64, Vec<String>> = std::collections::HashMap::new();
+        let syn_rows = syn_stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
+        for res in syn_rows {
+            let (id, syn) = res?;
+            syn_map.entry(id).or_default().push(syn);
+        }
+
+        for row in &mut rows {
+            if let Some(syns) = syn_map.remove(&row.id) {
+                for syn in syns {
+                    let trimmed = syn.trim();
+                    // Under 4 chars is too ambiguous to match on.
+                    if trimmed.chars().count() >= 4
+                        && !row.titles.iter().chain(&row.synonyms).any(|t| t.eq_ignore_ascii_case(trimmed))
+                    {
+                        row.synonyms.push(trimmed.to_string());
+                    }
+                }
+            }
+        }
         Ok(rows)
     }
 
@@ -716,6 +747,7 @@ impl Db {
             title: r.get("title")?,
             title_romaji: r.get("title_romaji")?,
             title_english: r.get("title_english")?,
+            synonyms: Vec::new(),
             cover_url: r.get("cover_url")?,
             format: r.get("format")?,
             episodes: r.get("episodes")?,
@@ -1174,7 +1206,9 @@ mod tests {
         // Reopening re-runs init_schema, i.e. the migration.
         let db = Db::open(path.to_str().unwrap()).unwrap();
         let stale = db.stale_catalog_ids().unwrap();
-        assert!(!stale.contains(&1), "a fully-synced legacy row must not be re-backfilled: {stale:?}");
+        // Legacy rows are stamped as version 1, which is behind the current
+        // version (2 added synonyms), so they backfill like any other stale row.
+        assert!(stale.contains(&1), "a v1-stamped row must be re-backfilled for synonyms: {stale:?}");
         assert!(stale.contains(&2), "the romaji-only row is exactly what the old marker missed");
         assert!(stale.contains(&3));
         drop(db);
@@ -2148,6 +2182,7 @@ mod tests {
             title: "Attack on Titan".into(),
             title_romaji: Some("Shingeki no Kyojin".into()),
             title_english: Some("Attack on Titan".into()),
+            synonyms: Vec::new(),
             cover_url: None,
             format: Some("TV".into()),
             genres: vec!["Action".into()],
@@ -2177,7 +2212,7 @@ mod tests {
             id: 43,
             title: "Timed Show".into(),
             title_romaji: None,
-            title_english: None,
+            title_english: None, synonyms: Vec::new(),
             cover_url: None,
             format: Some("TV".into()),
             genres: vec![],
@@ -2198,7 +2233,7 @@ mod tests {
             id: 44,
             title: "Undated Show".into(),
             title_romaji: None,
-            title_english: None,
+            title_english: None, synonyms: Vec::new(),
             cover_url: None,
             format: Some("TV".into()),
             genres: vec![],
@@ -2229,7 +2264,7 @@ mod tests {
             id: 45,
             title: "Studio Show".into(),
             title_romaji: None,
-            title_english: None,
+            title_english: None, synonyms: Vec::new(),
             cover_url: None,
             format: Some("TV".into()),
             genres: vec![],
@@ -2251,7 +2286,7 @@ mod tests {
             id: 46,
             title: "No Studio Show".into(),
             title_romaji: None,
-            title_english: None,
+            title_english: None, synonyms: Vec::new(),
             cover_url: None,
             format: Some("TV".into()),
             genres: vec![],
@@ -2281,7 +2316,7 @@ mod tests {
             id: 47,
             title: "Dated Show".into(),
             title_romaji: None,
-            title_english: None,
+            title_english: None, synonyms: Vec::new(),
             cover_url: None,
             format: Some("TV".into()),
             genres: vec![],
@@ -2300,7 +2335,7 @@ mod tests {
             id: 48,
             title: "Undated Show".into(),
             title_romaji: None,
-            title_english: None,
+            title_english: None, synonyms: Vec::new(),
             cover_url: None,
             format: Some("TV".into()),
             genres: vec![],
@@ -2331,7 +2366,7 @@ mod tests {
         db.upsert_catalog_anime(
             &crate::anilist::CatalogAnime {
                 id: 50, title: "Attack on Titan".into(), title_romaji: Some("Shingeki no Kyojin".into()),
-                title_english: Some("Attack on Titan".into()), cover_url: None, format: Some("TV".into()),
+                title_english: Some("Attack on Titan".into()), synonyms: Vec::new(), cover_url: None, format: Some("TV".into()),
                 genres: vec![], episodes: Some(25), average_score: None, popularity: None,
                 url: "https://anilist.co/anime/50".into(), status: None, duration: None, studio: None,
                 start_date: Some(1_776_211_200),
@@ -2343,7 +2378,7 @@ mod tests {
         // not present with a None/0 value.
         db.upsert_catalog_anime(
             &crate::anilist::CatalogAnime {
-                id: 51, title: "Unsynced Show".into(), title_romaji: None, title_english: None,
+                id: 51, title: "Unsynced Show".into(), title_romaji: None, title_english: None, synonyms: Vec::new(),
                 cover_url: None, format: Some("TV".into()), genres: vec![], episodes: None,
                 average_score: None, popularity: None, url: "https://anilist.co/anime/51".into(),
                 status: None, duration: None, studio: None, start_date: None,
@@ -2360,7 +2395,7 @@ mod tests {
 
     fn mk_catalog_anime(id: i64, title: &str, url: &str) -> crate::anilist::CatalogAnime {
         crate::anilist::CatalogAnime {
-            id, title: title.into(), title_romaji: None, title_english: None, cover_url: None,
+            id, title: title.into(), title_romaji: None, title_english: None, synonyms: Vec::new(), cover_url: None,
             format: Some("TV".into()), genres: vec![], episodes: Some(12), average_score: None,
             popularity: None, url: url.into(), status: None, duration: None, studio: None, start_date: None,
         }
@@ -2409,7 +2444,7 @@ mod tests {
 
     fn mk_full_catalog_anime(id: i64, title: &str, genres: &[&str]) -> crate::anilist::CatalogAnime {
         crate::anilist::CatalogAnime {
-            id, title: title.into(), title_romaji: None, title_english: None,
+            id, title: title.into(), title_romaji: None, title_english: None, synonyms: Vec::new(),
             cover_url: Some(format!("https://img/{id}")), format: Some("TV".into()),
             genres: genres.iter().map(|g| g.to_string()).collect(), episodes: Some(24),
             average_score: Some(88), popularity: Some(5000), url: format!("https://anilist.co/anime/{id}"),
@@ -2705,5 +2740,88 @@ mod tests {
         }
         let capped_ids = db.stale_status_ids().unwrap();
         assert_eq!(capped_ids.len(), 500, "must be capped at 500 rows");
+    }
+
+    #[test]
+    fn upsert_catalog_anime_synonyms_and_catalog_titles_for_index() {
+        let db = Db::open(":memory:").unwrap();
+        let mut a = catalog_anime(1, "Main Title", &[]);
+        a.synonyms = vec!["Synonym One".to_string(), "Synonym Two".to_string()];
+        db.upsert_catalog_anime(&a, 0).unwrap();
+
+        let titles = db.catalog_titles_for_index().unwrap();
+        assert_eq!(titles.len(), 1);
+        assert_eq!(titles[0].titles, vec!["Main Title".to_string()]);
+        let mut actual = titles[0].synonyms.clone();
+        actual.sort();
+        assert_eq!(actual, vec!["Synonym One".to_string(), "Synonym Two".to_string()]);
+    }
+
+    #[test]
+    fn upsert_catalog_anime_replaces_old_synonyms() {
+        let db = Db::open(":memory:").unwrap();
+        let mut a = catalog_anime(1, "Main Title", &[]);
+        a.synonyms = vec!["Old Synonym".to_string()];
+        db.upsert_catalog_anime(&a, 0).unwrap();
+
+        let mut a_new = catalog_anime(1, "Main Title", &[]);
+        a_new.synonyms = vec!["New Synonym".to_string()];
+        db.upsert_catalog_anime(&a_new, 0).unwrap();
+
+        let titles = db.catalog_titles_for_index().unwrap();
+        assert_eq!(titles.len(), 1);
+        assert_eq!(titles[0].synonyms, vec!["New Synonym".to_string()]);
+    }
+
+    #[test]
+    fn catalog_titles_for_index_skips_short_synonyms_and_duplicates() {
+        let db = Db::open(":memory:").unwrap();
+        let mut a = catalog_anime(1, "Main Title", &[]);
+        // "abc" is 3 chars (skip), "Main Title" is a duplicate of the main title (case-insensitive)
+        a.synonyms = vec!["abc".to_string(), "main title".to_string(), "Valid Synonym".to_string()];
+        db.upsert_catalog_anime(&a, 0).unwrap();
+
+        let titles = db.catalog_titles_for_index().unwrap();
+        assert_eq!(titles.len(), 1);
+        assert_eq!(titles[0].synonyms, vec!["Valid Synonym".to_string()]);
+    }
+
+    #[test]
+    fn link_series_to_catalog_matches_synonyms() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("TestSite", "https://site.example", "testsite").unwrap();
+
+        let mut a = catalog_anime(4242, "Hyakunichi Kakumei", &[]);
+        a.synonyms = vec!["Bai Ri Cheng Wang".to_string()];
+        db.upsert_catalog_anime(&a, 0).unwrap();
+
+        let sid = db.upsert_series(
+            src,
+            &crate::models::Series {
+                id: 0,
+                slug: "bai-ri-cheng-wang".into(),
+                title: "Bai Ri Cheng Wang".into(),
+                url: "https://site/bai-ri-cheng-wang".into(),
+                cover_url: None,
+                is_airing: true,
+                followed: true,
+                next_episode_at: None,
+                site_episode_count: None,
+            },
+        ).unwrap();
+        db.set_followed(sid, true).unwrap();
+
+        let linked = db.link_series_to_catalog().unwrap();
+        assert_eq!(linked, 1);
+
+        let actual_id = db
+            .conn
+            .query_row(
+                "SELECT anilist_id FROM series WHERE id=?1",
+                [sid],
+                |r| r.get::<_, Option<i64>>(0),
+            )
+            .unwrap();
+        assert_eq!(actual_id, Some(4242));
     }
 }
