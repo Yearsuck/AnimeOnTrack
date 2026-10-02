@@ -985,40 +985,61 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
 
     // Covers for currently-airing series (unfollowed + followed, not AniList-linked
     // which already display fine via the catalog's own cover).
+    // Spans ALL sites: the direct reqwest download needs no site state (it talks
+    // to the image CDN directly, not through the site's Cloudflare session), so
+    // there is no reason to restrict phase A to the active site.
     // Restructured in two phases:
-    // Phase A: direct reqwest downloads, max 4 concurrent via Semaphore;
-    //          collect rows whose failure a browser could get past
-    //          (`should_fallback_to_webview`: Cloudflare 403/503, 404/429, HTML body...).
-    // Phase B: strictly sequential WebView2 fallback for those CF-blocked ones,
-    //          capped at 20 per refresh cycle.
+    // Phase A: direct reqwest downloads, max 4 concurrent via Semaphore; spans
+    //          every site. Collect rows whose failure a browser could get past
+    //          (`should_fallback_to_webview`), split by whether the row belongs
+    //          to the active site (the shared WebView2 profile surely holds its
+    //          Cloudflare cookies) or to another site (maybe not).
+    // Phase B: strictly sequential WebView2 fallback: active-site rows capped at
+    //          20 per refresh, then at most OTHER_SITE_WEBVIEW_FALLBACK_CAP rows
+    //          of other sites, so missing cookies can never stall a whole cycle
+    //          on 30 s timeouts.
     const AIRING_COVER_BATCH_LIMIT: i64 = 60;
     const AIRING_WEBVIEW_FALLBACK_CAP: usize = 20;
+    // Rows of OTHER sites whose direct download failed get a much smaller
+    // WebView2 budget: the shared profile only holds Cloudflare cookies for
+    // domains the user has actually visited, and a fetch without them burns
+    // its whole 30 s timeout, so a large budget could stall the refresh. A few
+    // per cycle is enough to heal them over successive refreshes when the
+    // cookies are there (images served from the site's own domain, e.g.
+    // animeflv.net/uploads, which the plain HTTP client cannot even reach).
+    const OTHER_SITE_WEBVIEW_FALLBACK_CAP: usize = 3;
 
     let airing_needing = {
         let db = state.db.lock().unwrap();
-        db.airing_series_needing_cover_fetch(src, AIRING_COVER_BATCH_LIMIT)
+        // No source_id argument: the query now spans all sites.
+        db.airing_series_needing_cover_fetch(AIRING_COVER_BATCH_LIMIT)
             .map_err(|e| e.to_string())?
     };
 
+    // (id, title, remote_url) of rows the browser might get past: active-site
+    // rows (generous cap) and other-site rows (small cap).
     let mut cf_blocked: Vec<(i64, String, String)> = Vec::new();
-    let airing_needing: Vec<(i64, String, String)> =
-        airing_needing.into_iter().filter(|(id, _, _)| !cover_attempted.contains(id)).collect();
+    let mut cf_blocked_other: Vec<(i64, String, String)> = Vec::new();
+    let airing_needing: Vec<(i64, String, String, i64)> =
+        airing_needing.into_iter().filter(|(id, _, _, _)| !cover_attempted.contains(id)).collect();
     if !airing_needing.is_empty() {
         let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(4));
         let mut tasks = Vec::with_capacity(airing_needing.len());
 
-        for (id, title, remote) in airing_needing {
+        for (id, title, remote, row_src) in airing_needing {
             let sem = sem.clone();
             let app_handle = app.clone();
             tasks.push(tauri::async_runtime::spawn(async move {
                 let _permit = sem.acquire().await.ok();
                 let res = crate::cover_cache::cache_cover_image(&app_handle, &remote).await;
-                (id, title, remote, res)
+                // Carry row_src so the result handler can decide whether the
+                // WebView2 fallback is applicable (active site only).
+                (id, title, remote, row_src, res)
             }));
         }
 
         for task in tasks {
-            if let Ok((id, title, remote, res)) = task.await {
+            if let Ok((id, title, remote, row_src, res)) = task.await {
                 emit_refresh_progress(&app, total_series, total_series, &format!("Descargando carátulas: {title}"));
                 match res {
                     Ok(path) => {
@@ -1027,8 +1048,21 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
                         let db = state.db.lock().unwrap();
                         let _ = db.update_series_cover(id, &file_url);
                     }
-                    Err(err) if err.should_fallback_to_webview() => {
-                        cf_blocked.push((id, title, remote));
+                    Err(ref err) if err.should_fallback_to_webview() => {
+                        if row_src == src {
+                            // Active-site row: Cloudflare cookies in the shared
+                            // WebView2 profile may let the browser through —
+                            // queue for the sequential phase-B fallback.
+                            cf_blocked.push((id, title, remote));
+                        } else {
+                            // Other-site row: only a small WebView2 budget (see
+                            // OTHER_SITE_WEBVIEW_FALLBACK_CAP) — log why it got here.
+                            eprintln!(
+                                "[cover] airing series {id} ({title}): direct download failed ({err}); \
+                                 queued for the small other-site WebView2 fallback (source {row_src}, active is {src})"
+                            );
+                            cf_blocked_other.push((id, title, remote));
+                        }
                     }
                     Err(err) => {
                         eprintln!("[cover] airing series {id} ({title}): direct download failed: {err}");
@@ -1038,9 +1072,15 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
         }
     }
 
-    // Phase B: strictly sequential WebView2 fallback for Cloudflare-blocked covers,
-    // capped at 20 per refresh to avoid tripping Cloudflare rate limits.
-    for (id, title, remote) in cf_blocked.into_iter().take(AIRING_WEBVIEW_FALLBACK_CAP) {
+    // Phase B: strictly sequential WebView2 fallback for covers the direct download
+    // could not get, capped (see the constants above) to avoid tripping Cloudflare
+    // rate limits or stalling the refresh.
+    // Active-site rows first (cap 20), then at most a few rows of other sites.
+    let webview_queue = cf_blocked
+        .into_iter()
+        .take(AIRING_WEBVIEW_FALLBACK_CAP)
+        .chain(cf_blocked_other.into_iter().take(OTHER_SITE_WEBVIEW_FALLBACK_CAP));
+    for (id, title, remote) in webview_queue {
         emit_refresh_progress(&app, total_series, total_series, &format!("Descargando carátulas: {title}"));
         match fetch_cover_image(&app, &remote).await {
             Ok(data_uri) => {
