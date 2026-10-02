@@ -499,7 +499,7 @@ pub(crate) fn strip_season_markers(
 /// against an unrelated season-1 title that happens to share more surface
 /// text. Used by `CatalogIndex::fuzzy_lookup` to break ties `score()`'s
 /// season-blind `same_franchise` floor can't.
-fn extract_season_number(normalized_title: &str) -> Option<u32> {
+pub fn extract_season_number(normalized_title: &str) -> Option<u32> {
     let tokens: Vec<&str> = normalized_title.split_whitespace().collect();
     let is_marker = |t: &str| SEASON_MARKERS.contains(&t);
     let roman_num = |t: &str| ROMAN_NUMERALS.iter().position(|r| *r == t).map(|i| i as u32 + 2);
@@ -651,6 +651,51 @@ pub fn best_match(queries: &[&str], candidates: &[TitleCandidate]) -> Option<Mat
         }
     }
     best
+}
+
+/// Is the series' own season compatible with the catalog entry's titles?
+///
+/// - `Some(n >= 2)` (explicit later season): some entry title must encode the
+///   same number, or be an ambiguous "... Final Season" title (those resolve to
+///   no number at all). An entry with no titles never matches.
+/// - `Some(1)` / unmarked: must not be a later-season entry, i.e. some entry
+///   title is plain season 1 or ambiguous. Without this an unmarked finished
+///   season-1 row fuzzy-linked to a RELEASING "... 2nd Season" would flip to
+///   airing. An empty list stays consistent (nothing to contradict).
+/// - `None` (ambiguous marker): a "... Final Season" title needs an entry that
+///   is itself a "Final Season" (otherwise it would join the plain season-1
+///   entry); any other ambiguous title ("The Promised Neverland") has no season
+///   claim to check and is consistent.
+pub fn season_consistent(series_title: &str, catalog_titles: &[&str]) -> bool {
+    let series_norm = normalize_title(series_title);
+    let s = extract_season_number(&series_norm);
+    let seasons = || catalog_titles.iter().map(|&ct| extract_season_number(&normalize_title(ct)));
+    let is_final_season_entry = |ct: &str| {
+        let norm = normalize_title(ct);
+        extract_season_number(&norm).is_none() && norm.split_whitespace().any(|t| t == "final")
+    };
+    match s {
+        None if series_norm.split_whitespace().any(|t| t == "final") => {
+            catalog_titles.is_empty() || catalog_titles.iter().any(|&ct| is_final_season_entry(ct))
+        }
+        None => true,
+        Some(1) => catalog_titles.is_empty() || seasons().any(|c| c.is_none_or(|n| n <= 1)),
+        Some(s_num) => {
+            seasons().any(|c| c == Some(s_num)) || catalog_titles.iter().any(|&ct| is_final_season_entry(ct))
+        }
+    }
+}
+
+/// Checks if the title contains the words "live" and "action" as consecutive tokens.
+pub fn is_live_action(title: &str) -> bool {
+    let norm = normalize_title(title);
+    let tokens: Vec<&str> = norm.split_whitespace().collect();
+    for i in 0..tokens.len().saturating_sub(1) {
+        if tokens[i] == "live" && tokens[i + 1] == "action" {
+            return true;
+        }
+    }
+    false
 }
 
 #[cfg(test)]
@@ -1256,5 +1301,29 @@ mod tests {
         ];
         let index = CatalogIndex::build(&rows);
         assert_eq!(index.lookup(&["Dogulwang"]), Some(10));
+    }
+
+    #[test]
+    fn test_season_consistent() {
+        // an unmarked series must not trust a later-season-only entry
+        assert!(!season_consistent("Some Show", &["Some Show 2nd Season"]));
+        assert!(season_consistent("Some Show", &["Some Show 2nd Season", "Some Show"]));
+        // explicit later season accepts an ambiguous "Final Season" entry
+        assert!(season_consistent("Shingeki no Kyojin Temporada 4", &["Attack on Titan: The Final Season"]));
+
+        assert!(!season_consistent("Kanojo, Okarishimasu Temporada 5", &["Kanojo, Okarishimasu"]));
+        assert!(season_consistent("Kanojo, Okarishimasu Temporada 5", &["Kanojo, Okarishimasu 5th Season"]));
+        assert!(!season_consistent("Hanazakari no Kimitachi e Temporada 2", &["Hanazakari no Kimitachi e"]));
+        assert!(season_consistent("Hanazakari no Kimitachi e Temporada 2", &["Hanazakari no Kimitachi e 2nd Season"]));
+        assert!(season_consistent("Hanazakari no Kimitachi e 2nd Season", &["Hanazakari no Kimitachi e 2nd Season"]));
+        assert!(season_consistent("Some Title", &[]));
+        assert!(season_consistent("Temporada 1", &[]));
+        assert!(season_consistent("Dr. STONE SCIENCE FUTURE Cour 3", &["Dr. Stone: Science Future Part 3"]));
+    }
+
+    #[test]
+    fn test_is_live_action() {
+        assert!(is_live_action("One Piece: Live Action (2023)"));
+        assert!(!is_live_action("One Piece: Gyojin Tou-hen (2024)"));
     }
 }

@@ -317,9 +317,9 @@ async fn scan_airing_via_mirrors(
     // other site keep reappearing as pending here.
     db.sync_seen_progress_across_sites().map_err(|e| e.to_string())?;
     // A site's own scrape never un-airs a show once scraped as airing (see
-    // sync_finished_status_from_catalog's doc comment) — AniList's synced
+    // sync_status_from_catalog's doc comment) — AniList's synced
     // status is the only signal that actually catches a real finish.
-    db.sync_finished_status_from_catalog().map_err(|e| e.to_string())?;
+    db.sync_status_from_catalog().map_err(|e| e.to_string())?;
 
     *state.source_id.lock().unwrap() = Some(src);
     let airing = db.list_airing(src).map_err(|e| e.to_string())?;
@@ -629,14 +629,14 @@ async fn run_episode_backfill(app: AppHandle) -> Result<(), String> {
         // series_needing_catalog_link's `OR s.is_airing=1` clause matches
         // nearly every scraped row across all 6 sites (is_airing defaults to
         // true and almost nothing ever flips it — the exact gap
-        // sync_finished_status_from_catalog exists to close), thousands of
+        // sync_status_from_catalog exists to close), thousands of
         // rows, not the "small, targeted" set its own doc comment assumes.
         // Running that synchronously on every site switch blocked the async
         // runtime long enough to crash the app — confirmed live 2026-08-14.
         // Local-only (no network) so it's safe to run before the paced
         // network loop below, not after.
         db.link_series_to_catalog().map_err(|e| e.to_string())?;
-        db.sync_finished_status_from_catalog().map_err(|e| e.to_string())?;
+        db.sync_status_from_catalog().map_err(|e| e.to_string())?;
         let needing = db.followed_series_without_episodes(src).map_err(|e| e.to_string())?;
         (a, mirrors, needing)
     };
@@ -778,7 +778,7 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
         // on this site fell behind progress made on another (same reason as
         // scan_airing_via_mirrors — see sync_seen_progress_across_sites).
         db.sync_seen_progress_across_sites().map_err(|e| e.to_string())?;
-        db.sync_finished_status_from_catalog().map_err(|e| e.to_string())?;
+        db.sync_status_from_catalog().map_err(|e| e.to_string())?;
         db.list_followed(src).map_err(|e| e.to_string())?
     };
     let total_series = followed.len();
