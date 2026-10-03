@@ -222,6 +222,12 @@ impl Db {
                 synonym TEXT NOT NULL,
                 PRIMARY KEY(anilist_id, synonym)
             );
+            CREATE TABLE IF NOT EXISTS anilist_catalog_tags (
+                anilist_id INTEGER NOT NULL REFERENCES anilist_catalog(id),
+                tag TEXT NOT NULL,
+                rank INTEGER NOT NULL,
+                PRIMARY KEY(anilist_id, tag)
+            );
             "#,
         )?;
         ensure_column(&self.conn, "anilist_catalog", "popularity", "INTEGER")?;
@@ -254,6 +260,10 @@ impl Db {
         // `db::episodes::airing_season_dates` to answer "aired this season"
         // for airing-site rows with no scraped episode data.
         ensure_column(&self.conn, "anilist_catalog", "start_date", "INTEGER")?;
+        // next_airing_at and next_episode: next airing info from AniList.
+        // NULL when AniList has none (finished or not scheduled).
+        ensure_column(&self.conn, "anilist_catalog", "next_airing_at", "INTEGER")?;
+        ensure_column(&self.conn, "anilist_catalog", "next_episode", "INTEGER")?;
         // metadata_version: which generation of the AniList field set this row
         // was last written with (see `db::catalog::CATALOG_METADATA_VERSION`).
         // `stale_catalog_ids` used to infer staleness from `title_romaji IS
@@ -523,6 +533,24 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 1);
+        let tags_count: i64 = db
+            .conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='anilist_catalog_tags'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tags_count, 1);
+
+        let mut stmt = db.conn.prepare("PRAGMA table_info(anilist_catalog)").unwrap();
+        let cols: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert!(cols.contains(&"next_airing_at".to_string()));
+        assert!(cols.contains(&"next_episode".to_string()));
         let _ = std::fs::remove_file(&path);
     }
 

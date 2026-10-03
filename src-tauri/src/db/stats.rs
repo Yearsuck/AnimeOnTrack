@@ -1986,7 +1986,7 @@ mod tests {
 
         db.upsert_catalog_anime(
             &crate::anilist::CatalogAnime {
-                id: 21, title: "ONE PIECE".into(), title_romaji: None, title_english: None, synonyms: Vec::new(),
+                id: 21, title: "ONE PIECE".into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
                 cover_url: None, format: Some("TV".into()), genres: vec![],
                 episodes: Some(1140), average_score: None, popularity: None,
                 url: "https://anilist.co/anime/21".into(), status: None, duration: Some(24),
@@ -2012,7 +2012,7 @@ mod tests {
 
         db.upsert_catalog_anime(
             &crate::anilist::CatalogAnime {
-                id: 21, title: "ONE PIECE".into(), title_romaji: None, title_english: None, synonyms: Vec::new(),
+                id: 21, title: "ONE PIECE".into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
                 cover_url: None, format: Some("TV".into()), genres: vec![],
                 episodes: Some(100), average_score: None, popularity: None,
                 url: "https://anilist.co/anime/21".into(), status: None, duration: Some(24),
@@ -2226,7 +2226,7 @@ mod tests {
         // Watched-externally, linked to a catalog row with 12 TV episodes.
         db.upsert_catalog_anime(
             &crate::anilist::CatalogAnime {
-                id: 100, title: "External Show".into(), title_romaji: None, title_english: None, synonyms: Vec::new(),
+                id: 100, title: "External Show".into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
                 cover_url: None, format: Some("TV".into()), genres: vec![],
                 episodes: Some(12), average_score: None, popularity: None,
                 url: "https://anilist.co/anime/100".into(), status: None, duration: None,
@@ -2300,7 +2300,7 @@ mod tests {
 
         db.upsert_catalog_anime(
             &crate::anilist::CatalogAnime {
-                id: 200, title: "S2".into(), title_romaji: None, title_english: None, synonyms: Vec::new(),
+                id: 200, title: "S2".into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
                 cover_url: None, format: Some("TV".into()), genres: vec![],
                 episodes: Some(12), average_score: None, popularity: None,
                 url: "https://anilist.co/anime/200".into(), status: None, duration: None,
@@ -2328,7 +2328,7 @@ mod tests {
 
         db.upsert_catalog_anime(
             &crate::anilist::CatalogAnime {
-                id: 201, title: "S3".into(), title_romaji: None, title_english: None, synonyms: Vec::new(),
+                id: 201, title: "S3".into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
                 cover_url: None, format: Some("TV".into()), genres: vec![],
                 episodes: Some(12), average_score: None, popularity: None,
                 url: "https://anilist.co/anime/201".into(), status: None, duration: Some(23),
@@ -2353,7 +2353,7 @@ mod tests {
 
         db.upsert_catalog_anime(
             &crate::anilist::CatalogAnime {
-                id: 202, title: "S4".into(), title_romaji: None, title_english: None, synonyms: Vec::new(),
+                id: 202, title: "S4".into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
                 cover_url: None, format: Some("TV".into()), genres: vec![],
                 episodes: Some(12), average_score: None, popularity: None,
                 url: "https://anilist.co/anime/202".into(), status: None, duration: None,
@@ -2677,7 +2677,7 @@ mod tests {
         ] {
             db.upsert_catalog_anime(
                 &crate::anilist::CatalogAnime {
-                    id, title: title.into(), title_romaji: None, title_english: None, synonyms: Vec::new(),
+                    id, title: title.into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
                     cover_url: None, format: Some("TV".into()), genres: vec![],
                     episodes: Some(episodes), average_score: None, popularity: None,
                     url: format!("https://anilist.co/anime/{id}"), status: None, duration: Some(24),
@@ -2711,7 +2711,7 @@ mod tests {
 
         db.upsert_catalog_anime(
             &crate::anilist::CatalogAnime {
-                id: 910, title: "Linked Show".into(), title_romaji: None, title_english: None, synonyms: Vec::new(),
+                id: 910, title: "Linked Show".into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
                 cover_url: None, format: Some("TV".into()), genres: vec![],
                 episodes: Some(12), average_score: None, popularity: None,
                 url: "https://anilist.co/anime/910".into(), status: None, duration: Some(24),
@@ -3451,7 +3451,7 @@ mod tests {
 
         db.upsert_catalog_anime(
             &crate::anilist::CatalogAnime {
-                id: 920, title: "Long Runner".into(), title_romaji: None, title_english: None, synonyms: Vec::new(),
+                id: 920, title: "Long Runner".into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
                 cover_url: None, format: Some("TV".into()), genres: vec![],
                 episodes: Some(500), average_score: None, popularity: None,
                 url: "https://anilist.co/anime/920".into(), status: None, duration: Some(24),
@@ -3482,7 +3482,7 @@ mod tests {
         ] {
             db.upsert_catalog_anime(
                 &crate::anilist::CatalogAnime {
-                    id: pop, title: title.into(), title_romaji: None, title_english: None, synonyms: Vec::new(),
+                    id: pop, title: title.into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
                     cover_url: None, format: Some("TV".into()), genres: vec![],
                     episodes: Some(12), average_score: None, popularity: Some(pop),
                     url: format!("https://anilist.co/anime/{pop}"), status: None, duration: Some(24),
@@ -3529,7 +3529,7 @@ mod tests {
         // Same show on both sites, linked to same AniList ID
         db.upsert_catalog_anime(
             &crate::anilist::CatalogAnime {
-                id: 100, title: "Shared Show".into(), title_romaji: None, title_english: None, synonyms: Vec::new(),
+                id: 100, title: "Shared Show".into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
                 cover_url: None, format: Some("TV".into()), genres: vec![],
                 episodes: Some(12), average_score: None, popularity: Some(210000),
                 url: "https://anilist.co/anime/100".into(), status: None, duration: Some(24),
@@ -3553,7 +3553,7 @@ mod tests {
         ] {
             db.upsert_catalog_anime(
                 &crate::anilist::CatalogAnime {
-                    id: pop, title: title.into(), title_romaji: None, title_english: None, synonyms: Vec::new(),
+                    id: pop, title: title.into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
                     cover_url: None, format: Some("TV".into()), genres: vec![],
                     episodes: Some(12), average_score: None, popularity: Some(pop),
                     url: format!("https://anilist.co/anime/{pop}"), status: None, duration: Some(24),
@@ -3588,7 +3588,7 @@ mod tests {
         ] {
             db.upsert_catalog_anime(
                 &crate::anilist::CatalogAnime {
-                    id: pop, title: title.into(), title_romaji: None, title_english: None, synonyms: Vec::new(),
+                    id: pop, title: title.into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
                     cover_url: None, format: Some("TV".into()), genres: vec![],
                     episodes: Some(12), average_score: None, popularity: Some(pop),
                     url: format!("https://anilist.co/anime/{pop}"), status: None, duration: Some(24),
@@ -3623,7 +3623,7 @@ mod tests {
         ] {
             db.upsert_catalog_anime(
                 &crate::anilist::CatalogAnime {
-                    id: pop, title: title.into(), title_romaji: None, title_english: None, synonyms: Vec::new(),
+                    id: pop, title: title.into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
                     cover_url: None, format: Some("TV".into()), genres: vec![],
                     episodes: Some(12), average_score: None, popularity: Some(pop),
                     url: format!("https://anilist.co/anime/{pop}"), status: None, duration: Some(24),
@@ -3842,7 +3842,7 @@ mod tests {
 
         db.upsert_catalog_anime(
             &crate::anilist::CatalogAnime {
-                id: 777, title: "Long Show".into(), title_romaji: None, title_english: None, synonyms: Vec::new(),
+                id: 777, title: "Long Show".into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
                 cover_url: None, format: Some("TV".into()), genres: vec![],
                 episodes: Some(100), average_score: None, popularity: None,
                 url: "https://anilist.co/anime/777".into(), status: None, duration: Some(24),
@@ -3891,7 +3891,7 @@ mod tests {
         db.upsert_catalog_anime(
             &crate::anilist::CatalogAnime {
                 id: 16498, title: "Shingeki no Kyojin".into(), title_romaji: None,
-                title_english: Some("Attack on Titan".into()), synonyms: Vec::new(), cover_url: None,
+                title_english: Some("Attack on Titan".into()), synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(), cover_url: None,
                 format: Some("TV".into()), genres: vec![], episodes: Some(25),
                 average_score: None, popularity: None,
                 url: "https://anilist.co/anime/16498".into(), status: None, duration: Some(24),
