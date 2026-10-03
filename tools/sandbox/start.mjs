@@ -13,6 +13,7 @@
 // for a consistent read-only copy).
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { cpus, constants, setPriority } from 'node:os';
 import { join } from 'node:path';
 import { stripCloudSettings } from './sanitize.mjs';
 
@@ -87,6 +88,9 @@ const env = {
   ...process.env,
   WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `${TAURI_DEFAULT_WEBVIEW2_ARGS} --remote-debugging-port=${port}`,
   RUST_BACKTRACE: '1',
+  // rustc/cargo default to one job per logical core at normal priority: a release build then
+  // pegs every core for ~1.5 min and freezes the whole PC. A third of the cores is plenty.
+  CARGO_BUILD_JOBS: process.env.CARGO_BUILD_JOBS ?? String(Math.max(2, Math.floor(cpus().length / 3))),
 };
 const quoted = `"${configPath}"`;
 const tauriArgs = args.has('--release')
@@ -102,6 +106,10 @@ if (args.has('--release')) {
     '          (use PowerShell Start-Process to detach it)');
 }
 const child = spawn('npm', tauriArgs, { env, stdio: 'inherit', shell: true });
+// Windows priority classes are inherited by processes spawned later, so setting it on npm
+// is enough to keep cargo/rustc/vite from starving the desktop. (`tauri dev` also runs the
+// app itself under this class, so measure latency/hangs with --release + a normally started exe.)
+try { setPriority(child.pid, constants.priority.PRIORITY_BELOW_NORMAL); } catch { /* best effort */ }
 // Forward Ctrl+C so the dev server / app are not orphaned (they would keep :9222 and the profile).
 for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => child.kill(sig));
 child.on('exit', (code) => process.exit(code ?? 0));
