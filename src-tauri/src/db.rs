@@ -372,7 +372,11 @@ impl Db {
         // never strands your library. Progress is a single seen-watermark,
         // which is lossless because watching is gap-free.
         self.conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS library (
+            "CREATE TABLE IF NOT EXISTS anilist_search_misses (
+                norm_title TEXT PRIMARY KEY,
+                tried_at INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS library (
                 id INTEGER PRIMARY KEY,
                 canon_key TEXT NOT NULL UNIQUE,
                 anilist_id INTEGER,

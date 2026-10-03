@@ -232,6 +232,89 @@ impl Db {
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
+}
+
+/// One title the local catalog could not link, with every series row that
+/// carries it (same normalized title across sites), for an AniList search.
+#[derive(Debug, Clone)]
+pub struct SearchTarget {
+    pub norm_title: String,
+    pub title: String,
+    pub series_ids: Vec<i64>,
+}
+
+impl Db {
+    pub fn unlinked_for_search(&self, limit: usize, now: i64) -> Result<Vec<SearchTarget>> {
+        let mut by_norm: std::collections::HashMap<String, SearchTarget> = std::collections::HashMap::new();
+        let mut order: Vec<String> = Vec::new();
+
+        let mut stmt = self.conn.prepare(
+            "SELECT s.id, s.title, (s.is_airing = 1 OR s.followed = 1) as priority
+             FROM series s
+             WHERE s.anilist_id IS NULL
+               AND (s.followed=1 OR s.watched_externally=1 OR s.is_airing=1
+                    OR EXISTS (SELECT 1 FROM episodes e WHERE e.series_id=s.id AND e.seen=1))
+             ORDER BY priority DESC, s.id"
+        )?;
+
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+        })?.collect::<rusqlite::Result<Vec<_>>>()?;
+
+        let mut check_miss = self.conn.prepare("SELECT tried_at FROM anilist_search_misses WHERE norm_title=?1")?;
+
+        for (id, title) in rows {
+            let norm = crate::matching::normalize_title(&title);
+            if norm.is_empty() { continue; }
+
+            if !by_norm.contains_key(&norm) {
+                let tried_at: Option<i64> = check_miss.query_row([&norm], |r| r.get(0)).optional()?;
+                if let Some(t) = tried_at {
+                    if now - t < 14 * 24 * 3600 {
+                        continue;
+                    }
+                }
+                by_norm.insert(norm.clone(), SearchTarget {
+                    norm_title: norm.clone(),
+                    title: title.clone(),
+                    series_ids: Vec::new(),
+                });
+                order.push(norm.clone());
+            }
+            if let Some(entry) = by_norm.get_mut(&norm) {
+                entry.series_ids.push(id);
+            }
+        }
+
+        let mut result = Vec::new();
+        for norm in order {
+            if result.len() >= limit { break; }
+            if let Some(target) = by_norm.remove(&norm) {
+                result.push(target);
+            }
+        }
+
+        Ok(result)
+    }
+
+    pub fn record_search_miss(&self, norm_title: &str, now: i64) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO anilist_search_misses(norm_title, tried_at) VALUES(?1, ?2)",
+            rusqlite::params![norm_title, now],
+        )?;
+        Ok(())
+    }
+
+    /// Store the AniList entry found by a search (so the series has a catalog
+    /// row to read metadata from) and link every row of the target to it.
+    pub fn link_search_result(&self, series_ids: &[i64], anime: &crate::anilist::CatalogAnime) -> Result<()> {
+        let sort_order = self.catalog_sort_order(anime.id)?;
+        self.upsert_catalog_anime(anime, sort_order)?;
+        for &id in series_ids {
+            self.set_anilist_id(id, anime.id)?;
+        }
+        Ok(())
+    }
 
     /// Linked series grouped by (franchise key, season), built once per run so
     /// the sibling step is a hash lookup instead of re-normalising every linked
@@ -2916,5 +2999,57 @@ mod tests {
         assert_eq!(read.next_episode, None);
         assert_eq!(read.tags.len(), 1);
         assert_eq!(read.tags[0].name, "New");
+    }
+
+    #[test]
+    fn unlinked_for_search_tests() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("TestSite", "https://site.example", "testsite").unwrap();
+
+        let now = 20_000_000;
+
+        // s1: linked -> not offered
+        let sid1 = db.upsert_series(src, &crate::models::Series {
+            id: 0, slug: "s1".into(), title: "Linked Title".into(), url: "u1".into(), cover_url: None, is_airing: true, followed: true, next_episode_at: None, site_episode_count: None,
+        }).unwrap();
+        db.set_anilist_id(sid1, 123).unwrap();
+
+        // s2: unlinked, no miss
+        let sid2 = db.upsert_series(src, &crate::models::Series {
+            id: 0, slug: "s2".into(), title: "Title 2".into(), url: "u2".into(), cover_url: None, is_airing: true, followed: true, next_episode_at: None, site_episode_count: None,
+        }).unwrap();
+
+        // s3: unlinked, missed 15 days ago -> offered
+        let _sid3 = db.upsert_series(src, &crate::models::Series {
+            id: 0, slug: "s3".into(), title: "Title 3".into(), url: "u3".into(), cover_url: None, is_airing: true, followed: true, next_episode_at: None, site_episode_count: None,
+        }).unwrap();
+        db.record_search_miss(&crate::matching::normalize_title("Title 3"), now - 15 * 24 * 3600).unwrap();
+
+        // s4: unlinked, missed 13 days ago -> not offered
+        let _sid4 = db.upsert_series(src, &crate::models::Series {
+            id: 0, slug: "s4".into(), title: "Title 4".into(), url: "u4".into(), cover_url: None, is_airing: true, followed: true, next_episode_at: None, site_episode_count: None,
+        }).unwrap();
+        db.record_search_miss(&crate::matching::normalize_title("Title 4"), now - 13 * 24 * 3600).unwrap();
+
+        let targets = db.unlinked_for_search(10, now).unwrap();
+        assert_eq!(targets.len(), 2);
+
+        // They should be "Title 2" and "Title 3"
+        let t2 = targets.iter().find(|t| t.title == "Title 2");
+        assert!(t2.is_some());
+        let t3 = targets.iter().find(|t| t.title == "Title 3");
+        assert!(t3.is_some());
+
+        // Check link_search_result links all ids
+        let a = catalog_anime(4242, "Linked Anime", &[]);
+        db.link_search_result(&[sid2], &a).unwrap();
+
+        // Check that sid2 is linked
+        let actual_id: Option<i64> = db.conn.query_row("SELECT anilist_id FROM series WHERE id=?1", [sid2], |r| r.get(0)).unwrap();
+        assert_eq!(actual_id, Some(4242));
+
+        // Ensure catalog row is added
+        let has_cat: i64 = db.conn.query_row("SELECT COUNT(*) FROM anilist_catalog WHERE id=4242", [], |r| r.get(0)).unwrap();
+        assert_eq!(has_cat, 1);
     }
 }

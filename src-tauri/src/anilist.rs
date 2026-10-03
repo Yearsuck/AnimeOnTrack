@@ -556,6 +556,29 @@ pub async fn fetch_by_ids(ids: &[i64]) -> Result<Vec<CatalogAnime>> {
     Ok(execute_query(body, "by-ids").await?.items)
 }
 
+fn search_query() -> String {
+    format!(
+        r#"
+query ($search: String) {{
+  Page(page: 1, perPage: 6) {{
+    pageInfo {{ hasNextPage }}
+    media(type: ANIME, search: $search, sort: SEARCH_MATCH) {{
+      {MEDIA_FIELDS}
+    }}
+  }}
+}}
+"#
+    )
+}
+
+pub async fn search_anime(title: &str) -> Result<Vec<CatalogAnime>> {
+    let body = serde_json::json!({
+        "query": search_query(),
+        "variables": { "search": title },
+    });
+    Ok(execute_query(body, &format!("search '{title}'")).await?.items)
+}
+
 /// Shared POST + 429-retry + error-unwrapping path for every AniList query in
 /// this module, so the rate-limit handling can't drift between call sites.
 async fn execute_query(body: serde_json::Value, context: &str) -> Result<PartitionPage> {
@@ -932,5 +955,19 @@ mod tests {
         assert_eq!(mapped_missing.next_airing_at, None);
         assert_eq!(mapped_missing.next_episode, None);
         assert!(mapped_missing.tags.is_empty());
+    }
+
+    #[test]
+    fn search_query_builder() {
+        let q = search_query();
+        assert!(q.contains("query ($search: String)"));
+        assert!(q.contains("media(type: ANIME, search: $search, sort: SEARCH_MATCH)"));
+        assert!(q.contains(MEDIA_FIELDS));
+
+        let body = serde_json::json!({
+            "query": q,
+            "variables": { "search": "Naruto" },
+        });
+        assert_eq!(body["variables"]["search"], "Naruto");
     }
 }

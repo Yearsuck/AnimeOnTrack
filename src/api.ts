@@ -193,6 +193,7 @@ export const maybeSyncCatalogIncremental = () =>
 // Resolves engaged-but-unlinked series to their AniList catalog row against
 // the local catalog only — no network. Returns how many were newly linked.
 export const linkSeriesToCatalog = () => invoke<number>("link_series_to_catalog");
+export const linkUnlinkedViaAnilist = () => invoke<number>("link_unlinked_via_anilist");
 
 // Cross-site library import: for every followed series not yet on the active
 // site, search+link it there and replay its watched watermark. Paced/live
