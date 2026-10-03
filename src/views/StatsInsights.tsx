@@ -156,10 +156,10 @@ export function StatsInsights({
   const [bingeRecord, setBingeRecord] = useState<BingeRecord | null>(null);
 
   useEffect(() => {
-    getBingeRecord().then(setBingeRecord).catch(() => setBingeRecord({ day: null, count: 0 }));
+    getBingeRecord().then(setBingeRecord).catch(() => setBingeRecord({ day: null, count: 0, top_series: [] }));
   }, []);
 
-  const [hourlyDist, setHourlyDist] = useState<HourCount[]>([]);
+  const [hourlyDist, setHourlyDist] = useState<HourCount[] | null>(null);
 
   useEffect(() => {
     getHourlyDistribution().then(setHourlyDist).catch(() => setHourlyDist([]));
@@ -189,7 +189,7 @@ export function StatsInsights({
     { name: t("stats.finished"), count: insights.followed_finished },
   ];
   const hasMarks = insights.marks_by_day.some((d) => d.count > 0);
-  const hasHourly = hourlyDist.some((d) => d.count > 0);
+  const hasHourly = (hourlyDist ?? []).some((d) => d.count > 0);
 
   return (
     <div className="stats-insights">
@@ -215,6 +215,7 @@ export function StatsInsights({
             aria-valuenow={completionPct}
             aria-valuemin={0}
             aria-valuemax={100}
+            aria-label={t("stats.completion")}
           >
             <span style={{ width: `${completionPct}%` }} />
           </div>
@@ -227,12 +228,32 @@ export function StatsInsights({
           <div className="stat-value">{insights.avg_episodes_per_series.toFixed(1)}</div>
         </div>
         <div className="stat-card">
+          <div className="stat-label">{t("stats.backlog")}</div>
+          <div className="stat-value">
+            {(insights.backlog_episodes ?? 0) > 0 || (insights.backlog_minutes ?? 0) > 0
+              ? formatMinutes(t, insights.backlog_minutes ?? 0)
+              : t("stats.backlogEmpty")}
+          </div>
+          {(insights.backlog_episodes ?? 0) > 0 && (
+            <div className="stat-help">
+              {t(insights.backlog_episodes === 1 ? "stats.backlogEpisodesOne" : "stats.backlogEpisodes", {
+                n: n(insights.backlog_episodes),
+              })}
+            </div>
+          )}
+        </div>
+        <div className="stat-card">
           <div className="stat-label">{t("stats.bingeRecord")}</div>
           <div className="stat-value">
             {bingeRecord && bingeRecord.day
               ? t("stats.bingeRecordValue", { count: n(bingeRecord.count), day: axisDay(bingeRecord.day, lang) })
               : t("stats.bingeRecordEmpty")}
           </div>
+          {bingeRecord && bingeRecord.top_series && bingeRecord.top_series.length > 0 && (
+            <div className="stat-help">
+              {t("stats.bingeSeries", { series: bingeRecord.top_series.join(", ") })}
+            </div>
+          )}
         </div>
         <div className="stat-card">
           <div className="stat-label">{t("stats.completionSpeed")}</div>
@@ -246,14 +267,43 @@ export function StatsInsights({
         </div>
       </div>
 
-      {topSeriesData.length > 0 && (
+      {topSeriesData.length > 0 ? (
         <div className="series-block">
           <div className="series-head">
             <h3 className="section-title">{t("stats.topSeries")}</h3>
           </div>
           <BarChart data={topSeriesData} />
         </div>
+      ) : (
+        <div className="series-block">
+          <div className="series-head">
+            <h3 className="section-title">{t("stats.topSeries")}</h3>
+          </div>
+          <div className="empty">{t("stats.topSeriesEmpty")}</div>
+        </div>
       )}
+
+      <div className="series-block">
+        <div className="series-head">
+          <h3 className="section-title">{t("stats.topStudios")}</h3>
+        </div>
+        {insights.top_studios && insights.top_studios.length > 0 ? (
+          <BarChart data={insights.top_studios.map((s) => ({ name: s.title, count: s.count }))} />
+        ) : (
+          <div className="empty">{t("stats.topStudiosEmpty")}</div>
+        )}
+      </div>
+
+      <div className="series-block">
+        <div className="series-head">
+          <h3 className="section-title">{t("stats.eraDistribution")}</h3>
+        </div>
+        {insights.era_distribution && insights.era_distribution.length > 0 ? (
+          <BarChart data={insights.era_distribution.map((e) => ({ name: t("stats.eraDecade", { decade: e.decade }), count: e.count }))} />
+        ) : (
+          <div className="empty">{t("stats.eraEmpty")}</div>
+        )}
+      </div>
 
       <div className="section-toolbar">
         <ShapeToggle shape={shape} onChange={setShape} />
@@ -264,7 +314,7 @@ export function StatsInsights({
           <div className="series-head">
             <h3 className="section-title">{t("stats.funnelHeading")}</h3>
           </div>
-          <CategoryBlock data={funnelData} shape={shape} emptyMessage={t("stats.ringsEmpty")} />
+          <CategoryBlock data={funnelData} shape={shape} emptyMessage={t("stats.funnelEmpty")} />
         </div>
 
         <div className="series-block">
@@ -279,32 +329,38 @@ export function StatsInsights({
         </div>
       </div>
 
-      {hasHourly && (
-        <div className="series-block">
-          <div className="series-head">
-            <h3 className="section-title">{t("stats.hourlyHeading")}</h3>
-          </div>
+      <div className="series-block">
+        <div className="series-head">
+          <h3 className="section-title">{t("stats.hourlyHeading")}</h3>
+        </div>
+        {hourlyDist === null ? null : hasHourly ? (
           <HourlyDistributionChart data={hourlyDist} t={t} />
-        </div>
-      )}
+        ) : (
+          <div className="empty">{t("stats.hourlyEmpty")}</div>
+        )}
+      </div>
 
-      {hasMarks && insights.marks_tracked_since && (
-        <div className="series-block">
-          <div className="series-head">
-            <h3 className="section-title">{t("stats.marksHeading")}</h3>
-          </div>
-          <div className="dayact-wrap">
-            <DayActivityChart
-              data={insights.marks_by_day}
-              locale={lang}
-              emptyLabel={t("stats.marksHeading")}
-            />
-          </div>
-          <div className="stats-caveat">
-            {t("stats.marksCaveat", { date: insights.marks_tracked_since })}
-          </div>
+      <div className="series-block">
+        <div className="series-head">
+          <h3 className="section-title">{t("stats.marksHeading")}</h3>
         </div>
-      )}
+        {hasMarks && insights.marks_tracked_since ? (
+          <>
+            <div className="dayact-wrap">
+              <DayActivityChart
+                data={insights.marks_by_day}
+                locale={lang}
+                emptyLabel={t("stats.marksHeading")}
+              />
+            </div>
+            <div className="stats-caveat">
+              {t("stats.marksCaveat", { date: insights.marks_tracked_since })}
+            </div>
+          </>
+        ) : (
+          <div className="empty">{t("stats.marksEmpty")}</div>
+        )}
+      </div>
 
       {dusty.length > 0 && (
         <div className="series-block">

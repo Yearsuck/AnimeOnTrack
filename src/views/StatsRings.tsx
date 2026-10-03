@@ -29,11 +29,11 @@ export function BarChart({ data }: { data: Datum[] }) {
   }, []);
   const max = Math.max(1, ...data.map((d) => d.count));
   return (
-    <div className="barchart">
+    <div className="barchart" role="list">
       {data.map((d) => {
         const pct = (d.count / max) * 100;
         return (
-          <div className="bar-row" key={d.name}>
+          <div className="bar-row" key={d.name} role="listitem">
             <div className="bar-label" title={d.name}>
               {d.name}
             </div>
@@ -72,12 +72,12 @@ export function RingGrid({ data }: { data: Datum[] }) {
   }, []);
   const max = Math.max(1, ...data.map((d) => d.count));
   return (
-    <div className="ringgrid">
+    <div className="ringgrid" role="list">
       {data.map((d) => {
         const frac = grown ? d.count / max : 0;
         const dash = RING_C * frac;
         return (
-          <div className="ringcell" key={d.name}>
+          <div className="ringcell" key={d.name} role="listitem">
             <svg width={RING} height={RING} viewBox={`0 0 ${RING} ${RING}`} role="img" aria-label={`${d.name}: ${d.count}`}>
               <circle cx={RING / 2} cy={RING / 2} r={RING_R} fill="none" stroke="var(--surface-3)" strokeWidth={RING_STROKE} />
               <circle
@@ -179,7 +179,7 @@ function GenreCardComponent({
   const n = useFormatNumber();
   const epLabel = card.count === 1 ? t("stats.episodeSingular") : t("stats.episodePlural");
   return (
-    <article className="genrecard">
+    <article className="genrecard" role="listitem">
       <div className="genrecard-rank">{rank}</div>
       <div className="genrecard-body">
         <div className="genrecard-header">
@@ -205,6 +205,7 @@ function GenreCardComponent({
                 ) : null}
                 <div
                   className="genrecard-thumb-fallback"
+                  aria-hidden="true"
                   style={{
                     display: series.cover_url ? "none" : "flex",
                     background: categoryColor(card.genre),
@@ -237,7 +238,7 @@ export function GenreCards({
   }
 
   return (
-    <div className="genrecards-grid">
+    <div className="genrecards-grid" role="list">
       {genres.map((card, idx) => (
         <GenreCardComponent key={card.genre} rank={idx + 1} card={card} />
       ))}
