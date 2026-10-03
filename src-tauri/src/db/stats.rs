@@ -1032,6 +1032,109 @@ impl Db {
         Ok(merge_into_parent_franchises(grouped, &parent_of))
     }
 
+    /// How many episodes each franchise has, one entry per franchise, with the
+    /// show followed on several sites counted once (what the "Completado %"
+    /// denominator and the average episodes per series need).
+    ///
+    /// A franchise's total is the larger of (a) the best single site's episode
+    /// rows (arcs of one site are summed, sites are not) and (b) the sum of
+    /// AniList's `episodes` over the distinct linked entries: AniList is the
+    /// authority for a finished show, the site count covers a long-runner
+    /// AniList has no total for. Consequences worth knowing: an airing show
+    /// counts its full announced season length, and a followed show with no
+    /// marks counts all of its episodes.
+    ///
+    /// Groups with the same key/alias/parent rules as `franchise_rollups`, but
+    /// over its own corpus (`followed_only`: followed series; otherwise followed
+    /// OR at least one seen episode), so in odd data (an unseen followed parent
+    /// row) the grouping can differ from the watched numerator: callers clamp.
+    pub(crate) fn canonical_franchise_episode_totals(&self, followed_only: bool) -> Result<Vec<i64>> {
+        let scope = if followed_only {
+            "s.followed=1"
+        } else {
+            "(s.followed=1 OR EXISTS (SELECT 1 FROM episodes x WHERE x.series_id=s.id AND x.seen=1))"
+        };
+        let sql = format!(
+            "SELECT s.title, s.anilist_id, s.source_id, COUNT(e.id), c.episodes
+             FROM series s
+             LEFT JOIN episodes e ON e.series_id = s.id
+             LEFT JOIN anilist_catalog c ON c.id = s.anilist_id
+             WHERE {scope}
+             GROUP BY s.id"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+
+        struct Row {
+            title: String,
+            anilist_id: Option<i64>,
+            source_id: i64,
+            episode_rows: i64,
+            catalog_episodes: Option<i64>,
+        }
+        let rows: Vec<Row> = stmt.query_map([], |r| {
+            Ok(Row {
+                title: r.get(0)?,
+                anilist_id: r.get(1)?,
+                source_id: r.get(2)?,
+                episode_rows: r.get(3)?,
+                catalog_episodes: r.get(4)?,
+            })
+        })?.collect::<rusqlite::Result<Vec<_>>>()?;
+
+        let aliases = franchise_key_aliases(
+            &rows
+                .iter()
+                .map(|row| (row.anilist_id, franchise_key(&row.title)))
+                .collect::<Vec<_>>(),
+        );
+        let canonical = |key: String| aliases.get(&key).cloned().unwrap_or(key);
+
+        #[derive(Clone)]
+        struct FranchiseEps {
+            per_site: HashMap<i64, i64>,
+            catalog_by_anilist: HashMap<i64, i64>,
+        }
+
+        let mut grouped: HashMap<String, FranchiseEps> = HashMap::new();
+        let mut parent_of: HashMap<String, String> = HashMap::new();
+
+        for row in rows {
+            let key = canonical(franchise_key(&row.title));
+            if let Some(parent) = franchise_parent_key(&row.title).map(canonical) {
+                if parent != key {
+                    record_parent_candidate(&mut parent_of, &key, parent);
+                }
+            }
+            let entry = grouped.entry(key).or_insert_with(|| FranchiseEps {
+                per_site: HashMap::new(),
+                catalog_by_anilist: HashMap::new(),
+            });
+
+            *entry.per_site.entry(row.source_id).or_insert(0) += row.episode_rows;
+
+            if let Some(aid) = row.anilist_id {
+                if let Some(cep) = row.catalog_episodes {
+                    entry.catalog_by_anilist.insert(aid, cep);
+                }
+            }
+        }
+
+        let franchises = merge_into_parent_groups(grouped, &parent_of, |existing, child| {
+            for (source_id, rows) in &child.per_site {
+                *existing.per_site.entry(*source_id).or_insert(0) += rows;
+            }
+            for (aid, cep) in &child.catalog_by_anilist {
+                existing.catalog_by_anilist.insert(*aid, *cep);
+            }
+        });
+
+        Ok(franchises.into_iter().map(|f| {
+            let site_max = f.per_site.values().copied().max().unwrap_or(0);
+            let catalog_sum = f.catalog_by_anilist.values().copied().sum::<i64>();
+            site_max.max(catalog_sum)
+        }).collect())
+    }
+
     /// Scalar watch totals for the stats dashboard, **canonical across every
     /// site**: a show followed (or wanted, or pending) on any of the 3 sites
     /// counts once, via `canon_key` dedup — see `distinct_canon_count`. Never
@@ -1062,23 +1165,12 @@ impl Db {
         // real seen episode — so discarded/never-touched scraped rows don't
         // inflate it.
         //
-        // KNOWN ASYMMETRY: this one is still a raw row count, so it is *not*
-        // collapsed per franchise/site the way `episodes_watched` above now is
-        // — a show followed on two sites contributes both sites' episode rows
-        // here. The two are shown as a single "X/Y" progress line
-        // (`StatsInsights.tsx`), so for a cross-site user that ratio reads
-        // low. Collapsing it is not a one-line change: unlike the numerator it
-        // must also cover followed series with zero seen episodes (which
-        // `franchise_rollups` deliberately excludes, see `distinct_anime`), so
-        // it needs the roll-up widened to carry an episode-row total per
-        // franchise rather than a second parallel aggregation bolted on here.
-        let episodes_total: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM episodes e
-             JOIN series s ON s.id = e.series_id
-             WHERE s.followed=1 OR EXISTS (SELECT 1 FROM episodes x WHERE x.series_id=s.id AND x.seen=1)",
-            [],
-            |r| r.get(0),
-        )?;
+        // Collapsed per franchise (same parent merge as the numerator) so a show
+        // followed on two sites doesn't double-count its denominator.
+        // Never below what was watched: the two come from separately built
+        // groupings (see `canonical_franchise_episode_totals`), so in odd data
+        // the ratio must still stay a sane 0-100 %.
+        let episodes_total: i64 = self.canonical_franchise_episode_totals(false)?.iter().sum::<i64>().max(episodes_watched);
         // Episodes credited on top of `episodes_watched` from "Ya lo vi"
         // catalog estimates. Deliberately the per-franchise *remainder* (see
         // `FranchiseRollup`), not a raw sum: a franchise whose arc rows
@@ -1155,21 +1247,13 @@ impl Db {
         let external_titles_total = rollups.iter().filter(|r| r.has_external).count() as i64;
 
         // Mean episode count (all episodes, not just seen) across followed
-        // series rows (every site's row counts separately — this is a rough
-        // "how long are the shows I follow" gauge, not a watch total, so
-        // cross-site duplicates skewing it slightly is an acceptable
-        // approximation). NULL (no followed series at all) reads as 0.0.
-        let avg_episodes_per_series: Option<f64> = self.conn.query_row(
-            "SELECT AVG(cnt) FROM (
-                SELECT s.id, COUNT(e.id) AS cnt
-                FROM series s LEFT JOIN episodes e ON e.series_id = s.id
-                WHERE s.followed=1
-                GROUP BY s.id
-             )",
-            [],
-            |r| r.get(0),
-        )?;
-        let avg_episodes_per_series = avg_episodes_per_series.unwrap_or(0.0);
+        // franchises (canonical across sites). NULL/empty reads as 0.0.
+        let followed_eps = self.canonical_franchise_episode_totals(true)?;
+        let avg_episodes_per_series = if followed_eps.is_empty() {
+            0.0
+        } else {
+            followed_eps.iter().sum::<i64>() as f64 / followed_eps.len() as f64
+        };
 
         // Canonical (cross-site-deduped) funnel counts — see
         // `get_watch_summary`'s doc comment for why this never reads the
@@ -1607,7 +1691,15 @@ impl Db {
             .filter_map(|f| {
                 let first = chrono::NaiveDate::parse_from_str(&f.first_seen, "%Y-%m-%d").ok()?;
                 let last = chrono::NaiveDate::parse_from_str(&f.last_seen, "%Y-%m-%d").ok()?;
-                Some((last - first).num_days() as f64)
+                let days = (last - first).num_days();
+                // Everything marked on one calendar day is a bulk "mark as
+                // seen" (or a one-day marathon): not a completion time, and
+                // counted as 0 days it would drag the average toward nothing.
+                if days == 0 {
+                    None
+                } else {
+                    Some(days as f64)
+                }
             })
             .collect();
 
@@ -4249,5 +4341,192 @@ mod tests {
 
         assert!(count > 0);
         assert!(took < std::time::Duration::from_secs(1), "series_effective_genres full scan took {took:?}");
+    }
+
+    #[test]
+    fn episodes_total_is_never_below_episodes_watched() {
+        // Two arcs on two sites, both watched, plus an unseen followed row of
+        // the parent show: the denominator's grouping merges the arcs while the
+        // numerator's does not. The ratio must still be <= 100 %.
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("A", "a", "animeytx").unwrap();
+        let b = db.upsert_source("B", "b", "tioanime").unwrap();
+        let arc_a = db.upsert_series(a, &mk_airing("a1", "Big Show: Arc One", None)).unwrap();
+        db.set_followed(arc_a, true).unwrap();
+        insert_eps_seen_up_to(&db, arc_a, 10, 10);
+        let arc_b = db.upsert_series(b, &mk_airing("b1", "Big Show: Arc Two", None)).unwrap();
+        db.set_followed(arc_b, true).unwrap();
+        insert_eps_seen_up_to(&db, arc_b, 10, 10);
+        let parent = db.upsert_series(a, &mk_airing("p", "Big Show", None)).unwrap();
+        db.set_followed(parent, true).unwrap();
+
+        let summary = db.get_watch_summary().unwrap();
+        assert!(
+            summary.episodes_total >= summary.episodes_watched,
+            "total {} must not be below watched {}",
+            summary.episodes_total,
+            summary.episodes_watched
+        );
+    }
+
+    #[test]
+    fn canonical_totals_are_fast_at_real_size() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+        let tx = db.conn.unchecked_transaction().unwrap();
+        for i in 1..=6000 {
+            tx.execute(
+                "INSERT INTO series(id, source_id, slug, title, url, followed) VALUES(?1, ?2, ?3, ?4, 'x', ?5)",
+                (i, src, format!("slug{i}"), format!("Show Number {i}"), i % 2),
+            ).unwrap();
+            for n in 1..=20 {
+                tx.execute(
+                    "INSERT INTO episodes(series_id, number, url, seen) VALUES(?1, ?2, ?3, ?4)",
+                    (i, n.to_string(), format!("https://site/{i}/{n}"), n % 5 == 0),
+                ).unwrap();
+            }
+        }
+        tx.commit().unwrap();
+
+        let started = std::time::Instant::now();
+        let totals = db.canonical_franchise_episode_totals(false).unwrap();
+        let took = started.elapsed();
+        assert!(!totals.is_empty());
+        assert!(took < std::time::Duration::from_secs(1), "canonical totals took {took:?} for 6k series / 120k episodes");
+    }
+
+    #[test]
+    fn t4_a_same_show_two_sites_episodes_total() {
+        let db = Db::open(":memory:").unwrap();
+        let src1 = db.upsert_source("A", "a", "animeytx").unwrap();
+        let src2 = db.upsert_source("B", "b", "tioanime").unwrap();
+
+        let s1 = db.upsert_series(src1, &mk_airing("s1", "Same Show", None)).unwrap();
+        db.set_followed(s1, true).unwrap();
+        insert_eps_seen_up_to(&db, s1, 12, 6);
+
+        let s2 = db.upsert_series(src2, &mk_airing("s2", "Same Show", None)).unwrap();
+        db.set_followed(s2, true).unwrap();
+        insert_eps_seen_up_to(&db, s2, 12, 6);
+
+        let summary = db.get_watch_summary().unwrap();
+        assert_eq!(summary.episodes_total, 12, "episodes_total must not double count");
+        assert_eq!(summary.episodes_watched, 6, "episodes_watched must not double count");
+    }
+
+    #[test]
+    fn t4_b_linked_show_catalog_exceeds_scraped() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+
+        db.upsert_catalog_anime(
+            &crate::anilist::CatalogAnime {
+                id: 100, title: "Linked Show".into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
+                cover_url: None, format: Some("TV".into()), genres: vec![],
+                episodes: Some(24), average_score: None, popularity: None,
+                url: "https://anilist.co/anime/100".into(), status: None, duration: Some(24),
+                studio: None, start_date: None,
+            },
+            0,
+        ).unwrap();
+
+        let s1 = db.upsert_series(src, &mk_airing("s1", "Linked Show", None)).unwrap();
+        db.set_followed(s1, true).unwrap();
+        db.set_anilist_id(s1, 100).unwrap();
+        insert_eps_seen_up_to(&db, s1, 13, 0);
+
+        let summary = db.get_watch_summary().unwrap();
+        assert_eq!(summary.episodes_total, 24, "catalog episodes win when larger");
+    }
+
+    #[test]
+    fn t4_c_long_runner_catalog_null_uses_best_site_row_count() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+        let src2 = db.upsert_source("B", "b", "tioanime").unwrap();
+
+        db.upsert_catalog_anime(
+            &crate::anilist::CatalogAnime {
+                id: 100, title: "Long Runner".into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
+                cover_url: None, format: Some("TV".into()), genres: vec![],
+                episodes: None, average_score: None, popularity: None,
+                url: "https://anilist.co/anime/100".into(), status: None, duration: Some(24),
+                studio: None, start_date: None,
+            },
+            0,
+        ).unwrap();
+
+        let s1 = db.upsert_series(src, &mk_airing("s1", "Long Runner", None)).unwrap();
+        db.set_followed(s1, true).unwrap();
+        db.set_anilist_id(s1, 100).unwrap();
+        insert_eps_seen_up_to(&db, s1, 50, 0);
+
+        let s2 = db.upsert_series(src2, &mk_airing("s2", "Long Runner", None)).unwrap();
+        db.set_followed(s2, true).unwrap();
+        db.set_anilist_id(s2, 100).unwrap();
+        insert_eps_seen_up_to(&db, s2, 75, 0);
+
+        let summary = db.get_watch_summary().unwrap();
+        assert_eq!(summary.episodes_total, 75, "best site row count wins when catalog is null");
+    }
+
+    #[test]
+    fn t4_d_followed_series_zero_seen_counts_in_total() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+
+        let s1 = db.upsert_series(src, &mk_airing("s1", "Zero Seen", None)).unwrap();
+        db.set_followed(s1, true).unwrap();
+        insert_eps_seen_up_to(&db, s1, 12, 0);
+
+        let summary = db.get_watch_summary().unwrap();
+        assert_eq!(summary.episodes_total, 12, "followed but not seen still counts in episodes_total");
+    }
+
+    #[test]
+    fn t4_e_avg_episodes_two_sites_one_show() {
+        let db = Db::open(":memory:").unwrap();
+        let src1 = db.upsert_source("A", "a", "animeytx").unwrap();
+        let src2 = db.upsert_source("B", "b", "tioanime").unwrap();
+
+        let s1 = db.upsert_series(src1, &mk_airing("s1", "Same Show", None)).unwrap();
+        db.set_followed(s1, true).unwrap();
+        insert_eps_seen_up_to(&db, s1, 12, 0);
+
+        let s2 = db.upsert_series(src2, &mk_airing("s2", "Same Show", None)).unwrap();
+        db.set_followed(s2, true).unwrap();
+        insert_eps_seen_up_to(&db, s2, 12, 0);
+
+        let insights = db.get_watch_insights().unwrap();
+        assert_eq!(insights.avg_episodes_per_series, 12.0, "average over one franchise, not two 12-episode shows");
+    }
+
+    #[test]
+    fn t4_f_completion_days_ignores_0_day_franchise() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+
+        let s1 = mk_airing("s1", "Zero Day Show", None);
+        let id1 = db.upsert_series(src, &s1).unwrap();
+        db.set_followed(id1, true).unwrap();
+        db.conn.execute("UPDATE series SET is_airing=0 WHERE id=?1", [id1]).unwrap();
+        for n in 1..=2 {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: id1, number: n.to_string(), title: None,
+                url: format!("https://site/{n}/"), released_at: None, seen: true,
+            }).unwrap();
+            // Same day for both -> 0-day span
+            db.conn.execute(
+                "UPDATE episodes SET seen_at=datetime('now', '-5 days') WHERE series_id=?1 AND number=?2",
+                [id1.to_string(), n.to_string()],
+            ).unwrap();
+        }
+
+        let avg = db.get_avg_completion_days().unwrap();
+        assert_eq!(avg, None, "only 0-day franchises exist, must return None");
+
+        seed_finished_series(&db, src, "Normal Show", 10, 2); // 8-day span
+        let avg2 = db.get_avg_completion_days().unwrap();
+        assert_eq!(avg2, Some(8.0), "0-day show ignored, only 8-day show counts");
     }
 }
