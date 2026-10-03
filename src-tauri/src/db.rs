@@ -161,6 +161,17 @@ impl Db {
                 genre TEXT NOT NULL,
                 PRIMARY KEY(series_id, genre)
             );
+            DROP VIEW IF EXISTS series_effective_genres;
+            CREATE VIEW series_effective_genres AS
+            SELECT s.id AS series_id, cg.genre
+            FROM series s
+            JOIN anilist_catalog_genres cg ON s.anilist_id = cg.anilist_id
+            UNION ALL
+            SELECT sg.series_id, sg.genre
+            FROM series_genres sg
+            JOIN series s ON s.id = sg.series_id
+            WHERE s.anilist_id IS NULL
+               OR NOT EXISTS (SELECT 1 FROM anilist_catalog_genres WHERE anilist_id = s.anilist_id);
             "#,
         )?;
         // series_merges: the undo trail for `merge_series_into`.
