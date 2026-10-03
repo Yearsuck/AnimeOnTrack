@@ -750,7 +750,7 @@ impl Db {
     pub fn list_series_genres(&self, series_id: i64) -> Result<Vec<String>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT genre FROM series_genres WHERE series_id=?1 ORDER BY genre")?;
+            .prepare("SELECT genre FROM series_effective_genres WHERE series_id=?1 ORDER BY genre")?;
         let rows = stmt
             .query_map([series_id], |r| r.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -761,7 +761,15 @@ impl Db {
     /// detail-page fetch to backfill). Split out as a plain sync check so the
     /// async fetch decision can be unit-tested without a scraper/AppHandle.
     pub fn series_needs_genre_backfill(&self, series_id: i64) -> Result<bool> {
-        Ok(self.list_series_genres(series_id)?.is_empty())
+        // Deliberately the SITE table, not the effective-genres view: a linked
+        // series always has catalog genres, which would report "no backfill
+        // needed" and skip the detail fetch that also stores the site's kind.
+        let has_site_genres: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM series_genres WHERE series_id=?1)",
+            [series_id],
+            |r| r.get(0),
+        )?;
+        Ok(!has_site_genres)
     }
 
     pub(crate) fn row_to_series(r: &rusqlite::Row) -> rusqlite::Result<crate::models::Series> {
@@ -894,7 +902,7 @@ impl Db {
         if !ids.is_empty() {
             let placeholders = vec!["?"; ids.len()].join(",");
             let sql = format!(
-                "SELECT series_id, genre FROM series_genres WHERE series_id IN ({}) ORDER BY genre",
+                "SELECT series_id, genre FROM series_effective_genres WHERE series_id IN ({}) ORDER BY genre",
                 placeholders
             );
             let mut gstmt = self.conn.prepare(&sql)?;
@@ -2311,6 +2319,22 @@ mod tests {
         db.replace_series_genres(sid, &["Drama".to_string()]).unwrap();
 
         assert_eq!(db.list_series_genres(sid).unwrap(), vec!["Drama".to_string()]);
+    }
+
+    #[test]
+    fn a_linked_series_with_catalog_genres_still_needs_its_site_genre_backfill() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        db.upsert_catalog_anime(&crate::db::test_support::catalog_anime(100, "X", &["Action"]), 0).unwrap();
+        let s = crate::models::Series {
+            id: 0, slug: "x".into(), title: "X".into(),
+            url: "u".into(), cover_url: None, is_airing: false, followed: true, next_episode_at: None, site_episode_count: None,
+        };
+        let sid = db.upsert_series(src, &s).unwrap();
+        db.set_anilist_id(sid, 100).unwrap();
+        assert!(db.series_needs_genre_backfill(sid).unwrap(), "catalog genres must not mask the missing site rows");
+        db.insert_series_genres(sid, &["Seinen".into()]).unwrap();
+        assert!(!db.series_needs_genre_backfill(sid).unwrap());
     }
 
     #[test]

@@ -143,6 +143,44 @@ pub(crate) fn minutes_per_episode(format: Option<&str>) -> i64 {
     }
 }
 
+/// The type label of a series: the AniList catalog format when linked, else the
+/// site's free-text kind. Both are put in the vocabulary the Library filter
+/// already uses (`Library.tsx` `normalizeKind`: TV, MOVIE, OVA, ONA, SPECIAL
+/// upper-case, "Pelicula" -> MOVIE) so the type breakdown does not split
+/// "Movie"/"MOVIE"/"Pelicula" into separate buckets. TV_SHORT folds into TV
+/// (the short-episode minutes estimate reads the raw format separately).
+/// Site values outside that vocabulary are kept as they are.
+pub(crate) fn effective_kind(catalog_format: Option<&str>, site_kind: Option<&str>) -> Option<String> {
+    let normalize = |raw: &str| -> Option<String> {
+        let upper = raw.trim().to_uppercase();
+        match upper.as_str() {
+            "TV" | "TV_SHORT" | "TV SHOW" | "ANIME" => Some("TV".into()),
+            "MOVIE" | "PELICULA" | "PELÍCULA" => Some("MOVIE".into()),
+            "OVA" | "ONA" | "SPECIAL" | "MUSIC" => Some(upper),
+            _ => None,
+        }
+    };
+    if let Some(label) = catalog_format.and_then(normalize) {
+        return Some(label);
+    }
+    site_kind.map(|k| normalize(k).unwrap_or_else(|| k.to_string()))
+}
+
+/// Genres of one series in AniList's vocabulary where a mapping exists
+/// (`genres::canonical_genre`: "Acción"/"Action" -> "Action"), so a linked
+/// series (AniList's English names) and an unlinked one (the site's Spanish
+/// names) land in the same stats bucket. Unmapped tags are kept as they are.
+fn canonical_genres(raw: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for g in raw {
+        let label = crate::genres::canonical_genre(&g).map(str::to_string).unwrap_or(g);
+        if !out.contains(&label) {
+            out.push(label);
+        }
+    }
+    out
+}
+
 /// Whether `candidate` is a better franchise label than `current`. Members of
 /// one franchise usually reduce to the same display title, so this only
 /// arbitrates the cases where they don't, and only needs to be *deterministic*
@@ -438,7 +476,7 @@ impl Db {
         for g in &groups {
             let mut genres: HashSet<String> = HashSet::new();
             for &id in &g.member_ids {
-                genres.extend(self.list_series_genres(id)?);
+                genres.extend(canonical_genres(self.list_series_genres(id)?));
             }
             for genre in genres {
                 *counts.entry(genre).or_insert(0) += 1;
@@ -468,7 +506,7 @@ impl Db {
         for g in &groups {
             let mut genres: HashSet<String> = HashSet::new();
             for &id in &g.member_ids {
-                genres.extend(self.list_series_genres(id)?);
+                genres.extend(canonical_genres(self.list_series_genres(id)?));
             }
 
             // Real seen episodes for this canonical show, collapsed exactly the
@@ -580,7 +618,7 @@ impl Db {
     pub fn get_genre_affinity(&self, source_id: i64) -> Result<HashMap<String, f64>> {
         let mut stmt = self.conn.prepare(
             "SELECT sg.genre, s.followed, s.backlog_status
-             FROM series_genres sg
+             FROM series_effective_genres sg
              JOIN series s ON s.id = sg.series_id
              WHERE s.source_id=?1",
         )?;
@@ -631,7 +669,7 @@ impl Db {
     pub fn get_genre_affinity_across_sites(&self) -> Result<HashMap<String, f64>> {
         let mut stmt = self.conn.prepare(
             "SELECT s.anilist_id, s.title, s.followed, s.backlog_status, sg.genre
-             FROM series_genres sg
+             FROM series_effective_genres sg
              JOIN series s ON s.id = sg.series_id",
         )?;
         struct GenreRow {
@@ -732,7 +770,7 @@ impl Db {
             .map(|g| {
                 let mut genres: HashSet<String> = HashSet::new();
                 for &id in &g.member_ids {
-                    genres.extend(self.list_series_genres(id)?);
+                    genres.extend(canonical_genres(self.list_series_genres(id)?));
                 }
                 let mut genres: Vec<String> = genres.into_iter().collect();
                 genres.sort();
@@ -763,10 +801,14 @@ impl Db {
             title: String,
             kind: Option<String>,
             cover_url: Option<String>,
+            catalog_format: Option<String>,
         }
         let mut stmt = self
             .conn
-            .prepare("SELECT id, anilist_id, title, kind, cover_url FROM series WHERE followed=1")?;
+            .prepare("SELECT s.id, s.anilist_id, s.title, s.kind, s.cover_url, c.format
+                      FROM series s
+                      LEFT JOIN anilist_catalog c ON c.id = s.anilist_id
+                      WHERE s.followed=1")?;
         let rows: Vec<Row> = stmt
             .query_map([], |r| {
                 Ok(Row {
@@ -775,6 +817,7 @@ impl Db {
                     title: r.get(2)?,
                     kind: r.get(3)?,
                     cover_url: r.get(4)?,
+                    catalog_format: r.get(5)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -790,7 +833,7 @@ impl Db {
             });
             entry.member_ids.push(row.id);
             if entry.kind.is_none() {
-                entry.kind = row.kind.clone();
+                entry.kind = effective_kind(row.catalog_format.as_deref(), row.kind.as_deref());
             }
             if entry.cover_url.is_none() {
                 entry.cover_url = row.cover_url.clone();
@@ -946,11 +989,11 @@ impl Db {
             }
 
             // AniList's real per-episode duration wins whenever the series is
-            // linked to a synced catalog row that has one; otherwise fall back
-            // to the format/kind estimate, preferring the site's own `kind`
-            // (always present for scraped rows) over the catalog `format`.
+            // linked to a synced catalog row that has one; otherwise estimate
+            // from the format, AniList's first (raw, so TV_SHORT keeps its
+            // short-episode estimate) and the site's own kind as the fallback.
             let per_episode = row.catalog_duration.unwrap_or_else(|| {
-                minutes_per_episode(row.kind.as_deref().or(row.catalog_format.as_deref()))
+                minutes_per_episode(row.catalog_format.as_deref().or(row.kind.as_deref()))
             });
             let bucket = per_site.entry(key).or_default().entry(row.source_id).or_insert((0, 0));
             bucket.0 += row.seen_count;
@@ -4056,5 +4099,155 @@ mod tests {
             !deck_scores.contains_key("Mecha"),
             "the per-site affinity the swipe deck uses still sees only site A"
         );
+    }
+
+    #[test]
+    fn effective_genres_prefer_catalog_when_linked() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("TestSite", "https://site.example", "testsite").unwrap();
+
+        let mut anime = crate::anilist::CatalogAnime {
+            id: 100, title: "Test".into(), title_romaji: None, title_english: None,
+            cover_url: None, format: None, episodes: None, average_score: None, popularity: None,
+            url: "x".into(), genres: vec!["Action".into(), "Drama".into()], synonyms: vec![], tags: vec![],
+            status: None, duration: None, studio: None, start_date: None,
+            next_airing_at: None, next_episode: None,
+        };
+        db.upsert_catalog_anime(&anime, 0).unwrap();
+
+        let sid1 = db.upsert_series(src, &mk_airing("linked-with-genres", "Linked", None)).unwrap();
+        db.set_followed(sid1, true).unwrap();
+        db.insert_series_genres(sid1, &["Seinen".into()]).unwrap();
+        db.set_anilist_id(sid1, 100).unwrap();
+
+        let sid2 = db.upsert_series(src, &mk_airing("unlinked", "Unlinked", None)).unwrap();
+        db.set_followed(sid2, true).unwrap();
+        db.insert_series_genres(sid2, &["Seinen".into()]).unwrap();
+
+        anime.id = 101;
+        anime.genres = vec![];
+        db.upsert_catalog_anime(&anime, 1).unwrap();
+
+        let sid3 = db.upsert_series(src, &mk_airing("linked-no-genres", "LinkedNoGenres", None)).unwrap();
+        db.set_followed(sid3, true).unwrap();
+        db.insert_series_genres(sid3, &["Comedy".into()]).unwrap();
+        db.set_anilist_id(sid3, 101).unwrap();
+
+        let stats = db.get_genre_stats().unwrap();
+
+        let has_action = stats.iter().any(|g| g.genre == "Action");
+        let has_drama = stats.iter().any(|g| g.genre == "Drama");
+        let seinen_count = stats.iter().find(|g| g.genre == "Seinen").map(|g| g.count).unwrap_or(0);
+        let has_comedy = stats.iter().any(|g| g.genre == "Comedy");
+
+        assert!(has_action, "reports Action from catalog");
+        assert!(has_drama, "reports Drama from catalog");
+        assert_eq!(seinen_count, 1, "reports Seinen from unlinked");
+        assert!(has_comedy, "reports Comedy from site because catalog had NO genres");
+    }
+
+    #[test]
+    fn type_stats_uses_catalog_format_when_linked() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("TestSite", "https://site.example", "testsite").unwrap();
+
+        let anime = crate::anilist::CatalogAnime {
+            id: 100, title: "Test".into(), title_romaji: None, title_english: None,
+            cover_url: None, format: Some("TV_SHORT".into()), episodes: None, average_score: None, popularity: None,
+            url: "x".into(), genres: vec![], synonyms: vec![], tags: vec![],
+            status: None, duration: None, studio: None, start_date: None,
+            next_airing_at: None, next_episode: None,
+        };
+        db.upsert_catalog_anime(&anime, 0).unwrap();
+
+        let sid1 = db.upsert_series(src, &mk_airing("linked", "Linked", None)).unwrap();
+        db.conn.execute("UPDATE series SET kind='Película' WHERE id=?1", [sid1]).unwrap();
+        db.set_followed(sid1, true).unwrap();
+        db.set_anilist_id(sid1, 100).unwrap();
+
+        let sid2 = db.upsert_series(src, &mk_airing("unlinked", "Unlinked", None)).unwrap();
+        db.conn.execute("UPDATE series SET kind='OVA' WHERE id=?1", [sid2]).unwrap();
+        db.set_followed(sid2, true).unwrap();
+
+        let stats = db.get_type_stats().unwrap();
+        let has_tv = stats.iter().any(|s| s.kind == "TV");
+        let has_ova = stats.iter().any(|s| s.kind == "OVA");
+        let has_pelicula = stats.iter().any(|s| s.kind == "Película" || s.kind == "MOVIE");
+
+        assert!(has_tv, "catalog TV_SHORT maps to TV");
+        assert!(has_ova, "site OVA kept when unlinked");
+        assert!(!has_pelicula, "site Película ignored when linked");
+    }
+
+    #[test]
+    fn effective_kind_puts_both_sources_in_the_library_vocabulary() {
+        assert_eq!(effective_kind(Some("MOVIE"), Some("Pelicula")).as_deref(), Some("MOVIE"));
+        assert_eq!(effective_kind(None, Some("Pelicula")).as_deref(), Some("MOVIE"));
+        assert_eq!(effective_kind(None, Some("TV Show")).as_deref(), Some("TV"));
+        assert_eq!(effective_kind(None, Some("Anime")).as_deref(), Some("TV"));
+        assert_eq!(effective_kind(Some("TV_SHORT"), None).as_deref(), Some("TV"));
+        assert_eq!(effective_kind(None, Some("Sin Censura")).as_deref(), Some("Sin Censura"));
+        assert_eq!(effective_kind(None, None), None);
+    }
+
+    #[test]
+    fn linked_and_unlinked_series_share_one_genre_bucket_across_vocabularies() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("TestSite", "https://site.example", "testsite").unwrap();
+        let mut anime = crate::db::test_support::catalog_anime(100, "Test", &["Action"]);
+        anime.id = 100;
+        db.upsert_catalog_anime(&anime, 0).unwrap();
+        let linked = db.upsert_series(src, &mk_airing("a", "Linked", None)).unwrap();
+        db.set_followed(linked, true).unwrap();
+        db.set_anilist_id(linked, 100).unwrap();
+        let unlinked = db.upsert_series(src, &mk_airing("b", "Unlinked", None)).unwrap();
+        db.set_followed(unlinked, true).unwrap();
+        db.insert_series_genres(unlinked, &["Acción".into()]).unwrap();
+
+        let stats = db.get_genre_stats().unwrap();
+        let action = stats.iter().find(|g| g.genre == "Action").map(|g| g.count);
+        assert_eq!(action, Some(2), "Acción (site) and Action (AniList) are one genre: {stats:?}");
+        assert!(!stats.iter().any(|g| g.genre == "Acción"));
+    }
+
+    #[test]
+    fn series_effective_genres_is_fast_at_real_size() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("TestSite", "https://site.example", "testsite").unwrap();
+
+        let tx = db.conn.unchecked_transaction().unwrap();
+        for i in 1..=22000 {
+            tx.execute(
+                "INSERT INTO anilist_catalog(id, title, url, sort_order, metadata_version) VALUES(?1, 'Cat', 'x', ?1, 1)",
+                [i],
+            ).unwrap();
+            for j in 1..=3 {
+                tx.execute(
+                    "INSERT INTO anilist_catalog_genres(anilist_id, genre) VALUES(?1, ?2)",
+                    (i, format!("Genre{}", j)),
+                ).unwrap();
+            }
+        }
+        for i in 1..=6000 {
+            let anilist_id = if i % 2 == 0 { Some(i) } else { None };
+            tx.execute(
+                "INSERT INTO series(id, source_id, slug, title, url, anilist_id) VALUES(?1, ?2, ?3, 'Series', 'x', ?4)",
+                (i, src, format!("slug{i}"), anilist_id),
+            ).unwrap();
+            for j in 1..=2 {
+                tx.execute(
+                    "INSERT INTO series_genres(series_id, genre) VALUES(?1, ?2)",
+                    (i, format!("SiteGenre{}", j)),
+                ).unwrap();
+            }
+        }
+        tx.commit().unwrap();
+
+        let started = std::time::Instant::now();
+        let count: i64 = db.conn.query_row("SELECT COUNT(*) FROM series_effective_genres", [], |r| r.get(0)).unwrap();
+        let took = started.elapsed();
+
+        assert!(count > 0);
+        assert!(took < std::time::Duration::from_secs(1), "series_effective_genres full scan took {took:?}");
     }
 }
