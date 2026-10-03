@@ -333,8 +333,23 @@ impl Db {
         map
     }
 
+    /// A show long-running enough that the sites split it into arc rows
+    /// ("One Piece: Arco de Elbaph"). Only those may inherit their parent's
+    /// link from the colon-stripped base title; for a short show the colon
+    /// tail is a season ("Kami no Tou: Ouji no Kikan" is Tower of God season
+    /// 2, not season 1). AniList leaves `episodes` empty while a show airs.
+    fn is_long_runner(&self, anilist_id: i64) -> Result<bool> {
+        let episodes: Option<i64> = self
+            .conn
+            .query_row("SELECT episodes FROM anilist_catalog WHERE id=?1", [anilist_id], |r| r.get(0))
+            .optional()?
+            .flatten();
+        Ok(episodes.is_none_or(|n| n >= 60))
+    }
+
     fn resolve_catalog_link(
         &self,
+
         title: &str,
         ignore_series_id: i64,
         index: &crate::matching::CatalogIndex,
@@ -372,11 +387,11 @@ impl Db {
         if s == Some(1) && !live {
             let base = crate::db::stats::franchise_base_title(title);
             if base != title {
-                if let Some(id) = index.lookup(&[&base]) {
-                    if is_consistent(id) { return Ok(Some(id)); }
-                }
-                if let Some(id) = index.fuzzy_lookup(&[&base]) {
-                    if is_consistent(id) { return Ok(Some(id)); }
+                let colon = title.contains(':');
+                for id in [index.lookup(&[&base]), index.fuzzy_lookup(&[&base])].into_iter().flatten() {
+                    if is_consistent(id) && (!colon || self.is_long_runner(id)?) {
+                        return Ok(Some(id));
+                    }
                 }
             }
         }
@@ -457,6 +472,27 @@ impl Db {
 
             let norm = crate::matching::normalize_title(&title);
             let s = crate::matching::extract_season_number(&norm);
+            // A colon-qualified title linked to a short show can only have got
+            // there through the base-title fallback (see `is_long_runner`): keep
+            // it only when its own full title matches that entry.
+            if s == Some(1) && title.contains(':') && crate::db::stats::franchise_base_title(&title) != title {
+                // Cheapest first. The entry's own titles are authoritative: two
+                // entries can share a normalized title (a show and its movie), and
+                // the index resolves that to the more popular one, which may not
+                // be the one this row was (rightly) linked to.
+                let own_title_matches = catalog_titles.get(&anilist_id).is_some_and(|titles| {
+                    let variants = crate::matching::title_variants_norm(&title);
+                    titles.iter().any(|t| variants.contains(&crate::matching::normalize_title(t)))
+                });
+                let justified = self.is_long_runner(anilist_id)?
+                    || own_title_matches
+                    || index.lookup(&[&title]) == Some(anilist_id)
+                    || index.fuzzy_lookup(&[&title]) == Some(anilist_id);
+                if !justified {
+                    live_action_mislinks.push(id);
+                    continue;
+                }
+            }
             if s.unwrap_or(0) >= 2 {
                 // Clear only on positive evidence. An absent catalog row is
                 // unknown, and so is an entry with a different subtitle ("Kaguya-sama
@@ -1926,7 +1962,10 @@ mod tests {
         // fuzzy), so this must still fall back to the parent show's entry.
         let db = Db::open(":memory:").unwrap();
         let src = db.upsert_source("TioAnime", "t", "tioanime").unwrap();
-        db.upsert_catalog_anime(&catalog_anime(21, "One Piece", &["Action"]), 0).unwrap();
+        // One Piece airs: AniList has no episode total yet (None), i.e. a long-runner.
+        let mut op = catalog_anime(21, "One Piece", &["Action"]);
+        op.episodes = None;
+        db.upsert_catalog_anime(&op, 0).unwrap();
 
         let sid = db.upsert_series(src, &crate::models::Series {
             id: 0, slug: "one-piece-elbaph".into(), title: "One Piece: Arco de Elbaph".into(),
@@ -1977,7 +2016,9 @@ mod tests {
     fn link_does_not_attach_a_live_action_title_to_the_anime() {
         let db = Db::open(":memory:").unwrap();
         let src = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
-        db.upsert_catalog_anime(&catalog_anime(21, "One Piece", &[]), 0).unwrap();
+        let mut op = catalog_anime(21, "One Piece", &[]);
+        op.episodes = None;
+        db.upsert_catalog_anime(&op, 0).unwrap();
         let live = series_with(&db, src, "op-live", "One Piece: Live Action (2023)");
         let arc = series_with(&db, src, "op-arc", "One Piece: Arco de Elbaph");
 
@@ -2056,6 +2097,65 @@ mod tests {
 
         assert_eq!(db.repair_season_mislinks().unwrap(), 0);
         assert_eq!(linked_id(&db, s3), Some(101921));
+    }
+
+    #[test]
+    fn a_colon_subtitle_never_inherits_a_short_shows_link() {
+        // Real bug: "Kami no Tou: Ouji no Kikan" (season 2) was linked to the
+        // season-1 entry through the colon-stripped base title.
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        let mut tog = catalog_anime(115230, "Tower of God", &[]);
+        tog.title_romaji = Some("Kami no Tou: Tower of God".into());
+        tog.synonyms = vec!["Kami no Tou".into()];
+        db.upsert_catalog_anime(&tog, 0).unwrap();
+        let s2 = series_with(&db, src, "tog2", "Kami no Tou: Ouji no Kikan");
+
+        db.link_series_to_catalog().unwrap();
+        assert_eq!(linked_id(&db, s2), None);
+    }
+
+    #[test]
+    fn repair_unlinks_a_colon_subtitle_that_was_linked_through_the_base_title() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        db.upsert_catalog_anime(&catalog_anime(115230, "Tower of God", &[]), 0).unwrap(); // 12 episodes
+        let s2 = series_with(&db, src, "tog2", "Tower of God: Ouji no Kikan");
+        db.set_anilist_id(s2, 115230).unwrap();
+        let mut op = catalog_anime(21, "One Piece", &[]);
+        op.episodes = None;
+        db.upsert_catalog_anime(&op, 1).unwrap();
+        let arc = series_with(&db, src, "op-arc", "One Piece: Arco de Elbaph");
+        db.set_anilist_id(arc, 21).unwrap();
+
+        assert_eq!(db.repair_season_mislinks().unwrap(), 1);
+        assert_eq!(linked_id(&db, s2), None);
+        assert_eq!(linked_id(&db, arc), Some(21), "arcs of a long-runner keep the parent link");
+    }
+
+    #[test]
+    fn repair_keeps_a_colon_row_linked_to_an_entry_with_the_same_title_even_when_a_duplicate_is_more_popular() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        // A series and its movie share the exact title; the movie is more popular.
+        let mut tv = catalog_anime(1, "Foo: The Story", &[]);
+        tv.popularity = Some(10);
+        let mut movie = catalog_anime(2, "Foo: The Story", &[]);
+        movie.popularity = Some(9000);
+        db.upsert_catalog_anime(&tv, 0).unwrap();
+        db.upsert_catalog_anime(&movie, 1).unwrap();
+        let row = series_with(&db, src, "foo", "Foo: The Story");
+        db.set_anilist_id(row, 1).unwrap();
+        // and a row linked through its parenthetical spelling
+        let mut inner = catalog_anime(3, "Baz Qux", &[]);
+        inner.popularity = Some(5);
+        db.upsert_catalog_anime(&inner, 2).unwrap();
+        let paren = series_with(&db, src, "bq", "Foo: Bar (Baz Qux)");
+        db.set_anilist_id(paren, 3).unwrap();
+
+        assert_eq!(db.repair_season_mislinks().unwrap(), 0);
+        assert_eq!(linked_id(&db, row), Some(1));
+        assert_eq!(linked_id(&db, paren), Some(3));
     }
 
     #[test]
