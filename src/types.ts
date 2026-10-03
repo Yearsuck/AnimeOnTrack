@@ -126,10 +126,16 @@ export interface DustyEntry {
 export interface BingeRecord {
   day: string | null;
   count: number;
+  top_series: string[];
 }
 
 export interface HourCount {
   hour: number;
+  count: number;
+}
+
+export interface EraCount {
+  decade: number;
   count: number;
 }
 
@@ -147,6 +153,10 @@ export interface WatchInsights {
   top_series: TitleCount[];
   marks_by_day: DayCount[];
   marks_tracked_since: string | null;
+  backlog_episodes: number;
+  backlog_minutes: number;
+  top_studios: TitleCount[];
+  era_distribution: EraCount[];
 }
 
 export interface PopularityBias {
