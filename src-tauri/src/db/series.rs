@@ -1583,7 +1583,7 @@ mod tests {
 
         db.upsert_catalog_anime(
             &crate::anilist::CatalogAnime {
-                id: 300, title: "Ext".into(), title_romaji: None, title_english: None, synonyms: Vec::new(),
+                id: 300, title: "Ext".into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
                 cover_url: None, format: Some("TV".into()), genres: vec![],
                 episodes: Some(12), average_score: None, popularity: None,
                 url: "https://anilist.co/anime/300".into(), status: None, duration: None,
@@ -1625,7 +1625,7 @@ mod tests {
 
         db.upsert_catalog_anime(
             &crate::anilist::CatalogAnime {
-                id: 301, title: "Ext2".into(), title_romaji: None, title_english: None, synonyms: Vec::new(),
+                id: 301, title: "Ext2".into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
                 cover_url: None, format: Some("TV".into()), genres: vec![],
                 episodes: Some(12), average_score: None, popularity: None,
                 url: "https://anilist.co/anime/301".into(), status: None, duration: None,
@@ -1682,7 +1682,7 @@ mod tests {
 
         db.upsert_catalog_anime(
             &crate::anilist::CatalogAnime {
-                id: 302, title: "Both".into(), title_romaji: None, title_english: None, synonyms: Vec::new(),
+                id: 302, title: "Both".into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
                 cover_url: None, format: Some("TV".into()), genres: vec![],
                 episodes: Some(12), average_score: None, popularity: None,
                 url: "https://anilist.co/anime/302".into(), status: None, duration: None,

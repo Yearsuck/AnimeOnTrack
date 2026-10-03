@@ -178,7 +178,7 @@ mod tests {
             id,
             title: title.into(),
             title_romaji: None,
-            title_english: None, synonyms: Vec::new(),
+            title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
             cover_url: None,
             format: Some(format.into()),
             genres: genres.iter().map(|g| g.to_string()).collect(),

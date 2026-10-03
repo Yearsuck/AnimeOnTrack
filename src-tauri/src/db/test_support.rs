@@ -55,6 +55,9 @@ pub(crate) fn catalog_anime_with_popularity(
         duration: None,
         studio: None,
         start_date: None,
+        next_airing_at: None,
+        next_episode: None,
+        tags: Vec::new(),
     }
 }
 
@@ -83,6 +86,9 @@ pub(crate) fn catalog_anime_full(
         duration: None,
         studio: None,
         start_date: None,
+        next_airing_at: None,
+        next_episode: None,
+        tags: Vec::new(),
     }
 }
 
