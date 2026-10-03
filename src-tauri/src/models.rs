@@ -239,6 +239,12 @@ pub struct DustyEntry {
     pub last_seen_at: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EraCount {
+    pub decade: i32,
+    pub count: i64,
+}
+
 /// One day's binge record: the calendar day with the highest episode-marking
 /// count and that count. Mirrors the day-bucket query in `get_watch_insights`
 /// (localtime conversion, see that function's comment for why).
@@ -246,6 +252,8 @@ pub struct DustyEntry {
 pub struct BingeRecord {
     pub day: Option<String>,
     pub count: i64,
+    #[serde(default)]
+    pub top_series: Vec<String>,
 }
 
 /// One hour's episode-marking count, e.g. `{ hour: 14, count: 42 }` — see
@@ -298,6 +306,10 @@ pub struct WatchInsights {
     /// "marked seen" data goes back to, for the UI's honesty disclaimer.
     /// `None` when no episode has ever been marked seen.
     pub marks_tracked_since: Option<String>,
+    pub backlog_episodes: i64,
+    pub backlog_minutes: i64,
+    pub top_studios: Vec<TitleCount>,
+    pub era_distribution: Vec<EraCount>,
 }
 
 /// Mainstream vs underground taste score for Estadísticas — average AniList
