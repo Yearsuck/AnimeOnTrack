@@ -460,6 +460,62 @@ async fn run_catalog_sync(
     Ok(synced)
 }
 
+/// Link the series the local catalog could not resolve by searching AniList
+/// (docs/anilist-source-of-truth.md). At most 25 distinct titles per run and at
+/// most 2 requests per title (the title, then its parenthetical spelling), paced
+/// like the other AniList loops; the DB lock is never held across a request. A
+/// request error ends the run without recording a miss, so it is retried next
+/// launch; a title nothing confidently matches is remembered for 14 days.
+#[tauri::command]
+pub async fn link_unlinked_via_anilist(state: State<'_, AppState>) -> Result<i64, String> {
+    const PACED_SLEEP: std::time::Duration = std::time::Duration::from_millis(2100);
+
+    let now = chrono::Utc::now().timestamp();
+    let targets = {
+        let db = state.db.lock().unwrap();
+        db.unlinked_for_search(25, now).map_err(|e| e.to_string())?
+    };
+
+    let mut linked_count = 0i64;
+    'targets: for target in targets {
+        let mut picked: Option<crate::anilist::CatalogAnime> = None;
+        for query in crate::matching::search_queries(&target.title) {
+            let cands = match crate::anilist::search_anime(&query).await {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("[anilist-search] request failed, stopping the run: {e}");
+                    break 'targets;
+                }
+            };
+            let hit = crate::matching::pick_search_candidate(&target.title, &cands);
+            if let Some(found) = hit.and_then(|id| cands.into_iter().find(|c| c.id == id)) {
+                picked = Some(found);
+                break;
+            }
+            tokio::time::sleep(PACED_SLEEP).await;
+        }
+
+        {
+            let db = state.db.lock().unwrap();
+            match &picked {
+                Some(anime) => match db.link_search_result(&target.series_ids, anime) {
+                    Ok(()) => {
+                        eprintln!("[anilist-search] '{}' -> {} ({})", target.title, anime.id, anime.title);
+                        linked_count += target.series_ids.len() as i64;
+                    }
+                    Err(e) => eprintln!("[anilist-search] linking '{}' failed: {e}", target.title),
+                },
+                None => {
+                    let _ = db.record_search_miss(&target.norm_title, now);
+                }
+            }
+        }
+        tokio::time::sleep(PACED_SLEEP).await;
+    }
+
+    Ok(linked_count)
+}
+
 #[cfg(test)]
 mod auto_sync_tests {
     use super::{should_auto_sync_catalog, should_stamp_auto_sync};

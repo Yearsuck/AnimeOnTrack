@@ -213,6 +213,7 @@ pub fn run() {
             commands::backfill_catalog_metadata,
             commands::refresh_catalog_status,
             commands::link_series_to_catalog,
+            commands::link_unlinked_via_anilist,
             commands::import_library_to_active_site,
             commands::get_catalog_info_for_series,
             commands::discover_catalog_card,

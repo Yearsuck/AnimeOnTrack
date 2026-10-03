@@ -17,6 +17,7 @@ import {
   pendingCount,
   maybeSyncCatalogIncremental,
   linkSeriesToCatalog,
+  linkUnlinkedViaAnilist,
   backfillCatalogMetadata,
   refreshCatalogStatus,
 } from "./api";
@@ -113,6 +114,8 @@ export default function App() {
           // Paced AniList refresh of airing/recent statuses (~20s of
           // requests, once per 6h): last so it never delays the linking.
           await refreshCatalogStatus().catch(() => {});
+          // Last: ~1 request per unlinked title, so it never delays the steps above.
+          await linkUnlinkedViaAnilist().catch(() => {});
         })();
       } catch {
         setView("onboarding");
