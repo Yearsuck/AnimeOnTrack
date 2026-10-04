@@ -36,7 +36,9 @@ export function AiringSpotlight({ items, onOpenSeries }: AiringSpotlightProps) {
   // AiringGrid's AiringPoster) — the background <img> then fails to load.
   // Tracked by id so a blocked slide degrades to the plain scrim/gradient
   // background instead of sitting on a broken-image icon.
-  const [failedIds, setFailedIds] = useState<Set<number>>(new Set());
+  // Keyed by id AND url so a slide whose cover later changes (blocked thumbnail ->
+  // cached file) is retried instead of staying marked as failed.
+  const [failedIds, setFailedIds] = useState<Set<string>>(new Set());
 
   const featuredItems = useMemo(() => {
     const withCover = items.filter((it) => it.series.cover_url);
@@ -103,14 +105,14 @@ export function AiringSpotlight({ items, onOpenSeries }: AiringSpotlightProps) {
           const bgSrc = resolveCoverUrl(/^https?:/i.test(rawCover) ? highResCover(rawCover) : rawCover);
           return (
             <div key={item.series.id} className="spotlight-slide">
-              {bgSrc && !failedIds.has(item.series.id) && (
+              {bgSrc && !failedIds.has(`${item.series.id}|${rawCover}`) && (
                 <img
                   className="spotlight-bg"
                   src={bgSrc}
                   alt=""
                   aria-hidden="true"
                   onError={() =>
-                    setFailedIds((prev) => (prev.has(item.series.id) ? prev : new Set(prev).add(item.series.id)))
+                    setFailedIds((prev) => (prev.has(`${item.series.id}|${rawCover}`) ? prev : new Set(prev).add(`${item.series.id}|${rawCover}`)))
                   }
                 />
               )}

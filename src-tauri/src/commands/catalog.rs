@@ -292,7 +292,7 @@ pub fn should_refresh_catalog_status(last_at: Option<&str>, now: chrono::DateTim
 /// through AniList's GraphQL API, preserving existing `sort_order`, with ~2100ms
 /// pacing between batches. Throttled via settings key `catalog_status_refreshed_at`
 /// to run at most once every 6 hours. After updating catalog rows, runs
-/// `sync_finished_status_from_catalog()` so linked series have their `is_airing`
+/// `sync_status_from_catalog()` so linked series have their `is_airing`
 /// flag corrected when AniList reports them as finished.
 #[tauri::command]
 pub async fn refresh_catalog_status(state: State<'_, AppState>) -> Result<Option<i64>, String> {
@@ -331,7 +331,7 @@ pub async fn refresh_catalog_status(state: State<'_, AppState>) -> Result<Option
         let db = state.db.lock().unwrap();
         db.set_setting("catalog_status_refreshed_at", &chrono::Utc::now().to_rfc3339())
             .map_err(|e| e.to_string())?;
-        db.sync_finished_status_from_catalog().map_err(|e| e.to_string())?;
+        db.sync_status_from_catalog().map_err(|e| e.to_string())?;
     }
 
     Ok(Some(done))
@@ -458,6 +458,62 @@ async fn run_catalog_sync(
 
     let _ = app.emit("catalog-sync-progress", CatalogSyncProgress { synced, total: synced });
     Ok(synced)
+}
+
+/// Link the series the local catalog could not resolve by searching AniList
+/// (docs/anilist-source-of-truth.md). At most 25 distinct titles per run and at
+/// most 2 requests per title (the title, then its parenthetical spelling), paced
+/// like the other AniList loops; the DB lock is never held across a request. A
+/// request error ends the run without recording a miss, so it is retried next
+/// launch; a title nothing confidently matches is remembered for 14 days.
+#[tauri::command]
+pub async fn link_unlinked_via_anilist(state: State<'_, AppState>) -> Result<i64, String> {
+    const PACED_SLEEP: std::time::Duration = std::time::Duration::from_millis(2100);
+
+    let now = chrono::Utc::now().timestamp();
+    let targets = {
+        let db = state.db.lock().unwrap();
+        db.unlinked_for_search(25, now).map_err(|e| e.to_string())?
+    };
+
+    let mut linked_count = 0i64;
+    'targets: for target in targets {
+        let mut picked: Option<crate::anilist::CatalogAnime> = None;
+        for query in crate::matching::search_queries(&target.title) {
+            let cands = match crate::anilist::search_anime(&query).await {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("[anilist-search] request failed, stopping the run: {e}");
+                    break 'targets;
+                }
+            };
+            let hit = crate::matching::pick_search_candidate(&target.title, &cands);
+            if let Some(found) = hit.and_then(|id| cands.into_iter().find(|c| c.id == id)) {
+                picked = Some(found);
+                break;
+            }
+            tokio::time::sleep(PACED_SLEEP).await;
+        }
+
+        {
+            let db = state.db.lock().unwrap();
+            match &picked {
+                Some(anime) => match db.link_search_result(&target.series_ids, anime) {
+                    Ok(()) => {
+                        eprintln!("[anilist-search] '{}' -> {} ({})", target.title, anime.id, anime.title);
+                        linked_count += target.series_ids.len() as i64;
+                    }
+                    Err(e) => eprintln!("[anilist-search] linking '{}' failed: {e}", target.title),
+                },
+                None => {
+                    let _ = db.record_search_miss(&target.norm_title, now);
+                }
+            }
+        }
+        tokio::time::sleep(PACED_SLEEP).await;
+    }
+
+    Ok(linked_count)
 }
 
 #[cfg(test)]

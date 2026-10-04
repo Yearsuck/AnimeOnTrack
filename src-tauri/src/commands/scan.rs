@@ -212,7 +212,7 @@ async fn scrape_airing_listing(
     app: &AppHandle,
     mirrors: &[String],
     a: &dyn SiteAdapter,
-) -> Result<(Vec<Series>, String), String> {
+) -> Result<(Vec<Series>, String, bool), String> {
     emit_refresh_progress(app, 0, 1, "Escaneando listado de estrenos");
     // Walk every page of the airing listing, not just the first. Some sites
     // paginate their "en emisión" directory (TioAnime: ~5 pages of 20), so a
@@ -231,8 +231,15 @@ async fn scrape_airing_listing(
     let mut seen_slugs: std::collections::HashSet<String> =
         series.iter().map(|s| s.slug.clone()).collect();
     let page_mirrors = vec![working_mirror.clone()];
+    // `complete`: the walk ended on its own terms (no next page / an empty page /
+    // a page with nothing new), not on a failed page or the page cap. Only a
+    // complete listing may be used to conclude that a show is NOT listed.
+    let mut complete = false;
     for page in 2..=MAX_AIRING_PAGES {
-        let Some(path) = a.airing_page_url("", page) else { break };
+        let Some(path) = a.airing_page_url("", page) else {
+            complete = true;
+            break;
+        };
         emit_refresh_progress(app, 0, 1, &format!("Escaneando estrenos (página {page})"));
         // Wrap the parse in a one-element Vec so scrape_via_mirrors doesn't read
         // an empty page as a mirror failure (same trick as search_site): an
@@ -244,6 +251,7 @@ async fn scrape_airing_listing(
         let Ok((_s, mut pages, page_mirror)) = fetched else { break };
         let Some(page_series) = pages.pop() else { break };
         if page_series.is_empty() {
+            complete = true;
             break;
         }
         let mut added = 0;
@@ -257,11 +265,12 @@ async fn scrape_airing_listing(
         // A page with no *new* series (a site that clamps `p` to the last page
         // and re-serves it) also ends the walk — avoids looping to the cap.
         if added == 0 {
+            complete = true;
             break;
         }
     }
     emit_refresh_progress(app, 1, 1, "Listado completo");
-    Ok((series, working_mirror))
+    Ok((series, working_mirror, complete))
 }
 
 async fn scan_airing_via_mirrors(
@@ -271,7 +280,7 @@ async fn scan_airing_via_mirrors(
     a: &dyn SiteAdapter,
     site_id: &str,
 ) -> Result<Vec<Series>, String> {
-    let (series, working_mirror) = scrape_airing_listing(app, &mirrors, a).await?;
+    let (series, working_mirror, listing_complete) = scrape_airing_listing(app, &mirrors, a).await?;
     // Cover images are intentionally NOT fetched here: doing it for every
     // series on the airing list (~150 at once) reads as scraping abuse to
     // Cloudflare and gets rate-limited regardless of session validity. Covers
@@ -291,6 +300,12 @@ async fn scan_airing_via_mirrors(
     let mut upserted_ids: Vec<i64> = Vec::with_capacity(series.len());
     for s in &series {
         upserted_ids.push(db.upsert_series(src, s).map_err(|e| e.to_string())?);
+    }
+    if listing_complete {
+        let listed: std::collections::HashSet<&str> = series.iter().map(|s| s.slug.as_str()).collect();
+        if let Err(e) = db.mark_unlisted_not_airing(src, &listed) {
+            eprintln!("[scan] mark_unlisted_not_airing failed: {e}");
+        }
     }
     // Cross-site follow carry-over: a series followed on ANOTHER site that
     // matches (by title) one just scanned here inherits the follow + a
@@ -317,9 +332,9 @@ async fn scan_airing_via_mirrors(
     // other site keep reappearing as pending here.
     db.sync_seen_progress_across_sites().map_err(|e| e.to_string())?;
     // A site's own scrape never un-airs a show once scraped as airing (see
-    // sync_finished_status_from_catalog's doc comment) — AniList's synced
+    // sync_status_from_catalog's doc comment) — AniList's synced
     // status is the only signal that actually catches a real finish.
-    db.sync_finished_status_from_catalog().map_err(|e| e.to_string())?;
+    db.sync_status_from_catalog().map_err(|e| e.to_string())?;
 
     *state.source_id.lock().unwrap() = Some(src);
     let airing = db.list_airing(src).map_err(|e| e.to_string())?;
@@ -629,14 +644,14 @@ async fn run_episode_backfill(app: AppHandle) -> Result<(), String> {
         // series_needing_catalog_link's `OR s.is_airing=1` clause matches
         // nearly every scraped row across all 6 sites (is_airing defaults to
         // true and almost nothing ever flips it — the exact gap
-        // sync_finished_status_from_catalog exists to close), thousands of
+        // sync_status_from_catalog exists to close), thousands of
         // rows, not the "small, targeted" set its own doc comment assumes.
         // Running that synchronously on every site switch blocked the async
         // runtime long enough to crash the app — confirmed live 2026-08-14.
         // Local-only (no network) so it's safe to run before the paced
         // network loop below, not after.
         db.link_series_to_catalog().map_err(|e| e.to_string())?;
-        db.sync_finished_status_from_catalog().map_err(|e| e.to_string())?;
+        db.sync_status_from_catalog().map_err(|e| e.to_string())?;
         let needing = db.followed_series_without_episodes(src).map_err(|e| e.to_string())?;
         (a, mirrors, needing)
     };
@@ -694,7 +709,14 @@ async fn fetch_single_cover_with_fallback(
         }
         Err(err) if err.should_fallback_to_webview() => {
             match fetch_cover_image(app, remote).await {
-                Ok(data_uri) => Some(data_uri),
+                Ok(data_uri) => {
+                    if crate::cover_cache::is_placeholder_data_uri(&data_uri) {
+                        eprintln!("[cover] series {id} ({title}): {context} webview fallback returned a placeholder");
+                        None
+                    } else {
+                        Some(data_uri)
+                    }
+                }
                 Err(e) => {
                     eprintln!("[cover] series {id} ({title}): {context} webview fallback failed: {e}");
                     None
@@ -745,7 +767,7 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
     // delayed their new episodes by up to a day.
     let listing_slugs: Option<std::collections::HashSet<String>> =
         match scrape_airing_listing(&app, &mirrors, a.as_ref()).await {
-            Ok((series, _working_mirror)) => {
+            Ok((series, _working_mirror, listing_complete)) => {
                 let db = state.db.lock().unwrap();
                 // Drop `file:` covers whose cached file vanished (cleared
                 // AppData, DB restored on another machine) so the upsert
@@ -758,6 +780,18 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
                     Ok(0) => {}
                     Ok(n) => eprintln!("[cover] cleared {n} cached cover(s) whose file is missing"),
                     Err(e) => eprintln!("[cover] heal_missing_cached_covers failed: {e}"),
+                }
+                if listing_complete {
+                    match db.mark_unlisted_not_airing(src, &listed) {
+                        Ok(0) => {}
+                        Ok(n) => eprintln!("[scan] {n} unlinked show(s) no longer listed by the site: not airing"),
+                        Err(e) => eprintln!("[scan] mark_unlisted_not_airing failed: {e}"),
+                    }
+                }
+                match db.clear_placeholder_covers() {
+                    Ok(0) => {}
+                    Ok(n) => eprintln!("[cover] cleared {n} placeholder data uri(s) across all sites"),
+                    Err(e) => eprintln!("[cover] clear_placeholder_covers failed: {e}"),
                 }
                 for s in &series {
                     db.upsert_series(src, s).map_err(|e| e.to_string())?;
@@ -778,7 +812,7 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
         // on this site fell behind progress made on another (same reason as
         // scan_airing_via_mirrors — see sync_seen_progress_across_sites).
         db.sync_seen_progress_across_sites().map_err(|e| e.to_string())?;
-        db.sync_finished_status_from_catalog().map_err(|e| e.to_string())?;
+        db.sync_status_from_catalog().map_err(|e| e.to_string())?;
         db.list_followed(src).map_err(|e| e.to_string())?
     };
     let total_series = followed.len();
@@ -985,40 +1019,61 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
 
     // Covers for currently-airing series (unfollowed + followed, not AniList-linked
     // which already display fine via the catalog's own cover).
+    // Spans ALL sites: the direct reqwest download needs no site state (it talks
+    // to the image CDN directly, not through the site's Cloudflare session), so
+    // there is no reason to restrict phase A to the active site.
     // Restructured in two phases:
-    // Phase A: direct reqwest downloads, max 4 concurrent via Semaphore;
-    //          collect rows whose failure a browser could get past
-    //          (`should_fallback_to_webview`: Cloudflare 403/503, 404/429, HTML body...).
-    // Phase B: strictly sequential WebView2 fallback for those CF-blocked ones,
-    //          capped at 20 per refresh cycle.
+    // Phase A: direct reqwest downloads, max 4 concurrent via Semaphore; spans
+    //          every site. Collect rows whose failure a browser could get past
+    //          (`should_fallback_to_webview`), split by whether the row belongs
+    //          to the active site (the shared WebView2 profile surely holds its
+    //          Cloudflare cookies) or to another site (maybe not).
+    // Phase B: strictly sequential WebView2 fallback: active-site rows capped at
+    //          20 per refresh, then at most OTHER_SITE_WEBVIEW_FALLBACK_CAP rows
+    //          of other sites, so missing cookies can never stall a whole cycle
+    //          on 30 s timeouts.
     const AIRING_COVER_BATCH_LIMIT: i64 = 60;
     const AIRING_WEBVIEW_FALLBACK_CAP: usize = 20;
+    // Rows of OTHER sites whose direct download failed get a much smaller
+    // WebView2 budget: the shared profile only holds Cloudflare cookies for
+    // domains the user has actually visited, and a fetch without them burns
+    // its whole 30 s timeout, so a large budget could stall the refresh. A few
+    // per cycle is enough to heal them over successive refreshes when the
+    // cookies are there (images served from the site's own domain, e.g.
+    // animeflv.net/uploads, which the plain HTTP client cannot even reach).
+    const OTHER_SITE_WEBVIEW_FALLBACK_CAP: usize = 3;
 
     let airing_needing = {
         let db = state.db.lock().unwrap();
-        db.airing_series_needing_cover_fetch(src, AIRING_COVER_BATCH_LIMIT)
+        // No source_id argument: the query now spans all sites.
+        db.airing_series_needing_cover_fetch(AIRING_COVER_BATCH_LIMIT)
             .map_err(|e| e.to_string())?
     };
 
+    // (id, title, remote_url) of rows the browser might get past: active-site
+    // rows (generous cap) and other-site rows (small cap).
     let mut cf_blocked: Vec<(i64, String, String)> = Vec::new();
-    let airing_needing: Vec<(i64, String, String)> =
-        airing_needing.into_iter().filter(|(id, _, _)| !cover_attempted.contains(id)).collect();
+    let mut cf_blocked_other: Vec<(i64, String, String)> = Vec::new();
+    let airing_needing: Vec<(i64, String, String, i64)> =
+        airing_needing.into_iter().filter(|(id, _, _, _)| !cover_attempted.contains(id)).collect();
     if !airing_needing.is_empty() {
         let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(4));
         let mut tasks = Vec::with_capacity(airing_needing.len());
 
-        for (id, title, remote) in airing_needing {
+        for (id, title, remote, row_src) in airing_needing {
             let sem = sem.clone();
             let app_handle = app.clone();
             tasks.push(tauri::async_runtime::spawn(async move {
                 let _permit = sem.acquire().await.ok();
                 let res = crate::cover_cache::cache_cover_image(&app_handle, &remote).await;
-                (id, title, remote, res)
+                // Carry row_src so the result handler can decide whether the
+                // WebView2 fallback is applicable (active site only).
+                (id, title, remote, row_src, res)
             }));
         }
 
         for task in tasks {
-            if let Ok((id, title, remote, res)) = task.await {
+            if let Ok((id, title, remote, row_src, res)) = task.await {
                 emit_refresh_progress(&app, total_series, total_series, &format!("Descargando carátulas: {title}"));
                 match res {
                     Ok(path) => {
@@ -1027,8 +1082,21 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
                         let db = state.db.lock().unwrap();
                         let _ = db.update_series_cover(id, &file_url);
                     }
-                    Err(err) if err.should_fallback_to_webview() => {
-                        cf_blocked.push((id, title, remote));
+                    Err(ref err) if err.should_fallback_to_webview() => {
+                        if row_src == src {
+                            // Active-site row: Cloudflare cookies in the shared
+                            // WebView2 profile may let the browser through —
+                            // queue for the sequential phase-B fallback.
+                            cf_blocked.push((id, title, remote));
+                        } else {
+                            // Other-site row: only a small WebView2 budget (see
+                            // OTHER_SITE_WEBVIEW_FALLBACK_CAP) — log why it got here.
+                            eprintln!(
+                                "[cover] airing series {id} ({title}): direct download failed ({err}); \
+                                 queued for the small other-site WebView2 fallback (source {row_src}, active is {src})"
+                            );
+                            cf_blocked_other.push((id, title, remote));
+                        }
                     }
                     Err(err) => {
                         eprintln!("[cover] airing series {id} ({title}): direct download failed: {err}");
@@ -1038,14 +1106,24 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
         }
     }
 
-    // Phase B: strictly sequential WebView2 fallback for Cloudflare-blocked covers,
-    // capped at 20 per refresh to avoid tripping Cloudflare rate limits.
-    for (id, title, remote) in cf_blocked.into_iter().take(AIRING_WEBVIEW_FALLBACK_CAP) {
+    // Phase B: strictly sequential WebView2 fallback for covers the direct download
+    // could not get, capped (see the constants above) to avoid tripping Cloudflare
+    // rate limits or stalling the refresh.
+    // Active-site rows first (cap 20), then at most a few rows of other sites.
+    let webview_queue = cf_blocked
+        .into_iter()
+        .take(AIRING_WEBVIEW_FALLBACK_CAP)
+        .chain(cf_blocked_other.into_iter().take(OTHER_SITE_WEBVIEW_FALLBACK_CAP));
+    for (id, title, remote) in webview_queue {
         emit_refresh_progress(&app, total_series, total_series, &format!("Descargando carátulas: {title}"));
         match fetch_cover_image(&app, &remote).await {
             Ok(data_uri) => {
-                let db = state.db.lock().unwrap();
-                let _ = db.update_series_cover(id, &data_uri);
+                if crate::cover_cache::is_placeholder_data_uri(&data_uri) {
+                    eprintln!("[cover] airing series {id} ({title}): webview fallback returned a placeholder");
+                } else {
+                    let db = state.db.lock().unwrap();
+                    let _ = db.update_series_cover(id, &data_uri);
+                }
             }
             Err(e) => {
                 eprintln!("[cover] airing series {id} ({title}): webview fallback failed: {e}");

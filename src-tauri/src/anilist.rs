@@ -39,6 +39,7 @@ const ENDPOINT: &str = "https://graphql.anilist.co";
 /// the main crawl, with no compiler or test signal tying the two together.
 const MEDIA_FIELDS: &str = r#"id
       title { romaji english }
+      synonyms
       coverImage { large }
       format
       genres
@@ -49,7 +50,9 @@ const MEDIA_FIELDS: &str = r#"id
       siteUrl
       status
       studios(isMain: true) { nodes { name } }
-      startDate { year month day }"#;
+      startDate { year month day }
+      nextAiringEpisode { airingAt episode }
+      tags { name rank isMediaSpoiler }"#;
 
 fn catalog_query() -> String {
     format!(
@@ -117,6 +120,9 @@ pub struct CatalogAnime {
     /// which one `title` actually is.
     #[serde(default)]
     pub title_english: Option<String>,
+    /// Alternative titles AniList lists, used only for matching.
+    #[serde(default)]
+    pub synonyms: Vec<String>,
     pub cover_url: Option<String>,
     pub format: Option<String>,
     pub genres: Vec<String>,
@@ -154,6 +160,18 @@ pub struct CatalogAnime {
     /// date at all.
     #[serde(default)]
     pub start_date: Option<i64>,
+    #[serde(default)]
+    pub next_airing_at: Option<i64>,
+    #[serde(default)]
+    pub next_episode: Option<i64>,
+    #[serde(default)]
+    pub tags: Vec<CatalogTag>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CatalogTag {
+    pub name: String,
+    pub rank: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -193,6 +211,8 @@ struct PageInfo {
 struct MediaEntry {
     id: i64,
     title: MediaTitle,
+    #[serde(default)]
+    synonyms: Option<Vec<Option<String>>>,
     #[serde(rename = "coverImage")]
     cover_image: Option<CoverImage>,
     format: Option<String>,
@@ -211,7 +231,32 @@ struct MediaEntry {
     studios: Option<StudioConnection>,
     #[serde(rename = "startDate", default)]
     start_date: Option<FuzzyDate>,
+    #[serde(rename = "nextAiringEpisode", default)]
+    next_airing_episode: Option<NextAiringEpisode>,
+    #[serde(default)]
+    tags: Option<Vec<Option<MediaTag>>>,
 }
+
+#[derive(Debug, Deserialize)]
+struct NextAiringEpisode {
+    #[serde(rename = "airingAt")]
+    airing_at: i64,
+    episode: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct MediaTag {
+    name: String,
+    // Both nullable in AniList's schema: one explicit null must not fail the
+    // whole 50-row page (that would abort a sync/backfill and retry forever).
+    #[serde(default)]
+    rank: Option<i64>,
+    #[serde(rename = "isMediaSpoiler", default)]
+    is_media_spoiler: Option<bool>,
+}
+
+/// Tags ranked below this (AniList's 0-100 relevance vote) are noise.
+const MIN_TAG_RANK: i64 = 30;
 
 #[derive(Debug, Deserialize)]
 struct StudioConnection {
@@ -258,11 +303,41 @@ struct CoverImage {
 impl From<MediaEntry> for CatalogAnime {
     fn from(m: MediaEntry) -> Self {
         let title = m.title.english.clone().or_else(|| m.title.romaji.clone()).unwrap_or_default();
+        let mut synonyms = Vec::new();
+        for s in m.synonyms.into_iter().flatten().flatten() {
+            let trimmed = s.trim().to_string();
+            if !trimmed.is_empty() && !synonyms.contains(&trimmed) {
+                synonyms.push(trimmed);
+            }
+        }
+        let (next_airing_at, next_episode) = match m.next_airing_episode {
+            Some(n) => (Some(n.airing_at), Some(n.episode)),
+            None => (None, None),
+        };
+        let mut tags = Vec::new();
+        if let Some(media_tags) = m.tags {
+            for t in media_tags.into_iter().flatten() {
+                let Some(rank) = t.rank else { continue };
+                if t.is_media_spoiler == Some(true) || rank < MIN_TAG_RANK {
+                    continue;
+                }
+                let name = t.name.trim().to_string();
+                if name.is_empty() {
+                    continue;
+                }
+                // Keep the best rank when a name repeats.
+                match tags.iter_mut().find(|x: &&mut CatalogTag| x.name == name) {
+                    Some(existing) => existing.rank = existing.rank.max(rank),
+                    None => tags.push(CatalogTag { name, rank }),
+                }
+            }
+        }
         CatalogAnime {
             id: m.id,
             title,
             title_romaji: m.title.romaji,
             title_english: m.title.english,
+            synonyms,
             cover_url: m.cover_image.and_then(|c| c.large),
             format: m.format,
             genres: m.genres,
@@ -274,6 +349,9 @@ impl From<MediaEntry> for CatalogAnime {
             duration: m.duration,
             studio: m.studios.and_then(|s| s.nodes.into_iter().next()).map(|n| n.name),
             start_date: m.start_date.and_then(|d| d.to_timestamp()),
+            next_airing_at,
+            next_episode,
+            tags,
         }
     }
 }
@@ -476,6 +554,29 @@ pub async fn fetch_by_ids(ids: &[i64]) -> Result<Vec<CatalogAnime>> {
         "variables": { "ids": ids, "perPage": MAX_IDS_PER_REQUEST },
     });
     Ok(execute_query(body, "by-ids").await?.items)
+}
+
+fn search_query() -> String {
+    format!(
+        r#"
+query ($search: String) {{
+  Page(page: 1, perPage: 6) {{
+    pageInfo {{ hasNextPage }}
+    media(type: ANIME, search: $search, sort: SEARCH_MATCH) {{
+      {MEDIA_FIELDS}
+    }}
+  }}
+}}
+"#
+    )
+}
+
+pub async fn search_anime(title: &str) -> Result<Vec<CatalogAnime>> {
+    let body = serde_json::json!({
+        "query": search_query(),
+        "variables": { "search": title },
+    });
+    Ok(execute_query(body, &format!("search '{title}'")).await?.items)
 }
 
 /// Shared POST + 429-retry + error-unwrapping path for every AniList query in
@@ -730,5 +831,143 @@ mod tests {
         assert!(vars.get("status").is_none());
         assert_eq!(vars["page"], serde_json::json!(1));
         assert_eq!(vars["perPage"], serde_json::json!(50));
+    }
+
+    #[test]
+    fn synonyms_deserialize_and_dedup() {
+        let json = serde_json::json!({
+            "id": 1,
+            "title": { "romaji": "Test", "english": null },
+            "synonyms": ["Bai Ri Cheng Wang", "  ", "Bai Ri Cheng Wang"],
+            "coverImage": { "large": null },
+            "format": null,
+            "genres": [],
+            "episodes": null,
+            "duration": null,
+            "averageScore": null,
+            "popularity": null,
+            "siteUrl": "https://url",
+            "status": null,
+            "studios": null,
+            "startDate": null
+        });
+        let entry: MediaEntry = serde_json::from_value(json).unwrap();
+        let mapped = CatalogAnime::from(entry);
+        assert_eq!(mapped.synonyms, vec!["Bai Ri Cheng Wang"]);
+
+        let json_empty = serde_json::json!({
+            "id": 2,
+            "title": { "romaji": "Test", "english": null },
+            "coverImage": { "large": null },
+            "format": null,
+            "genres": [],
+            "episodes": null,
+            "duration": null,
+            "averageScore": null,
+            "popularity": null,
+            "siteUrl": "https://url",
+            "status": null,
+            "studios": null,
+            "startDate": null
+        });
+        let entry_empty: MediaEntry = serde_json::from_value(json_empty).unwrap();
+        let mapped_empty = CatalogAnime::from(entry_empty);
+        assert!(mapped_empty.synonyms.is_empty());
+    }
+
+    #[test]
+    fn mapping_handles_next_airing_and_tags() {
+        let json = serde_json::json!({
+            "id": 1,
+            "title": { "romaji": "Test", "english": null },
+            "coverImage": { "large": null },
+            "format": null,
+            "genres": [],
+            "episodes": null,
+            "duration": null,
+            "averageScore": null,
+            "popularity": null,
+            "siteUrl": "https://url",
+            "status": null,
+            "studios": null,
+            "startDate": null,
+            "nextAiringEpisode": { "airingAt": 123456789, "episode": 5 },
+            "tags": [
+                { "name": "Spoiler Tag", "rank": 90, "isMediaSpoiler": true },
+                { "name": "Low Rank Tag", "rank": 10, "isMediaSpoiler": false },
+                { "name": "Good Tag", "rank": 85, "isMediaSpoiler": false },
+                { "name": "Good Tag", "rank": 95, "isMediaSpoiler": false },
+                { "name": "Null Rank", "rank": null, "isMediaSpoiler": null },
+                { "name": "Null Spoiler Flag", "rank": 60, "isMediaSpoiler": null },
+                { "name": "  Trim Tag  ", "rank": 50, "isMediaSpoiler": false },
+                null
+            ]
+        });
+        let entry: MediaEntry = serde_json::from_value(json).unwrap();
+        let mapped = CatalogAnime::from(entry);
+        assert_eq!(mapped.next_airing_at, Some(123456789));
+        assert_eq!(mapped.next_episode, Some(5));
+        assert_eq!(mapped.tags.len(), 3);
+        assert_eq!(mapped.tags[0], CatalogTag { name: "Good Tag".into(), rank: 95 });
+        assert_eq!(mapped.tags[1], CatalogTag { name: "Null Spoiler Flag".into(), rank: 60 });
+        assert_eq!(mapped.tags[2], CatalogTag { name: "Trim Tag".into(), rank: 50 });
+
+        let json_null = serde_json::json!({
+            "id": 2,
+            "title": { "romaji": "Test", "english": null },
+            "coverImage": { "large": null },
+            "format": null,
+            "genres": [],
+            "episodes": null,
+            "duration": null,
+            "averageScore": null,
+            "popularity": null,
+            "siteUrl": "https://url",
+            "status": null,
+            "studios": null,
+            "startDate": null,
+            "nextAiringEpisode": null,
+            "tags": null
+        });
+        let entry_null: MediaEntry = serde_json::from_value(json_null).unwrap();
+        let mapped_null = CatalogAnime::from(entry_null);
+        assert_eq!(mapped_null.next_airing_at, None);
+        assert_eq!(mapped_null.next_episode, None);
+        assert!(mapped_null.tags.is_empty());
+
+        let json_missing = serde_json::json!({
+            "id": 3,
+            "title": { "romaji": "Test", "english": null },
+            "coverImage": { "large": null },
+            "format": null,
+            "genres": [],
+            "episodes": null,
+            "duration": null,
+            "averageScore": null,
+            "popularity": null,
+            "siteUrl": "https://url",
+            "status": null,
+            "studios": null,
+            "startDate": null
+        });
+        let entry_missing: MediaEntry = serde_json::from_value(json_missing).unwrap();
+        let mapped_missing = CatalogAnime::from(entry_missing);
+        assert_eq!(mapped_missing.next_airing_at, None);
+        assert_eq!(mapped_missing.next_episode, None);
+        assert!(mapped_missing.tags.is_empty());
+    }
+
+    #[test]
+    fn search_query_builder() {
+        let q = search_query();
+        assert!(q.contains("query ($search: String)"));
+        assert!(q.contains("media(type: ANIME, search: $search, sort: SEARCH_MATCH)"));
+        assert!(q.contains(MEDIA_FIELDS));
+
+        let body = serde_json::json!({
+            "query": q,
+            "variables": { "search": "Naruto" },
+        });
+        assert_eq!(body["variables"]["search"], "Naruto");
     }
 }

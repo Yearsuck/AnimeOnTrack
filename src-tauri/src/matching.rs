@@ -125,6 +125,12 @@ pub struct CatalogTitleRow {
     /// AniList's display title plus its romaji/english variants when stored.
     /// All are indexed, so a site row matches whichever spelling it uses.
     pub titles: Vec<String>,
+    /// Alternative titles AniList lists. Indexed for exact/squashed lookups
+    /// only, and never over a key a primary title owns: a popular remake that
+    /// lists the original's name as a synonym must not steal it, and synonyms
+    /// add no fuzzy candidates (too noisy). Kept apart from `titles`, which
+    /// season checks read.
+    pub synonyms: Vec<String>,
     /// Tiebreaker when several catalog rows normalize to the same title —
     /// remakes, shorts and specials routinely share a show's exact name, and
     /// the popular one is the entry a user means. Missing popularity reads
@@ -249,6 +255,18 @@ impl CatalogIndex {
                     }
                 }
                 fuzzy_titles.push((key, row.id, row.popularity));
+            }
+        }
+        for row in rows {
+            for syn in &row.synonyms {
+                let key = normalize_title(syn);
+                if !key.is_empty() {
+                    by_normalized_title.entry(key).or_insert((row.id, row.popularity));
+                }
+                let squashed = squashed_title(syn);
+                if squashed.chars().count() >= MIN_SQUASHED_KEY_LEN {
+                    by_squashed_title.entry(squashed).or_insert((row.id, row.popularity));
+                }
             }
         }
         Self { by_normalized_title, by_squashed_title, fuzzy_titles, token_index }
@@ -499,7 +517,7 @@ pub(crate) fn strip_season_markers(
 /// against an unrelated season-1 title that happens to share more surface
 /// text. Used by `CatalogIndex::fuzzy_lookup` to break ties `score()`'s
 /// season-blind `same_franchise` floor can't.
-fn extract_season_number(normalized_title: &str) -> Option<u32> {
+pub fn extract_season_number(normalized_title: &str) -> Option<u32> {
     let tokens: Vec<&str> = normalized_title.split_whitespace().collect();
     let is_marker = |t: &str| SEASON_MARKERS.contains(&t);
     let roman_num = |t: &str| ROMAN_NUMERALS.iter().position(|r| *r == t).map(|i| i as u32 + 2);
@@ -653,9 +671,338 @@ pub fn best_match(queries: &[&str], candidates: &[TitleCandidate]) -> Option<Mat
     best
 }
 
+/// Is the series' own season compatible with the catalog entry's titles?
+///
+/// - `Some(n >= 2)` (explicit later season): some entry title must encode the
+///   same number, or be an ambiguous "... Final Season" title (those resolve to
+///   no number at all). An entry with no titles never matches.
+/// - `Some(1)` / unmarked: must not be a later-season entry, i.e. some entry
+///   title is plain season 1 or ambiguous. Without this an unmarked finished
+///   season-1 row fuzzy-linked to a RELEASING "... 2nd Season" would flip to
+///   airing. An empty list stays consistent (nothing to contradict).
+/// - `None` (ambiguous marker): a "... Final Season" title needs an entry that
+///   is itself a "Final Season" (otherwise it would join the plain season-1
+///   entry); any other ambiguous title ("The Promised Neverland") has no season
+///   claim to check and is consistent.
+pub fn season_consistent(series_title: &str, catalog_titles: &[&str]) -> bool {
+    let series_norm = normalize_title(series_title);
+    let s = extract_season_number(&series_norm);
+    let seasons = || catalog_titles.iter().map(|&ct| extract_season_number(&normalize_title(ct)));
+    let is_final_season_entry = |ct: &str| {
+        let norm = normalize_title(ct);
+        extract_season_number(&norm).is_none() && norm.split_whitespace().any(|t| t == "final")
+    };
+    match s {
+        None if series_norm.split_whitespace().any(|t| t == "final") => {
+            catalog_titles.is_empty() || catalog_titles.iter().any(|&ct| is_final_season_entry(ct))
+        }
+        None => true,
+        Some(1) => catalog_titles.is_empty() || seasons().any(|c| c.is_none_or(|n| n <= 1)),
+        Some(s_num) => {
+            seasons().any(|c| c == Some(s_num)) || catalog_titles.iter().any(|&ct| is_final_season_entry(ct))
+        }
+    }
+}
+
+/// Checks if the title contains the words "live" and "action" as consecutive tokens.
+pub fn is_live_action(title: &str) -> bool {
+    let norm = normalize_title(title);
+    let tokens: Vec<&str> = norm.split_whitespace().collect();
+    for i in 0..tokens.len().saturating_sub(1) {
+        if tokens[i] == "live" && tokens[i + 1] == "action" {
+            return true;
+        }
+    }
+    false
+}
+
+/// Split a site title like "Crowned in a Hundred Days (Bai Ri Cheng Wang) Temporada 2"
+/// into the text outside the parentheses and the text inside them, each keeping
+/// the trailing season suffix. Sites often glue the English and the romanized
+/// name together this way, and AniList search finds nothing for the glued form.
+fn title_parts(title: &str) -> (String, Option<String>) {
+    let mut outside = String::new();
+    let mut inside = String::new();
+    let mut tail = String::new();
+    let mut depth = 0usize;
+    let mut closed = false;
+    for c in title.chars() {
+        match c {
+            '(' => depth += 1,
+            ')' if depth > 0 => {
+                depth -= 1;
+                if depth == 0 {
+                    closed = true;
+                    inside.push(' ');
+                }
+            }
+            _ if depth > 0 => inside.push(c),
+            _ => {
+                outside.push(c);
+                if closed {
+                    tail.push(c);
+                }
+            }
+        }
+    }
+    let collapse = |t: &str| t.split_whitespace().collect::<Vec<_>>().join(" ");
+    let outside = collapse(&outside);
+    let inner = collapse(&inside);
+    let full_inside = collapse(&format!("{inside} {tail}"));
+    // A second spelling only when the parenthetical is a real name: two words
+    // or ~6 letters, never a year or a label like "TV", "Dub" or "Hen".
+    let letters = inner.chars().filter(|c| c.is_alphanumeric()).count();
+    let is_name = closed
+        && !inner.chars().all(|c| c.is_ascii_digit() || !c.is_alphanumeric())
+        && (inner.split_whitespace().count() >= 2 || letters >= 6);
+    (outside, is_name.then_some(full_inside))
+}
+
+/// Every spelling of a site title worth comparing against catalog titles,
+/// normalized: the whole title, the part outside the parentheses and the
+/// parenthetical (each keeping a trailing season suffix).
+pub fn title_variants_norm(title: &str) -> Vec<String> {
+    let (outside, inside) = title_parts(title);
+    std::iter::once(title.to_string())
+        .chain(std::iter::once(outside))
+        .chain(inside)
+        .map(|v| normalize_title(&v))
+        .filter(|v| !v.is_empty())
+        .collect()
+}
+
+/// Queries to send to AniList for one site title, best first: the title without
+/// its parenthetical, then the parenthetical on its own. Season markers are
+/// rewritten to the "Season N" form AniList's English titles use.
+pub fn search_queries(title: &str) -> Vec<String> {
+    let season = extract_season_number(&normalize_title(title));
+    let (outside, inside) = title_parts(title);
+    let shape = |text: &str| -> String {
+        let tokens: Vec<&str> = text.split_whitespace().collect();
+        let base = strip_season_markers(tokens, normalize_title).join(" ");
+        match season {
+            Some(n) if n >= 2 && !base.is_empty() => format!("{base} Season {n}"),
+            _ => base,
+        }
+    };
+    let mut out: Vec<String> = Vec::new();
+    for text in std::iter::once(outside).chain(inside) {
+        let q = shape(&text);
+        if !q.is_empty() && !out.contains(&q) {
+            out.push(q);
+        }
+    }
+    out
+}
+
+/// Pick the AniList entry a site title means among search results, or `None`.
+/// High confidence only: a wrong link is worse than none (it imports another
+/// season's status and progress), and a miss is simply retried in 14 days.
+pub fn pick_search_candidate(series_title: &str, candidates: &[crate::anilist::CatalogAnime]) -> Option<i64> {
+    let variants = title_variants_norm(series_title);
+    // The parenthetical alone (what `title_variants_norm` lists last), if the title has one.
+    let inner_variant = title_parts(series_title).1.map(|v| normalize_title(&v));
+    if variants.is_empty() {
+        return None;
+    }
+
+    let series_norm = normalize_title(series_title);
+    let series_season = extract_season_number(&series_norm);
+    let series_tokens: Vec<&str> = series_norm.split_whitespace().collect();
+    // A movie/OVA/special entry is only acceptable when the site title says so.
+    let wants_side_story = series_tokens.iter().any(|t| {
+        matches!(*t, "movie" | "pelicula" | "film" | "ova" | "oad" | "special" | "specials" | "especial")
+    });
+    let is_la_series = is_live_action(series_title);
+    let mut scored: Vec<(f64, i64)> = Vec::new();
+
+    for cand in candidates {
+        let side_story = matches!(cand.format.as_deref(), Some("MOVIE" | "OVA" | "SPECIAL" | "TV_SPECIAL"));
+        if cand.format.as_deref() == Some("MUSIC") || (side_story && !wants_side_story) {
+            continue;
+        }
+
+        let mut primary: Vec<&str> = vec![cand.title.as_str()];
+        primary.extend(cand.title_romaji.as_deref());
+        primary.extend(cand.title_english.as_deref());
+
+        if is_la_series != primary.iter().any(|t| is_live_action(t)) {
+            continue;
+        }
+        if !season_consistent(series_title, &primary) {
+            continue;
+        }
+        let primary_norm: Vec<String> = primary.iter().map(|t| normalize_title(t)).collect();
+        // An unmarked (or ambiguous) series must not take an entry that only
+        // exists as a later season.
+        if matches!(series_season, None | Some(1))
+            && primary_norm.iter().all(|t| extract_season_number(t).is_some_and(|n| n >= 2))
+        {
+            continue;
+        }
+
+        // Same franchise AND same season number is the same show spelled with
+        // a different season word ("Temporada 2" / "Season 2"), so it counts as
+        // exact; `score` alone caps that case at 0.9.
+        let pair_score = |v: &str, t: &str| {
+            let same_season = extract_season_number(v).is_some_and(|n| extract_season_number(t) == Some(n));
+            if same_season && same_franchise(v, t) { 1.0 } else { score(v, t) }
+        };
+        let best_primary = variants
+            .iter()
+            .flat_map(|v| primary_norm.iter().map(move |t| pair_score(v, t)))
+            .fold(0.0_f64, f64::max);
+        // A parenthetical that is exactly the subtitle of one of the entry's own
+        // titles ("Tears of the Azure Sea" for "... the Movie: Tears of the
+        // Azure Sea") names the work as well as the whole title does.
+        let subtitle_exact = inner_variant.as_ref().is_some_and(|v| {
+            v.split_whitespace().count() >= 3
+                && primary.iter().any(|t| {
+                    t.rsplit_once(':').is_some_and(|(_, tail)| normalize_title(tail) == *v)
+                })
+        });
+        let exact_primary = best_primary >= 1.0 || subtitle_exact;
+        // Movies/OVAs/specials are only linked on an exact title: their names
+        // are the most reused ones.
+        if side_story && !exact_primary {
+            continue;
+        }
+        // Synonyms only count as an exact match: they are loose by nature (a
+        // sequel often lists the franchise's short name), so no fuzzy scoring.
+        let exact_synonym = cand
+            .synonyms
+            .iter()
+            .map(|syn| normalize_title(syn))
+            .any(|syn| variants.contains(&syn));
+        // A different work reusing the base name ("Foo: Subtitle" for "Foo")
+        // is rejected unless one of the entry's own titles is the exact name.
+        if !exact_primary
+            && variants.iter().any(|v| primary_norm.iter().any(|t| distinct_extension(v, t)))
+        {
+            continue;
+        }
+
+        let best = if exact_synonym || subtitle_exact { best_primary.max(1.0) } else { best_primary };
+        if best >= 0.9 {
+            scored.push((best, cand.id));
+        }
+    }
+
+    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal).then(a.1.cmp(&b.1)));
+    let (top_score, top_id) = *scored.first()?;
+    let clear_margin = scored.get(1).is_none_or(|(second, _)| top_score >= second + 0.1 - 1e-9);
+    (top_score >= 0.95 && clear_margin).then_some(top_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn search_cand(id: i64, title: &str, romaji: Option<&str>, format: &str, synonyms: &[&str]) -> crate::anilist::CatalogAnime {
+        crate::anilist::CatalogAnime {
+            id,
+            title: title.to_string(),
+            title_romaji: romaji.map(str::to_string),
+            title_english: None,
+            synonyms: synonyms.iter().map(|s| s.to_string()).collect(),
+            cover_url: None,
+            format: Some(format.to_string()),
+            genres: vec![],
+            episodes: None,
+            average_score: None,
+            popularity: None,
+            url: String::new(),
+            status: None,
+            duration: None,
+            studio: None,
+            start_date: None,
+            next_airing_at: None,
+            next_episode: None,
+            tags: vec![],
+        }
+    }
+
+    #[test]
+    fn search_queries_split_the_parenthetical_and_rewrite_the_season() {
+        assert_eq!(search_queries("Tomb Raider King (Dogulwang)"), vec!["Tomb Raider King", "Dogulwang"]);
+        assert_eq!(
+            search_queries("The Beginning After the End (Saikyou no Ousama) Temporada 2"),
+            vec!["The Beginning After the End Season 2", "Saikyou no Ousama Season 2"]
+        );
+        assert_eq!(search_queries("Plain Title"), vec!["Plain Title"]);
+        // labels and years in parentheses are not a second name
+        assert_eq!(search_queries("Kaijuu Sekai Seifuku (TV)"), vec!["Kaijuu Sekai Seifuku"]);
+        assert_eq!(search_queries("Fruits Basket (2019)"), vec!["Fruits Basket"]);
+        assert_eq!(search_queries("Foo 2nd Season"), vec!["Foo Season 2"]);
+    }
+
+    #[test]
+    fn pick_matches_the_inner_romaji_and_exact_synonyms() {
+        let c = search_cand(213484, "Crowned in a Hundred Days", Some("Bai Ri Cheng Wang"), "ONA", &[]);
+        assert_eq!(pick_search_candidate("Crowned in a Hundred Days (Bai Ri Cheng Wang)", &[c]), Some(213484));
+        let c = search_cand(7, "Hyakunichi Kakumei", None, "TV", &["Bai Ri Cheng Wang"]);
+        assert_eq!(pick_search_candidate("Bai Ri Cheng Wang", &[c]), Some(7));
+    }
+
+    #[test]
+    fn pick_takes_the_right_season_and_never_a_wrong_one() {
+        let s1 = search_cand(1, "Show", None, "TV", &[]);
+        let s2 = search_cand(2, "Show Season 2", None, "TV", &[]);
+        assert_eq!(pick_search_candidate("Show Temporada 2", &[s1.clone(), s2.clone()]), Some(2));
+        assert_eq!(pick_search_candidate("Show Temporada 2", std::slice::from_ref(&s1)), None);
+        // an unmarked title must not take an entry that is only a later season
+        assert_eq!(pick_search_candidate("Show", &[s2]), None);
+        assert_eq!(pick_search_candidate("Show", &[s1]), Some(1));
+    }
+
+    #[test]
+    fn pick_rejects_a_sequel_that_lists_the_short_name_as_a_synonym() {
+        let sequel = search_cand(9, "Foo: The Next Chapter", None, "TV", &["Foo"]);
+        assert_eq!(pick_search_candidate("Foo", &[sequel]), None);
+        // but a long official title is fine when another of its titles is the exact name
+        let long = search_cand(3, "Ascendance of a Bookworm", Some("Honzuki no Gekokujou: Shisho ni Naru Tame ni wa"), "TV", &[]);
+        let mut long = long;
+        long.title_english = Some("Honzuki no Gekokujou".to_string());
+        assert_eq!(pick_search_candidate("Honzuki no Gekokujou", &[long]), Some(3));
+    }
+
+    #[test]
+    fn pick_links_a_movie_by_the_subtitle_in_its_parenthetical() {
+        // Real case: the site calls it "Tensei shitara Slime Datta Ken Movie 2: Soukai no
+        // Namida-hen (Tears of the Azure Sea)", AniList "...the Movie: Tears of the Azure Sea".
+        let movie = search_cand(
+            182206,
+            "That Time I Got Reincarnated as a Slime the Movie: Tears of the Azure Sea",
+            Some("Tensei Shitara Slime Datta Ken: Soukai no Namida-hen"),
+            "MOVIE",
+            &[],
+        );
+        let site = "Tensei shitara Slime Datta Ken Movie 2: Soukai no Namida-hen (Tears of the Azure Sea)";
+        assert_eq!(pick_search_candidate(site, std::slice::from_ref(&movie)), Some(182206));
+        // a two-word subtitle is too generic to be proof
+        let other = search_cand(9, "Foo the Movie: Blue Sea", None, "MOVIE", &[]);
+        assert_eq!(pick_search_candidate("Foo Movie (Blue Sea)", std::slice::from_ref(&other)), None);
+    }
+
+    #[test]
+    fn pick_filters_by_format_and_live_action() {
+        let special = search_cand(4, "Show Specials", None, "SPECIAL", &[]);
+        assert_eq!(pick_search_candidate("Show", std::slice::from_ref(&special)), None);
+        assert_eq!(pick_search_candidate("Show Specials", &[special]), Some(4));
+        let music = search_cand(5, "Show", None, "MUSIC", &[]);
+        assert_eq!(pick_search_candidate("Show", &[music]), None);
+        let anime = search_cand(6, "Show", None, "TV", &[]);
+        assert_eq!(pick_search_candidate("Show: Live Action", &[anime]), None);
+    }
+
+    #[test]
+    fn pick_needs_a_unique_clear_winner() {
+        let a = search_cand(1, "Show", None, "TV", &[]);
+        let b = search_cand(2, "Show", None, "ONA", &[]);
+        assert_eq!(pick_search_candidate("Show", &[a, b]), None, "two equally good entries");
+        let c = search_cand(3, "Something Else Entirely", None, "TV", &[]);
+        assert_eq!(pick_search_candidate("Show", &[c]), None);
+    }
 
     #[test]
     fn normalize_title_is_public_and_pins_a_known_normalization() {
@@ -770,8 +1117,27 @@ mod tests {
         CatalogTitleRow {
             id,
             titles: titles.iter().map(|t| t.to_string()).collect(),
+            synonyms: Vec::new(),
             popularity,
         }
+    }
+
+    #[test]
+    fn a_synonym_never_steals_a_key_a_primary_title_owns() {
+        // A popular remake lists the original's name as a synonym.
+        let mut remake = catalog_row(1, 9000, &["Remake"]);
+        remake.synonyms = vec!["Original Show".into()];
+        let original = catalog_row(2, 10, &["Original Show"]);
+        let index = CatalogIndex::build(&[remake, original]);
+        assert_eq!(index.lookup(&["Original Show"]), Some(2));
+    }
+
+    #[test]
+    fn a_synonym_matches_when_no_primary_title_does() {
+        let mut row = catalog_row(1, 10, &["Hyakunichi Kakumei"]);
+        row.synonyms = vec!["Bai Ri Cheng Wang".into()];
+        let index = CatalogIndex::build(&[row]);
+        assert_eq!(index.lookup(&["Bai Ri Cheng Wang"]), Some(1));
     }
 
     #[test]
@@ -1256,5 +1622,29 @@ mod tests {
         ];
         let index = CatalogIndex::build(&rows);
         assert_eq!(index.lookup(&["Dogulwang"]), Some(10));
+    }
+
+    #[test]
+    fn test_season_consistent() {
+        // an unmarked series must not trust a later-season-only entry
+        assert!(!season_consistent("Some Show", &["Some Show 2nd Season"]));
+        assert!(season_consistent("Some Show", &["Some Show 2nd Season", "Some Show"]));
+        // explicit later season accepts an ambiguous "Final Season" entry
+        assert!(season_consistent("Shingeki no Kyojin Temporada 4", &["Attack on Titan: The Final Season"]));
+
+        assert!(!season_consistent("Kanojo, Okarishimasu Temporada 5", &["Kanojo, Okarishimasu"]));
+        assert!(season_consistent("Kanojo, Okarishimasu Temporada 5", &["Kanojo, Okarishimasu 5th Season"]));
+        assert!(!season_consistent("Hanazakari no Kimitachi e Temporada 2", &["Hanazakari no Kimitachi e"]));
+        assert!(season_consistent("Hanazakari no Kimitachi e Temporada 2", &["Hanazakari no Kimitachi e 2nd Season"]));
+        assert!(season_consistent("Hanazakari no Kimitachi e 2nd Season", &["Hanazakari no Kimitachi e 2nd Season"]));
+        assert!(season_consistent("Some Title", &[]));
+        assert!(season_consistent("Temporada 1", &[]));
+        assert!(season_consistent("Dr. STONE SCIENCE FUTURE Cour 3", &["Dr. Stone: Science Future Part 3"]));
+    }
+
+    #[test]
+    fn test_is_live_action() {
+        assert!(is_live_action("One Piece: Live Action (2023)"));
+        assert!(!is_live_action("One Piece: Gyojin Tou-hen (2024)"));
     }
 }

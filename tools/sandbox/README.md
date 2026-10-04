@@ -51,7 +51,8 @@ node tools/sandbox/cdp.mjs probe 60                        # every 3s: renderer 
 Exit codes: `0` ok, `1` the page threw / the command was rejected / bad usage, `2` no app listening or no
 main page, `3` timeout. `probe` exits `3` if any sample timed out or errored, so it can gate a script.
 It is the quick way to tell a real freeze (sync command times out while the renderer answers) from a
-slow command.
+slow command. The sampled command is `pending_count`, which takes the DB mutex: a query that holds it for
+minutes (see the `idx_series_anilist_id` story) makes it time out while the renderer still answers.
 
 ## Security: the debug port is full control of the app
 

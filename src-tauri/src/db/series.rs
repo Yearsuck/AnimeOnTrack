@@ -1,5 +1,14 @@
 use super::*;
 
+/// Unrelated shows (distinct franchises) sharing one small cover byte for byte means a placeholder.
+const SHARED_COVER_MIN_SERIES: usize = 3;
+
+/// The show a title belongs to, for "do these rows share a cover legitimately":
+/// arcs ("Big Show: Arc One") and seasons collapse onto the show itself.
+fn cover_franchise_key(title: &str) -> String {
+    crate::matching::franchise_dedup_key(&crate::db::stats::franchise_base_title(title))
+}
+
 #[cfg(test)]
 use crate::db::test_support::*;
 
@@ -580,43 +589,49 @@ impl Db {
         Ok(())
     }
 
-    /// Up to `limit` currently-airing series on `source_id` whose cover has
-    /// never been fetched: not AniList-linked (`list_airing` already shows
-    /// those via the catalog's own `data:`-compatible-by-CSP cover instead
-    /// of this column, see `db/airing.rs`) and not already a `data:` URI.
+    /// Up to `limit` currently-airing series across **every** site whose cover
+    /// has never been fetched: not AniList-linked (`list_airing` already shows
+    /// those via the catalog's own `data:`-compatible-by-CSP cover instead of
+    /// this column, see `db/airing.rs`) and not already a `data:`, `file:`, or
+    /// `asset:` URI.
+    ///
+    /// Spans every site because the direct reqwest download
+    /// (`cover_cache::cache_cover_image`) needs no site state — it speaks
+    /// directly to the image CDN, not through the site's Cloudflare session.
+    /// Only the WebView2 canvas fallback is site-sensitive (Cloudflare cookies
+    /// live per domain and a fetch can burn up to 30 s), so callers must
+    /// limit that path to the active site.
     ///
     /// This is `refresh()`'s only path to ever converting a cover for an
     /// airing series that ISN'T followed — the main fetch/backlog loops are
     /// both scoped to `list_followed`, so an unfollowed, unlinked airing
     /// series' cover was permanently stuck on the site's raw remote URL,
-    /// which the app's CSP silently blocks (confirmed live: 279 of 308
-    /// currently-airing series across one real library). `limit` bounds
-    /// this to a modest number of fetches per refresh cycle rather than
-    /// bulk-fetching the whole airing listing's covers at once, which reads
-    /// to Cloudflare as scraping abuse regardless of having a valid session
-    /// — see CLAUDE.md. Self-limiting the same way the followed-series
-    /// cover backlog is: a row drops out for good the first time this
-    /// succeeds, so it converges over several refresh cycles instead of
-    /// needing to happen all at once.
+    /// which the app's CSP silently blocks. `limit` bounds this to a modest
+    /// number of fetches per refresh cycle rather than bulk-fetching the whole
+    /// airing listing's covers at once, which reads to Cloudflare as scraping
+    /// abuse regardless of having a valid session — see CLAUDE.md.
     ///
     /// The window is random, not `ORDER BY id`: a cover that fails for good
     /// (404, non-image body, over the size cap) stays remote and so is
     /// selected again every cycle, and with a fixed order `limit` such rows
     /// would pin the window to the same ids forever and starve every later
     /// series. Shuffling lets the whole backlog drain over a few cycles.
-    pub fn airing_series_needing_cover_fetch(&self, source_id: i64, limit: i64) -> Result<Vec<(i64, String, String)>> {
+    ///
+    /// Returns `(id, title, cover_url, source_id)` so the caller can apply
+    /// the WebView2 fallback only to rows belonging to the active site.
+    pub fn airing_series_needing_cover_fetch(&self, limit: i64) -> Result<Vec<(i64, String, String, i64)>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, title, cover_url FROM series
-             WHERE source_id=?1 AND is_airing=1 AND anilist_id IS NULL
+            "SELECT id, title, cover_url, source_id FROM series
+             WHERE is_airing=1 AND anilist_id IS NULL
                AND cover_url IS NOT NULL
                AND cover_url NOT LIKE 'data:%'
                AND cover_url NOT LIKE 'file:%'
                AND cover_url NOT LIKE 'asset:%'
              ORDER BY RANDOM()
-             LIMIT ?2",
+             LIMIT ?1",
         )?;
         let rows = stmt
-            .query_map((source_id, limit), |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .query_map([limit], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -657,8 +672,115 @@ impl Db {
         Ok(cleared)
     }
 
+    /// Clear covers that are stored as data URIs but are actually tiny placeholder
+    /// images (like the Edge error icon), returning how many were cleared.
+    /// Runs a cheap length filter first to avoid loading huge data URIs.
+    ///
+    /// Also clears small covers that three or more series share byte for byte:
+    /// a site's own "NO IMAGE" picture is a normal-sized poster that no
+    /// dimension check catches, but a real cover is never identical across
+    /// unrelated shows.
+    pub fn clear_placeholder_covers(&self) -> Result<usize> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, cover_url FROM series
+             WHERE cover_url LIKE 'data:image%' AND length(cover_url) < 20000"
+        )?;
+        let rows: Vec<(i64, String)> = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        // Distinct FRANCHISES per cover: arcs or seasons of one show on one site
+        // legitimately share a poster; unrelated shows never do.
+        let mut titles_by_cover: std::collections::HashMap<&str, std::collections::HashSet<String>> =
+            std::collections::HashMap::new();
+        {
+            let mut tstmt = self.conn.prepare("SELECT title FROM series WHERE id=?1")?;
+            for (id, url) in &rows {
+                let title: String = tstmt.query_row([id], |r| r.get(0))?;
+                titles_by_cover
+                    .entry(url.as_str())
+                    .or_default()
+                    .insert(cover_franchise_key(&title));
+            }
+        }
+
+        let tx = self.conn.unchecked_transaction()?;
+        let mut cleared = 0;
+        for (id, url) in &rows {
+            let widely_shared =
+                titles_by_cover.get(url.as_str()).map_or(0, |f| f.len()) >= SHARED_COVER_MIN_SERIES;
+            if widely_shared || crate::cover_cache::is_placeholder_data_uri(url) {
+                tx.execute("UPDATE series SET cover_url=NULL WHERE id=?1", [id])?;
+                cleared += 1;
+            }
+        }
+        tx.commit()?;
+        Ok(cleared)
+    }
+
+    /// A show that a COMPLETE airing listing of `source_id` no longer carries
+    /// stops airing, unless AniList linked it (then AniList's status decides,
+    /// `sync_status_from_catalog`) or the user follows it (its episodes still
+    /// matter: it must not jump to the "finished" bucket because a site rotated
+    /// it off a page). Without this a show the site dropped stayed "En emision"
+    /// for ever: scans only ever upsert what is listed. The next listing that
+    /// carries it again sets it back (adapters report listed shows as airing).
+    /// The caller must only pass a listing whose page walk ended on its own
+    /// (`scrape_airing_listing`'s `complete`). Two more guards against a broken
+    /// parse or an incompatible mirror: fewer than 10 listed shows, or fewer than
+    /// half as many as this source currently has airing and unlinked, change nothing.
+    pub fn mark_unlisted_not_airing(
+        &self,
+        source_id: i64,
+        listed_slugs: &std::collections::HashSet<&str>,
+    ) -> Result<usize> {
+        if listed_slugs.len() < 10 {
+            return Ok(0);
+        }
+        let mut stmt = self.conn.prepare(
+            "SELECT id, slug, followed FROM series WHERE source_id=?1 AND is_airing=1 AND anilist_id IS NULL",
+        )?;
+        let airing_unlinked: Vec<(i64, String, bool)> = stmt
+            .query_map([source_id], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)? != 0)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        if listed_slugs.len() * 2 < airing_unlinked.len() {
+            return Ok(0);
+        }
+        let stale: Vec<i64> = airing_unlinked
+            .into_iter()
+            .filter(|(_, slug, followed)| !followed && !listed_slugs.contains(slug.as_str()))
+            .map(|(id, _, _)| id)
+            .collect();
+        let tx = self.conn.unchecked_transaction()?;
+        for id in &stale {
+            tx.execute("UPDATE series SET is_airing=0 WHERE id=?1", [id])?;
+        }
+        tx.commit()?;
+        Ok(stale.len())
+    }
+
     /// Replace a series' cover with a fetched base64 data URI.
+    ///
+    /// A small image that two or more OTHER franchises already carry byte for byte
+    /// is a site's "NO IMAGE" placeholder (see `clear_placeholder_covers`): store
+    /// nothing. (The next refresh puts the remote URL back and fetches it once more
+    /// per refresh; the fallback is capped, so the cost is bounded.)
     pub fn update_series_cover(&self, series_id: i64, cover_url: &str) -> Result<()> {
+        if cover_url.starts_with("data:image") && cover_url.len() < 20_000 {
+            let mut tstmt = self.conn.prepare("SELECT title FROM series WHERE cover_url=?1 AND id<>?2")?;
+            let own_title: String = self.conn.query_row("SELECT title FROM series WHERE id=?1", [series_id], |r| r.get(0))?;
+            let own_key = cover_franchise_key(&own_title);
+            let other_franchises: std::collections::HashSet<String> = tstmt
+                .query_map((cover_url, series_id), |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+                .iter()
+                .map(|t| cover_franchise_key(t))
+                .filter(|k| *k != own_key)
+                .collect();
+            if other_franchises.len() >= SHARED_COVER_MIN_SERIES - 1 {
+                self.conn.execute("UPDATE series SET cover_url=NULL WHERE id=?1", [series_id])?;
+                return Ok(());
+            }
+        }
         self.conn.execute(
             "UPDATE series SET cover_url=?1 WHERE id=?2",
             (cover_url, series_id),
@@ -721,7 +843,7 @@ impl Db {
     pub fn list_series_genres(&self, series_id: i64) -> Result<Vec<String>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT genre FROM series_genres WHERE series_id=?1 ORDER BY genre")?;
+            .prepare("SELECT genre FROM series_effective_genres WHERE series_id=?1 ORDER BY genre")?;
         let rows = stmt
             .query_map([series_id], |r| r.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -732,7 +854,15 @@ impl Db {
     /// detail-page fetch to backfill). Split out as a plain sync check so the
     /// async fetch decision can be unit-tested without a scraper/AppHandle.
     pub fn series_needs_genre_backfill(&self, series_id: i64) -> Result<bool> {
-        Ok(self.list_series_genres(series_id)?.is_empty())
+        // Deliberately the SITE table, not the effective-genres view: a linked
+        // series always has catalog genres, which would report "no backfill
+        // needed" and skip the detail fetch that also stores the site's kind.
+        let has_site_genres: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM series_genres WHERE series_id=?1)",
+            [series_id],
+            |r| r.get(0),
+        )?;
+        Ok(!has_site_genres)
     }
 
     pub(crate) fn row_to_series(r: &rusqlite::Row) -> rusqlite::Result<crate::models::Series> {
@@ -865,7 +995,7 @@ impl Db {
         if !ids.is_empty() {
             let placeholders = vec!["?"; ids.len()].join(",");
             let sql = format!(
-                "SELECT series_id, genre FROM series_genres WHERE series_id IN ({}) ORDER BY genre",
+                "SELECT series_id, genre FROM series_effective_genres WHERE series_id IN ({}) ORDER BY genre",
                 placeholders
             );
             let mut gstmt = self.conn.prepare(&sql)?;
@@ -1280,9 +1410,10 @@ mod tests {
         finished.is_airing = false;
         db.upsert_series(src, &finished).unwrap();
 
-        let rows = db.airing_series_needing_cover_fetch(src, 20).unwrap();
+        let rows = db.airing_series_needing_cover_fetch(20).unwrap();
         assert_eq!(rows.len(), 1, "only the unfollowed/unlinked/remote-cover/airing row qualifies");
         assert_eq!(rows[0].0, sid_needs);
+        // Tuple is now (id, title, cover_url, source_id); .2 is still cover_url.
         assert_eq!(rows[0].2, "https://site/needs-fetch.jpg");
 
         // The cap is real, not just a LIMIT that happens not to bite here.
@@ -1291,7 +1422,7 @@ mod tests {
             s.cover_url = Some(format!("https://site/more-{i}.jpg"));
             db.upsert_series(src, &s).unwrap();
         }
-        assert_eq!(db.airing_series_needing_cover_fetch(src, 3).unwrap().len(), 3);
+        assert_eq!(db.airing_series_needing_cover_fetch(3).unwrap().len(), 3);
     }
 
     #[test]
@@ -1553,7 +1684,7 @@ mod tests {
 
         db.upsert_catalog_anime(
             &crate::anilist::CatalogAnime {
-                id: 300, title: "Ext".into(), title_romaji: None, title_english: None,
+                id: 300, title: "Ext".into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
                 cover_url: None, format: Some("TV".into()), genres: vec![],
                 episodes: Some(12), average_score: None, popularity: None,
                 url: "https://anilist.co/anime/300".into(), status: None, duration: None,
@@ -1595,7 +1726,7 @@ mod tests {
 
         db.upsert_catalog_anime(
             &crate::anilist::CatalogAnime {
-                id: 301, title: "Ext2".into(), title_romaji: None, title_english: None,
+                id: 301, title: "Ext2".into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
                 cover_url: None, format: Some("TV".into()), genres: vec![],
                 episodes: Some(12), average_score: None, popularity: None,
                 url: "https://anilist.co/anime/301".into(), status: None, duration: None,
@@ -1652,7 +1783,7 @@ mod tests {
 
         db.upsert_catalog_anime(
             &crate::anilist::CatalogAnime {
-                id: 302, title: "Both".into(), title_romaji: None, title_english: None,
+                id: 302, title: "Both".into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
                 cover_url: None, format: Some("TV".into()), genres: vec![],
                 episodes: Some(12), average_score: None, popularity: None,
                 url: "https://anilist.co/anime/302".into(), status: None, duration: None,
@@ -2284,6 +2415,22 @@ mod tests {
     }
 
     #[test]
+    fn a_linked_series_with_catalog_genres_still_needs_its_site_genre_backfill() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        db.upsert_catalog_anime(&crate::db::test_support::catalog_anime(100, "X", &["Action"]), 0).unwrap();
+        let s = crate::models::Series {
+            id: 0, slug: "x".into(), title: "X".into(),
+            url: "u".into(), cover_url: None, is_airing: false, followed: true, next_episode_at: None, site_episode_count: None,
+        };
+        let sid = db.upsert_series(src, &s).unwrap();
+        db.set_anilist_id(sid, 100).unwrap();
+        assert!(db.series_needs_genre_backfill(sid).unwrap(), "catalog genres must not mask the missing site rows");
+        db.insert_series_genres(sid, &["Seinen".into()]).unwrap();
+        assert!(!db.series_needs_genre_backfill(sid).unwrap());
+    }
+
+    #[test]
     fn series_needs_genre_backfill_reflects_series_genres_rows() {
         let db = Db::open(":memory:").unwrap();
         let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
@@ -2516,8 +2663,249 @@ mod tests {
         // Null cover
         db.upsert_series(src, &make("null-cover", None)).unwrap();
 
-        let needing = db.airing_series_needing_cover_fetch(src, 60).unwrap();
+        let needing = db.airing_series_needing_cover_fetch(60).unwrap();
         assert_eq!(needing.len(), 1);
+        // Tuple is now (id, title, cover_url, source_id); title == slug in
+        // these fixtures, so the assertion is unchanged in substance.
         assert_eq!(needing[0].1, "remote");
+        assert_eq!(needing[0].3, src);
     }
+
+    #[test]
+    fn airing_series_needing_cover_fetch_spans_all_sites() {
+        // Two sources (different site_ids). Rows with http covers on both
+        // must appear; each tuple must carry the right source_id.
+        // A linked row (anilist_id set), a data: cover, a file: cover, and
+        // a not-airing row must NOT be returned.
+        let db = Db::open(":memory:").unwrap();
+        let src_a = db.upsert_source("AnimeYT", "https://animeytx.net", "animeytx").unwrap();
+        let src_b = db.upsert_source("TioAnime", "https://tioanime.com", "tioanime").unwrap();
+
+        let make = |slug: &str, cover: &str, is_airing: bool| crate::models::Series {
+            id: 0,
+            slug: slug.into(),
+            title: slug.into(),
+            url: format!("https://example.com/{slug}"),
+            cover_url: Some(cover.to_string()),
+            is_airing,
+            followed: false,
+            next_episode_at: None,
+            site_episode_count: None,
+        };
+
+        // Both of these should be returned — one per site.
+        let id_a = db.upsert_series(src_a, &make("show-a", "https://cdn.a/a.jpg", true)).unwrap();
+        let id_b = db.upsert_series(src_b, &make("show-b", "https://cdn.b/b.jpg", true)).unwrap();
+
+        // Linked row — anilist_id IS NOT NULL, must be excluded.
+        let id_linked = db.upsert_series(src_a, &make("show-linked", "https://cdn.a/l.jpg", true)).unwrap();
+        db.set_anilist_id(id_linked, 999).unwrap();
+
+        // Already-fetched covers — must be excluded.
+        db.upsert_series(src_a, &make("show-data", "data:image/png;base64,AAAA", true)).unwrap();
+        db.upsert_series(src_b, &make("show-file", "file:C:/covers/x.jpg", true)).unwrap();
+
+        // Not airing — must be excluded.
+        let mut not_air = make("show-not-airing", "https://cdn.a/na.jpg", false);
+        not_air.slug = "show-not-airing".into();
+        db.upsert_series(src_a, &not_air).unwrap();
+
+        let needing = db.airing_series_needing_cover_fetch(60).unwrap();
+
+        let ids: std::collections::HashSet<i64> = needing.iter().map(|(id, _, _, _)| *id).collect();
+        assert!(ids.contains(&id_a), "show-a (site animeytx) must be selected");
+        assert!(ids.contains(&id_b), "show-b (site tioanime) must be selected");
+        assert!(!ids.contains(&id_linked), "linked row must not be selected");
+        assert_eq!(needing.len(), 2, "only the two unlinked airing remote-cover rows");
+
+        // Each tuple carries its own source_id.
+        let src_for = |id: i64| needing.iter().find(|(i, _, _, _)| *i == id).unwrap().3;
+        assert_eq!(src_for(id_a), src_a);
+        assert_eq!(src_for(id_b), src_b);
+    }
+
+    #[test]
+    fn clear_placeholder_covers_clears_edge_and_leaves_real_and_null() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let mk = |slug: &str, cover: Option<&str>| crate::models::Series {
+            id: 0, slug: slug.into(), title: slug.into(), url: format!("https://x/{slug}"),
+            cover_url: cover.map(|c| c.to_string()), is_airing: true, followed: false,
+            next_episode_at: None, site_episode_count: None,
+        };
+
+        // Edge placeholder
+        let edge_bytes = include_bytes!("../../tests/fixtures/edge-logo-48.jpg");
+        use base64::Engine;
+        let edge_b64 = base64::prelude::BASE64_STANDARD.encode(edge_bytes);
+        let edge_uri = format!("data:image/jpeg;base64,{}", edge_b64);
+        let id_edge = db.upsert_series(src, &mk("edge", Some(&edge_uri))).unwrap();
+
+        // Real size cover (200x300 PNG)
+        let mut real_bytes = vec![];
+        real_bytes.extend_from_slice(b"\x89PNG\r\n\x1a\n");
+        real_bytes.extend_from_slice(&[0; 8]);
+        real_bytes.extend_from_slice(&200u32.to_be_bytes()); // 16..20
+        real_bytes.extend_from_slice(&300u32.to_be_bytes()); // 20..24
+        // Realistic size (0.3 bytes per pixel), so it is not mistaken for a flat placeholder
+        real_bytes.extend(vec![0; 200 * 300 * 3 / 10]);
+        let real_b64 = base64::prelude::BASE64_STANDARD.encode(&real_bytes);
+        let real_uri = format!("data:image/png;base64,{}", real_b64);
+        let id_real = db.upsert_series(src, &mk("real", Some(&real_uri))).unwrap();
+
+        // Null cover
+        let id_null = db.upsert_series(src, &mk("null", None)).unwrap();
+
+        assert_eq!(db.clear_placeholder_covers().unwrap(), 1);
+
+        let get = |id: i64| -> Option<String> {
+            db.conn.query_row("SELECT cover_url FROM series WHERE id=?1", [id], |r| r.get(0)).unwrap()
+        };
+
+        assert_eq!(get(id_edge), None);
+        assert_eq!(get(id_real).as_deref(), Some(real_uri.as_str()));
+        assert_eq!(get(id_null), None);
+    }
+
+    fn series_in(db: &Db, src: i64, slug: &str, title: &str, cover: Option<&str>) -> i64 {
+        db.upsert_series(src, &crate::models::Series {
+            id: 0, slug: slug.into(), title: title.into(), url: format!("https://x/{slug}"),
+            cover_url: cover.map(str::to_string), is_airing: true, followed: false,
+            next_episode_at: None, site_episode_count: None,
+        }).unwrap()
+    }
+
+    fn airing_flag(db: &Db, id: i64) -> bool {
+        db.conn.query_row("SELECT is_airing FROM series WHERE id=?1", [id], |r| r.get::<_, i64>(0)).unwrap() != 0
+    }
+
+    #[test]
+    fn a_show_the_site_stopped_listing_stops_airing_unless_linked() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "https://a", "animeytx").unwrap();
+        let mut keep: Vec<String> = Vec::new();
+        for i in 0..12 {
+            let slug = format!("listed-{i}");
+            series_in(&db, src, &slug, &format!("Listed {i}"), None);
+            keep.push(slug);
+        }
+        let dropped = series_in(&db, src, "dropped", "Dropped Show", None);
+        let linked = series_in(&db, src, "linked", "Linked Show", None);
+        db.set_anilist_id(linked, 1).unwrap();
+
+        let listed: std::collections::HashSet<&str> = keep.iter().map(String::as_str).collect();
+        assert_eq!(db.mark_unlisted_not_airing(src, &listed).unwrap(), 1);
+        assert!(!airing_flag(&db, dropped));
+        assert!(airing_flag(&db, linked), "AniList decides for a linked show");
+        assert!(airing_flag(&db, db.conn.query_row("SELECT id FROM series WHERE slug='listed-0'", [], |r| r.get(0)).unwrap()));
+    }
+
+    #[test]
+    fn a_tiny_listing_is_treated_as_broken_and_changes_nothing() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "https://a", "animeytx").unwrap();
+        let other = series_in(&db, src, "other", "Other", None);
+        let listed: std::collections::HashSet<&str> = ["x"].into_iter().collect();
+        assert_eq!(db.mark_unlisted_not_airing(src, &listed).unwrap(), 0);
+        assert!(airing_flag(&db, other));
+    }
+
+    #[test]
+    fn a_cover_shared_by_three_unrelated_series_is_a_placeholder() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "https://a", "gogoanime").unwrap();
+        let no_image = "data:image/jpeg;base64,AAAA"; // content is irrelevant, only that it repeats
+        let a = series_in(&db, src, "a", "A", None);
+        let b = series_in(&db, src, "b", "B", None);
+        let c = series_in(&db, src, "c", "C", None);
+        let real = series_in(&db, src, "d", "D", None);
+        for id in [a, b, c] {
+            db.conn.execute("UPDATE series SET cover_url=?1 WHERE id=?2", (no_image, id)).unwrap();
+        }
+        db.conn.execute("UPDATE series SET cover_url=?1 WHERE id=?2", ("data:image/jpeg;base64,BBBB", real)).unwrap();
+
+        assert_eq!(db.clear_placeholder_covers().unwrap(), 3);
+        let cover = |id: i64| -> Option<String> {
+            db.conn.query_row("SELECT cover_url FROM series WHERE id=?1", [id], |r| r.get(0)).unwrap()
+        };
+        assert_eq!(cover(a), None);
+        assert!(cover(real).is_some());
+    }
+
+    #[test]
+    fn storing_a_cover_that_two_others_already_carry_leaves_it_empty() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "https://a", "gogoanime").unwrap();
+        let no_image = "data:image/jpeg;base64,CCCC";
+        for slug in ["a", "b"] {
+            let id = series_in(&db, src, slug, slug, None);
+            db.conn.execute("UPDATE series SET cover_url=?1 WHERE id=?2", (no_image, id)).unwrap();
+        }
+        let third = series_in(&db, src, "c", "C", Some("https://remote/c.jpg"));
+        db.update_series_cover(third, no_image).unwrap();
+        let cover: Option<String> = db.conn.query_row("SELECT cover_url FROM series WHERE id=?1", [third], |r| r.get(0)).unwrap();
+        assert_eq!(cover, None, "a placeholder is not stored, and nothing is left to refetch");
+
+        let fresh = series_in(&db, src, "d", "D", None);
+        db.update_series_cover(fresh, "data:image/jpeg;base64,DDDD").unwrap();
+        let cover: Option<String> = db.conn.query_row("SELECT cover_url FROM series WHERE id=?1", [fresh], |r| r.get(0)).unwrap();
+        assert_eq!(cover.as_deref(), Some("data:image/jpeg;base64,DDDD"));
+    }
+
+    #[test]
+    fn unlisting_spares_followed_rows_other_sources_and_guards_against_a_mass_drop() {
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("A", "https://a", "animeytx").unwrap();
+        let b = db.upsert_source("B", "https://b", "tioanime").unwrap();
+        let mut listed_slugs: Vec<String> = Vec::new();
+        for i in 0..12 {
+            let slug = format!("l{i}");
+            series_in(&db, a, &slug, &format!("Listed {i}"), None);
+            listed_slugs.push(slug);
+        }
+        let followed_gone = series_in(&db, a, "fg", "Followed Gone", None);
+        db.set_followed(followed_gone, true).unwrap();
+        let plain_gone = series_in(&db, a, "pg", "Plain Gone", None);
+        let other_site = series_in(&db, b, "ob", "Other Site Show", None);
+        let listed: std::collections::HashSet<&str> = listed_slugs.iter().map(String::as_str).collect();
+
+        assert_eq!(db.mark_unlisted_not_airing(a, &listed).unwrap(), 1);
+        assert!(airing_flag(&db, followed_gone), "a followed show is never unaired by an unlisting");
+        assert!(!airing_flag(&db, plain_gone));
+        assert!(airing_flag(&db, other_site), "another source is untouched");
+
+        // a listing far smaller than what the source has airing is a broken parse
+        let db2 = Db::open(":memory:").unwrap();
+        let s2 = db2.upsert_source("A", "https://a", "animeytx").unwrap();
+        for i in 0..40 {
+            series_in(&db2, s2, &format!("x{i}"), &format!("Show {i}"), None);
+        }
+        let tiny: std::collections::HashSet<&str> = (0..12).map(|_| "x0").collect();
+        let mut big: Vec<String> = (0..12).map(|i| format!("x{i}")).collect();
+        big.truncate(12);
+        let twelve: std::collections::HashSet<&str> = big.iter().map(String::as_str).collect();
+        assert_eq!(db2.mark_unlisted_not_airing(s2, &tiny).unwrap(), 0);
+        assert_eq!(db2.mark_unlisted_not_airing(s2, &twelve).unwrap(), 0, "12 of 40 is not a credible listing");
+    }
+
+    #[test]
+    fn arcs_of_one_franchise_sharing_a_cover_keep_it() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "https://a", "gogoanime").unwrap();
+        let shared = "data:image/jpeg;base64,EEEE";
+        let ids: Vec<i64> = ["Big Show: Arc One", "Big Show: Arc Two", "Big Show: Arc Three"]
+            .iter()
+            .enumerate()
+            .map(|(i, t)| series_in(&db, src, &format!("s{i}"), t, None))
+            .collect();
+        for id in &ids {
+            db.conn.execute("UPDATE series SET cover_url=?1 WHERE id=?2", (shared, id)).unwrap();
+        }
+        assert_eq!(db.clear_placeholder_covers().unwrap(), 0, "one franchise is not three unrelated shows");
+        let fourth = series_in(&db, src, "s9", "Big Show: Arc Four", None);
+        db.update_series_cover(fourth, shared).unwrap();
+        let cover: Option<String> = db.conn.query_row("SELECT cover_url FROM series WHERE id=?1", [fourth], |r| r.get(0)).unwrap();
+        assert_eq!(cover.as_deref(), Some(shared));
+    }
+
 }

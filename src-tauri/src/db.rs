@@ -96,6 +96,16 @@ impl Db {
              WHERE slug LIKE 'anilist-%' AND anilist_id IS NULL",
             [],
         )?;
+        // Several catalog queries correlate on `series.anilist_id = c.id` for every
+        // catalog row (`stale_status_ids`, `stale_catalog_ids`). Without this index
+        // each of the ~22k catalog rows scanned the whole `series` table, twice:
+        // `stale_status_ids` took ~220 s on a real library WHILE HOLDING the DB
+        // mutex, so the UI (sync commands run on the main thread and wait for
+        // that mutex) froze with Windows reporting "not responding". Indexed it
+        // is a few milliseconds.
+        self.conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_series_anilist_id ON series(anilist_id);",
+        )?;
         // watched_externally: set by decide_catalog_card's "seen" decision —
         // "I've watched this outside the app, don't show it to me again,
         // don't put it in my backlog." No episode data backs this (AniList
@@ -151,6 +161,17 @@ impl Db {
                 genre TEXT NOT NULL,
                 PRIMARY KEY(series_id, genre)
             );
+            DROP VIEW IF EXISTS series_effective_genres;
+            CREATE VIEW series_effective_genres AS
+            SELECT s.id AS series_id, cg.genre
+            FROM series s
+            JOIN anilist_catalog_genres cg ON s.anilist_id = cg.anilist_id
+            UNION ALL
+            SELECT sg.series_id, sg.genre
+            FROM series_genres sg
+            JOIN series s ON s.id = sg.series_id
+            WHERE s.anilist_id IS NULL
+               OR NOT EXISTS (SELECT 1 FROM anilist_catalog_genres WHERE anilist_id = s.anilist_id);
             "#,
         )?;
         // series_merges: the undo trail for `merge_series_into`.
@@ -207,6 +228,17 @@ impl Db {
                 genre TEXT NOT NULL,
                 PRIMARY KEY(anilist_id, genre)
             );
+            CREATE TABLE IF NOT EXISTS anilist_catalog_synonyms (
+                anilist_id INTEGER NOT NULL REFERENCES anilist_catalog(id),
+                synonym TEXT NOT NULL,
+                PRIMARY KEY(anilist_id, synonym)
+            );
+            CREATE TABLE IF NOT EXISTS anilist_catalog_tags (
+                anilist_id INTEGER NOT NULL REFERENCES anilist_catalog(id),
+                tag TEXT NOT NULL,
+                rank INTEGER NOT NULL,
+                PRIMARY KEY(anilist_id, tag)
+            );
             "#,
         )?;
         ensure_column(&self.conn, "anilist_catalog", "popularity", "INTEGER")?;
@@ -239,6 +271,10 @@ impl Db {
         // `db::episodes::airing_season_dates` to answer "aired this season"
         // for airing-site rows with no scraped episode data.
         ensure_column(&self.conn, "anilist_catalog", "start_date", "INTEGER")?;
+        // next_airing_at and next_episode: next airing info from AniList.
+        // NULL when AniList has none (finished or not scheduled).
+        ensure_column(&self.conn, "anilist_catalog", "next_airing_at", "INTEGER")?;
+        ensure_column(&self.conn, "anilist_catalog", "next_episode", "INTEGER")?;
         // metadata_version: which generation of the AniList field set this row
         // was last written with (see `db::catalog::CATALOG_METADATA_VERSION`).
         // `stale_catalog_ids` used to infer staleness from `title_romaji IS
@@ -347,7 +383,11 @@ impl Db {
         // never strands your library. Progress is a single seen-watermark,
         // which is lossless because watching is gap-free.
         self.conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS library (
+            "CREATE TABLE IF NOT EXISTS anilist_search_misses (
+                norm_title TEXT PRIMARY KEY,
+                tried_at INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS library (
                 id INTEGER PRIMARY KEY,
                 canon_key TEXT NOT NULL UNIQUE,
                 anilist_id INTEGER,
@@ -508,6 +548,24 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 1);
+        let tags_count: i64 = db
+            .conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='anilist_catalog_tags'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tags_count, 1);
+
+        let mut stmt = db.conn.prepare("PRAGMA table_info(anilist_catalog)").unwrap();
+        let cols: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert!(cols.contains(&"next_airing_at".to_string()));
+        assert!(cols.contains(&"next_episode".to_string()));
         let _ = std::fs::remove_file(&path);
     }
 

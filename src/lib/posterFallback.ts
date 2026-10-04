@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 
 // Up to two initials from a title, for the poster-less fallback block —
@@ -38,4 +39,18 @@ export function resolveCoverUrl(url: string | null | undefined): string | null {
     return convertFileSrc(url);
   }
   return url;
+}
+
+/**
+ * "This cover failed to load" state, tied to the URL that failed.
+ *
+ * A plain `useState(false)` flag is wrong for cards keyed by series id: the card
+ * keeps its component instance when the list reloads, so a flag set by the
+ * CSP-blocked scraped thumbnail would stay true after the real cover (a cached
+ * `file:` path, an AniList URL) arrives and the card would show initials for
+ * ever. Remembering WHICH url failed makes a new url get its own chance.
+ */
+export function useCoverFailure(url: string | null | undefined): [boolean, () => void] {
+  const [failedUrl, setFailedUrl] = useState<string | null>(null);
+  return [url != null && failedUrl === url, () => setFailedUrl(url ?? null)];
 }

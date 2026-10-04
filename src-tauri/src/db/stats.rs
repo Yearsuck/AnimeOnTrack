@@ -143,6 +143,44 @@ pub(crate) fn minutes_per_episode(format: Option<&str>) -> i64 {
     }
 }
 
+/// The type label of a series: the AniList catalog format when linked, else the
+/// site's free-text kind. Both are put in the vocabulary the Library filter
+/// already uses (`Library.tsx` `normalizeKind`: TV, MOVIE, OVA, ONA, SPECIAL
+/// upper-case, "Pelicula" -> MOVIE) so the type breakdown does not split
+/// "Movie"/"MOVIE"/"Pelicula" into separate buckets. TV_SHORT folds into TV
+/// (the short-episode minutes estimate reads the raw format separately).
+/// Site values outside that vocabulary are kept as they are.
+pub(crate) fn effective_kind(catalog_format: Option<&str>, site_kind: Option<&str>) -> Option<String> {
+    let normalize = |raw: &str| -> Option<String> {
+        let upper = raw.trim().to_uppercase();
+        match upper.as_str() {
+            "TV" | "TV_SHORT" | "TV SHOW" | "ANIME" => Some("TV".into()),
+            "MOVIE" | "PELICULA" | "PELÍCULA" => Some("MOVIE".into()),
+            "OVA" | "ONA" | "SPECIAL" | "MUSIC" => Some(upper),
+            _ => None,
+        }
+    };
+    if let Some(label) = catalog_format.and_then(normalize) {
+        return Some(label);
+    }
+    site_kind.map(|k| normalize(k).unwrap_or_else(|| k.to_string()))
+}
+
+/// Genres of one series in AniList's vocabulary where a mapping exists
+/// (`genres::canonical_genre`: "Acción"/"Action" -> "Action"), so a linked
+/// series (AniList's English names) and an unlinked one (the site's Spanish
+/// names) land in the same stats bucket. Unmapped tags are kept as they are.
+fn canonical_genres(raw: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for g in raw {
+        let label = crate::genres::canonical_genre(&g).map(str::to_string).unwrap_or(g);
+        if !out.contains(&label) {
+            out.push(label);
+        }
+    }
+    out
+}
+
 /// Whether `candidate` is a better franchise label than `current`. Members of
 /// one franchise usually reduce to the same display title, so this only
 /// arbitrates the cases where they don't, and only needs to be *deterministic*
@@ -438,7 +476,7 @@ impl Db {
         for g in &groups {
             let mut genres: HashSet<String> = HashSet::new();
             for &id in &g.member_ids {
-                genres.extend(self.list_series_genres(id)?);
+                genres.extend(canonical_genres(self.list_series_genres(id)?));
             }
             for genre in genres {
                 *counts.entry(genre).or_insert(0) += 1;
@@ -468,7 +506,7 @@ impl Db {
         for g in &groups {
             let mut genres: HashSet<String> = HashSet::new();
             for &id in &g.member_ids {
-                genres.extend(self.list_series_genres(id)?);
+                genres.extend(canonical_genres(self.list_series_genres(id)?));
             }
 
             // Real seen episodes for this canonical show, collapsed exactly the
@@ -580,7 +618,7 @@ impl Db {
     pub fn get_genre_affinity(&self, source_id: i64) -> Result<HashMap<String, f64>> {
         let mut stmt = self.conn.prepare(
             "SELECT sg.genre, s.followed, s.backlog_status
-             FROM series_genres sg
+             FROM series_effective_genres sg
              JOIN series s ON s.id = sg.series_id
              WHERE s.source_id=?1",
         )?;
@@ -631,7 +669,7 @@ impl Db {
     pub fn get_genre_affinity_across_sites(&self) -> Result<HashMap<String, f64>> {
         let mut stmt = self.conn.prepare(
             "SELECT s.anilist_id, s.title, s.followed, s.backlog_status, sg.genre
-             FROM series_genres sg
+             FROM series_effective_genres sg
              JOIN series s ON s.id = sg.series_id",
         )?;
         struct GenreRow {
@@ -732,7 +770,7 @@ impl Db {
             .map(|g| {
                 let mut genres: HashSet<String> = HashSet::new();
                 for &id in &g.member_ids {
-                    genres.extend(self.list_series_genres(id)?);
+                    genres.extend(canonical_genres(self.list_series_genres(id)?));
                 }
                 let mut genres: Vec<String> = genres.into_iter().collect();
                 genres.sort();
@@ -763,10 +801,14 @@ impl Db {
             title: String,
             kind: Option<String>,
             cover_url: Option<String>,
+            catalog_format: Option<String>,
         }
         let mut stmt = self
             .conn
-            .prepare("SELECT id, anilist_id, title, kind, cover_url FROM series WHERE followed=1")?;
+            .prepare("SELECT s.id, s.anilist_id, s.title, s.kind, s.cover_url, c.format
+                      FROM series s
+                      LEFT JOIN anilist_catalog c ON c.id = s.anilist_id
+                      WHERE s.followed=1")?;
         let rows: Vec<Row> = stmt
             .query_map([], |r| {
                 Ok(Row {
@@ -775,6 +817,7 @@ impl Db {
                     title: r.get(2)?,
                     kind: r.get(3)?,
                     cover_url: r.get(4)?,
+                    catalog_format: r.get(5)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -790,7 +833,7 @@ impl Db {
             });
             entry.member_ids.push(row.id);
             if entry.kind.is_none() {
-                entry.kind = row.kind.clone();
+                entry.kind = effective_kind(row.catalog_format.as_deref(), row.kind.as_deref());
             }
             if entry.cover_url.is_none() {
                 entry.cover_url = row.cover_url.clone();
@@ -946,11 +989,11 @@ impl Db {
             }
 
             // AniList's real per-episode duration wins whenever the series is
-            // linked to a synced catalog row that has one; otherwise fall back
-            // to the format/kind estimate, preferring the site's own `kind`
-            // (always present for scraped rows) over the catalog `format`.
+            // linked to a synced catalog row that has one; otherwise estimate
+            // from the format, AniList's first (raw, so TV_SHORT keeps its
+            // short-episode estimate) and the site's own kind as the fallback.
             let per_episode = row.catalog_duration.unwrap_or_else(|| {
-                minutes_per_episode(row.kind.as_deref().or(row.catalog_format.as_deref()))
+                minutes_per_episode(row.catalog_format.as_deref().or(row.kind.as_deref()))
             });
             let bucket = per_site.entry(key).or_default().entry(row.source_id).or_insert((0, 0));
             bucket.0 += row.seen_count;
@@ -989,6 +1032,109 @@ impl Db {
         Ok(merge_into_parent_franchises(grouped, &parent_of))
     }
 
+    /// How many episodes each franchise has, one entry per franchise, with the
+    /// show followed on several sites counted once (what the "Completado %"
+    /// denominator and the average episodes per series need).
+    ///
+    /// A franchise's total is the larger of (a) the best single site's episode
+    /// rows (arcs of one site are summed, sites are not) and (b) the sum of
+    /// AniList's `episodes` over the distinct linked entries: AniList is the
+    /// authority for a finished show, the site count covers a long-runner
+    /// AniList has no total for. Consequences worth knowing: an airing show
+    /// counts its full announced season length, and a followed show with no
+    /// marks counts all of its episodes.
+    ///
+    /// Groups with the same key/alias/parent rules as `franchise_rollups`, but
+    /// over its own corpus (`followed_only`: followed series; otherwise followed
+    /// OR at least one seen episode), so in odd data (an unseen followed parent
+    /// row) the grouping can differ from the watched numerator: callers clamp.
+    pub(crate) fn canonical_franchise_episode_totals(&self, followed_only: bool) -> Result<Vec<i64>> {
+        let scope = if followed_only {
+            "s.followed=1"
+        } else {
+            "(s.followed=1 OR EXISTS (SELECT 1 FROM episodes x WHERE x.series_id=s.id AND x.seen=1))"
+        };
+        let sql = format!(
+            "SELECT s.title, s.anilist_id, s.source_id, COUNT(e.id), c.episodes
+             FROM series s
+             LEFT JOIN episodes e ON e.series_id = s.id
+             LEFT JOIN anilist_catalog c ON c.id = s.anilist_id
+             WHERE {scope}
+             GROUP BY s.id"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+
+        struct Row {
+            title: String,
+            anilist_id: Option<i64>,
+            source_id: i64,
+            episode_rows: i64,
+            catalog_episodes: Option<i64>,
+        }
+        let rows: Vec<Row> = stmt.query_map([], |r| {
+            Ok(Row {
+                title: r.get(0)?,
+                anilist_id: r.get(1)?,
+                source_id: r.get(2)?,
+                episode_rows: r.get(3)?,
+                catalog_episodes: r.get(4)?,
+            })
+        })?.collect::<rusqlite::Result<Vec<_>>>()?;
+
+        let aliases = franchise_key_aliases(
+            &rows
+                .iter()
+                .map(|row| (row.anilist_id, franchise_key(&row.title)))
+                .collect::<Vec<_>>(),
+        );
+        let canonical = |key: String| aliases.get(&key).cloned().unwrap_or(key);
+
+        #[derive(Clone)]
+        struct FranchiseEps {
+            per_site: HashMap<i64, i64>,
+            catalog_by_anilist: HashMap<i64, i64>,
+        }
+
+        let mut grouped: HashMap<String, FranchiseEps> = HashMap::new();
+        let mut parent_of: HashMap<String, String> = HashMap::new();
+
+        for row in rows {
+            let key = canonical(franchise_key(&row.title));
+            if let Some(parent) = franchise_parent_key(&row.title).map(canonical) {
+                if parent != key {
+                    record_parent_candidate(&mut parent_of, &key, parent);
+                }
+            }
+            let entry = grouped.entry(key).or_insert_with(|| FranchiseEps {
+                per_site: HashMap::new(),
+                catalog_by_anilist: HashMap::new(),
+            });
+
+            *entry.per_site.entry(row.source_id).or_insert(0) += row.episode_rows;
+
+            if let Some(aid) = row.anilist_id {
+                if let Some(cep) = row.catalog_episodes {
+                    entry.catalog_by_anilist.insert(aid, cep);
+                }
+            }
+        }
+
+        let franchises = merge_into_parent_groups(grouped, &parent_of, |existing, child| {
+            for (source_id, rows) in &child.per_site {
+                *existing.per_site.entry(*source_id).or_insert(0) += rows;
+            }
+            for (aid, cep) in &child.catalog_by_anilist {
+                existing.catalog_by_anilist.insert(*aid, *cep);
+            }
+        });
+
+        Ok(franchises.into_iter().map(|f| {
+            let site_max = f.per_site.values().copied().max().unwrap_or(0);
+            let catalog_sum = f.catalog_by_anilist.values().copied().sum::<i64>();
+            site_max.max(catalog_sum)
+        }).collect())
+    }
+
     /// Scalar watch totals for the stats dashboard, **canonical across every
     /// site**: a show followed (or wanted, or pending) on any of the 3 sites
     /// counts once, via `canon_key` dedup — see `distinct_canon_count`. Never
@@ -1019,23 +1165,12 @@ impl Db {
         // real seen episode — so discarded/never-touched scraped rows don't
         // inflate it.
         //
-        // KNOWN ASYMMETRY: this one is still a raw row count, so it is *not*
-        // collapsed per franchise/site the way `episodes_watched` above now is
-        // — a show followed on two sites contributes both sites' episode rows
-        // here. The two are shown as a single "X/Y" progress line
-        // (`StatsInsights.tsx`), so for a cross-site user that ratio reads
-        // low. Collapsing it is not a one-line change: unlike the numerator it
-        // must also cover followed series with zero seen episodes (which
-        // `franchise_rollups` deliberately excludes, see `distinct_anime`), so
-        // it needs the roll-up widened to carry an episode-row total per
-        // franchise rather than a second parallel aggregation bolted on here.
-        let episodes_total: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM episodes e
-             JOIN series s ON s.id = e.series_id
-             WHERE s.followed=1 OR EXISTS (SELECT 1 FROM episodes x WHERE x.series_id=s.id AND x.seen=1)",
-            [],
-            |r| r.get(0),
-        )?;
+        // Collapsed per franchise (same parent merge as the numerator) so a show
+        // followed on two sites doesn't double-count its denominator.
+        // Never below what was watched: the two come from separately built
+        // groupings (see `canonical_franchise_episode_totals`), so in odd data
+        // the ratio must still stay a sane 0-100 %.
+        let episodes_total: i64 = self.canonical_franchise_episode_totals(false)?.iter().sum::<i64>().max(episodes_watched);
         // Episodes credited on top of `episodes_watched` from "Ya lo vi"
         // catalog estimates. Deliberately the per-franchise *remainder* (see
         // `FranchiseRollup`), not a raw sum: a franchise whose arc rows
@@ -1112,21 +1247,13 @@ impl Db {
         let external_titles_total = rollups.iter().filter(|r| r.has_external).count() as i64;
 
         // Mean episode count (all episodes, not just seen) across followed
-        // series rows (every site's row counts separately — this is a rough
-        // "how long are the shows I follow" gauge, not a watch total, so
-        // cross-site duplicates skewing it slightly is an acceptable
-        // approximation). NULL (no followed series at all) reads as 0.0.
-        let avg_episodes_per_series: Option<f64> = self.conn.query_row(
-            "SELECT AVG(cnt) FROM (
-                SELECT s.id, COUNT(e.id) AS cnt
-                FROM series s LEFT JOIN episodes e ON e.series_id = s.id
-                WHERE s.followed=1
-                GROUP BY s.id
-             )",
-            [],
-            |r| r.get(0),
-        )?;
-        let avg_episodes_per_series = avg_episodes_per_series.unwrap_or(0.0);
+        // franchises (canonical across sites). NULL/empty reads as 0.0.
+        let followed_eps = self.canonical_franchise_episode_totals(true)?;
+        let avg_episodes_per_series = if followed_eps.is_empty() {
+            0.0
+        } else {
+            followed_eps.iter().sum::<i64>() as f64 / followed_eps.len() as f64
+        };
 
         // Canonical (cross-site-deduped) funnel counts — see
         // `get_watch_summary`'s doc comment for why this never reads the
@@ -1225,6 +1352,182 @@ impl Db {
             |r| r.get(0),
         )?;
 
+        // --- T1 (Backlog), T2 (Studios), T3 (Era) ---
+        let mut backlog_episodes = 0;
+        let mut backlog_minutes = 0;
+        let top_studios: Vec<crate::models::TitleCount>;
+        let era_distribution: Vec<crate::models::EraCount>;
+
+        {
+            use std::collections::HashSet;
+            let mut stmt = self.conn.prepare(
+                "SELECT s.title, s.anilist_id, s.source_id, s.watched_externally, s.kind,
+                        (SELECT COUNT(*) FROM episodes e WHERE e.series_id=s.id) AS available,
+                        (SELECT COUNT(*) FROM episodes e WHERE e.series_id=s.id AND e.seen=1) AS seen_cnt,
+                        c.format, c.duration, c.studio, c.start_date, s.followed
+                 FROM series s
+                 LEFT JOIN anilist_catalog c ON c.id = s.anilist_id
+                 WHERE s.followed = 1 OR EXISTS (SELECT 1 FROM episodes e WHERE e.series_id=s.id AND e.seen=1) OR s.watched_externally=1"
+            )?;
+            struct EngagedRow {
+                title: String,
+                anilist_id: Option<i64>,
+                source_id: i64,
+                watched_externally: bool,
+                kind: Option<String>,
+                available: i64,
+                seen_cnt: i64,
+                catalog_format: Option<String>,
+                catalog_duration: Option<i64>,
+                studio: Option<String>,
+                start_date: Option<i64>,
+                followed: bool,
+            }
+            let rows: Vec<EngagedRow> = stmt.query_map([], |r| {
+                Ok(EngagedRow {
+                    title: r.get(0)?,
+                    anilist_id: r.get(1)?,
+                    source_id: r.get(2)?,
+                    watched_externally: r.get::<_, i64>(3)? != 0,
+                    kind: r.get(4)?,
+                    available: r.get(5)?,
+                    seen_cnt: r.get(6)?,
+                    catalog_format: r.get(7)?,
+                    catalog_duration: r.get(8)?,
+                    studio: r.get(9)?,
+                    start_date: r.get(10)?,
+                    followed: r.get::<_, i64>(11)? != 0,
+                })
+            })?.collect::<rusqlite::Result<Vec<_>>>()?;
+
+            let aliases = franchise_key_aliases(
+                &rows.iter().map(|row| (row.anilist_id, franchise_key(&row.title))).collect::<Vec<_>>()
+            );
+            let canonical = |key: String| aliases.get(&key).cloned().unwrap_or(key);
+
+            #[derive(Clone)]
+            struct EngagedFranchise {
+                per_site: HashMap<i64, (i64, i64)>, // source_id -> (available, seen)
+                // Minutes per episode: the longest AniList duration among its rows,
+                // else the longest format estimate (deterministic, row order must
+                // not decide the price of a franchise's remaining episodes).
+                catalog_minutes: Option<i64>,
+                estimate_minutes: i64,
+                any_followed: bool,
+                any_external: bool,
+                studios: HashSet<String>,
+                start_dates: Vec<i64>,
+            }
+            let mut grouped: HashMap<String, EngagedFranchise> = HashMap::new();
+            let mut parent_of: HashMap<String, String> = HashMap::new();
+
+            for row in rows {
+                let key = canonical(franchise_key(&row.title));
+                if let Some(parent) = franchise_parent_key(&row.title).map(canonical) {
+                    if parent != key {
+                        record_parent_candidate(&mut parent_of, &key, parent);
+                    }
+                }
+                let estimate = minutes_per_episode(row.catalog_format.as_deref().or(row.kind.as_deref()));
+
+                let entry = grouped.entry(key).or_insert_with(|| EngagedFranchise {
+                    per_site: HashMap::new(),
+                    catalog_minutes: None,
+                    estimate_minutes: 0,
+                    any_followed: false,
+                    any_external: false,
+                    studios: HashSet::new(),
+                    start_dates: Vec::new(),
+                });
+
+                if row.followed {
+                    entry.any_followed = true;
+                }
+                if row.watched_externally {
+                    entry.any_external = true;
+                }
+                if let Some(studio) = row.studio {
+                    if !studio.trim().is_empty() {
+                        entry.studios.insert(studio);
+                    }
+                }
+                if let Some(start_date) = row.start_date {
+                    entry.start_dates.push(start_date);
+                }
+
+                let bucket = entry.per_site.entry(row.source_id).or_insert((0, 0));
+                bucket.0 += row.available;
+                bucket.1 += row.seen_cnt;
+
+                entry.catalog_minutes = entry.catalog_minutes.max(row.catalog_duration);
+                entry.estimate_minutes = entry.estimate_minutes.max(estimate);
+            }
+
+            let merged = merge_into_parent_groups(grouped, &parent_of, |existing, child| {
+                for (source_id, &(avail, seen)) in &child.per_site {
+                    let bucket = existing.per_site.entry(*source_id).or_insert((0, 0));
+                    bucket.0 += avail;
+                    bucket.1 += seen;
+                }
+                existing.any_followed |= child.any_followed;
+                existing.any_external |= child.any_external;
+                existing.catalog_minutes = existing.catalog_minutes.max(child.catalog_minutes);
+                existing.estimate_minutes = existing.estimate_minutes.max(child.estimate_minutes);
+                for s in &child.studios {
+                    existing.studios.insert(s.clone());
+                }
+                existing.start_dates.extend(&child.start_dates);
+            });
+
+            let mut studio_counts: HashMap<String, i64> = HashMap::new();
+            let mut era_counts: HashMap<i32, i64> = HashMap::new();
+
+            for franchise in merged {
+                // T1 Backlog: sites are mirrors of the same episodes, so the most
+                // any site has minus the most any site has been marked (the
+                // roll-up's `real_seen` convention). A "Ya lo vi" franchise is
+                // claimed as watched: no backlog even if its scraped rows are unseen.
+                if franchise.any_followed && !franchise.any_external {
+                    let most_available = franchise.per_site.values().map(|&(avail, _)| avail).max().unwrap_or(0);
+                    let most_seen = franchise.per_site.values().map(|&(_, seen)| seen).max().unwrap_or(0);
+                    let remaining = (most_available - most_seen).max(0);
+                    let per_episode = franchise.catalog_minutes.unwrap_or(franchise.estimate_minutes);
+                    backlog_episodes += remaining;
+                    backlog_minutes += remaining * per_episode;
+                }
+
+                // T2 Studios
+                for studio in &franchise.studios {
+                    *studio_counts.entry(studio.clone()).or_insert(0) += 1;
+                }
+
+                // T3 Era
+                if let Some(&min_date) = franchise.start_dates.iter().min() {
+                    use chrono::{TimeZone, Utc};
+                    if let chrono::LocalResult::Single(dt) = Utc.timestamp_opt(min_date, 0) {
+                        let year = dt.year();
+                        let decade = (year / 10) * 10;
+                        *era_counts.entry(decade).or_insert(0) += 1;
+                    }
+                }
+            }
+
+            let mut studios: Vec<crate::models::TitleCount> = studio_counts
+                .into_iter()
+                .map(|(title, count)| crate::models::TitleCount { title, count })
+                .collect();
+            studios.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.title.cmp(&b.title)));
+            studios.truncate(8);
+            top_studios = studios;
+
+            let mut eras: Vec<crate::models::EraCount> = era_counts
+                .into_iter()
+                .map(|(decade, count)| crate::models::EraCount { decade, count })
+                .collect();
+            eras.sort_by_key(|e| e.decade);
+            era_distribution = eras;
+        }
+
         Ok(crate::models::WatchInsights {
             estimated_minutes_tracked,
             estimated_minutes_external,
@@ -1239,6 +1542,10 @@ impl Db {
             top_series,
             marks_by_day,
             marks_tracked_since,
+            backlog_episodes,
+            backlog_minutes,
+            top_studios,
+            era_distribution,
         })
     }
 
@@ -1349,13 +1656,39 @@ impl Db {
             .next()
             .transpose()?;
         match row {
-            Some((day, count)) => Ok(crate::models::BingeRecord {
-                day: Some(day),
-                count,
-            }),
+            Some((day, count)) => {
+                let mut stmt2 = self.conn.prepare(
+                    "SELECT s.title, COUNT(*) as c
+                     FROM episodes e
+                     JOIN series s ON s.id = e.series_id
+                     WHERE e.seen = 1
+                       AND e.seen_at IS NOT NULL
+                       AND DATE(e.seen_at, 'localtime') = ?1
+                     GROUP BY s.id"
+                )?;
+                let episode_rows: Vec<(String, i64)> = stmt2.query_map([&day], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+
+                let mut groups: HashMap<String, i64> = HashMap::new();
+                for (title, eps) in episode_rows {
+                    let label = franchise_display_title(&title);
+                    *groups.entry(label).or_insert(0) += eps;
+                }
+
+                let mut top_list: Vec<(String, i64)> = groups.into_iter().collect();
+                top_list.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+                top_list.truncate(3);
+                let top_series: Vec<String> = top_list.into_iter().map(|(t, _)| t).collect();
+
+                Ok(crate::models::BingeRecord {
+                    day: Some(day),
+                    count,
+                    top_series,
+                })
+            },
             None => Ok(crate::models::BingeRecord {
                 day: None,
                 count: 0,
+                top_series: Vec::new(),
             }),
         }
     }
@@ -1564,7 +1897,15 @@ impl Db {
             .filter_map(|f| {
                 let first = chrono::NaiveDate::parse_from_str(&f.first_seen, "%Y-%m-%d").ok()?;
                 let last = chrono::NaiveDate::parse_from_str(&f.last_seen, "%Y-%m-%d").ok()?;
-                Some((last - first).num_days() as f64)
+                let days = (last - first).num_days();
+                // Everything marked on one calendar day is a bulk "mark as
+                // seen" (or a one-day marathon): not a completion time, and
+                // counted as 0 days it would drag the average toward nothing.
+                if days == 0 {
+                    None
+                } else {
+                    Some(days as f64)
+                }
             })
             .collect();
 
@@ -1986,7 +2327,7 @@ mod tests {
 
         db.upsert_catalog_anime(
             &crate::anilist::CatalogAnime {
-                id: 21, title: "ONE PIECE".into(), title_romaji: None, title_english: None,
+                id: 21, title: "ONE PIECE".into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
                 cover_url: None, format: Some("TV".into()), genres: vec![],
                 episodes: Some(1140), average_score: None, popularity: None,
                 url: "https://anilist.co/anime/21".into(), status: None, duration: Some(24),
@@ -2012,7 +2353,7 @@ mod tests {
 
         db.upsert_catalog_anime(
             &crate::anilist::CatalogAnime {
-                id: 21, title: "ONE PIECE".into(), title_romaji: None, title_english: None,
+                id: 21, title: "ONE PIECE".into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
                 cover_url: None, format: Some("TV".into()), genres: vec![],
                 episodes: Some(100), average_score: None, popularity: None,
                 url: "https://anilist.co/anime/21".into(), status: None, duration: Some(24),
@@ -2226,7 +2567,7 @@ mod tests {
         // Watched-externally, linked to a catalog row with 12 TV episodes.
         db.upsert_catalog_anime(
             &crate::anilist::CatalogAnime {
-                id: 100, title: "External Show".into(), title_romaji: None, title_english: None,
+                id: 100, title: "External Show".into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
                 cover_url: None, format: Some("TV".into()), genres: vec![],
                 episodes: Some(12), average_score: None, popularity: None,
                 url: "https://anilist.co/anime/100".into(), status: None, duration: None,
@@ -2300,7 +2641,7 @@ mod tests {
 
         db.upsert_catalog_anime(
             &crate::anilist::CatalogAnime {
-                id: 200, title: "S2".into(), title_romaji: None, title_english: None,
+                id: 200, title: "S2".into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
                 cover_url: None, format: Some("TV".into()), genres: vec![],
                 episodes: Some(12), average_score: None, popularity: None,
                 url: "https://anilist.co/anime/200".into(), status: None, duration: None,
@@ -2328,7 +2669,7 @@ mod tests {
 
         db.upsert_catalog_anime(
             &crate::anilist::CatalogAnime {
-                id: 201, title: "S3".into(), title_romaji: None, title_english: None,
+                id: 201, title: "S3".into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
                 cover_url: None, format: Some("TV".into()), genres: vec![],
                 episodes: Some(12), average_score: None, popularity: None,
                 url: "https://anilist.co/anime/201".into(), status: None, duration: Some(23),
@@ -2353,7 +2694,7 @@ mod tests {
 
         db.upsert_catalog_anime(
             &crate::anilist::CatalogAnime {
-                id: 202, title: "S4".into(), title_romaji: None, title_english: None,
+                id: 202, title: "S4".into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
                 cover_url: None, format: Some("TV".into()), genres: vec![],
                 episodes: Some(12), average_score: None, popularity: None,
                 url: "https://anilist.co/anime/202".into(), status: None, duration: None,
@@ -2677,7 +3018,7 @@ mod tests {
         ] {
             db.upsert_catalog_anime(
                 &crate::anilist::CatalogAnime {
-                    id, title: title.into(), title_romaji: None, title_english: None,
+                    id, title: title.into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
                     cover_url: None, format: Some("TV".into()), genres: vec![],
                     episodes: Some(episodes), average_score: None, popularity: None,
                     url: format!("https://anilist.co/anime/{id}"), status: None, duration: Some(24),
@@ -2711,7 +3052,7 @@ mod tests {
 
         db.upsert_catalog_anime(
             &crate::anilist::CatalogAnime {
-                id: 910, title: "Linked Show".into(), title_romaji: None, title_english: None,
+                id: 910, title: "Linked Show".into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
                 cover_url: None, format: Some("TV".into()), genres: vec![],
                 episodes: Some(12), average_score: None, popularity: None,
                 url: "https://anilist.co/anime/910".into(), status: None, duration: Some(24),
@@ -3451,7 +3792,7 @@ mod tests {
 
         db.upsert_catalog_anime(
             &crate::anilist::CatalogAnime {
-                id: 920, title: "Long Runner".into(), title_romaji: None, title_english: None,
+                id: 920, title: "Long Runner".into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
                 cover_url: None, format: Some("TV".into()), genres: vec![],
                 episodes: Some(500), average_score: None, popularity: None,
                 url: "https://anilist.co/anime/920".into(), status: None, duration: Some(24),
@@ -3482,7 +3823,7 @@ mod tests {
         ] {
             db.upsert_catalog_anime(
                 &crate::anilist::CatalogAnime {
-                    id: pop, title: title.into(), title_romaji: None, title_english: None,
+                    id: pop, title: title.into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
                     cover_url: None, format: Some("TV".into()), genres: vec![],
                     episodes: Some(12), average_score: None, popularity: Some(pop),
                     url: format!("https://anilist.co/anime/{pop}"), status: None, duration: Some(24),
@@ -3529,7 +3870,7 @@ mod tests {
         // Same show on both sites, linked to same AniList ID
         db.upsert_catalog_anime(
             &crate::anilist::CatalogAnime {
-                id: 100, title: "Shared Show".into(), title_romaji: None, title_english: None,
+                id: 100, title: "Shared Show".into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
                 cover_url: None, format: Some("TV".into()), genres: vec![],
                 episodes: Some(12), average_score: None, popularity: Some(210000),
                 url: "https://anilist.co/anime/100".into(), status: None, duration: Some(24),
@@ -3553,7 +3894,7 @@ mod tests {
         ] {
             db.upsert_catalog_anime(
                 &crate::anilist::CatalogAnime {
-                    id: pop, title: title.into(), title_romaji: None, title_english: None,
+                    id: pop, title: title.into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
                     cover_url: None, format: Some("TV".into()), genres: vec![],
                     episodes: Some(12), average_score: None, popularity: Some(pop),
                     url: format!("https://anilist.co/anime/{pop}"), status: None, duration: Some(24),
@@ -3588,7 +3929,7 @@ mod tests {
         ] {
             db.upsert_catalog_anime(
                 &crate::anilist::CatalogAnime {
-                    id: pop, title: title.into(), title_romaji: None, title_english: None,
+                    id: pop, title: title.into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
                     cover_url: None, format: Some("TV".into()), genres: vec![],
                     episodes: Some(12), average_score: None, popularity: Some(pop),
                     url: format!("https://anilist.co/anime/{pop}"), status: None, duration: Some(24),
@@ -3623,7 +3964,7 @@ mod tests {
         ] {
             db.upsert_catalog_anime(
                 &crate::anilist::CatalogAnime {
-                    id: pop, title: title.into(), title_romaji: None, title_english: None,
+                    id: pop, title: title.into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
                     cover_url: None, format: Some("TV".into()), genres: vec![],
                     episodes: Some(12), average_score: None, popularity: Some(pop),
                     url: format!("https://anilist.co/anime/{pop}"), status: None, duration: Some(24),
@@ -3842,7 +4183,7 @@ mod tests {
 
         db.upsert_catalog_anime(
             &crate::anilist::CatalogAnime {
-                id: 777, title: "Long Show".into(), title_romaji: None, title_english: None,
+                id: 777, title: "Long Show".into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
                 cover_url: None, format: Some("TV".into()), genres: vec![],
                 episodes: Some(100), average_score: None, popularity: None,
                 url: "https://anilist.co/anime/777".into(), status: None, duration: Some(24),
@@ -3891,7 +4232,7 @@ mod tests {
         db.upsert_catalog_anime(
             &crate::anilist::CatalogAnime {
                 id: 16498, title: "Shingeki no Kyojin".into(), title_romaji: None,
-                title_english: Some("Attack on Titan".into()), cover_url: None,
+                title_english: Some("Attack on Titan".into()), synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(), cover_url: None,
                 format: Some("TV".into()), genres: vec![], episodes: Some(25),
                 average_score: None, popularity: None,
                 url: "https://anilist.co/anime/16498".into(), status: None, duration: Some(24),
@@ -4056,5 +4397,560 @@ mod tests {
             !deck_scores.contains_key("Mecha"),
             "the per-site affinity the swipe deck uses still sees only site A"
         );
+    }
+
+    #[test]
+    fn effective_genres_prefer_catalog_when_linked() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("TestSite", "https://site.example", "testsite").unwrap();
+
+        let mut anime = crate::anilist::CatalogAnime {
+            id: 100, title: "Test".into(), title_romaji: None, title_english: None,
+            cover_url: None, format: None, episodes: None, average_score: None, popularity: None,
+            url: "x".into(), genres: vec!["Action".into(), "Drama".into()], synonyms: vec![], tags: vec![],
+            status: None, duration: None, studio: None, start_date: None,
+            next_airing_at: None, next_episode: None,
+        };
+        db.upsert_catalog_anime(&anime, 0).unwrap();
+
+        let sid1 = db.upsert_series(src, &mk_airing("linked-with-genres", "Linked", None)).unwrap();
+        db.set_followed(sid1, true).unwrap();
+        db.insert_series_genres(sid1, &["Seinen".into()]).unwrap();
+        db.set_anilist_id(sid1, 100).unwrap();
+
+        let sid2 = db.upsert_series(src, &mk_airing("unlinked", "Unlinked", None)).unwrap();
+        db.set_followed(sid2, true).unwrap();
+        db.insert_series_genres(sid2, &["Seinen".into()]).unwrap();
+
+        anime.id = 101;
+        anime.genres = vec![];
+        db.upsert_catalog_anime(&anime, 1).unwrap();
+
+        let sid3 = db.upsert_series(src, &mk_airing("linked-no-genres", "LinkedNoGenres", None)).unwrap();
+        db.set_followed(sid3, true).unwrap();
+        db.insert_series_genres(sid3, &["Comedy".into()]).unwrap();
+        db.set_anilist_id(sid3, 101).unwrap();
+
+        let stats = db.get_genre_stats().unwrap();
+
+        let has_action = stats.iter().any(|g| g.genre == "Action");
+        let has_drama = stats.iter().any(|g| g.genre == "Drama");
+        let seinen_count = stats.iter().find(|g| g.genre == "Seinen").map(|g| g.count).unwrap_or(0);
+        let has_comedy = stats.iter().any(|g| g.genre == "Comedy");
+
+        assert!(has_action, "reports Action from catalog");
+        assert!(has_drama, "reports Drama from catalog");
+        assert_eq!(seinen_count, 1, "reports Seinen from unlinked");
+        assert!(has_comedy, "reports Comedy from site because catalog had NO genres");
+    }
+
+    #[test]
+    fn type_stats_uses_catalog_format_when_linked() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("TestSite", "https://site.example", "testsite").unwrap();
+
+        let anime = crate::anilist::CatalogAnime {
+            id: 100, title: "Test".into(), title_romaji: None, title_english: None,
+            cover_url: None, format: Some("TV_SHORT".into()), episodes: None, average_score: None, popularity: None,
+            url: "x".into(), genres: vec![], synonyms: vec![], tags: vec![],
+            status: None, duration: None, studio: None, start_date: None,
+            next_airing_at: None, next_episode: None,
+        };
+        db.upsert_catalog_anime(&anime, 0).unwrap();
+
+        let sid1 = db.upsert_series(src, &mk_airing("linked", "Linked", None)).unwrap();
+        db.conn.execute("UPDATE series SET kind='Película' WHERE id=?1", [sid1]).unwrap();
+        db.set_followed(sid1, true).unwrap();
+        db.set_anilist_id(sid1, 100).unwrap();
+
+        let sid2 = db.upsert_series(src, &mk_airing("unlinked", "Unlinked", None)).unwrap();
+        db.conn.execute("UPDATE series SET kind='OVA' WHERE id=?1", [sid2]).unwrap();
+        db.set_followed(sid2, true).unwrap();
+
+        let stats = db.get_type_stats().unwrap();
+        let has_tv = stats.iter().any(|s| s.kind == "TV");
+        let has_ova = stats.iter().any(|s| s.kind == "OVA");
+        let has_pelicula = stats.iter().any(|s| s.kind == "Película" || s.kind == "MOVIE");
+
+        assert!(has_tv, "catalog TV_SHORT maps to TV");
+        assert!(has_ova, "site OVA kept when unlinked");
+        assert!(!has_pelicula, "site Película ignored when linked");
+    }
+
+    #[test]
+    fn effective_kind_puts_both_sources_in_the_library_vocabulary() {
+        assert_eq!(effective_kind(Some("MOVIE"), Some("Pelicula")).as_deref(), Some("MOVIE"));
+        assert_eq!(effective_kind(None, Some("Pelicula")).as_deref(), Some("MOVIE"));
+        assert_eq!(effective_kind(None, Some("TV Show")).as_deref(), Some("TV"));
+        assert_eq!(effective_kind(None, Some("Anime")).as_deref(), Some("TV"));
+        assert_eq!(effective_kind(Some("TV_SHORT"), None).as_deref(), Some("TV"));
+        assert_eq!(effective_kind(None, Some("Sin Censura")).as_deref(), Some("Sin Censura"));
+        assert_eq!(effective_kind(None, None), None);
+    }
+
+    #[test]
+    fn linked_and_unlinked_series_share_one_genre_bucket_across_vocabularies() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("TestSite", "https://site.example", "testsite").unwrap();
+        let mut anime = crate::db::test_support::catalog_anime(100, "Test", &["Action"]);
+        anime.id = 100;
+        db.upsert_catalog_anime(&anime, 0).unwrap();
+        let linked = db.upsert_series(src, &mk_airing("a", "Linked", None)).unwrap();
+        db.set_followed(linked, true).unwrap();
+        db.set_anilist_id(linked, 100).unwrap();
+        let unlinked = db.upsert_series(src, &mk_airing("b", "Unlinked", None)).unwrap();
+        db.set_followed(unlinked, true).unwrap();
+        db.insert_series_genres(unlinked, &["Acción".into()]).unwrap();
+
+        let stats = db.get_genre_stats().unwrap();
+        let action = stats.iter().find(|g| g.genre == "Action").map(|g| g.count);
+        assert_eq!(action, Some(2), "Acción (site) and Action (AniList) are one genre: {stats:?}");
+        assert!(!stats.iter().any(|g| g.genre == "Acción"));
+    }
+
+    #[test]
+    fn series_effective_genres_is_fast_at_real_size() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("TestSite", "https://site.example", "testsite").unwrap();
+
+        let tx = db.conn.unchecked_transaction().unwrap();
+        for i in 1..=22000 {
+            tx.execute(
+                "INSERT INTO anilist_catalog(id, title, url, sort_order, metadata_version) VALUES(?1, 'Cat', 'x', ?1, 1)",
+                [i],
+            ).unwrap();
+            for j in 1..=3 {
+                tx.execute(
+                    "INSERT INTO anilist_catalog_genres(anilist_id, genre) VALUES(?1, ?2)",
+                    (i, format!("Genre{}", j)),
+                ).unwrap();
+            }
+        }
+        for i in 1..=6000 {
+            let anilist_id = if i % 2 == 0 { Some(i) } else { None };
+            tx.execute(
+                "INSERT INTO series(id, source_id, slug, title, url, anilist_id) VALUES(?1, ?2, ?3, 'Series', 'x', ?4)",
+                (i, src, format!("slug{i}"), anilist_id),
+            ).unwrap();
+            for j in 1..=2 {
+                tx.execute(
+                    "INSERT INTO series_genres(series_id, genre) VALUES(?1, ?2)",
+                    (i, format!("SiteGenre{}", j)),
+                ).unwrap();
+            }
+        }
+        tx.commit().unwrap();
+
+        let started = std::time::Instant::now();
+        let count: i64 = db.conn.query_row("SELECT COUNT(*) FROM series_effective_genres", [], |r| r.get(0)).unwrap();
+        let took = started.elapsed();
+
+        assert!(count > 0);
+        assert!(took < std::time::Duration::from_secs(1), "series_effective_genres full scan took {took:?}");
+    }
+
+    #[test]
+    fn episodes_total_is_never_below_episodes_watched() {
+        // Two arcs on two sites, both watched, plus an unseen followed row of
+        // the parent show: the denominator's grouping merges the arcs while the
+        // numerator's does not. The ratio must still be <= 100 %.
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("A", "a", "animeytx").unwrap();
+        let b = db.upsert_source("B", "b", "tioanime").unwrap();
+        let arc_a = db.upsert_series(a, &mk_airing("a1", "Big Show: Arc One", None)).unwrap();
+        db.set_followed(arc_a, true).unwrap();
+        insert_eps_seen_up_to(&db, arc_a, 10, 10);
+        let arc_b = db.upsert_series(b, &mk_airing("b1", "Big Show: Arc Two", None)).unwrap();
+        db.set_followed(arc_b, true).unwrap();
+        insert_eps_seen_up_to(&db, arc_b, 10, 10);
+        let parent = db.upsert_series(a, &mk_airing("p", "Big Show", None)).unwrap();
+        db.set_followed(parent, true).unwrap();
+
+        let summary = db.get_watch_summary().unwrap();
+        assert!(
+            summary.episodes_total >= summary.episodes_watched,
+            "total {} must not be below watched {}",
+            summary.episodes_total,
+            summary.episodes_watched
+        );
+    }
+
+    #[test]
+    fn canonical_totals_are_fast_at_real_size() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+        let tx = db.conn.unchecked_transaction().unwrap();
+        for i in 1..=6000 {
+            tx.execute(
+                "INSERT INTO series(id, source_id, slug, title, url, followed) VALUES(?1, ?2, ?3, ?4, 'x', ?5)",
+                (i, src, format!("slug{i}"), format!("Show Number {i}"), i % 2),
+            ).unwrap();
+            for n in 1..=20 {
+                tx.execute(
+                    "INSERT INTO episodes(series_id, number, url, seen) VALUES(?1, ?2, ?3, ?4)",
+                    (i, n.to_string(), format!("https://site/{i}/{n}"), n % 5 == 0),
+                ).unwrap();
+            }
+        }
+        tx.commit().unwrap();
+
+        let started = std::time::Instant::now();
+        let totals = db.canonical_franchise_episode_totals(false).unwrap();
+        let took = started.elapsed();
+        assert!(!totals.is_empty());
+        assert!(took < std::time::Duration::from_secs(1), "canonical totals took {took:?} for 6k series / 120k episodes");
+    }
+
+    #[test]
+    fn t4_a_same_show_two_sites_episodes_total() {
+        let db = Db::open(":memory:").unwrap();
+        let src1 = db.upsert_source("A", "a", "animeytx").unwrap();
+        let src2 = db.upsert_source("B", "b", "tioanime").unwrap();
+
+        let s1 = db.upsert_series(src1, &mk_airing("s1", "Same Show", None)).unwrap();
+        db.set_followed(s1, true).unwrap();
+        insert_eps_seen_up_to(&db, s1, 12, 6);
+
+        let s2 = db.upsert_series(src2, &mk_airing("s2", "Same Show", None)).unwrap();
+        db.set_followed(s2, true).unwrap();
+        insert_eps_seen_up_to(&db, s2, 12, 6);
+
+        let summary = db.get_watch_summary().unwrap();
+        assert_eq!(summary.episodes_total, 12, "episodes_total must not double count");
+        assert_eq!(summary.episodes_watched, 6, "episodes_watched must not double count");
+    }
+
+    #[test]
+    fn t4_b_linked_show_catalog_exceeds_scraped() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+
+        db.upsert_catalog_anime(
+            &crate::anilist::CatalogAnime {
+                id: 100, title: "Linked Show".into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
+                cover_url: None, format: Some("TV".into()), genres: vec![],
+                episodes: Some(24), average_score: None, popularity: None,
+                url: "https://anilist.co/anime/100".into(), status: None, duration: Some(24),
+                studio: None, start_date: None,
+            },
+            0,
+        ).unwrap();
+
+        let s1 = db.upsert_series(src, &mk_airing("s1", "Linked Show", None)).unwrap();
+        db.set_followed(s1, true).unwrap();
+        db.set_anilist_id(s1, 100).unwrap();
+        insert_eps_seen_up_to(&db, s1, 13, 0);
+
+        let summary = db.get_watch_summary().unwrap();
+        assert_eq!(summary.episodes_total, 24, "catalog episodes win when larger");
+    }
+
+    #[test]
+    fn t4_c_long_runner_catalog_null_uses_best_site_row_count() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+        let src2 = db.upsert_source("B", "b", "tioanime").unwrap();
+
+        db.upsert_catalog_anime(
+            &crate::anilist::CatalogAnime {
+                id: 100, title: "Long Runner".into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
+                cover_url: None, format: Some("TV".into()), genres: vec![],
+                episodes: None, average_score: None, popularity: None,
+                url: "https://anilist.co/anime/100".into(), status: None, duration: Some(24),
+                studio: None, start_date: None,
+            },
+            0,
+        ).unwrap();
+
+        let s1 = db.upsert_series(src, &mk_airing("s1", "Long Runner", None)).unwrap();
+        db.set_followed(s1, true).unwrap();
+        db.set_anilist_id(s1, 100).unwrap();
+        insert_eps_seen_up_to(&db, s1, 50, 0);
+
+        let s2 = db.upsert_series(src2, &mk_airing("s2", "Long Runner", None)).unwrap();
+        db.set_followed(s2, true).unwrap();
+        db.set_anilist_id(s2, 100).unwrap();
+        insert_eps_seen_up_to(&db, s2, 75, 0);
+
+        let summary = db.get_watch_summary().unwrap();
+        assert_eq!(summary.episodes_total, 75, "best site row count wins when catalog is null");
+    }
+
+    #[test]
+    fn t4_d_followed_series_zero_seen_counts_in_total() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+
+        let s1 = db.upsert_series(src, &mk_airing("s1", "Zero Seen", None)).unwrap();
+        db.set_followed(s1, true).unwrap();
+        insert_eps_seen_up_to(&db, s1, 12, 0);
+
+        let summary = db.get_watch_summary().unwrap();
+        assert_eq!(summary.episodes_total, 12, "followed but not seen still counts in episodes_total");
+    }
+
+    #[test]
+    fn t4_e_avg_episodes_two_sites_one_show() {
+        let db = Db::open(":memory:").unwrap();
+        let src1 = db.upsert_source("A", "a", "animeytx").unwrap();
+        let src2 = db.upsert_source("B", "b", "tioanime").unwrap();
+
+        let s1 = db.upsert_series(src1, &mk_airing("s1", "Same Show", None)).unwrap();
+        db.set_followed(s1, true).unwrap();
+        insert_eps_seen_up_to(&db, s1, 12, 0);
+
+        let s2 = db.upsert_series(src2, &mk_airing("s2", "Same Show", None)).unwrap();
+        db.set_followed(s2, true).unwrap();
+        insert_eps_seen_up_to(&db, s2, 12, 0);
+
+        let insights = db.get_watch_insights().unwrap();
+        assert_eq!(insights.avg_episodes_per_series, 12.0, "average over one franchise, not two 12-episode shows");
+    }
+
+    #[test]
+    fn t4_f_completion_days_ignores_0_day_franchise() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+
+        let s1 = mk_airing("s1", "Zero Day Show", None);
+        let id1 = db.upsert_series(src, &s1).unwrap();
+        db.set_followed(id1, true).unwrap();
+        db.conn.execute("UPDATE series SET is_airing=0 WHERE id=?1", [id1]).unwrap();
+        for n in 1..=2 {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: id1, number: n.to_string(), title: None,
+                url: format!("https://site/{n}/"), released_at: None, seen: true,
+            }).unwrap();
+            // Same day for both -> 0-day span
+            db.conn.execute(
+                "UPDATE episodes SET seen_at=datetime('now', '-5 days') WHERE series_id=?1 AND number=?2",
+                [id1.to_string(), n.to_string()],
+            ).unwrap();
+        }
+
+        let avg = db.get_avg_completion_days().unwrap();
+        assert_eq!(avg, None, "only 0-day franchises exist, must return None");
+
+        seed_finished_series(&db, src, "Normal Show", 10, 2); // 8-day span
+        let avg2 = db.get_avg_completion_days().unwrap();
+        assert_eq!(avg2, Some(8.0), "0-day show ignored, only 8-day show counts");
+    }
+
+    #[test]
+    fn t6_backlog_two_sites_of_one_show_count_once() {
+        let db = Db::open(":memory:").unwrap();
+        let src1 = db.upsert_source("A", "a", "animeytx").unwrap();
+        let src2 = db.upsert_source("B", "b", "tioanime").unwrap();
+
+        let s1 = db.upsert_series(src1, &mk_airing("s1", "Same Show", None)).unwrap();
+        db.set_followed(s1, true).unwrap();
+        insert_eps_seen_up_to(&db, s1, 10, 4); // available 10, seen 4. remaining 6
+
+        let s2 = db.upsert_series(src2, &mk_airing("s2", "Same Show", None)).unwrap();
+        db.set_followed(s2, true).unwrap();
+        insert_eps_seen_up_to(&db, s2, 12, 4); // available 12, seen 4. remaining 8
+
+        let insights = db.get_watch_insights().unwrap();
+        // most available (12) minus most marked on any site (4)
+        assert_eq!(insights.backlog_episodes, 8);
+        assert_eq!(insights.backlog_minutes, 8 * 24); // default for TV (assumed)
+    }
+
+    #[test]
+    fn t6_backlog_airing_show_counts_only_available_rows() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+
+        let s = db.upsert_series(src, &mk_airing("s", "Airing", None)).unwrap();
+        db.set_followed(s, true).unwrap();
+        db.set_anilist_id(s, 100).unwrap();
+        db.upsert_catalog_anime(&crate::anilist::CatalogAnime {
+            id: 100, title: "Airing".into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
+            cover_url: None, format: Some("TV".into()), genres: vec![],
+            episodes: Some(24), average_score: None, popularity: None,
+            url: "x".into(), status: Some("RELEASING".into()), duration: Some(25),
+            studio: None, start_date: None,
+        }, 0).unwrap();
+        insert_eps_seen_up_to(&db, s, 3, 0); // available 3
+
+        let insights = db.get_watch_insights().unwrap();
+        assert_eq!(insights.backlog_episodes, 3, "counts available rows, not catalog episodes");
+        assert_eq!(insights.backlog_minutes, 3 * 25, "linked duration beats estimate");
+    }
+
+    #[test]
+    fn t6_backlog_watched_franchise_gives_zero() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+
+        let s = db.upsert_series(src, &mk_airing("s", "Watched", None)).unwrap();
+        db.set_followed(s, true).unwrap();
+        db.conn.execute("UPDATE series SET watched_externally=1 WHERE id=?1", [s]).unwrap();
+
+        let insights = db.get_watch_insights().unwrap();
+        assert_eq!(insights.backlog_episodes, 0, "watched_externally with no rows gives 0");
+    }
+
+    #[test]
+    fn t6_studios_and_era() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+
+        let s1 = db.upsert_series(src, &mk_airing("s1", "Show 1", None)).unwrap();
+        db.set_followed(s1, true).unwrap();
+        db.set_anilist_id(s1, 1).unwrap();
+        db.upsert_catalog_anime(&crate::anilist::CatalogAnime {
+            id: 1, title: "S1".into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
+            cover_url: None, format: Some("TV".into()), genres: vec![],
+            episodes: Some(12), average_score: None, popularity: None,
+            url: "x".into(), status: None, duration: Some(24),
+            studio: Some("Bones".into()), start_date: Some(946684800),
+        }, 0).unwrap();
+
+        let s2 = db.upsert_series(src, &mk_airing("s2", "Show 2", None)).unwrap();
+        db.set_followed(s2, true).unwrap();
+        db.set_anilist_id(s2, 2).unwrap();
+        db.upsert_catalog_anime(&crate::anilist::CatalogAnime {
+            id: 2, title: "S2".into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
+            cover_url: None, format: Some("TV".into()), genres: vec![],
+            episodes: Some(12), average_score: None, popularity: None,
+            url: "x".into(), status: None, duration: Some(24),
+            studio: Some("Bones".into()), start_date: Some(1262304000),
+        }, 0).unwrap();
+
+        let s3 = db.upsert_series(src, &mk_airing("s3", "Show 1: Arc 2", None)).unwrap();
+        db.set_followed(s3, true).unwrap();
+        db.set_anilist_id(s3, 3).unwrap();
+        db.upsert_catalog_anime(&crate::anilist::CatalogAnime {
+            id: 3, title: "S3".into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
+            cover_url: None, format: Some("TV".into()), genres: vec![],
+            episodes: Some(12), average_score: None, popularity: None,
+            url: "x".into(), status: None, duration: Some(24),
+            studio: Some("Bones".into()), start_date: Some(978307200),
+        }, 0).unwrap();
+
+        let s4 = db.upsert_series(src, &mk_airing("s4", "Show 4", None)).unwrap();
+        db.set_followed(s4, true).unwrap();
+        db.set_anilist_id(s4, 4).unwrap();
+        db.upsert_catalog_anime(&crate::anilist::CatalogAnime {
+            id: 4, title: "S4".into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
+            cover_url: None, format: Some("TV".into()), genres: vec![],
+            episodes: Some(12), average_score: None, popularity: None,
+            url: "x".into(), status: None, duration: Some(24),
+            studio: Some("Mappa".into()), start_date: Some(1262304000),
+        }, 0).unwrap();
+
+        let insights = db.get_watch_insights().unwrap();
+        assert_eq!(insights.top_studios.len(), 2);
+        assert_eq!(insights.top_studios[0].title, "Bones");
+        assert_eq!(insights.top_studios[0].count, 2);
+        assert_eq!(insights.top_studios[1].title, "Mappa");
+        assert_eq!(insights.top_studios[1].count, 1);
+
+        let eras = insights.era_distribution;
+        assert_eq!(eras.len(), 2);
+        assert_eq!(eras[0].decade, 2000);
+        assert_eq!(eras[0].count, 1);
+        assert_eq!(eras[1].decade, 2010);
+        assert_eq!(eras[1].count, 2);
+    }
+
+    #[test]
+    fn t6_binge_top_series_and_empty() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+
+        let binge_empty = db.get_binge_record().unwrap();
+        assert_eq!(binge_empty.day, None);
+        assert_eq!(binge_empty.count, 0);
+        assert!(binge_empty.top_series.is_empty());
+
+        let s1 = db.upsert_series(src, &mk_airing("s1", "A Show", None)).unwrap();
+        let s2 = db.upsert_series(src, &mk_airing("s2", "B Show", None)).unwrap();
+
+        for n in 1..=3 {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: s1, number: n.to_string(), title: None,
+                url: format!("https://site/a/{n}/"), released_at: None, seen: true,
+            }).unwrap();
+            db.conn.execute("UPDATE episodes SET seen_at=datetime('now') WHERE series_id=?1 AND number=?2", [s1, n]).unwrap();
+        }
+
+        for n in 1..=2 {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: s2, number: n.to_string(), title: None,
+                url: format!("https://site/b/{n}/"), released_at: None, seen: true,
+            }).unwrap();
+            db.conn.execute("UPDATE episodes SET seen_at=datetime('now') WHERE series_id=?1 AND number=?2", [s2, n]).unwrap();
+        }
+
+        let binge = db.get_binge_record().unwrap();
+        assert_eq!(binge.count, 5);
+        assert_eq!(binge.top_series.len(), 2);
+        assert_eq!(binge.top_series[0], "A Show");
+        assert_eq!(binge.top_series[1], "B Show");
+    }
+
+    #[test]
+    fn backlog_uses_the_site_the_user_actually_watched_on() {
+        // Site A lists 12 episodes (none marked), site B lists 10 and the user marked all 10:
+        // only 2 are left, not 12.
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("A", "a", "animeytx").unwrap();
+        let b = db.upsert_source("B", "b", "tioanime").unwrap();
+        let sa = db.upsert_series(a, &mk_airing("a", "Cross Show", None)).unwrap();
+        db.set_followed(sa, true).unwrap();
+        insert_eps_seen_up_to(&db, sa, 12, 0);
+        let sb = db.upsert_series(b, &mk_airing("b", "Cross Show", None)).unwrap();
+        db.set_followed(sb, true).unwrap();
+        insert_eps_seen_up_to(&db, sb, 10, 10);
+
+        let insights = db.get_watch_insights().unwrap();
+        assert_eq!(insights.backlog_episodes, 2);
+    }
+
+    #[test]
+    fn backlog_ignores_a_ya_lo_vi_franchise_even_with_unseen_rows() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+        let s = db.upsert_series(src, &mk_airing("s", "Claimed Watched", None)).unwrap();
+        db.set_followed(s, true).unwrap();
+        insert_eps_seen_up_to(&db, s, 12, 0);
+        db.conn.execute("UPDATE series SET watched_externally=1 WHERE id=?1", [s]).unwrap();
+
+        let insights = db.get_watch_insights().unwrap();
+        assert_eq!(insights.backlog_episodes, 0);
+        assert_eq!(insights.backlog_minutes, 0);
+    }
+
+    #[test]
+    fn t6_timing_get_watch_insights() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+        let tx = db.conn.unchecked_transaction().unwrap();
+        for i in 1..=22000 {
+            tx.execute(
+                "INSERT INTO anilist_catalog(id, title, url, sort_order, format, episodes, duration, start_date, metadata_version) VALUES(?1, ?2, 'x', ?1, 'TV', 12, 24, 946684800, 3)",
+                (i, format!("Show {i}")),
+            ).unwrap();
+        }
+        for i in 1..=6000 {
+            tx.execute(
+                "INSERT INTO series(id, source_id, slug, title, url, followed, anilist_id) VALUES(?1, ?2, ?3, ?4, 'x', 1, ?5)",
+                (i, src, format!("slug{i}"), format!("Show {i}"), i),
+            ).unwrap();
+            for n in 1..=20 {
+                tx.execute(
+                    "INSERT INTO episodes(series_id, number, url, seen) VALUES(?1, ?2, ?3, ?4)",
+                    (i, n.to_string(), format!("https://site/{i}/{n}"), n % 5 == 0),
+                ).unwrap();
+            }
+        }
+        tx.commit().unwrap();
+
+        let started = std::time::Instant::now();
+        let _insights = db.get_watch_insights().unwrap();
+        let took = started.elapsed();
+        assert!(took < std::time::Duration::from_millis(3000), "get_watch_insights took {took:?} (limit 3000ms)");
     }
 }

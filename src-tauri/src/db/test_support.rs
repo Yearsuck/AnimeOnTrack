@@ -43,6 +43,7 @@ pub(crate) fn catalog_anime_with_popularity(
         title: title.into(),
         title_romaji: None,
         title_english: None,
+        synonyms: Vec::new(),
         cover_url: Some(format!("https://cdn/{id}.jpg")),
         format: Some("TV".into()),
         genres: genres.iter().map(|g| g.to_string()).collect(),
@@ -54,6 +55,9 @@ pub(crate) fn catalog_anime_with_popularity(
         duration: None,
         studio: None,
         start_date: None,
+        next_airing_at: None,
+        next_episode: None,
+        tags: Vec::new(),
     }
 }
 
@@ -70,6 +74,7 @@ pub(crate) fn catalog_anime_full(
         title: title.into(),
         title_romaji: None,
         title_english: None,
+        synonyms: Vec::new(),
         cover_url: None,
         format: Some(format.into()),
         genres: genres.iter().map(|g| g.to_string()).collect(),
@@ -81,6 +86,9 @@ pub(crate) fn catalog_anime_full(
         duration: None,
         studio: None,
         start_date: None,
+        next_airing_at: None,
+        next_episode: None,
+        tags: Vec::new(),
     }
 }
 
