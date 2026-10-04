@@ -203,9 +203,18 @@ pub fn image_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
     None
 }
 
+/// A poster that is (almost) one flat colour compresses to a handful of bytes
+/// per pixel: a site's own "NO IMAGE" picture (165x233 in 3.2 KB, 0.085 B/px)
+/// where a real cover of that size is 0.2-0.4 B/px. Only for images big enough
+/// that the ratio means something (a 100x140 thumbnail can be tiny and real).
+fn is_flat_image(w: u32, h: u32, total_bytes: usize) -> bool {
+    let pixels = u64::from(w) * u64::from(h);
+    pixels >= 20_000 && (total_bytes as f64) / (pixels as f64) < 0.1
+}
+
 pub fn is_placeholder_image(bytes: &[u8]) -> bool {
     if let Some((w, h)) = image_dimensions(bytes) {
-        std::cmp::min(w, h) < 64
+        std::cmp::min(w, h) < 64 || is_flat_image(w, h, bytes.len())
     } else {
         false
     }
@@ -222,7 +231,11 @@ pub fn is_placeholder_data_uri(uri: &str) -> bool {
         use base64::Engine;
         // Bytes, not a str slice: a str slice panics on a non-ASCII boundary.
         if let Ok(bytes) = base64::prelude::BASE64_STANDARD.decode(&b64[..limit]) {
-            return is_placeholder_image(&bytes);
+            // Only the header was decoded; the real size follows from the payload length.
+            return match image_dimensions(&bytes) {
+                Some((w, h)) => std::cmp::min(w, h) < 64 || is_flat_image(w, h, b64.len() / 4 * 3),
+                None => false,
+            };
         }
     }
     false
@@ -525,6 +538,7 @@ mod tests {
         bytes.extend_from_slice(&[0; 8]);
         bytes.extend_from_slice(&200u32.to_be_bytes()); // 16..20
         bytes.extend_from_slice(&300u32.to_be_bytes()); // 20..24
+        bytes.extend(vec![0; 200 * 300 * 3 / 10]); // a realistic 0.3 bytes per pixel, not a flat image
         assert_eq!(image_dimensions(&bytes), Some((200, 300)));
         assert!(!is_placeholder_image(&bytes));
     }
@@ -536,13 +550,30 @@ mod tests {
             0xFF, 0xD8, 0xFF, 0xFF, 0xE0, 0x00, 0x04, 0x00, 0x00, 0xFF, 0xC0, 0x00, 0x11, 0x08, 0x02, 0x58, 0x03, 0x20,
         ];
         assert_eq!(image_dimensions(&bytes), Some((800, 600)));
-        assert!(!is_placeholder_image(&bytes));
+        let mut padded = bytes.to_vec();
+        padded.extend(vec![0; 800 * 600 * 3 / 10]);
+        assert!(!is_placeholder_image(&padded));
     }
 
     #[test]
     fn non_ascii_data_uri_does_not_panic() {
         let uri = format!("data:image/jpeg;base64,{}", "é".repeat(4000));
         assert!(!is_placeholder_data_uri(&uri));
+    }
+
+    #[test]
+    fn a_sites_flat_no_image_poster_is_a_placeholder_but_a_real_cover_is_not() {
+        let no_image = include_bytes!("../tests/fixtures/no-image-165x233.jpg");
+        assert_eq!(image_dimensions(no_image), Some((165, 230)));
+        assert!(is_placeholder_image(no_image), "165x230 in {} bytes is flat", no_image.len());
+
+        use base64::Engine;
+        let uri = format!("data:image/jpeg;base64,{}", base64::prelude::BASE64_STANDARD.encode(no_image));
+        assert!(is_placeholder_data_uri(&uri));
+
+        // the same dimensions at a realistic 0.3 bytes per pixel are a cover
+        let realistic_len = 165 * 230 * 3 / 10;
+        assert!(!is_flat_image(165, 230, realistic_len));
     }
 
     #[test]

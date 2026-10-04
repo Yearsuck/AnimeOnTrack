@@ -114,6 +114,12 @@ impl Db {
         let mut groups: std::collections::HashMap<String, Vec<AiringRow>> =
             std::collections::HashMap::new();
         for row in rows {
+            // A live-action adaptation has no AniList entry to say whether it is
+            // still airing, and this is an anime tracker: unless the user follows
+            // it, it does not belong in the airing list.
+            if row.anilist_id.is_none() && !row.followed && crate::matching::is_live_action(&row.series.title) {
+                continue;
+            }
             // Linked rows dedup by AniList id. Unlinked rows dedup by franchise
             // key (season markers + spacing stripped) so the same show under two
             // sites' title variants ("…2nd Season" vs "…Temporada 2") collapses
@@ -721,4 +727,21 @@ mod tests {
         let airing = db.list_airing(a).unwrap();
         assert_eq!(airing[0].next_episode_at, Some(now + 100));
     }
+
+    #[test]
+    fn list_airing_hides_an_unfollowed_live_action_without_a_catalog_entry() {
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("AnimeYT", "https://a", "animeytx").unwrap();
+        db.upsert_series(a, &mk_airing("op-live", "One Piece: Live Action (2023)", None)).unwrap();
+        let anime = db.upsert_series(a, &mk_airing("op", "Some Anime", None)).unwrap();
+        let followed_live = db.upsert_series(a, &mk_airing("fl", "Another: Live Action", None)).unwrap();
+        db.set_followed(followed_live, true).unwrap();
+
+        let titles: Vec<String> = db.list_airing(a).unwrap().into_iter().map(|s| s.title).collect();
+        assert!(titles.contains(&"Some Anime".to_string()));
+        assert!(titles.contains(&"Another: Live Action".to_string()), "a followed one stays");
+        assert!(!titles.iter().any(|t| t.contains("One Piece: Live Action")));
+        let _ = anime;
+    }
+
 }

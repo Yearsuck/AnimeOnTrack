@@ -245,6 +245,13 @@ pub struct SearchTarget {
 
 impl Db {
     pub fn unlinked_for_search(&self, limit: usize, now: i64) -> Result<Vec<SearchTarget>> {
+        // Misses were decided by older matching rules: when the rules improve,
+        // every title gets another chance instead of waiting out the 14 days.
+        const SEARCH_RULES_VERSION: &str = "2";
+        if self.get_setting("anilist_search_rules")?.as_deref() != Some(SEARCH_RULES_VERSION) {
+            self.conn.execute("DELETE FROM anilist_search_misses", [])?;
+            self.set_setting("anilist_search_rules", SEARCH_RULES_VERSION)?;
+        }
         let mut by_norm: std::collections::HashMap<String, SearchTarget> = std::collections::HashMap::new();
         let mut order: Vec<String> = Vec::new();
 
@@ -390,6 +397,21 @@ impl Db {
                 let colon = title.contains(':');
                 for id in [index.lookup(&[&base]), index.fuzzy_lookup(&[&base])].into_iter().flatten() {
                     if is_consistent(id) && (!colon || self.is_long_runner(id)?) {
+                        return Ok(Some(id));
+                    }
+                }
+            }
+        }
+
+        // Sites spell season 2 as "X Temporada 2" while AniList often lists
+        // the same season as "X 2" (a synonym or the romaji): try that spelling.
+        if let Some(n) = s.filter(|&n| n >= 2 && !live) {
+            let tokens: Vec<&str> = title.split_whitespace().collect();
+            let stem = crate::matching::strip_season_markers(tokens, crate::matching::normalize_title).join(" ");
+            if !stem.is_empty() {
+                let bare = format!("{stem} {n}");
+                for id in [index.lookup(&[&bare]), index.fuzzy_lookup(&[&bare])].into_iter().flatten() {
+                    if is_consistent(id) {
                         return Ok(Some(id));
                     }
                 }
@@ -3102,8 +3124,25 @@ mod tests {
     }
 
     #[test]
+    fn improved_search_rules_forget_the_old_misses_once() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("TestSite", "https://site.example", "testsite").unwrap();
+        series_with(&db, src, "m", "Missed Title");
+        let norm = crate::matching::normalize_title("Missed Title");
+        let now = 20_000_000;
+
+        db.set_setting("anilist_search_rules", "1").unwrap(); // misses recorded under old rules
+        db.record_search_miss(&norm, now).unwrap();
+        assert_eq!(db.unlinked_for_search(10, now).unwrap().len(), 1, "old-rules miss is forgotten");
+
+        db.record_search_miss(&norm, now).unwrap();
+        assert!(db.unlinked_for_search(10, now).unwrap().is_empty(), "a miss under the current rules stands");
+    }
+
+    #[test]
     fn unlinked_for_search_tests() {
         let db = Db::open(":memory:").unwrap();
+        db.set_setting("anilist_search_rules", "2").unwrap(); // current rules: recorded misses stand
         let src = db.upsert_source("TestSite", "https://site.example", "testsite").unwrap();
 
         let now = 20_000_000;
@@ -3152,4 +3191,30 @@ mod tests {
         let has_cat: i64 = db.conn.query_row("SELECT COUNT(*) FROM anilist_catalog WHERE id=4242", [], |r| r.get(0)).unwrap();
         assert_eq!(has_cat, 1);
     }
+
+    #[test]
+    fn link_resolves_a_temporada_title_through_the_bare_number_spelling() {
+        // Real case: AniList lists season 2 as "... desu 2"; the site row says "... Temporada 2".
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        let mut s2 = catalog_anime(159309, "Trapped in a Dating Sim Season 2", &[]);
+        s2.synonyms = vec!["Otome Game Sekai wa Mob ni Kibishii Sekai desu 2".into()];
+        db.upsert_catalog_anime(&s2, 0).unwrap();
+        let row = series_with(&db, src, "otome2", "Otome Game Sekai wa Mob ni Kibishii Sekai desu Temporada 2");
+
+        db.link_series_to_catalog().unwrap();
+        assert_eq!(linked_id(&db, row), Some(159309));
+    }
+
+    #[test]
+    fn a_temporada_title_never_takes_the_bare_number_of_an_unrelated_franchise() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        // "Something Else 2" exists, but it is another show, not "Mob Show"'s season 2.
+        db.upsert_catalog_anime(&catalog_anime(1, "Something Else 2", &[]), 0).unwrap();
+        let row = series_with(&db, src, "mob2", "Mob Show Temporada 2");
+        db.link_series_to_catalog().unwrap();
+        assert_eq!(linked_id(&db, row), None);
+    }
+
 }

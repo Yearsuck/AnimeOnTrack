@@ -212,7 +212,7 @@ async fn scrape_airing_listing(
     app: &AppHandle,
     mirrors: &[String],
     a: &dyn SiteAdapter,
-) -> Result<(Vec<Series>, String), String> {
+) -> Result<(Vec<Series>, String, bool), String> {
     emit_refresh_progress(app, 0, 1, "Escaneando listado de estrenos");
     // Walk every page of the airing listing, not just the first. Some sites
     // paginate their "en emisión" directory (TioAnime: ~5 pages of 20), so a
@@ -231,8 +231,15 @@ async fn scrape_airing_listing(
     let mut seen_slugs: std::collections::HashSet<String> =
         series.iter().map(|s| s.slug.clone()).collect();
     let page_mirrors = vec![working_mirror.clone()];
+    // `complete`: the walk ended on its own terms (no next page / an empty page /
+    // a page with nothing new), not on a failed page or the page cap. Only a
+    // complete listing may be used to conclude that a show is NOT listed.
+    let mut complete = false;
     for page in 2..=MAX_AIRING_PAGES {
-        let Some(path) = a.airing_page_url("", page) else { break };
+        let Some(path) = a.airing_page_url("", page) else {
+            complete = true;
+            break;
+        };
         emit_refresh_progress(app, 0, 1, &format!("Escaneando estrenos (página {page})"));
         // Wrap the parse in a one-element Vec so scrape_via_mirrors doesn't read
         // an empty page as a mirror failure (same trick as search_site): an
@@ -244,6 +251,7 @@ async fn scrape_airing_listing(
         let Ok((_s, mut pages, page_mirror)) = fetched else { break };
         let Some(page_series) = pages.pop() else { break };
         if page_series.is_empty() {
+            complete = true;
             break;
         }
         let mut added = 0;
@@ -257,11 +265,12 @@ async fn scrape_airing_listing(
         // A page with no *new* series (a site that clamps `p` to the last page
         // and re-serves it) also ends the walk — avoids looping to the cap.
         if added == 0 {
+            complete = true;
             break;
         }
     }
     emit_refresh_progress(app, 1, 1, "Listado completo");
-    Ok((series, working_mirror))
+    Ok((series, working_mirror, complete))
 }
 
 async fn scan_airing_via_mirrors(
@@ -271,7 +280,7 @@ async fn scan_airing_via_mirrors(
     a: &dyn SiteAdapter,
     site_id: &str,
 ) -> Result<Vec<Series>, String> {
-    let (series, working_mirror) = scrape_airing_listing(app, &mirrors, a).await?;
+    let (series, working_mirror, listing_complete) = scrape_airing_listing(app, &mirrors, a).await?;
     // Cover images are intentionally NOT fetched here: doing it for every
     // series on the airing list (~150 at once) reads as scraping abuse to
     // Cloudflare and gets rate-limited regardless of session validity. Covers
@@ -291,6 +300,12 @@ async fn scan_airing_via_mirrors(
     let mut upserted_ids: Vec<i64> = Vec::with_capacity(series.len());
     for s in &series {
         upserted_ids.push(db.upsert_series(src, s).map_err(|e| e.to_string())?);
+    }
+    if listing_complete {
+        let listed: std::collections::HashSet<&str> = series.iter().map(|s| s.slug.as_str()).collect();
+        if let Err(e) = db.mark_unlisted_not_airing(src, &listed) {
+            eprintln!("[scan] mark_unlisted_not_airing failed: {e}");
+        }
     }
     // Cross-site follow carry-over: a series followed on ANOTHER site that
     // matches (by title) one just scanned here inherits the follow + a
@@ -752,7 +767,7 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
     // delayed their new episodes by up to a day.
     let listing_slugs: Option<std::collections::HashSet<String>> =
         match scrape_airing_listing(&app, &mirrors, a.as_ref()).await {
-            Ok((series, _working_mirror)) => {
+            Ok((series, _working_mirror, listing_complete)) => {
                 let db = state.db.lock().unwrap();
                 // Drop `file:` covers whose cached file vanished (cleared
                 // AppData, DB restored on another machine) so the upsert
@@ -765,6 +780,13 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
                     Ok(0) => {}
                     Ok(n) => eprintln!("[cover] cleared {n} cached cover(s) whose file is missing"),
                     Err(e) => eprintln!("[cover] heal_missing_cached_covers failed: {e}"),
+                }
+                if listing_complete {
+                    match db.mark_unlisted_not_airing(src, &listed) {
+                        Ok(0) => {}
+                        Ok(n) => eprintln!("[scan] {n} unlinked show(s) no longer listed by the site: not airing"),
+                        Err(e) => eprintln!("[scan] mark_unlisted_not_airing failed: {e}"),
+                    }
                 }
                 match db.clear_placeholder_covers() {
                     Ok(0) => {}
