@@ -800,6 +800,8 @@ pub fn search_queries(title: &str) -> Vec<String> {
 /// season's status and progress), and a miss is simply retried in 14 days.
 pub fn pick_search_candidate(series_title: &str, candidates: &[crate::anilist::CatalogAnime]) -> Option<i64> {
     let variants = title_variants_norm(series_title);
+    // The parenthetical alone (what `title_variants_norm` lists last), if the title has one.
+    let inner_variant = title_parts(series_title).1.map(|v| normalize_title(&v));
     if variants.is_empty() {
         return None;
     }
@@ -850,7 +852,16 @@ pub fn pick_search_candidate(series_title: &str, candidates: &[crate::anilist::C
             .iter()
             .flat_map(|v| primary_norm.iter().map(move |t| pair_score(v, t)))
             .fold(0.0_f64, f64::max);
-        let exact_primary = best_primary >= 1.0;
+        // A parenthetical that is exactly the subtitle of one of the entry's own
+        // titles ("Tears of the Azure Sea" for "... the Movie: Tears of the
+        // Azure Sea") names the work as well as the whole title does.
+        let subtitle_exact = inner_variant.as_ref().is_some_and(|v| {
+            v.split_whitespace().count() >= 3
+                && primary.iter().any(|t| {
+                    t.rsplit_once(':').is_some_and(|(_, tail)| normalize_title(tail) == *v)
+                })
+        });
+        let exact_primary = best_primary >= 1.0 || subtitle_exact;
         // Movies/OVAs/specials are only linked on an exact title: their names
         // are the most reused ones.
         if side_story && !exact_primary {
@@ -871,7 +882,7 @@ pub fn pick_search_candidate(series_title: &str, candidates: &[crate::anilist::C
             continue;
         }
 
-        let best = if exact_synonym { best_primary.max(1.0) } else { best_primary };
+        let best = if exact_synonym || subtitle_exact { best_primary.max(1.0) } else { best_primary };
         if best >= 0.9 {
             scored.push((best, cand.id));
         }
@@ -953,6 +964,24 @@ mod tests {
         let mut long = long;
         long.title_english = Some("Honzuki no Gekokujou".to_string());
         assert_eq!(pick_search_candidate("Honzuki no Gekokujou", &[long]), Some(3));
+    }
+
+    #[test]
+    fn pick_links_a_movie_by_the_subtitle_in_its_parenthetical() {
+        // Real case: the site calls it "Tensei shitara Slime Datta Ken Movie 2: Soukai no
+        // Namida-hen (Tears of the Azure Sea)", AniList "...the Movie: Tears of the Azure Sea".
+        let movie = search_cand(
+            182206,
+            "That Time I Got Reincarnated as a Slime the Movie: Tears of the Azure Sea",
+            Some("Tensei Shitara Slime Datta Ken: Soukai no Namida-hen"),
+            "MOVIE",
+            &[],
+        );
+        let site = "Tensei shitara Slime Datta Ken Movie 2: Soukai no Namida-hen (Tears of the Azure Sea)";
+        assert_eq!(pick_search_candidate(site, std::slice::from_ref(&movie)), Some(182206));
+        // a two-word subtitle is too generic to be proof
+        let other = search_cand(9, "Foo the Movie: Blue Sea", None, "MOVIE", &[]);
+        assert_eq!(pick_search_candidate("Foo Movie (Blue Sea)", std::slice::from_ref(&other)), None);
     }
 
     #[test]
