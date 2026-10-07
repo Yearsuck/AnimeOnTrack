@@ -604,7 +604,7 @@ pub fn franchise_dedup_key(title: &str) -> String {
 /// exactly when stripping season/part/year markers from the longer title does
 /// **not** collapse it back to the shorter one, so a genuine season suffix
 /// ("…Final Season", "…Part 2", "…2011") is *not* caught and still matches.
-fn distinct_extension(a: &str, b: &str) -> bool {
+pub(crate) fn distinct_extension(a: &str, b: &str) -> bool {
     let ta: Vec<&str> = a.split_whitespace().collect();
     let tb: Vec<&str> = b.split_whitespace().collect();
     let (short, long, long_norm) = if ta.len() <= tb.len() { (&ta, &tb, b) } else { (&tb, &ta, a) };
@@ -1646,5 +1646,19 @@ mod tests {
     fn test_is_live_action() {
         assert!(is_live_action("One Piece: Live Action (2023)"));
         assert!(!is_live_action("One Piece: Gyojin Tou-hen (2024)"));
+    }
+
+    #[test]
+    fn test_distinct_extension_rejects_sequels() {
+        // Must reject distinct sequels/movies that reuse the base name
+        assert!(distinct_extension(&normalize_title("Steins;Gate"), &normalize_title("Steins;Gate 0")));
+        assert!(distinct_extension(&normalize_title("Digimon Adventure"), &normalize_title("Digimon Adventure 02")));
+        assert!(distinct_extension(&normalize_title("Mobile Suit Gundam"), &normalize_title("Mobile Suit Gundam Wing")));
+        assert!(distinct_extension(&normalize_title("Naruto"), &normalize_title("Naruto Shippuden")));
+        assert!(distinct_extension(&normalize_title("Sword Art Online"), &normalize_title("Sword Art Online The Movie Ordinal Scale")));
+
+        // Genuine season suffixes are not distinct extensions
+        assert!(!distinct_extension(&normalize_title("Attack on Titan"), &normalize_title("Attack on Titan Final Season")));
+        assert!(!distinct_extension(&normalize_title("My Hero Academia"), &normalize_title("My Hero Academia Season 2")));
     }
 }

@@ -304,7 +304,7 @@ pub fn reclassify_series(
 /// 0 or 50 result cards on it — only `parse_search_results` itself returning
 /// `Err` (page doesn't look like this site's layout at all) makes
 /// `scrape_via_mirrors` fall through to the next mirror.
-async fn search_site(
+pub async fn search_site(
     app: &AppHandle,
     mirrors: &[String],
     query: &str,

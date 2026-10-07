@@ -44,6 +44,8 @@ pub use scan::*;
 mod maintenance;
 pub use maintenance::*;
 
+mod fallback;
+
 #[derive(Serialize, Clone)]
 struct RefreshProgress {
     current: usize,
@@ -107,6 +109,8 @@ pub struct AppState {
     /// flag because the two background jobs do unrelated work and either can
     /// legitimately still be running when the other's scan trigger fires.
     pub episode_backfill_running: std::sync::atomic::AtomicBool,
+    /// Same one-at-a-time guard, for the fallback resolver.
+    pub episode_fallback_running: std::sync::atomic::AtomicBool,
     /// Same one-at-a-time guard, for the AniList catalog sync
     /// (`sync_anime_catalog`/`maybe_sync_catalog_incremental`) — without it,
     /// the manual "Sync" button pressed within the auto-incremental sync's

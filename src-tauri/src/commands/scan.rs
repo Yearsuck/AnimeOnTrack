@@ -628,6 +628,11 @@ async fn run_episode_backfill(app: AppHandle) -> Result<(), String> {
     let state = app.state::<AppState>();
     // Only one backfill at a time — same reasoning as library_import_running:
     // an overlapping run would double the Cloudflare-facing request rate.
+    // ...and never next to the episode-source fallback resolver: both drive WebView2
+    // scraper windows, and only one may run at a time.
+    if state.episode_fallback_running.load(Ordering::SeqCst) {
+        return Ok(());
+    }
     if state.episode_backfill_running.swap(true, Ordering::SeqCst) {
         return Ok(());
     }
@@ -1146,6 +1151,8 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
             let _ = auto_backup_if_due(app2).await;
         });
     }
+
+    crate::commands::fallback::spawn_episode_fallback(app.clone());
 
     Ok(total_new)
 }
