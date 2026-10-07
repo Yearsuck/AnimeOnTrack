@@ -150,12 +150,69 @@ impl Db {
             .collect::<rusqlite::Result<std::collections::HashMap<i64, Option<i64>>>>()?;
         Ok(rows)
     }
+
+    /// Record that all sites have been searched for this canonical show and none had episodes.
+    pub fn record_episode_fallback_miss(&self, canon_key: &str, now: i64) -> Result<()> {
+        self.set_setting(&format!("episode_fallback_miss:{}", canon_key), &now.to_string())
+    }
+
+    /// Check if this show was checked recently (within 3 days) and had no episodes anywhere.
+    pub fn has_recent_episode_fallback_miss(&self, canon_key: &str, now: i64) -> Result<bool> {
+        if let Some(v) = self.get_setting(&format!("episode_fallback_miss:{}", canon_key))? {
+            if let Ok(time) = v.parse::<i64>() {
+                if now - time < 3 * 24 * 3600 {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
+    }
+
+    /// Record that a specific site failed to yield episodes for this show.
+    pub fn record_episode_fallback_site_miss(&self, canon_key: &str, site_id: &str, now: i64) -> Result<()> {
+        self.set_setting(&format!("episode_fallback_site_miss:{}:{}", site_id, canon_key), &now.to_string())
+    }
+
+    /// Check if a specific site failed recently (within 3 days).
+    pub fn has_recent_episode_fallback_site_miss(&self, canon_key: &str, site_id: &str, now: i64) -> Result<bool> {
+        if let Some(v) = self.get_setting(&format!("episode_fallback_site_miss:{}:{}", site_id, canon_key))? {
+            if let Ok(time) = v.parse::<i64>() {
+                if now - time < 3 * 24 * 3600 {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::db::test_support::*;
+
+    #[test]
+    fn episode_fallback_miss_memory_expires_after_3_days() {
+        let db = Db::open(":memory:").unwrap();
+        let now = 10_000_000;
+
+        // Not checked yet
+        assert!(!db.has_recent_episode_fallback_miss("al:21", now).unwrap());
+
+        // Record a miss
+        db.record_episode_fallback_miss("al:21", now).unwrap();
+        assert!(db.has_recent_episode_fallback_miss("al:21", now).unwrap());
+        assert!(db.has_recent_episode_fallback_miss("al:21", now + 2 * 24 * 3600).unwrap()); // 2 days later is recent
+        assert!(!db.has_recent_episode_fallback_miss("al:21", now + 4 * 24 * 3600).unwrap()); // 4 days later is not
+
+        // Site miss
+        assert!(!db.has_recent_episode_fallback_site_miss("al:21", "tioanime", now).unwrap());
+        db.record_episode_fallback_site_miss("al:21", "tioanime", now).unwrap();
+        assert!(db.has_recent_episode_fallback_site_miss("al:21", "tioanime", now).unwrap());
+        assert!(db.has_recent_episode_fallback_site_miss("al:21", "tioanime", now + 2 * 24 * 3600).unwrap());
+        assert!(!db.has_recent_episode_fallback_site_miss("al:21", "tioanime", now + 4 * 24 * 3600).unwrap());
+        assert!(!db.has_recent_episode_fallback_site_miss("al:21", "jkanime", now).unwrap(), "different site");
+    }
 
     #[test]
     fn last_checked_age_none_until_set_then_small() {
