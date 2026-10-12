@@ -7,7 +7,10 @@ import {
   openEpisode,
   reclassifySeries,
   setSeenCascade,
+  getPlayerSettings,
+  setPlayerSettings,
 } from "../api";
+
 import { useT } from "../i18n";
 import { isUnlinkedCatalogRow } from "../lib/catalogLink";
 import { parseReleasedAtToUnixSeconds } from "../lib/parseReleasedAt";
@@ -81,6 +84,26 @@ export function SeriesDetail({
   // double-invoke (same pattern as App.tsx's startup effect) — otherwise
   // opening an unlinked catalog row would fire two scrapes.
   const linkTriedRef = useRef<number | null>(null);
+
+  const [playerFullscreen, setPlayerFullscreen] = useState(false);
+
+  useEffect(() => {
+    getPlayerSettings()
+      .then((s) => setPlayerFullscreen(s.fullscreen))
+      .catch(() => {});
+  }, []);
+
+  const togglePlayerFullscreen = async () => {
+    const next = !playerFullscreen;
+    setPlayerFullscreen(next);
+    try {
+      const current = await getPlayerSettings();
+      await setPlayerSettings(current.monitor, next);
+    } catch (err) {
+      console.error("Failed to update player fullscreen:", err);
+    }
+  };
+
 
   async function load(): Promise<Episode[]> {
     setLoading(true);
@@ -228,10 +251,20 @@ export function SeriesDetail({
           </div>
         </div>
         {episodes.length > 0 && (
+          <button
+            className={`btn ${playerFullscreen ? "btn-primary" : "btn-ghost"}`}
+            onClick={togglePlayerFullscreen}
+            title={t("settings.playerHelp")}
+          >
+            {playerFullscreen ? `⛶ ${t("settings.playerFullscreen")}` : `🗗 ${t("settings.playerWindowed")}`}
+          </button>
+        )}
+        {episodes.length > 0 && (
           <button className="btn" onClick={jumpToCurrent}>
             {t("seriesDetail.jumpToCurrent")}
           </button>
         )}
+
         {series.followed && (
           <button className="btn btn-ghost" onClick={unfollow}>
             {t("seriesDetail.unfollow")}

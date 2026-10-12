@@ -9,7 +9,20 @@ use super::*;
 /// dispatch attempt deadlocked the UI). Async commands run on Tauri's runtime,
 /// the same context `scraper_engine` builds its windows from successfully.
 #[tauri::command]
-pub async fn open_episode(app: AppHandle, url: String) -> Result<(), String> {
+pub async fn open_episode(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    url: String,
+    monitor: Option<String>,
+    fullscreen: Option<bool>,
+) -> Result<(), String> {
+    let (eff_monitor, eff_fullscreen) = {
+        let db = state.db.lock().unwrap();
+        let mon = monitor.or_else(|| db.get_player_monitor().ok().flatten());
+        let fs = fullscreen.unwrap_or_else(|| db.get_player_fullscreen().unwrap_or(false));
+        (mon, fs)
+    };
+
     let ep = Episode {
         id: 0,
         series_id: 0,
@@ -21,8 +34,61 @@ pub async fn open_episode(app: AppHandle, url: String) -> Result<(), String> {
         download_path: None,
         download_status: None,
     };
-    AppWindowPlayer.open(&app, &ep).map_err(|e| e.to_string())
+    AppWindowPlayer
+        .open_with_options(&app, &ep, eff_monitor.as_deref(), eff_fullscreen)
+        .map_err(|e| e.to_string())
 }
+
+/// Lists all currently connected/available displays/monitors on the system.
+#[tauri::command]
+pub fn list_monitors(app: AppHandle) -> Result<Vec<crate::models::MonitorOption>, String> {
+    let monitors = app.available_monitors().map_err(|e| e.to_string())?;
+    let primary = app.primary_monitor().ok().flatten();
+    let result = monitors
+        .into_iter()
+        .enumerate()
+        .map(|(idx, m)| {
+            let is_primary = primary
+                .as_ref()
+                .map(|p| p.name() == m.name() && p.position() == m.position())
+                .unwrap_or(false);
+            let name = m.name().cloned().unwrap_or_else(|| format!("Display {}", idx + 1));
+            let id = m.name().cloned().unwrap_or_else(|| format!("index-{}", idx));
+            crate::models::MonitorOption {
+                id,
+                name,
+                index: idx,
+                is_primary,
+                width: m.size().width,
+                height: m.size().height,
+            }
+        })
+        .collect();
+    Ok(result)
+}
+
+/// Retrieves stored player playback preferences (target monitor and fullscreen).
+#[tauri::command]
+pub fn get_player_settings(state: State<'_, AppState>) -> Result<crate::models::PlayerSettings, String> {
+    let db = state.db.lock().unwrap();
+    let monitor = db.get_player_monitor().map_err(|e| e.to_string())?;
+    let fullscreen = db.get_player_fullscreen().map_err(|e| e.to_string())?;
+    Ok(crate::models::PlayerSettings { monitor, fullscreen })
+}
+
+/// Persists player playback preferences (target monitor and fullscreen).
+#[tauri::command]
+pub fn set_player_settings(
+    state: State<'_, AppState>,
+    monitor: Option<String>,
+    fullscreen: bool,
+) -> Result<(), String> {
+    let db = state.db.lock().unwrap();
+    db.set_player_monitor(monitor.as_deref()).map_err(|e| e.to_string())?;
+    db.set_player_fullscreen(fullscreen).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 
 /// Mark an episode seen or unseen (persisted). When marking seen, any
 /// downloaded video file for the episode is automatically deleted from disk.

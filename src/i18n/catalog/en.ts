@@ -138,6 +138,16 @@ export const en: Messages = {
   "settings.backupSize": "Size: {size}",
   "settings.backupIntro": "Keep a copy of your data in a private folder on your Google Drive and restore it on another machine.",
   "settings.backupError": "Backup error: {msg}",
+  "settings.playerHeading": "Episode Player",
+  "settings.playerMonitor": "Display to open episodes on",
+  "settings.playerMonitorDefault": "Default (Current screen / Primary)",
+  "settings.playerMonitorOption": "Screen {index} ({width}×{height})",
+  "settings.playerMonitorPrimaryTag": " (Primary)",
+  "settings.playerMode": "Display mode",
+  "settings.playerWindowed": "Windowed",
+  "settings.playerFullscreen": "Full screen",
+  "settings.playerHelp": "Configure which monitor episodes open on and whether they launch in full screen or in a window.",
+
 
   "library.searchAriaLabel": "Search by name",
   "library.emptyTitle": "You're not following any series yet.",

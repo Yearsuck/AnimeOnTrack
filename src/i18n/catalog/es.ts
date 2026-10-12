@@ -149,6 +149,16 @@ export const es = {
   "settings.backupSize": "Tamaño: {size}",
   "settings.backupIntro": "Guarda una copia de tus datos en una carpeta privada de tu Google Drive y restáurala en otro equipo.",
   "settings.backupError": "Error de copia: {msg}",
+  "settings.playerHeading": "Reproductor de episodios",
+  "settings.playerMonitor": "Pantalla donde abrir los episodios",
+  "settings.playerMonitorDefault": "Predeterminada (Pantalla actual / Principal)",
+  "settings.playerMonitorOption": "Pantalla {index} ({width}×{height})",
+  "settings.playerMonitorPrimaryTag": " (Principal)",
+  "settings.playerMode": "Modo de apertura",
+  "settings.playerWindowed": "Ventana",
+  "settings.playerFullscreen": "Pantalla completa",
+  "settings.playerHelp": "Configura en qué monitor se abren los episodios y si deben iniciarse a pantalla completa o en ventana.",
+
 
   // Library.tsx
   "library.searchAriaLabel": "Buscar por nombre",

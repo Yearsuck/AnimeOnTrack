@@ -187,8 +187,12 @@ pub fn run() {
             commands::list_pending,
             commands::pending_count,
             commands::open_episode,
+            commands::list_monitors,
+            commands::get_player_settings,
+            commands::set_player_settings,
             commands::set_seen,
             commands::set_seen_cascade,
+
             commands::list_episodes,
             commands::rescan_airing,
             commands::get_mirrors,

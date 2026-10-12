@@ -145,6 +145,16 @@ export const ca: Messages = {
   "settings.backupSize": "Mida: {size}",
   "settings.backupIntro": "Desa una còpia de les teves dades en una carpeta privada del teu Google Drive i restaura-la en un altre equip.",
   "settings.backupError": "Error de còpia: {msg}",
+  "settings.playerHeading": "Reproductor d'episodis",
+  "settings.playerMonitor": "Pantalla on obrir els episodis",
+  "settings.playerMonitorDefault": "Per defecte (Pantalla actual / Principal)",
+  "settings.playerMonitorOption": "Pantalla {index} ({width}×{height})",
+  "settings.playerMonitorPrimaryTag": " (Principal)",
+  "settings.playerMode": "Mode d'obertura",
+  "settings.playerWindowed": "Finestra",
+  "settings.playerFullscreen": "Pantalla completa",
+  "settings.playerHelp": "Configura a quin monitor s'obren els episodis i si han d'iniciar-se a pantalla completa o en finestra.",
+
 
   // Library.tsx
   "library.searchAriaLabel": "Cerca pel nom",
