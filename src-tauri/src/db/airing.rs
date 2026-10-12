@@ -430,12 +430,20 @@ impl Db {
             PendingSort::RemainingDesc => "DESC",
         };
         let sql = format!(
-            "SELECT s.id, s.slug, s.title, s.url, s.cover_url, s.is_airing, s.followed,
+            "SELECT s.id, s.slug, s.title, s.url,
+                    COALESCE(
+                        CASE WHEN s.cover_url LIKE 'file:%' OR s.cover_url LIKE 'data:%' OR s.cover_url LIKE 'https://%anilist.co%' THEN s.cover_url ELSE NULL END,
+                        c.cover_url,
+                        s.cover_url
+                    ) AS cover_url,
+                    s.is_airing, s.followed,
                     e.id, e.series_id, e.number, e.title, e.url, e.released_at, e.seen,
                     s.next_episode_at, s.site_episode_count,
                     COUNT(*) OVER (PARTITION BY s.id) AS remaining,
                     e.download_path, e.download_status
-             FROM episodes e JOIN series s ON s.id = e.series_id
+             FROM episodes e
+             JOIN series s ON s.id = e.series_id
+             LEFT JOIN anilist_catalog c ON c.id = s.anilist_id
              WHERE e.seen=0 AND s.watched_externally=0 AND s.id IN ({ids_str})
              ORDER BY remaining {dir}, s.title, CAST(e.number AS INTEGER) ASC, e.id ASC"
         );
