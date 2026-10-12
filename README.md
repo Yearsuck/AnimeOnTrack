@@ -1,220 +1,436 @@
+<a id="readme-top"></a>
+
+<!-- PROJECT SHIELDS -->
 <div align="center">
 
-<img src="https://capsule-render.vercel.app/api?type=waving&color=0:0b1521,100:4aa8ff&height=210&section=header&text=AnimeOnTrack&fontSize=56&fontColor=e9eff5&fontAlignY=38&animation=fadeIn&desc=Stop%20refreshing%20the%20site.%20Let%20the%20app%20refresh%20it.&descAlignY=58&descSize=16&descColor=9fd4ff" width="100%" alt="AnimeOnTrack" />
-
-<img src="https://img.shields.io/badge/Tauri-2-4aa8ff?style=for-the-badge&logo=tauri&logoColor=e9eff5&labelColor=0b1521" alt="Tauri 2" />
-<img src="https://img.shields.io/badge/Rust-stable-4aa8ff?style=for-the-badge&logo=rust&logoColor=e9eff5&labelColor=0b1521" alt="Rust" />
-<img src="https://img.shields.io/badge/React-19-4aa8ff?style=for-the-badge&logo=react&logoColor=e9eff5&labelColor=0b1521" alt="React 19" />
-<img src="https://img.shields.io/badge/SQLite-embedded-46d19e?style=for-the-badge&logo=sqlite&logoColor=0b1521&labelColor=0b1521" alt="SQLite" />
-<img src="https://img.shields.io/badge/i18n-EN%20%C2%B7%20ES-46d19e?style=for-the-badge&labelColor=0b1521" alt="i18n EN/ES" />
-<img src="https://img.shields.io/badge/platform-Windows-e9eff5?style=for-the-badge&logo=windows11&logoColor=0b1521&labelColor=0b1521" alt="Windows" />
-
-<a href="https://github.com/Yearsuck/AnimeOnTrack/releases/latest"><img src="https://img.shields.io/github/v/release/Yearsuck/AnimeOnTrack?style=flat-square&color=4aa8ff&labelColor=0b1521&label=latest" alt="Latest release" /></a>
-<a href="https://github.com/Yearsuck/AnimeOnTrack/releases"><img src="https://img.shields.io/github/downloads/Yearsuck/AnimeOnTrack/total?style=flat-square&color=46d19e&labelColor=0b1521&label=downloads" alt="Downloads" /></a>
-<a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0--or--later-9fd4ff?style=flat-square&labelColor=0b1521" alt="GPL-3.0-or-later" /></a>
-<img src="https://img.shields.io/badge/sites-6%20adapters-9fd4ff?style=flat-square&labelColor=0b1521" alt="6 site adapters" />
-<img src="https://img.shields.io/badge/catalog-~22k%20titles-9fd4ff?style=flat-square&labelColor=0b1521" alt="~22,000 AniList titles mirrored locally" />
-
-<p><em>Tracks currently-airing anime, tells you the moment a new episode drops, and never loses your place — across six streaming sites, in English or Spanish.</em></p>
-
-<p>
-  <a href="https://github.com/Yearsuck/AnimeOnTrack/releases/latest"><b>⬇ Download for Windows</b></a>
-  &nbsp;·&nbsp;
-  <a href="#features">Features</a>
-  &nbsp;·&nbsp;
-  <a href="#why-the-odd-design-choices">How it works</a>
-  &nbsp;·&nbsp;
-  <a href="#getting-started">Build it yourself</a>
-</p>
+[![Latest Release][release-shield]][release-url]
+[![Total Downloads][downloads-shield]][downloads-url]
+[![Stars][stars-shield]][stars-url]
+[![Forks][forks-shield]][forks-url]
+[![Issues][issues-shield]][issues-url]
+[![License][license-shield]][license-url]
+[![Platform][platform-shield]][platform-url]
 
 </div>
 
----
+<!-- PROJECT LOGO & HEADER -->
+<br />
+<div align="center">
+  <a href="https://github.com/Yearsuck/AnimeOnTrack">
+    <img src="src-tauri/icons/128x128.png" alt="AnimeOnTrack Logo" width="96" height="96" />
+  </a>
 
-## Get it
+  <img src="https://capsule-render.vercel.app/api?type=waving&color=0:0b1521,100:4aa8ff&height=190&section=header&text=AnimeOnTrack&fontSize=52&fontColor=e9eff5&fontAlignY=36&animation=fadeIn&desc=Stop%20refreshing%20the%20site.%20Let%20the%20app%20refresh%20it.&descAlignY=58&descSize=15&descColor=9fd4ff" width="100%" alt="AnimeOnTrack Banner" />
 
-Grab the latest `*_x64-setup.exe` (or the `.msi`) from the [**releases page**](https://github.com/Yearsuck/AnimeOnTrack/releases/latest) and run it. No account, no config file, no telemetry — everything lives in a local SQLite database on your machine.
+  <p align="center">
+    <strong>A high-performance, local-first anime tracker and offline downloader for Windows.</strong>
+    <br />
+    Tracks currently-airing anime, notifies you the second a new episode drops, downloads episodes for offline viewing, and unifies your progress across six streaming sites — without an account or cloud lock-in.
+    <br />
+    <br />
+    <a href="https://github.com/Yearsuck/AnimeOnTrack/releases/latest"><strong>⬇ Download Installer (v0.6.2) »</strong></a>
+    <br />
+    <br />
+    <a href="#about-the-project">About The Project</a>
+    ·
+    <a href="#key-features">Key Features</a>
+    ·
+    <a href="#supported-streaming-sites">Supported Sites</a>
+    ·
+    <a href="#getting-started">Getting Started</a>
+    ·
+    <a href="https://github.com/Yearsuck/AnimeOnTrack/issues/new?labels=bug">Report Bug</a>
+    ·
+    <a href="https://github.com/Yearsuck/AnimeOnTrack/issues/new?labels=enhancement">Request Feature</a>
+  </p>
+</div>
 
-On first launch, pick a site in **Settings** and let it scan. macOS and Linux builds are published too, but are **not functional yet** — the episode-detection scraper is Windows-only for now (see [`docs/cross-platform-porting.md`](docs/cross-platform-porting.md)).
-
----
-
-## The premise
-
-Pirate streaming sites carry almost everything that's currently airing, and they sit behind Cloudflare — no ordinary HTTP client gets past the `403`, because clearing the JavaScript challenge takes a real browser engine. **AnimeOnTrack** opens a hidden WebView2 window, waits for the challenge to clear, pulls the rendered HTML back into Rust, and tells you when something you follow has a new episode. You decide what to watch; the app decides when it needs to check.
-
-It also keeps a full local mirror of the **AniList catalog (~22,000 titles)**, so browsing, filtering, and discovery are instant and offline — the streaming site is only ever touched when it genuinely has to be.
-
----
-
-## A note on piracy
-
-I'll say this plainly: I always advocate paying for the content you watch. Creators,
-studios, and the people who make anime don't live on air — if you can support them
-officially, you should, and I do.
-
-But I also won't pretend the history is simple. Spanish- and English-language anime
-piracy has, for decades, been the **first door into anime** for most fans outside Japan.
-Without fansubs and pirate streaming, the medium simply would not be as big, as global,
-or as loved as it is today — a lot of us are here *because* of that door. And there's a
-harder truth on top of it: plenty of titles are only ever available fansubbed, never
-licensed or translated officially in a given region — so for those, "just pay for it"
-isn't an option that exists, pirate or not. You can't support what nobody is selling you.
-
-So: support creators wherever you actually can, and understand this tool for what it is —
-a tracker built by someone who loves the medium, not an excuse to skip the box set when
-the box set exists.
-
----
-
-## Supported sites
-
-Six sites ship today, each behind the same pluggable `SiteAdapter`. Switch between them in **Settings** — your followed shows, seen episodes, watch progress, and backlog are one **shared, canonical** state across every site you use a show on, unified by its AniList id (or a normalized title when unlinked). Only the actual episode-playback links point at whichever site's copy you have open: switching the active site changes which URLs you click through to watch, not *which* shows you follow or how much you've watched. Every site still has a per-site mirror list, so when a domain goes down the app falls through to a working clone automatically.
-
-| Site | Default domain | Adapter id |
-|---|---|---|
-| **AnimeYT** | `wwv.animeytx.net` | `animeytx` |
-| **TioAnime** | `tioanime.com` | `tioanime` |
-| **AnimeFLV** | `www4.animeflv.net` | `animeflv` |
-| **JKanime** | `jkanime.net` | `jkanime` |
-| **GogoAnime** | `gogoanime.by` | `gogoanime` |
-| **AnimeLand** | `w7.animeland.tv` | `animeland` |
-
-Adding a seventh is one `SiteInfo` row plus a `SiteAdapter` implementation — no other code changes.
-
----
-
-## Features
-
-| Area | What it does |
-|---|---|
-| **Pending** | Flat queue of new episodes across everything you follow. Sortable by how many episodes each series still has left to watch. |
-| **Airing** | The live scraped airing schedule — follow a series with one click. Newest-release-first. |
-| **Library** | Followed series grouped by derived status — **Watching** (includes airing shows you're caught up on), **Plan to watch**, **Completed** (finished *and* fully watched). Airing filter, progress bars, keyboard-accessible, one-click reclassify. |
-| **Discover** | A swipe deck (Want / Seen / Discard) drawn from the local catalog, weighted toward your taste. Multi-level undo of your last ~5 cards, plus configurable per-genre, per-type, and release-date-range filters (default: everything up to today — set it into the future to include upcoming titles). |
-| **Catalog** | The full AniList catalog, filterable by genre / format / score / length. Multi-select to batch-add many titles to *Want* or *Seen*; ℹ opens the AniList page. |
-| **Stats** | Watch-time and completion tiles, a top-series ranking, an activity timeline, genre/type breakdowns, and an interactive 3D force graph of your library — all computed locally. Long-runners the site splits into per-arc rows (One Piece, Boruto…) roll up into one franchise. |
-| **Backup** | One-click, end-to-end backup of your database to a hidden folder in **your** Google Drive, plus automatic daily backups. Restore onto a fresh machine by connecting the same account. |
-| **Settings** | Language (English / Spanish), light / dark theme, active site, mirror list, Google Drive credentials, and a full-recheck escape hatch. |
-
-**Watching is gap-free.** Marking an episode seen marks every earlier one seen; un-marking one un-marks every later one. No "I watched 10 but not 6–9" states — and it parses whatever numbering the site uses (`1x05`, `12.5`, …).
-
-**Everything is reversible.** Unfollow, move between lists, un-mark "seen", return a Discover card to the deck — every classification has an inverse reachable from the UI.
-
-**Links open in their own window.** Watching an episode or opening an info page spawns an app-owned window, separate from your everyday browser and its profile.
+<!-- TABLE OF CONTENTS -->
+<details>
+  <summary><strong>Table of Contents</strong></summary>
+  <ol>
+    <li>
+      <a href="#about-the-project">About The Project</a>
+      <ul>
+        <li><a href="#the-premise">The Premise</a></li>
+        <li><a href="#built-with">Built With</a></li>
+      </ul>
+    </li>
+    <li><a href="#key-features">Key Features</a></li>
+    <li><a href="#supported-streaming-sites">Supported Streaming Sites</a></li>
+    <li>
+      <a href="#getting-started">Getting Started</a>
+      <ul>
+        <li><a href="#prebuilt-binaries">Prebuilt Binaries</a></li>
+        <li><a href="#prerequisites">Prerequisites</a></li>
+        <li><a href="#installation--development">Installation & Development</a></li>
+        <li><a href="#build--test-suite">Build & Test Suite</a></li>
+      </ul>
+    </li>
+    <li><a href="#architecture--engineering-highlights">Architecture & Engineering Highlights</a></li>
+    <li><a href="#project-layout">Project Layout</a></li>
+    <li><a href="#whats-new-in-v062">What's New in v0.6.2</a></li>
+    <li><a href="#contributing">Contributing</a></li>
+    <li><a href="#a-note-on-piracy">A Note on Piracy</a></li>
+    <li><a href="#disclaimer">Disclaimer</a></li>
+    <li><a href="#license">License</a></li>
+    <li><a href="#acknowledgments">Acknowledgments</a></li>
+  </ol>
+</details>
 
 ---
 
-## What's new
+## About The Project
 
-- **v0.5.4** — Faster scraping: up to **4 concurrent** episode-list fetches (was 2), app-wide. Plus a crash fix — catalog linking no longer blocks the site switch that triggers it.
-- **v0.5.3** — Switching to a site now catches it up automatically: shows followed elsewhere get their episode lists fetched and their AniList links resolved in the background, instead of waiting until that site happened to be the one open at startup. Also fixes AnimeLand storing URL slugs (`re-monster`) instead of real titles (`Re Monster`).
-- **v0.5.2** — All six adapters re-validated against the live sites; JKanime's directory-page selector updated after a site redesign that had silently broken its listing.
-- **v0.5.1** — Four fixes: shows that actually finished now get un-marked as airing (via AniList's status), pending episodes sort numerically instead of by scrape order, the Discover deck stops re-offering shows you already decided on another site, and saving deck filters applies immediately instead of after a tab switch.
-- **v0.5.0** — **Release-date range filter** in Discover: pick any window, defaults to *everything up to today*, and can reach into the future for upcoming titles.
-- **v0.4.3** — Real per-episode progress now syncs across sites continuously. Follow the same show on two sites, watch on one, the other updates automatically — no more stale "unwatched" entries when switching sites.
-- **v0.4.2** — **Estadísticas** computed canonically across *every* site you use. Before this, Stats only reflected the active site's slice of your data (e.g. showing 0 "want to watch" when you had hundreds tracked under a different site).
-- **v0.4.1** — Scraper remembers the last working mirror per site and tries it first next time. Cross-site airing entries use the freshest "next episode" timestamp across *all* sites that have the show. Catalog linking falls back to fuzzy title match (season markers, cross-language variants), collapsing duplicate entries into one canonical "En emisión"/library row.
-- **Six sites**, up from three — JKanime, GogoAnime, and AnimeLand joined the adapter registry.
-- **Google Drive backup & restore**, configurable entirely in-app: paste a Desktop OAuth client into Settings, no rebuild. Automatic daily backups; restoring onto a new machine finds the backup by name.
-- **Stats accuracy pass.** Franchise roll-up fixes long-runners the site splits into per-arc rows (One Piece counted only one arc before), real-vs-estimated watch counts that never double-count, local-time activity buckets, and honest empty states.
-- **A rebuilt design system.** Bundled Inter variable font, one consistent type/spacing/motion scale, normalized controls, loading skeletons, and a fully theme-aware light mode.
+### The Premise
 
----
+Streaming sites host almost every title currently airing, but their catalogs and release schedules sit behind Cloudflare anti-bot verification. Standard HTTP clients hit `403 Forbidden` because passing the Turnstile/JavaScript challenge requires a real, modern rendering engine.
 
-## Why the odd design choices
+**AnimeOnTrack** embeds a hidden WebView2 browser instance to transparently solve challenges, parses the rendered DOM inside native Rust, and alerts you the instant an episode drops for any series in your library. You decide what to watch; the app handles the tracking.
 
-- **A WebView2 window instead of `reqwest`.** Cloudflare requires a real JS engine; a spoofed-user-agent HTTP client never clears the challenge. Only normal REST APIs (AniList, Google Drive) use `reqwest`.
-- **Covers fetched one at a time, only for followed series.** Requesting ~150 posters at once reads as scraping abuse and gets rate-limited regardless of a valid session. One cover per followed series per refresh, decoded via an offscreen `<canvas>` and stored as a `data:` URI.
-- **Mirror fallback doesn't trust a `200`.** A mirror can return HTTP 200 while rendering a totally different, incompatible site. Fallthrough continues until a mirror actually *parses* into data, not merely until the server answers.
-- **Refresh skips series that can't have changed.** Using the airing schedule's own release metadata, a quiet refresh went from ~510s (scraping every followed series) to ~1.5s (typically one fetch). The skip rule is a pure, unit-tested function — a bug there would silently stop the app from doing its one job.
-- **Concurrency is one app-wide ceiling, not per-command.** Every scraper window — refresh, discover, a one-off detail fetch — draws from a single semaphore (4 permits). Per-caller limits looked fine in isolation and still stacked into stalls and `ExecuteScript` timeouts when two flows ran at once. It's deliberately modest: unnaturally-parallel requests to one site are exactly what bot detection keys on, and the bottleneck is the site, not the PC.
-- **Browsing and swiping never scrape.** The streaming site is hit only for the airing scan and on-demand for a single title (opening its detail, following it, or marking it seen). Discover, the Catalog, and the "Want" swipe stay entirely local against the SQLite catalog.
-- **Backup credentials live in local SQLite, not baked into the build.** A Desktop OAuth client's id and secret are non-confidential by design (which is why the flow uses PKCE), so storing them next to the refresh token adds no exposure — and means no rebuild to set backup up.
+Crucially, the app maintains an **offline mirror of the AniList catalog (~22,000 titles)** inside an embedded SQLite database. Browsing, filtering, franchise aggregation, and deck discovery run locally at sub-millisecond speeds — the streaming site is only queried when strictly required.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+### Built With
+
+* [![Tauri][tauri-shield]][tauri-url]
+* [![Rust][rust-shield]][rust-url]
+* [![React][react-shield]][react-url]
+* [![TypeScript][typescript-shield]][typescript-url]
+* [![Vite][vite-shield]][vite-url]
+* [![SQLite][sqlite-shield]][sqlite-url]
+* [![Three.js][threejs-shield]][threejs-url]
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 ---
 
-## Tech stack
+## Key Features
 
-- **Shell:** [Tauri v2](https://tauri.app/) (Windows, WebView2)
-- **Backend:** Rust — [`rusqlite`](https://github.com/rusqlite/rusqlite) (bundled SQLite), [`scraper`](https://github.com/causal-agent/scraper) for HTML parsing, `reqwest` for the AniList and Google Drive APIs
-- **Frontend:** React 19 + TypeScript + Vite, a hand-written light/dark design system (no UI library) on a bundled Inter variable font, `react-force-graph-3d` / three.js for the stats graph
-- **i18n:** a dependency-free catalog layer (English / Spanish), compile-time-checked for full key coverage
+### 💾 Offline Episode Downloads & Auto-Cleanup
+* **Background Downloader**: Download episodes directly for offline viewing with real-time transfer speeds, ETA, and progress bar tracking.
+* **Auto-Delete on Seen**: Optional smart cleanup toggle — automatically removes the local media file once an episode is marked as watched to save disk space.
+* **Pause, Resume & Cancel**: Full control over your active download queue directly from the UI.
+
+### 🖼️ AniList Spotlight & Landscape Banners
+* **Wide Cinematic Banners**: The Airing Spotlight carousel fetches high-definition landscape banners directly from AniList's GraphQL API.
+* **Graceful Cover Fallback**: Automatic fallback to high-resolution portrait posters whenever an official banner is unavailable.
+
+### ⚡ Intelligent Airing Detection
+* **Sub-2-Second Quiet Scans**: Release schedule heuristics skip titles that cannot have updated yet, cutting refresh cycles from ~510s down to ~1.5s.
+* **App-Wide Semaphore**: Scraper requests are capped to 4 concurrent permits, eliminating bot-detection triggers and WebView2 IPC stalls.
+
+### 🔗 Canonical Tracking Across 6 Streaming Sites
+* **Unified Watch History**: Followed series, watched episodes, and backlogs are shared canonically across all supported sites using AniList ID resolution.
+* **Seamless Site Switching**: Switching between streaming providers updates video links without disturbing your library progress or statistics.
+* **Automatic Mirror Failover**: Each adapter contains a fallback mirror list that automatically bypasses dead domains or DNS takedowns.
+
+### 🃏 Discover Swipe Deck with Multi-Level Undo
+* **Tinder-Style Swiping**: Rapidly sort recommendations into *Want*, *Seen*, or *Discard* with keyboard shortcuts or mouse gestures.
+* **Taste-Weighted Algorithm**: Surfaces recommendations based on your completed and high-rated franchises.
+* **Precision Filtering**: Filter by release date ranges (including future upcoming releases), formats (TV, Movie, OVA, ONA), and genres, backed by a ~5-step undo history.
+
+### 📊 Watch Insights & Interactive 3D Force Graph
+* **Comprehensive Stats**: View total hours watched, completion percentages, activity timelines, and genre distributions.
+* **Franchise Rollups**: Multi-season epics (e.g., *One Piece*, *Boruto*) consolidate into single franchises instead of fragmented arcs.
+* **3D Knowledge Graph**: Explore your entire anime universe with an interactive, GPU-accelerated 3D force-directed graph powered by Three.js.
+
+### ☁️ Encrypted Google Drive Backup
+* **Zero Cloud Lock-In**: End-to-end database backups saved to a private, hidden folder in your own Google Drive.
+* **PKCE OAuth**: Easy one-click setup directly within Settings without custom compilation or baked-in secrets.
+* **Cross-Machine Migration**: Restoring on a fresh installation detects your snapshot and stages it safely.
+
+### 🌐 Tri-Lingual Support
+* Full localization in **English (`en`)**, **Spanish (`es`)**, and **Catalan (`ca`)**, verified at compile time with 100% key coverage.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 ---
 
-## Getting started
+## Supported Streaming Sites
 
-**Prerequisites**
+Six adapters are bundled out of the box, all conforming to a pluggable `SiteAdapter` interface:
 
-- [Rust](https://rustup.rs/) (stable, `x86_64-pc-windows-msvc`)
-- **Visual Studio 2022 Build Tools** with the C++ workload — `rusqlite`'s `bundled` feature compiles SQLite from C
-- [Node.js](https://nodejs.org/) (with npm)
+| Site | Default Domain | Adapter ID | Primary Language | Mirror Failover |
+|:---|:---|:---|:---:|:---:|
+| **AnimeYT** | `wwv.animeytx.net` | `animeytx` | Spanish (Castilian / LatAm) | Automatic |
+| **TioAnime** | `tioanime.com` | `tioanime` | Spanish (Castilian / LatAm) | Automatic |
+| **AnimeFLV** | `www4.animeflv.net` | `animeflv` | Spanish (Castilian / LatAm) | Automatic |
+| **JKanime** | `jkanime.net` | `jkanime` | Spanish (Castilian / LatAm) | Automatic |
+| **GogoAnime** | `gogoanime.by` | `gogoanime` | English (Sub / Dub) | Automatic |
+| **AnimeLand** | `w7.animeland.tv` | `animeland` | English (Dubbed) | Automatic |
 
-**Run it (dev, hot-reload)**
+> [!TIP]
+> Adding support for a new site requires only a single `SiteInfo` registry entry and a `SiteAdapter` implementation — no frontend modifications required.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+---
+
+## Getting Started
+
+### Prebuilt Binaries
+
+1. Navigate to the [**Releases Page**](https://github.com/Yearsuck/AnimeOnTrack/releases/latest).
+2. Download the latest Windows setup installer (`AnimeOnTrack_*_x64-setup.exe` or `.msi`).
+3. Run the installer. On first launch, select your preferred streaming site in **Settings** and initiate your initial library scan.
+
+> [!NOTE]
+> macOS and Linux builds compile via Tauri stubs, but automated Cloudflare bypass scraping is currently exclusive to Windows via WebView2 (refer to [`docs/cross-platform-porting.md`](docs/cross-platform-porting.md)).
+
+### Prerequisites
+
+To build AnimeOnTrack from source, ensure your environment has:
+
+* **[Rust](https://rustup.rs/)** (stable toolchain, `x86_64-pc-windows-msvc`)
+* **[Node.js](https://nodejs.org/)** (v18+ with `npm`)
+* **Visual Studio 2022 Build Tools** with the *Desktop development with C++* workload (required for compiling bundled SQLite from C via `rusqlite`)
+
+### Installation & Development
+
+1. Clone the repository and checkout the `develop` branch:
+   ```bash
+   git clone https://github.com/Yearsuck/AnimeOnTrack.git
+   cd AnimeOnTrack
+   ```
+
+2. Install frontend dependencies:
+   ```bash
+   npm install
+   ```
+
+3. Launch the desktop application with live hot-reloading:
+   ```bash
+   npm run tauri dev
+   ```
+
+### Build & Test Suite
+
+Verify both backend and frontend layers prior to opening pull requests:
 
 ```bash
-npm install
-npm run tauri dev
-```
+# Rust backend: Run all 680+ automated unit & integration tests
+cargo test --manifest-path src-tauri/Cargo.toml
 
-**Build & check**
+# Rust backend: Strict linter check
+cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 
-```bash
-# Backend
-cargo build   --manifest-path src-tauri/Cargo.toml
-cargo test    --manifest-path src-tauri/Cargo.toml
-
-# Frontend
+# Frontend: Typecheck & production bundle build
 npx tsc --noEmit
 npm run build
 ```
 
-On first launch, add a site in **Settings** and let it scan. The app's SQLite database
-lives at `%APPDATA%\com.animeontrack.app\animeontrack.sqlite`. To enable cloud backup,
-follow [`docs/google-drive-setup.md`](docs/google-drive-setup.md).
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 ---
 
-## Project layout
+## Architecture & Engineering Highlights
 
+```mermaid
+flowchart TD
+    subgraph UI ["Frontend (React 19 + TypeScript)"]
+        Views["Views (Airing, Library, Discover, Downloads, Stats)"]
+        Store["State & i18n (en / es / ca)"]
+        ThreeGraph["3D Force Graph (Three.js)"]
+    end
+
+    subgraph Core ["Tauri IPC & Rust Engine"]
+        Commands["Tauri Commands Layer"]
+        Limiter["Concurrency Semaphore (4 Permits)"]
+        Engine["Scraper Engine (WebView2)"]
+        Downloader["Offline Downloader (Auto-Delete)"]
+        AniList["AniList GraphQL Client"]
+        GDoc["Google Drive Backup (PKCE)"]
+    end
+
+    subgraph Storage ["Local Storage"]
+        DB[(Embedded SQLite DB)]
+        Media[("Local Downloads / Video Cache")]
+    end
+
+    Views <--> Commands
+    Commands --> Limiter
+    Limiter --> Engine
+    Commands --> Downloader
+    Downloader --> Media
+    Downloader --> DB
+    Commands --> DB
+    Commands --> AniList
+    Commands --> GDoc
+    Engine --> DB
 ```
-src-tauri/src/
-  scraper_engine.rs   hidden-WebView2 fetch (Cloudflare) + cover decoding
-  adapter/            SiteAdapter trait + 6 site implementations
-  commands/           Tauri commands (the app's API surface)
-  db/                 rusqlite schema + queries (series, episodes, catalog, stats)
-  anilist.rs          AniList catalog sync + by-id backfill (reqwest)
-  backup/             Google Drive backup: OAuth (PKCE), snapshot, staged restore
-  matching.rs         fuzzy + exact title matching (site <-> catalog)
-  player.rs           episode/info-link opening (app-owned window)
-src/
-  api.ts              typed wrapper over every invoke() call
-  views/*.tsx         one file per screen
-  i18n/               en/es/ca catalog + provider
-  styles.css          the design system (tokens, components, light/dark)
-docs/                     setup docs (Google Drive backup)
+
+* **WebView2 vs. `reqwest`**: Cloudflare Turnstile blocks spoofed User-Agents. AnimeOnTrack instantiates a hidden WebView2 window, lets the challenge execute legitimately, and harvests rendered HTML back into Rust.
+* **Global Concurrency Semaphore**: All scraping tasks share a single 4-permit semaphore. This prevents rate-limiting IP bans and avoids IPC deadlocks.
+* **Strict Gap-Free Progression**: Marking episode 12 as seen automatically marks episodes 1 through 11; un-marking episode 12 cascades forward. Numbering parsers gracefully handle notations like `1x05`, `12.5`, and multi-part specials.
+* **Smart Airing Skip Predicate**: Refreshes skip series that cannot mathematically have updated based on their broadcast schedule, speeding up typical background checks to ~1.5s.
+* **Local-First SQLite Database**: The application database lives locally at `%APPDATA%\com.animeontrack.app\animeontrack.sqlite`. No telemetry or mandatory cloud connections.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+---
+
+## Project Layout
+
+```text
+AnimeOnTrack/
+├── src-tauri/
+│   ├── src/
+│   │   ├── adapter/         # SiteAdapter trait and 6 streaming implementations
+│   │   ├── backup/          # Google Drive OAuth (PKCE), snapshot, and staged restore
+│   │   ├── commands/        # Tauri command handlers (app API surface)
+│   │   ├── db/              # rusqlite schema, migrations, queries, and catalog indexing
+│   │   ├── anilist.rs       # AniList GraphQL sync, landscape banner & metadata resolver
+│   │   ├── matching.rs      # Fuzzy and exact title matching algorithms
+│   │   ├── player.rs        # Dedicated external player window lifecycle
+│   │   └── scraper_engine.rs# Hidden WebView2 challenge solver & canvas cover decoder
+│   ├── Cargo.toml           # Rust backend dependencies & build settings
+│   └── tauri.conf.json      # Tauri application bundle configuration
+├── src/
+│   ├── components/          # Reusable design system primitives & UI widgets
+│   ├── i18n/                # Zero-dependency catalog with full en/es/ca coverage
+│   ├── views/               # Screen views (Airing, Library, Discover, Downloads, Stats)
+│   ├── api.ts               # Strongly-typed wrapper over window.__TAURI__.invoke
+│   └── styles.css           # Custom design system tokens, typography, and dark/light themes
+├── docs/                    # Technical documentation and platform guides
+└── package.json             # Frontend dependencies & scripts
 ```
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+---
+
+## What's New in v0.6.2
+
+* **Offline Episode Downloads**: Full background downloading with live transfer rate metrics, pause/resume/cancel controls, and an **auto-delete on seen** option.
+* **AniList Hero Banners**: Airing spotlight carousel now showcases high-resolution landscape banners fetched directly from AniList.
+* **Concurrency Improvements**: Polished 4-permit semaphore pipeline for faster episode list scraping without triggering site throttling.
+* **Catalog Synchronization**: Fuzzy matching enhancements to collapse multi-season and cross-language titles into unified library records.
+
+*(For detailed historical release notes, see the [Releases](https://github.com/Yearsuck/AnimeOnTrack/releases) tab).*
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+---
+
+## Contributing
+
+Contributions are what make the open source community such an amazing place to learn, inspire, and create. Any contributions you make are **greatly appreciated**.
+
+This project follows the **Gitflow** branching workflow:
+* `main`: Production-ready, tagged releases only (`vX.Y.Z`).
+* `develop`: Active integration branch.
+* `feat/*`, `fix/*`, `docs/*`: Short-lived feature and bugfix branches.
+
+### Workflow
+
+1. Fork the Project.
+2. Create your Feature Branch off `develop`:
+   ```bash
+   git checkout develop
+   git checkout -b feat/AmazingFeature
+   ```
+3. Commit your Changes using [Conventional Commits](https://www.conventionalcommits.org/):
+   ```bash
+   git commit -m "feat(scraper): add support for new streaming provider"
+   ```
+4. Verify tests and linting:
+   ```bash
+   cargo test --manifest-path src-tauri/Cargo.toml
+   npm run build
+   ```
+5. Push to your branch:
+   ```bash
+   git push origin feat/AmazingFeature
+   ```
+6. Open a Pull Request targeting `develop`.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+---
+
+## A Note on Piracy
+
+I'll say this plainly: I always advocate paying for the content you watch. Creators, studios, and the people who make anime don't live on air — if you can support them officially, you should, and I do.
+
+Spanish- and English-language anime piracy has, for decades, been the **first door into anime** for most fans outside Japan. Without fansubs and community streaming, the medium simply would not be as global, accessible, or beloved as it is today. Furthermore, plenty of older and niche titles are never licensed or distributed officially in given regions — so for those, "just pay for it" simply isn't an option. You cannot support what nobody is selling you.
+
+Support creators wherever you actually can, and understand this tool for what it is: a tracker built by someone who loves the medium, not an excuse to skip the official release when one exists.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 ---
 
 ## Disclaimer
 
-AnimeOnTrack is a personal, educational project. It scrapes third-party streaming sites
-that the author does not operate, host, or endorse; it stores no media and streams nothing
-itself — it only reads publicly-rendered pages to detect new episodes and opens links in a
-window. You are responsible for how you use it and for complying with the laws and terms
-that apply to you.
+AnimeOnTrack is an independent, open-source software project. It interacts with third-party streaming sites that the author does not operate, host, or endorse. The application stores no copyrighted media files on remote servers and hosts no streaming content — it parses publicly-rendered web pages to detect release updates and opens playback links in an isolated browser window. Users are solely responsible for their use of the software and compliance with local laws and regulations.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 ---
 
 ## License
 
-Licensed under the **GNU General Public License v3.0 or later** — see [`LICENSE`](LICENSE).
+Distributed under the **GNU General Public License v3.0 or later**. See [`LICENSE`](LICENSE) for more information.
 
-You may use, study, share, and modify this software, but any distributed derivative must
-also be released under the GPL. It comes with **no warranty** of any kind.
+```text
+AnimeOnTrack - Cross-site anime tracker and manager
+Copyright (C) 2026 Yearsuck and contributors
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+```
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+---
+
+## Acknowledgments
+
+* [othneildrew/Best-README-Template](https://github.com/othneildrew/Best-README-Template) — for the outstanding README structure and inspiration.
+* [AniList API v2](https://anilist.gitbook.io/anilist-api-v2-docs/) — for providing comprehensive anime metadata and banner artwork.
+* [Tauri](https://tauri.app/) — for delivering a lightweight, secure native desktop shell.
+* [rusqlite](https://github.com/rusqlite/rusqlite) & [SQLite](https://www.sqlite.org/) — for rock-solid embedded local data persistence.
+* [react-force-graph-3d](https://github.com/vasturiano/react-force-graph) & [Three.js](https://threejs.org/) — for 3D library visualization.
+* [Capsule Render](https://github.com/kyechan99/capsule-render) — for dynamic SVG banner artwork.
+* [Shields.io](https://shields.io/) — for dynamic GitHub status badges.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 <div align="center">
-<img src="https://capsule-render.vercel.app/api?type=waving&color=0:4aa8ff,100:0b1521&height=120&section=footer&animation=fadeIn" width="100%" alt="" />
+  <img src="https://capsule-render.vercel.app/api?type=waving&color=0:4aa8ff,100:0b1521&height=110&section=footer&animation=fadeIn" width="100%" alt="Footer Banner" />
 </div>
+
+<!-- MARKDOWN LINKS & IMAGES -->
+[release-shield]: https://img.shields.io/github/v/release/Yearsuck/AnimeOnTrack?style=for-the-badge&color=4aa8ff&labelColor=0b1521&label=release
+[release-url]: https://github.com/Yearsuck/AnimeOnTrack/releases/latest
+[downloads-shield]: https://img.shields.io/github/downloads/Yearsuck/AnimeOnTrack/total?style=for-the-badge&color=46d19e&labelColor=0b1521&label=downloads
+[downloads-url]: https://github.com/Yearsuck/AnimeOnTrack/releases
+[stars-shield]: https://img.shields.io/github/stars/Yearsuck/AnimeOnTrack.svg?style=for-the-badge&color=4aa8ff&labelColor=0b1521
+[stars-url]: https://github.com/Yearsuck/AnimeOnTrack/stargazers
+[forks-shield]: https://img.shields.io/github/forks/Yearsuck/AnimeOnTrack.svg?style=for-the-badge&color=4aa8ff&labelColor=0b1521
+[forks-url]: https://github.com/Yearsuck/AnimeOnTrack/network/members
+[issues-shield]: https://img.shields.io/github/issues/Yearsuck/AnimeOnTrack.svg?style=for-the-badge&color=4aa8ff&labelColor=0b1521
+[issues-url]: https://github.com/Yearsuck/AnimeOnTrack/issues
+[license-shield]: https://img.shields.io/badge/license-GPL--3.0--or--later-46d19e?style=for-the-badge&labelColor=0b1521
+[license-url]: https://github.com/Yearsuck/AnimeOnTrack/blob/main/LICENSE
+[platform-shield]: https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-e9eff5?style=for-the-badge&logo=windows11&logoColor=0b1521&labelColor=0b1521
+[platform-url]: https://github.com/Yearsuck/AnimeOnTrack/releases
+
+[tauri-shield]: https://img.shields.io/badge/Tauri_2-24C8D8?style=for-the-badge&logo=tauri&logoColor=white
+[tauri-url]: https://tauri.app/
+[rust-shield]: https://img.shields.io/badge/Rust_stable-DEA584?style=for-the-badge&logo=rust&logoColor=black
+[rust-url]: https://www.rust-lang.org/
+[react-shield]: https://img.shields.io/badge/React_19-20232A?style=for-the-badge&logo=react&logoColor=61DAFB
+[react-url]: https://react.dev/
+[typescript-shield]: https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white
+[typescript-url]: https://www.typescriptlang.org/
+[vite-shield]: https://img.shields.io/badge/Vite-646CFF?style=for-the-badge&logo=vite&logoColor=white
+[vite-url]: https://vitejs.dev/
+[sqlite-shield]: https://img.shields.io/badge/SQLite_3-003B57?style=for-the-badge&logo=sqlite&logoColor=white
+[sqlite-url]: https://www.sqlite.org/
+[threejs-shield]: https://img.shields.io/badge/Three.js-000000?style=for-the-badge&logo=three.js&logoColor=white
+[threejs-url]: https://threejs.org/
