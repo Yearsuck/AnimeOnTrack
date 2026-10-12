@@ -509,7 +509,8 @@ mod tests {
         let c2b = db.upsert_series(src_b, &mk("c2b", "Candidate Two")).unwrap();
         db.set_anilist_id(c2b, 20).unwrap();
         db.insert_episode(&crate::models::Episode {
-            id: 0, series_id: c2b, number: "1".into(), title: None, url: "u/1".into(), released_at: None, seen: false
+            id: 0, series_id: c2b, number: "1".into(), title: None, url: "u/1".into(), released_at: None, seen: false,
+            download_path: None, download_status: None,
         }).unwrap();
 
         // Not followed -> NOT a Candidate
@@ -1064,7 +1065,8 @@ mod tests {
         // Non-active site row has an episode
         let id_b = db.upsert_series(b, &mk_airing("op-b", "One Piece", None)).unwrap();
         db.insert_episode(&crate::models::Episode {
-            id: 0, series_id: id_b, number: "1".into(), title: None, url: "e1".into(), released_at: None, seen: false
+            id: 0, series_id: id_b, number: "1".into(), title: None, url: "e1".into(), released_at: None, seen: false,
+            download_path: None, download_status: None,
         }).unwrap();
 
         let airing = db.list_airing(a).unwrap();
@@ -1088,6 +1090,7 @@ mod tests {
         db.insert_episode(&crate::models::Episode {
             id: 0, series_id: row_a, number: "1".into(), title: None,
             url: "u/1".into(), released_at: None, seen: true, // SEEN!
+            download_path: None, download_status: None,
         }).unwrap();
 
         let row_b = db.upsert_series(src_b, &mk("oth", "Show")).unwrap();
@@ -1095,6 +1098,7 @@ mod tests {
         db.insert_episode(&crate::models::Episode {
             id: 0, series_id: row_b, number: "1".into(), title: None,
             url: "u/1b".into(), released_at: None, seen: false, // UNSEEN!
+            download_path: None, download_status: None,
         }).unwrap();
 
         // Active site has episodes, so it stays authoritative. Since its eps are seen, pending_count is 0.
@@ -1113,6 +1117,7 @@ mod tests {
         db.insert_episode(&crate::models::Episode {
             id: 0, series_id: row, number: "1".into(), title: None,
             url: "u/1".into(), released_at: None, seen: false,
+            download_path: None, download_status: None,
         }).unwrap();
 
         assert_eq!(db.pending_count(src_a).unwrap(), 0, "watched_externally should yield 0 pending");
@@ -1134,6 +1139,7 @@ mod tests {
         db.insert_episode(&crate::models::Episode {
             id: 0, series_id: row_b, number: "1".into(), title: None,
             url: "u/1b".into(), released_at: None, seen: false,
+            download_path: None, download_status: None,
         }).unwrap();
 
         // A has NO episodes but IS followed.
@@ -1157,10 +1163,12 @@ mod tests {
         db.insert_episode(&crate::models::Episode {
             id: 0, series_id: row, number: "1".into(), title: None,
             url: "u/1".into(), released_at: None, seen: false,
+            download_path: None, download_status: None,
         }).unwrap();
         db.insert_episode(&crate::models::Episode {
             id: 0, series_id: row, number: "2".into(), title: None,
             url: "u/2".into(), released_at: None, seen: false,
+            download_path: None, download_status: None,
         }).unwrap();
 
         let count = db.pending_count(src_a).unwrap();

@@ -166,6 +166,7 @@ pub fn run() {
             commands::scan_airing,
             commands::list_airing,
             commands::list_airing_season,
+            commands::get_series_banner,
             commands::list_library,
             commands::get_genre_stats,
             commands::get_genre_cards,

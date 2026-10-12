@@ -279,6 +279,10 @@ impl Db {
         // NULL when AniList has none (finished or not scheduled).
         ensure_column(&self.conn, "anilist_catalog", "next_airing_at", "INTEGER")?;
         ensure_column(&self.conn, "anilist_catalog", "next_episode", "INTEGER")?;
+        // banner_url: Wide landscape header image from AniList (Media.bannerImage)
+        // for airing hero banners and series detail headers.
+        ensure_column(&self.conn, "anilist_catalog", "banner_url", "TEXT")?;
+        ensure_column(&self.conn, "series", "banner_url", "TEXT")?;
         // metadata_version: which generation of the AniList field set this row
         // was last written with (see `db::catalog::CATALOG_METADATA_VERSION`).
         // `stale_catalog_ids` used to infer staleness from `title_romaji IS

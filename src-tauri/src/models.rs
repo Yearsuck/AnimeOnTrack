@@ -41,6 +41,10 @@ pub struct AiringItem {
     /// so `None` here means "unknown", not "old".
     #[serde(default)]
     pub first_episode_at: Option<i64>,
+    /// Wide landscape banner URL (typically from AniList `bannerImage`)
+    /// for hero spotlight displays.
+    #[serde(default)]
+    pub banner_url: Option<String>,
 }
 
 /// The lowest-numbered unseen episode of a followed series (`LibraryItem`'s
@@ -390,6 +394,7 @@ mod tests {
                 site_episode_count: None,
             },
             first_episode_at: Some(1_780_000_000),
+            banner_url: Some("https://s4.anilist.co/banner.jpg".into()),
         };
         let j = serde_json::to_string(&item).unwrap();
         let back: AiringItem = serde_json::from_str(&j).unwrap();

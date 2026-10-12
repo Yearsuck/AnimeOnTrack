@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, useCallback } from "react";
 import { useT } from "../i18n";
 import { resolveCoverUrl } from "../lib/posterFallback";
+import { getSeriesBanner } from "../api";
 import type { AiringItem } from "../types";
 
 type AiringSpotlightProps = {
@@ -32,6 +33,10 @@ export function AiringSpotlight({ items, onOpenSeries }: AiringSpotlightProps) {
   // mid-view. `null` (nothing shown yet) resolves to the first slide.
   const [currentId, setCurrentId] = useState<number | null>(null);
   const [isHovering, setIsHovering] = useState(false);
+  // On-demand fetched wide banner images from AniList
+  const [banners, setBanners] = useState<Record<number, string>>({});
+  // If a banner image fails to load, fall back to cover poster
+  const [bannerFailedIds, setBannerFailedIds] = useState<Set<number>>(new Set());
   // A series' cover_url can be a remote URL the app's CSP blocks (see
   // AiringGrid's AiringPoster) — the background <img> then fails to load.
   // Tracked by id so a blocked slide degrades to the plain scrim/gradient
@@ -50,6 +55,22 @@ export function AiringSpotlight({ items, onOpenSeries }: AiringSpotlightProps) {
     });
     return sorted.slice(0, 4);
   }, [items]);
+
+  // Fetch missing banners on demand for featured carousel items
+  useEffect(() => {
+    featuredItems.forEach((item) => {
+      const hasBanner = item.banner_url || banners[item.series.id];
+      if (!hasBanner && !bannerFailedIds.has(item.series.id)) {
+        getSeriesBanner(item.series.id)
+          .then((b) => {
+            if (b) {
+              setBanners((prev) => ({ ...prev, [item.series.id]: b }));
+            }
+          })
+          .catch(() => {});
+      }
+    });
+  }, [featuredItems, banners, bannerFailedIds]);
 
   // Re-derived from the id after every re-sort, so the banner follows the
   // show it was showing rather than the slot it was in. This also subsumes
@@ -98,22 +119,39 @@ export function AiringSpotlight({ items, onOpenSeries }: AiringSpotlightProps) {
         style={{ transform: `translateX(-${currentIndex * (100 / featuredItems.length)}%)` }}
       >
         {featuredItems.map((item) => {
-          // highResCover re-serialises through `new URL`, which mangles a cached
-          // `file:` path containing spaces (%20, then double-encoded) — only
-          // remote http(s) thumbnails go through it.
+          // Priority 1: Wide horizontal banner from AniList (item.banner_url or fetched on-demand)
+          const banner = !bannerFailedIds.has(item.series.id)
+            ? (banners[item.series.id] || item.banner_url)
+            : null;
+
+          const isBanner = Boolean(banner);
           const rawCover = item.series.cover_url ?? "";
-          const bgSrc = resolveCoverUrl(/^https?:/i.test(rawCover) ? highResCover(rawCover) : rawCover);
+          let bgSrc: string | null = null;
+          if (banner) {
+            bgSrc = banner;
+          } else if (item.series.cover_url) {
+            // Priority 2: Fall back to vertical poster cover
+            bgSrc = resolveCoverUrl(/^https?:/i.test(rawCover) ? highResCover(rawCover) : rawCover);
+          }
+
+          const coverKey = `${item.series.id}|${rawCover}`;
+          const isFailed = isBanner ? false : failedIds.has(coverKey);
+
           return (
             <div key={item.series.id} className="spotlight-slide">
-              {bgSrc && !failedIds.has(`${item.series.id}|${rawCover}`) && (
+              {bgSrc && !isFailed && (
                 <img
                   className="spotlight-bg"
                   src={bgSrc}
                   alt=""
                   aria-hidden="true"
-                  onError={() =>
-                    setFailedIds((prev) => (prev.has(`${item.series.id}|${rawCover}`) ? prev : new Set(prev).add(`${item.series.id}|${rawCover}`)))
-                  }
+                  onError={() => {
+                    if (isBanner) {
+                      setBannerFailedIds((prev) => new Set(prev).add(item.series.id));
+                    } else {
+                      setFailedIds((prev) => (prev.has(coverKey) ? prev : new Set(prev).add(coverKey)));
+                    }
+                  }}
                 />
               )}
               <div className="spotlight-scrim" />

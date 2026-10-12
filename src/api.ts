@@ -262,3 +262,6 @@ export const getDownloadsSize = () =>
 export const clearAllDownloads = () =>
   invoke<number>("clear_all_downloads");
 
+export const getSeriesBanner = (seriesId: number) =>
+  invoke<string | null>("get_series_banner", { seriesId });
+
