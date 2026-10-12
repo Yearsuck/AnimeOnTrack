@@ -15,22 +15,29 @@ import { OverflowMenu, PosterThumb } from "./components";
 
 export function WantRow({
   series,
+  genres: initialGenres,
   onChanged,
   onOpenSeries,
 }: {
   series: Series;
+  genres?: string[];
   onChanged: () => void;
   onOpenSeries: (s: Series) => void;
 }) {
   const t = useT();
-  const [genres, setGenres] = useState<string[]>([]);
+  const [genres, setGenres] = useState<string[]>(initialGenres ?? []);
   const [linking, setLinking] = useState(false);
   const [starting, setStarting] = useState(false);
   const [noMatch, setNoMatch] = useState(false);
   const unlinked = isUnlinkedCatalogRow(series);
+
   useEffect(() => {
-    getSeriesGenres(series.id).then(setGenres);
-  }, [series.id]);
+    if (initialGenres != null) {
+      setGenres(initialGenres);
+    } else {
+      getSeriesGenres(series.id).then(setGenres);
+    }
+  }, [series.id, initialGenres]);
 
   const retryLink = async () => {
     setLinking(true);
@@ -98,23 +105,31 @@ export function WantRow({
       </div>
       <div className="listas-actions">
         <button
-          type="button"
-          className="btn btn-ghost"
-          onClick={() => onOpenSeries(series)}
-        >
-          {t("discover.viewDetails") || "Detalles"}
-        </button>
-        <button
-          type="button"
           className="btn btn-primary"
           onClick={handleStartWatching}
-          disabled={starting}
+          disabled={starting || linking}
         >
-          {starting ? t("discover.searchingBtn") : t("discover.startWatching")}
+          {starting ? t("common.saving") : t("discover.startWatching")}
+        </button>
+        <button
+          className="btn"
+          onClick={async () => {
+            await setBacklogStatus(series.id, "discarded");
+            onChanged();
+          }}
+        >
+          {t("discover.discard")}
         </button>
         <OverflowMenu
           label={t("discover.moreActions")}
           items={[
+            {
+              label: t("discover.moveToWant"),
+              onClick: async () => {
+                await setBacklogStatus(series.id, "want");
+                onChanged();
+              },
+            },
             {
               label: t("discover.discard"),
               onClick: async () => {
@@ -145,16 +160,40 @@ export function WantRow({
   );
 }
 
-export function WatchedRow({ series, onChanged }: { series: Series; onChanged: () => void }) {
+export function WatchedRow({
+  series,
+  genres = [],
+  onChanged,
+  onOpenSeries,
+}: {
+  series: Series;
+  genres?: string[];
+  onChanged: () => void;
+  onOpenSeries?: (s: Series) => void;
+}) {
   const t = useT();
   return (
     <div className="listas-card">
-      <PosterThumb series={series} />
+      <PosterThumb series={series} onClick={onOpenSeries ? () => onOpenSeries(series) : undefined} />
       <div className="backlog-main">
         <div className="listas-card-head">
-          <span className="listas-title">{series.title}</span>
+          <span
+            className={`listas-title ${onOpenSeries ? "clickable" : ""}`}
+            onClick={onOpenSeries ? () => onOpenSeries(series) : undefined}
+          >
+            {series.title}
+          </span>
           <span className="listas-chip listas-chip-watched">{t("discover.chipWatched")}</span>
+          {series.is_airing && (
+            <span className="listas-chip listas-chip-airing">
+              {t("airing.airingNow") || "En emisión"}
+            </span>
+          )}
+          {series.site_episode_count != null && (
+            <span className="listas-chip listas-chip-eps">{series.site_episode_count} eps</span>
+          )}
         </div>
+        {genres.length > 0 && <div className="backlog-genres">{genres.join(", ")}</div>}
       </div>
       <div className="listas-actions">
         <button
@@ -176,6 +215,7 @@ export function WatchedRow({ series, onChanged }: { series: Series; onChanged: (
                 onChanged();
               },
             },
+            ...(onOpenSeries ? [{ label: t("discover.viewDetails"), onClick: () => onOpenSeries(series) }] : []),
           ]}
         />
       </div>
@@ -183,16 +223,40 @@ export function WatchedRow({ series, onChanged }: { series: Series; onChanged: (
   );
 }
 
-export function DiscardedRow({ series, onChanged }: { series: Series; onChanged: () => void }) {
+export function DiscardedRow({
+  series,
+  genres = [],
+  onChanged,
+  onOpenSeries,
+}: {
+  series: Series;
+  genres?: string[];
+  onChanged: () => void;
+  onOpenSeries?: (s: Series) => void;
+}) {
   const t = useT();
   return (
     <div className="listas-card">
-      <PosterThumb series={series} />
+      <PosterThumb series={series} onClick={onOpenSeries ? () => onOpenSeries(series) : undefined} />
       <div className="backlog-main">
         <div className="listas-card-head">
-          <span className="listas-title">{series.title}</span>
+          <span
+            className={`listas-title ${onOpenSeries ? "clickable" : ""}`}
+            onClick={onOpenSeries ? () => onOpenSeries(series) : undefined}
+          >
+            {series.title}
+          </span>
           <span className="listas-chip listas-chip-discarded">{t("discover.chipDiscarded")}</span>
+          {series.is_airing && (
+            <span className="listas-chip listas-chip-airing">
+              {t("airing.airingNow") || "En emisión"}
+            </span>
+          )}
+          {series.site_episode_count != null && (
+            <span className="listas-chip listas-chip-eps">{series.site_episode_count} eps</span>
+          )}
         </div>
+        {genres.length > 0 && <div className="backlog-genres">{genres.join(", ")}</div>}
       </div>
       <div className="listas-actions">
         <button
@@ -214,6 +278,7 @@ export function DiscardedRow({ series, onChanged }: { series: Series; onChanged:
                 onChanged();
               },
             },
+            ...(onOpenSeries ? [{ label: t("discover.viewDetails"), onClick: () => onOpenSeries(series) }] : []),
           ]}
         />
       </div>

@@ -877,6 +877,35 @@ impl Db {
         Ok(rows)
     }
 
+    /// Bulk-fetch genres for multiple series ids in a single query.
+    pub fn list_series_genres_batch(
+        &self,
+        series_ids: &[i64],
+    ) -> Result<std::collections::HashMap<i64, Vec<String>>> {
+        let mut map: std::collections::HashMap<i64, Vec<String>> = std::collections::HashMap::new();
+        if series_ids.is_empty() {
+            return Ok(map);
+        }
+        for &id in series_ids {
+            map.entry(id).or_default();
+        }
+        let placeholders = vec!["?"; series_ids.len()].join(",");
+        let sql = format!(
+            "SELECT series_id, genre FROM series_effective_genres WHERE series_id IN ({}) ORDER BY genre",
+            placeholders
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let params = rusqlite::params_from_iter(series_ids.iter());
+        let rows = stmt
+            .query_map(params, |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for (sid, g) in rows {
+            map.entry(sid).or_default().push(g);
+        }
+        Ok(map)
+    }
+
+
     /// `true` if this series has no `series_genres` rows yet (needs a
     /// detail-page fetch to backfill). Split out as a plain sync check so the
     /// async fetch decision can be unit-tested without a scraper/AppHandle.
@@ -2935,4 +2964,26 @@ mod tests {
         assert_eq!(cover.as_deref(), Some(shared));
     }
 
+    #[test]
+    fn list_series_genres_batch_returns_mapped_genres_and_empty_for_missing() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "https://a", "animeytx").unwrap();
+        let s1 = series_in(&db, src, "s1", "Show 1", None);
+        let s2 = series_in(&db, src, "s2", "Show 2", None);
+        let s3 = series_in(&db, src, "s3", "Show 3", None);
+
+        db.conn.execute("INSERT INTO series_genres (series_id, genre) VALUES (?1, ?2)", (s1, "Action")).unwrap();
+        db.conn.execute("INSERT INTO series_genres (series_id, genre) VALUES (?1, ?2)", (s1, "Adventure")).unwrap();
+        db.conn.execute("INSERT INTO series_genres (series_id, genre) VALUES (?1, ?2)", (s2, "Comedy")).unwrap();
+
+        let batch = db.list_series_genres_batch(&[s1, s2, s3]).unwrap();
+        assert_eq!(batch.get(&s1).map(|v| v.as_slice()), Some(&["Action".to_string(), "Adventure".to_string()][..]));
+        assert_eq!(batch.get(&s2).map(|v| v.as_slice()), Some(&["Comedy".to_string()][..]));
+        assert_eq!(batch.get(&s3).map(|v| v.as_slice()), Some(&[][..]));
+
+        let empty = db.list_series_genres_batch(&[]).unwrap();
+        assert!(empty.is_empty());
+    }
+
 }
+

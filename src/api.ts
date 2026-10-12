@@ -30,6 +30,8 @@ import type {
   BackupStatus,
   HourCount,
   GenreCard,
+  MonitorOption,
+  PlayerSettings,
 } from "./types";
 
 export const scanAiring = (baseUrl: string) =>
@@ -53,8 +55,23 @@ export const listPending = (sort?: "remaining_asc" | "remaining_desc") =>
 
 export const pendingCount = () => invoke<number>("pending_count");
 
-export const openEpisode = (url: string) =>
-  invoke<void>("open_episode", { url });
+export const openEpisode = (
+  url: string,
+  options?: { monitor?: string | null; fullscreen?: boolean | null }
+) =>
+  invoke<void>("open_episode", {
+    url,
+    monitor: options?.monitor ?? null,
+    fullscreen: options?.fullscreen ?? null,
+  });
+
+export const listMonitors = () => invoke<MonitorOption[]>("list_monitors");
+
+export const getPlayerSettings = () => invoke<PlayerSettings>("get_player_settings");
+
+export const setPlayerSettings = (monitor: string | null, fullscreen: boolean) =>
+  invoke<void>("set_player_settings", { monitor, fullscreen });
+
 
 export const setSeen = (episodeId: number, seen: boolean) =>
   invoke<void>("set_seen", { episodeId, seen });
@@ -172,6 +189,10 @@ export const listWatchedExternally = () =>
 
 export const getSeriesGenres = (seriesId: number) =>
   invoke<string[]>("get_series_genres", { seriesId });
+
+export const getSeriesGenresBatch = (seriesIds: number[]) =>
+  invoke<Record<number, string[]>>("get_series_genres_batch", { seriesIds });
+
 
 export const getTopGenres = (limit: number) =>
   invoke<GenreAffinity[]>("get_top_genres", { limit });

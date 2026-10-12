@@ -670,7 +670,20 @@ impl Db {
 
         let search = filter.search.as_deref().map(str::trim).filter(|s| !s.is_empty());
         if let Some(search) = search {
-            conditions.push("title LIKE '%' || ? || '%' COLLATE NOCASE".to_string());
+            conditions.push(
+                "(title LIKE '%' || ? || '%' COLLATE NOCASE \
+                 OR (title_romaji IS NOT NULL AND title_romaji LIKE '%' || ? || '%' COLLATE NOCASE) \
+                 OR (title_english IS NOT NULL AND title_english LIKE '%' || ? || '%' COLLATE NOCASE) \
+                 OR id IN (SELECT anilist_id FROM anilist_catalog_tags WHERE tag LIKE '%' || ? || '%' COLLATE NOCASE) \
+                 OR id IN (SELECT anilist_id FROM anilist_catalog_genres WHERE genre LIKE '%' || ? || '%' COLLATE NOCASE) \
+                 OR id IN (SELECT anilist_id FROM anilist_catalog_synonyms WHERE synonym LIKE '%' || ? || '%' COLLATE NOCASE))"
+                    .to_string(),
+            );
+            params.push(Value::Text(search.to_string()));
+            params.push(Value::Text(search.to_string()));
+            params.push(Value::Text(search.to_string()));
+            params.push(Value::Text(search.to_string()));
+            params.push(Value::Text(search.to_string()));
             params.push(Value::Text(search.to_string()));
         }
 
@@ -712,20 +725,20 @@ impl Db {
             .filter(|g| !g.is_empty())
             .collect();
         if !genres.is_empty() {
-            let placeholders = genres.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
-            conditions.push(format!(
-                "id IN (SELECT anilist_id FROM anilist_catalog_genres \
-                 WHERE genre IN ({placeholders}) GROUP BY anilist_id \
-                 HAVING COUNT(DISTINCT genre) = ?)"
-            ));
             for genre in &genres {
+                conditions.push(
+                    "(id IN (SELECT anilist_id FROM anilist_catalog_genres WHERE genre = ? COLLATE NOCASE) \
+                      OR id IN (SELECT anilist_id FROM anilist_catalog_tags WHERE tag = ? COLLATE NOCASE))"
+                        .to_string(),
+                );
+                params.push(Value::Text((*genre).to_string()));
                 params.push(Value::Text((*genre).to_string()));
             }
-            params.push(Value::Integer(genres.len() as i64));
         }
 
         (conditions.join(" AND "), params)
     }
+
 
     /// Filtered + paginated variant of `list_catalog` — same popularity
     /// ordering, narrowed by `filter`. See `CatalogFilter` for field
@@ -768,18 +781,28 @@ impl Db {
         Ok(count)
     }
 
-    /// Distinct genre vocabulary from the synced catalog, alphabetical —
-    /// drives the Catálogo filter bar's genre chips without hardcoding
-    /// AniList's genre list.
+    /// Distinct genre and major thematic tag vocabulary from the synced catalog,
+    /// alphabetical — drives the Catálogo filter bar's genre chips.
     pub fn distinct_catalog_genres(&self) -> Result<Vec<String>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT DISTINCT genre FROM anilist_catalog_genres ORDER BY genre COLLATE NOCASE")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT genre FROM (
+                SELECT genre FROM anilist_catalog_genres
+                UNION
+                SELECT tag AS genre FROM anilist_catalog_tags
+                WHERE rank >= 50 AND tag IN (
+                    'Isekai', 'Magic', 'School', 'Super Power', 'Martial Arts', 'Military',
+                    'Historical', 'Parody', 'Space', 'Vampire', 'Cyberpunk', 'Time Travel',
+                    'Reincarnation', 'Virtual World', 'Cultivation', 'Post-Apocalyptic',
+                    'Idol', 'Gore', 'Mythology', 'Detective', 'Survival', 'Video Games'
+                )
+            ) ORDER BY genre COLLATE NOCASE",
+        )?;
         let genres = stmt
             .query_map([], |r| r.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(genres)
     }
+
 
     /// Distinct, non-null format vocabulary from the synced catalog,
     /// alphabetical — drives the Catálogo filter bar's format select.
@@ -3334,4 +3357,41 @@ mod tests {
         assert_eq!(linked_id(&db, row), None);
     }
 
+    #[test]
+    fn query_catalog_matches_tag_isekai_and_genre_filter() {
+        let db = Db::open(":memory:").unwrap();
+        let mut a1 = catalog_anime(1001, "Tensei Shitara Slime Datta Ken", &["Fantasy"]);
+        a1.tags = vec![crate::anilist::CatalogTag { name: "Isekai".into(), rank: 90 }];
+        db.upsert_catalog_anime(&a1, 0).unwrap();
+
+        let a2 = catalog_anime(1002, "Ordinary School Life", &["Action"]);
+        db.upsert_catalog_anime(&a2, 0).unwrap();
+
+        // Search text "isekai" matches a1 via tag even though title has "Slime" and genre is "Fantasy"
+        let search_filter = CatalogFilter {
+            search: Some("isekai".into()),
+            ..Default::default()
+        };
+        let results = db.list_catalog_filtered(1, 10, &search_filter).unwrap();
+        let total = db.catalog_count_filtered(&search_filter).unwrap();
+        assert_eq!(total, 1);
+        assert_eq!(results[0].id, 1001);
+
+        // Genre filter with "Isekai" also matches a1 because genre filter checks tags as well
+        let genre_filter = CatalogFilter {
+            genres: vec!["Isekai".into()],
+            ..Default::default()
+        };
+        let results2 = db.list_catalog_filtered(1, 10, &genre_filter).unwrap();
+        let total2 = db.catalog_count_filtered(&genre_filter).unwrap();
+        assert_eq!(total2, 1);
+        assert_eq!(results2[0].id, 1001);
+
+        // distinct_catalog_genres includes "Isekai"
+        let genres = db.distinct_catalog_genres().unwrap();
+        assert!(genres.contains(&"Isekai".to_string()));
+    }
+
 }
+
+

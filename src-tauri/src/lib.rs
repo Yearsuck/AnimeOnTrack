@@ -187,8 +187,12 @@ pub fn run() {
             commands::list_pending,
             commands::pending_count,
             commands::open_episode,
+            commands::list_monitors,
+            commands::get_player_settings,
+            commands::set_player_settings,
             commands::set_seen,
             commands::set_seen_cascade,
+
             commands::list_episodes,
             commands::rescan_airing,
             commands::get_mirrors,
@@ -207,7 +211,9 @@ pub fn run() {
             commands::set_backlog_status,
             commands::reclassify_series,
             commands::get_series_genres,
+            commands::get_series_genres_batch,
             commands::get_top_genres,
+
             commands::get_anime_catalog,
             commands::get_catalog_facets,
             commands::sync_anime_catalog,

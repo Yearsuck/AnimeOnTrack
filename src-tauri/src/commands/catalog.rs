@@ -7,6 +7,17 @@ pub fn get_series_genres(state: State<'_, AppState>, series_id: i64) -> Result<V
     db.list_series_genres(series_id).map_err(|e| e.to_string())
 }
 
+/// Bulk-fetch genre lists for multiple series ids in one call.
+#[tauri::command]
+pub fn get_series_genres_batch(
+    state: State<'_, AppState>,
+    series_ids: Vec<i64>,
+) -> Result<std::collections::HashMap<i64, Vec<String>>, String> {
+    let db = state.db.lock().unwrap();
+    db.list_series_genres_batch(&series_ids).map_err(|e| e.to_string())
+}
+
+
 /// This user's top `limit` genres by affinity score (positive only), for
 /// the "Tus géneros favoritos" chip row in the swipe UI — makes the
 /// otherwise-invisible taste-weighting in `discover_swipe_card` visible.

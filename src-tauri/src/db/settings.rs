@@ -102,6 +102,30 @@ impl Db {
         }
     }
 
+    /// User-preferred target monitor for opening episodes.
+    /// `None` or `"default"` falls back to the current window's monitor or primary monitor.
+    pub fn get_player_monitor(&self) -> Result<Option<String>> {
+        self.get_setting("player_monitor")
+    }
+
+    pub fn set_player_monitor(&self, value: Option<&str>) -> Result<()> {
+        match value {
+            Some(v) if !v.trim().is_empty() => self.set_setting("player_monitor", v.trim()),
+            _ => self.delete_setting("player_monitor"),
+        }
+    }
+
+    /// User preference: open episode viewing windows in full screen mode.
+    /// Defaults to `false` (windowed 1280x800).
+    pub fn get_player_fullscreen(&self) -> Result<bool> {
+        Ok(self.get_setting("player_fullscreen")?.as_deref() == Some("true"))
+    }
+
+    pub fn set_player_fullscreen(&self, fullscreen: bool) -> Result<()> {
+        self.set_setting("player_fullscreen", if fullscreen { "true" } else { "false" })
+    }
+
+
     /// Record "this series' episode list was actually fetched just now" —
     /// gates the FINISHED_RECHECK interval for followed series absent from
     /// the airing listing (see `commands::should_fetch_series`).
@@ -293,4 +317,22 @@ mod tests {
         assert_eq!(db.get_deck_min_start_date().unwrap(), None);
         assert_eq!(db.get_deck_max_start_date().unwrap(), None);
     }
+
+    #[test]
+    fn player_settings_round_trip() {
+        let db = Db::open(":memory:").unwrap();
+        assert_eq!(db.get_player_monitor().unwrap(), None);
+        assert!(!db.get_player_fullscreen().unwrap());
+
+        db.set_player_monitor(Some("DISPLAY2")).unwrap();
+        db.set_player_fullscreen(true).unwrap();
+        assert_eq!(db.get_player_monitor().unwrap().as_deref(), Some("DISPLAY2"));
+        assert!(db.get_player_fullscreen().unwrap());
+
+        db.set_player_monitor(None).unwrap();
+        db.set_player_fullscreen(false).unwrap();
+        assert_eq!(db.get_player_monitor().unwrap(), None);
+        assert!(!db.get_player_fullscreen().unwrap());
+    }
 }
+
