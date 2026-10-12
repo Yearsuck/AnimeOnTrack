@@ -289,3 +289,18 @@ export interface BackupStatus {
   size_bytes: number | null;
   last_error: string | null;
 }
+
+export interface MonitorOption {
+  id: string;
+  name: string;
+  index: number;
+  is_primary: boolean;
+  width: number;
+  height: number;
+}
+
+export interface PlayerSettings {
+  monitor: string | null;
+  fullscreen: boolean;
+}
+

@@ -482,3 +482,22 @@ pub struct LibraryImportProgress {
     pub total: usize,
     pub title: String,
 }
+
+/// Information about a detected system display for episode playback.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MonitorOption {
+    pub id: String,
+    pub name: String,
+    pub index: usize,
+    pub is_primary: bool,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// User preference for episode playback display and window state.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PlayerSettings {
+    pub monitor: Option<String>,
+    pub fullscreen: bool,
+}
+
