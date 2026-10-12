@@ -433,7 +433,8 @@ impl Db {
             "SELECT s.id, s.slug, s.title, s.url, s.cover_url, s.is_airing, s.followed,
                     e.id, e.series_id, e.number, e.title, e.url, e.released_at, e.seen,
                     s.next_episode_at, s.site_episode_count,
-                    COUNT(*) OVER (PARTITION BY s.id) AS remaining
+                    COUNT(*) OVER (PARTITION BY s.id) AS remaining,
+                    e.download_path, e.download_status
              FROM episodes e JOIN series s ON s.id = e.series_id
              WHERE e.seen=0 AND s.watched_externally=0 AND s.id IN ({ids_str})
              ORDER BY remaining {dir}, s.title, CAST(e.number AS INTEGER) ASC, e.id ASC"
@@ -461,6 +462,8 @@ impl Db {
                     url: r.get(11)?,
                     released_at: r.get(12)?,
                     seen: r.get::<_, i64>(13)? != 0,
+                    download_path: r.get("download_path")?,
+                    download_status: r.get("download_status")?,
                 };
                 Ok((series, ep))
             })?
@@ -583,7 +586,7 @@ mod tests {
         db.set_followed(active_has_eps, true).unwrap();
         db.insert_episode(&crate::models::Episode {
             id: 0, series_id: active_has_eps, number: "1".into(), title: None,
-            url: "u/1".into(), released_at: None, seen: false,
+            url: "u/1".into(), released_at: None, seen: false, download_path: None, download_status: None,
         }).unwrap();
 
         // 2. show only on another site
@@ -591,20 +594,20 @@ mod tests {
         db.set_followed(only_other, true).unwrap();
         db.insert_episode(&crate::models::Episode {
             id: 0, series_id: only_other, number: "1".into(), title: None,
-            url: "u/1".into(), released_at: None, seen: false,
+            url: "u/1".into(), released_at: None, seen: false, download_path: None, download_status: None,
         }).unwrap();
 
         // 3. show on two other sites (the one with more episodes wins)
         let two_b = db.upsert_series(src_b, &mk("two-b", "Two Others")).unwrap();
         db.set_anilist_id(two_b, 100).unwrap();
         db.set_followed(two_b, true).unwrap();
-        db.insert_episode(&crate::models::Episode { id: 0, series_id: two_b, number: "1".into(), title: None, url: "u/1".into(), released_at: None, seen: false }).unwrap();
+        db.insert_episode(&crate::models::Episode { id: 0, series_id: two_b, number: "1".into(), title: None, url: "u/1".into(), released_at: None, seen: false, download_path: None, download_status: None }).unwrap();
 
         let two_c = db.upsert_series(src_c, &mk("two-c", "Two Others")).unwrap();
         db.set_anilist_id(two_c, 100).unwrap();
         // C has 2 episodes, so C wins
-        db.insert_episode(&crate::models::Episode { id: 0, series_id: two_c, number: "1".into(), title: None, url: "u/1".into(), released_at: None, seen: false }).unwrap();
-        db.insert_episode(&crate::models::Episode { id: 0, series_id: two_c, number: "2".into(), title: None, url: "u/2".into(), released_at: None, seen: false }).unwrap();
+        db.insert_episode(&crate::models::Episode { id: 0, series_id: two_c, number: "1".into(), title: None, url: "u/1".into(), released_at: None, seen: false, download_path: None, download_status: None }).unwrap();
+        db.insert_episode(&crate::models::Episode { id: 0, series_id: two_c, number: "2".into(), title: None, url: "u/2".into(), released_at: None, seen: false, download_path: None, download_status: None }).unwrap();
 
         // 4. show on active site with 0 eps, but another site has eps
         let active_zero = db.upsert_series(src_a, &mk("zero-a", "Active Zero")).unwrap();
@@ -613,11 +616,11 @@ mod tests {
 
         let zero_b = db.upsert_series(src_b, &mk("zero-b", "Active Zero")).unwrap();
         db.set_anilist_id(zero_b, 200).unwrap();
-        db.insert_episode(&crate::models::Episode { id: 0, series_id: zero_b, number: "1".into(), title: None, url: "u/1".into(), released_at: None, seen: false }).unwrap();
+        db.insert_episode(&crate::models::Episode { id: 0, series_id: zero_b, number: "1".into(), title: None, url: "u/1".into(), released_at: None, seen: false, download_path: None, download_status: None }).unwrap();
 
         // 5. unfollowed rows never appear
         let unfollowed = db.upsert_series(src_b, &mk("unf", "Unfollowed")).unwrap();
-        db.insert_episode(&crate::models::Episode { id: 0, series_id: unfollowed, number: "1".into(), title: None, url: "u/1".into(), released_at: None, seen: false }).unwrap();
+        db.insert_episode(&crate::models::Episode { id: 0, series_id: unfollowed, number: "1".into(), title: None, url: "u/1".into(), released_at: None, seen: false, download_path: None, download_status: None }).unwrap();
 
         // Expected counts for active source (A):
         // Active Has Eps: 1
@@ -654,12 +657,12 @@ mod tests {
         db.set_followed(many, true).unwrap();
         db.insert_episode(&crate::models::Episode {
             id: 0, series_id: few, number: "1".into(), title: None,
-            url: "few/1".into(), released_at: None, seen: false,
+            url: "few/1".into(), released_at: None, seen: false, download_path: None, download_status: None,
         }).unwrap();
         for n in 1..=3 {
             db.insert_episode(&crate::models::Episode {
                 id: 0, series_id: many, number: n.to_string(), title: None,
-                url: format!("many/{n}"), released_at: None, seen: false,
+                url: format!("many/{n}"), released_at: None, seen: false, download_path: None, download_status: None,
             }).unwrap();
         }
 
@@ -692,7 +695,7 @@ mod tests {
         for n in ["10", "2", "1"] {
             db.insert_episode(&crate::models::Episode {
                 id: 0, series_id: sid, number: n.into(), title: None,
-                url: format!("show/{n}"), released_at: None, seen: false,
+                url: format!("show/{n}"), released_at: None, seen: false, download_path: None, download_status: None,
             }).unwrap();
         }
 

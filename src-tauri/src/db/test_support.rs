@@ -21,6 +21,7 @@ pub(crate) fn insert_eps_seen_up_to(db: &Db, series_id: i64, total: i64, seen_up
         db.insert_episode(&crate::models::Episode {
             id: 0, series_id, number: i.to_string(), title: None,
             url: format!("https://site/{series_id}-{i}"), released_at: None, seen: false,
+            download_path: None, download_status: None,
         }).unwrap();
     }
     if seen_up_to >= 1 {

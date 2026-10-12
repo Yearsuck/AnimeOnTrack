@@ -32,6 +32,10 @@ export interface Episode {
   url: string;
   released_at: string | null;
   seen: boolean;
+  /** Local filesystem path to the downloaded video file. */
+  download_path?: string | null;
+  /** "downloading" | "downloaded" | "failed" | null */
+  download_status?: "downloading" | "downloaded" | "failed" | null;
 }
 
 export interface PendingItem {

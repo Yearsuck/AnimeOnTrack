@@ -18,20 +18,28 @@ pub async fn open_episode(app: AppHandle, url: String) -> Result<(), String> {
         url,
         released_at: None,
         seen: false,
+        download_path: None,
+        download_status: None,
     };
     AppWindowPlayer.open(&app, &ep).map_err(|e| e.to_string())
 }
 
-/// Mark an episode seen or unseen (persisted).
+/// Mark an episode seen or unseen (persisted). When marking seen, any
+/// downloaded video file for the episode is automatically deleted from disk.
 #[tauri::command]
 pub fn set_seen(state: State<'_, AppState>, episode_id: i64, seen: bool) -> Result<(), String> {
     let db = state.db.lock().unwrap();
-    db.set_seen(episode_id, seen).map_err(|e| e.to_string())
+    db.set_seen(episode_id, seen).map_err(|e| e.to_string())?;
+    if seen {
+        cleanup_downloads(&db, &[episode_id]);
+    }
+    Ok(())
 }
 
 /// Mark an episode seen/unseen, cascading to keep watching gap-free: marking
 /// seen also marks every earlier episode of the series seen; marking unseen
-/// also marks every later one unseen.
+/// also marks every later one unseen. When marking seen, downloaded video
+/// files for all affected episodes are automatically deleted from disk.
 #[tauri::command]
 pub fn set_seen_cascade(
     state: State<'_, AppState>,
@@ -40,7 +48,20 @@ pub fn set_seen_cascade(
     seen: bool,
 ) -> Result<(), String> {
     let db = state.db.lock().unwrap();
-    db.set_seen_cascade(series_id, &number, seen).map_err(|e| e.to_string())
+    // Collect the IDs that will flip to seen BEFORE the cascade runs, so we
+    // know which downloads to clean up afterwards.
+    let affected_ids = if seen {
+        db.episode_ids_in_cascade(series_id, &number, true)
+            .unwrap_or_default()
+    } else {
+        vec![]
+    };
+    db.set_seen_cascade(series_id, &number, seen)
+        .map_err(|e| e.to_string())?;
+    if seen && !affected_ids.is_empty() {
+        cleanup_downloads(&db, &affected_ids);
+    }
+    Ok(())
 }
 
 /// Hard-delete a series row outright — used for "Eliminar del todo" on
@@ -51,3 +72,120 @@ pub fn delete_series(state: State<'_, AppState>, series_id: i64) -> Result<(), S
     let db = state.db.lock().unwrap();
     db.delete_series(series_id).map_err(|e| e.to_string())
 }
+
+/// Delete downloaded video files from disk and clear their DB columns.
+/// Best-effort: a missing file is not an error (the column is still cleared
+/// to avoid an orphaned "downloaded" state forever).
+fn cleanup_downloads(db: &crate::db::Db, episode_ids: &[i64]) {
+    match db.downloaded_paths(episode_ids) {
+        Ok(paths) => {
+            let mut cleaned = Vec::new();
+            for (id, path) in &paths {
+                match std::fs::remove_file(path) {
+                    Ok(()) => cleaned.push(*id),
+                    Err(e) => {
+                        eprintln!("[download] failed to delete {path}: {e}");
+                        // Clear DB anyway — a missing file is better than a
+                        // perpetually-stuck "downloaded" badge.
+                        cleaned.push(*id);
+                    }
+                }
+            }
+            if !cleaned.is_empty() {
+                if let Err(e) = db.clear_download_columns(&cleaned) {
+                    eprintln!("[download] failed to clear download columns: {e}");
+                }
+            }
+        }
+        Err(e) => eprintln!("[download] failed to query download paths: {e}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cleanup_downloads_deletes_file_and_clears_db() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let s = crate::models::Series {
+            id: 0, slug: "test".into(), title: "Test".into(),
+            url: "https://site/tv/test/".into(), cover_url: None, is_airing: false, followed: true, next_episode_at: None, site_episode_count: None,
+        };
+        let sid = db.upsert_series(src, &s).unwrap();
+
+        let (ep_id, _) = db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: sid, number: "1".into(), title: None,
+            url: "https://site/test-1".into(), released_at: None, seen: false,
+            download_path: None, download_status: None,
+        }).unwrap();
+
+        // Create a fake downloaded file on disk
+        let temp_file = std::env::temp_dir().join(format!("aot_seen_dl_test_{}.mp4", ep_id));
+        std::fs::write(&temp_file, b"video-content").unwrap();
+        assert!(temp_file.exists());
+
+        db.set_download_status(ep_id, "downloaded", Some(temp_file.to_str().unwrap())).unwrap();
+
+        // Call cleanup_downloads
+        cleanup_downloads(&db, &[ep_id]);
+
+        // Verify the file was removed from disk
+        assert!(!temp_file.exists(), "Downloaded file should be deleted upon cleanup");
+
+        // Verify the DB columns were cleared
+        let ep = db.get_episode(ep_id).unwrap();
+        assert!(ep.download_path.is_none());
+        assert!(ep.download_status.is_none());
+    }
+
+    #[test]
+    fn cascade_deletes_downloaded_files_up_to_number() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let s = crate::models::Series {
+            id: 0, slug: "test-cascade".into(), title: "Test Cascade".into(),
+            url: "https://site/tv/test-cascade/".into(), cover_url: None, is_airing: false, followed: true, next_episode_at: None, site_episode_count: None,
+        };
+        let sid = db.upsert_series(src, &s).unwrap();
+
+        // Create 3 episodes: 1, 2, 3
+        let mut ep_ids = Vec::new();
+        let mut temp_files = Vec::new();
+        for num in ["1", "2", "3"] {
+            let (ep_id, _) = db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: sid, number: num.to_string(), title: None,
+                url: format!("https://site/test-{}", num), released_at: None, seen: false,
+                download_path: None, download_status: None,
+            }).unwrap();
+            ep_ids.push(ep_id);
+
+            let temp_file = std::env::temp_dir().join(format!("aot_cascade_dl_test_{}_{}.mp4", sid, num));
+            std::fs::write(&temp_file, b"content").unwrap();
+            assert!(temp_file.exists());
+            db.set_download_status(ep_id, "downloaded", Some(temp_file.to_str().unwrap())).unwrap();
+            temp_files.push(temp_file);
+        }
+
+        // Collect affected IDs before cascade
+        let affected_ids = db.episode_ids_in_cascade(sid, "3", true).unwrap();
+        assert_eq!(affected_ids.len(), 3);
+        db.set_seen_cascade(sid, "3", true).unwrap();
+        cleanup_downloads(&db, &affected_ids);
+
+        // All 3 files should be deleted from disk
+        for file in &temp_files {
+            assert!(!file.exists(), "File {:?} should have been deleted", file);
+        }
+
+        // All 3 episodes should have cleared download columns and seen=true
+        for ep_id in &ep_ids {
+            let ep = db.get_episode(*ep_id).unwrap();
+            assert!(ep.seen);
+            assert!(ep.download_path.is_none());
+            assert!(ep.download_status.is_none());
+        }
+    }
+}
+

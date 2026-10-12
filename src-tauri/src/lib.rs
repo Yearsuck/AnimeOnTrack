@@ -232,6 +232,11 @@ pub fn run() {
             commands::restore_latest,
             commands::auto_backup_if_due,
             commands::uninstall_app,
+            commands::download_episode,
+            commands::cancel_download,
+            commands::delete_download,
+            commands::get_downloads_size,
+            commands::clear_all_downloads,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

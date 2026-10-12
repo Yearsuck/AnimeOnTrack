@@ -166,6 +166,8 @@ impl SiteAdapter for GogoanimeAdapter {
                 url,
                 released_at: None,
                 seen: false,
+                download_path: None,
+                download_status: None,
             });
         }
         Ok(out)

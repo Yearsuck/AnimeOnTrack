@@ -426,4 +426,19 @@ export const ca: Messages = {
   "stats.heatmapFri": "Dv",
   "stats.heatmapSat": "Ds",
   "stats.heatmapSun": "Dg",
+
+  // Offline downloads
+  "download.download": "⬇ Descarrega",
+  "download.downloading": "Descarregant… {percent}%",
+  "download.downloaded": "✓ Descarregat",
+  "download.failed": "Error en descarregar",
+  "download.playOffline": "▶ Offline",
+  "download.cancel": "Cancel·la la descàrrega",
+  "download.delete": "Esborra la descàrrega",
+  "download.autoDeleteHint": "Els episodis descarregats s'esborren automàticament en marcar-los com a vistos.",
+  "download.settingsHeading": "Descàrregues offline",
+  "download.storageUsed": "Espai usat: {size}",
+  "download.clearAll": "Esborra totes les descàrregues",
+  "download.clearAllConfirm": "Esborrar tots els fitxers descarregats? No es pot desfer.",
+  "download.nothingDownloaded": "No hi ha res descarregat.",
 };

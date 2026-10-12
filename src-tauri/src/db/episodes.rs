@@ -321,7 +321,8 @@ impl Db {
     /// progress view for "which episode am I on".
     pub fn list_series_episodes(&self, series_id: i64) -> Result<Vec<crate::models::Episode>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, series_id, number, title, url, released_at, seen
+            "SELECT id, series_id, number, title, url, released_at, seen,
+                    download_path, download_status
              FROM episodes WHERE series_id=?1
              ORDER BY CAST(number AS INTEGER) ASC, id ASC",
         )?;
@@ -335,6 +336,8 @@ impl Db {
                     url: r.get(4)?,
                     released_at: r.get(5)?,
                     seen: r.get::<_, i64>(6)? != 0,
+                    download_path: r.get(7)?,
+                    download_status: r.get(8)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -477,6 +480,144 @@ impl Db {
         tx.commit()?;
         Ok(inserted)
     }
+
+    /// Returns (episode_id, download_path) pairs for episodes that have a
+    /// non-NULL download_path among the given IDs. Used by the auto-cleanup
+    /// hook in `set_seen` / `set_seen_cascade` to know which files to delete.
+    pub fn downloaded_paths(&self, episode_ids: &[i64]) -> Result<Vec<(i64, String)>> {
+        let mut result = Vec::new();
+        for &id in episode_ids {
+            let path: Option<String> = self
+                .conn
+                .query_row(
+                    "SELECT download_path FROM episodes WHERE id=?1 AND download_path IS NOT NULL",
+                    [id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if let Some(p) = path {
+                result.push((id, p));
+            }
+        }
+        Ok(result)
+    }
+
+    /// Clear the download_path and download_status columns for the given
+    /// episode IDs — called after the on-disk file has been deleted.
+    pub fn clear_download_columns(&self, episode_ids: &[i64]) -> Result<()> {
+        for &id in episode_ids {
+            self.conn.execute(
+                "UPDATE episodes SET download_path = NULL, download_status = NULL WHERE id=?1",
+                [id],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Set the download status (and optionally the path) for an episode.
+    pub fn set_download_status(
+        &self,
+        episode_id: i64,
+        status: &str,
+        path: Option<&str>,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE episodes SET download_status=?1, download_path=COALESCE(?2, download_path) WHERE id=?3",
+            (status, path, episode_id),
+        )?;
+        Ok(())
+    }
+
+    /// Compute which episode IDs would be affected by a cascade marking
+    /// `seen` or `unseen` from the given episode number. Used by
+    /// `commands::seen` to know which downloads to auto-delete.
+    pub fn episode_ids_in_cascade(
+        &self,
+        series_id: i64,
+        number: &str,
+        seen: bool,
+    ) -> Result<Vec<i64>> {
+        let target = parse_ep_number(number);
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, number FROM episodes WHERE series_id=?1")?;
+        let rows: Vec<(i64, String)> = stmt
+            .query_map([series_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut ids = Vec::new();
+        for (id, num) in rows {
+            let matches = match (target, parse_ep_number(&num)) {
+                (Some(t), Some(v)) if seen => v <= t,
+                (Some(t), Some(v)) => v >= t,
+                (None, _) => num == number,
+                _ => false,
+            };
+            if matches {
+                ids.push(id);
+            }
+        }
+        Ok(ids)
+    }
+
+    /// Retrieve a single episode by its ID.
+    pub fn get_episode(&self, episode_id: i64) -> Result<crate::models::Episode> {
+        Ok(self.conn.query_row(
+            "SELECT id, series_id, number, title, url, released_at, seen,
+                    download_path, download_status
+             FROM episodes WHERE id=?1",
+            [episode_id],
+            |r| {
+                Ok(crate::models::Episode {
+                    id: r.get(0)?,
+                    series_id: r.get(1)?,
+                    number: r.get(2)?,
+                    title: r.get(3)?,
+                    url: r.get(4)?,
+                    released_at: r.get(5)?,
+                    seen: r.get::<_, i64>(6)? != 0,
+                    download_path: r.get(7)?,
+                    download_status: r.get(8)?,
+                })
+            },
+        )?)
+    }
+
+    /// Total size in bytes of all downloaded episode files on disk.
+    pub fn downloads_disk_size(&self) -> Result<u64> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT download_path FROM episodes WHERE download_path IS NOT NULL")?;
+        let paths: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let total = paths
+            .iter()
+            .filter_map(|p| std::fs::metadata(p).ok())
+            .map(|m| m.len())
+            .sum();
+        Ok(total)
+    }
+
+    /// Delete ALL downloaded episode files from disk and clear their DB
+    /// columns. Returns how many files were cleaned up.
+    pub fn clear_all_downloads(&self) -> Result<usize> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, download_path FROM episodes WHERE download_path IS NOT NULL")?;
+        let rows: Vec<(i64, String)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut cleaned = 0;
+        for (id, path) in &rows {
+            let _ = std::fs::remove_file(path);
+            self.conn.execute(
+                "UPDATE episodes SET download_path = NULL, download_status = NULL WHERE id=?1",
+                [id],
+            )?;
+            cleaned += 1;
+        }
+        Ok(cleaned)
+    }
 }
 
 #[cfg(test)]
@@ -543,17 +684,17 @@ mod tests {
         let sid = db.upsert_series(src, &mk_airing("a", "A", None)).unwrap();
         db.insert_episode(&crate::models::Episode {
             id: 0, series_id: sid, number: "1".into(), title: None,
-            url: "https://old.example/a-1".into(), released_at: None, seen: true,
+            url: "https://old.example/a-1".into(), released_at: None, seen: true, download_path: None, download_status: None,
         }).unwrap();
 
         let scraped = vec![
             crate::models::Episode {
                 id: 0, series_id: 0, number: "1".into(), title: Some("Ep 1".into()),
-                url: "https://new.example/a-1".into(), released_at: Some("hoy".into()), seen: false,
+                url: "https://new.example/a-1".into(), released_at: Some("hoy".into()), seen: false, download_path: None, download_status: None,
             },
             crate::models::Episode {
                 id: 0, series_id: 0, number: "2".into(), title: None,
-                url: "https://new.example/a-2".into(), released_at: None, seen: false,
+                url: "https://new.example/a-2".into(), released_at: None, seen: false, download_path: None, download_status: None,
             },
         ];
         let inserted = db.apply_episode_diff(sid, Some("https://new.example"), &scraped).unwrap();
@@ -574,23 +715,23 @@ mod tests {
         let sid = db.upsert_series(src, &mk_airing("shingeki", "Shingeki", None)).unwrap();
         db.insert_episode(&crate::models::Episode {
             id: 0, series_id: sid, number: "135".into(), title: None,
-            url: "https://tioanime.com/ver/shingeki-no-kyojin-13.5".into(), released_at: None, seen: true,
+            url: "https://tioanime.com/ver/shingeki-no-kyojin-13.5".into(), released_at: None, seen: true, download_path: None, download_status: None,
         }).unwrap();
         db.insert_episode(&crate::models::Episode {
             id: 0, series_id: sid, number: "13".into(), title: None,
-            url: "https://tioanime.com/ver/shingeki-no-kyojin-13".into(), released_at: None, seen: true,
+            url: "https://tioanime.com/ver/shingeki-no-kyojin-13".into(), released_at: None, seen: true, download_path: None, download_status: None,
         }).unwrap();
 
         let scraped = vec![
             crate::models::Episode {
                 id: 0, series_id: 0, number: "135".into(), title: None,
-                url: "https://tioanime.com/ver/shingeki-no-kyojin-13.5".into(), released_at: None, seen: false,
+                url: "https://tioanime.com/ver/shingeki-no-kyojin-13.5".into(), released_at: None, seen: false, download_path: None, download_status: None,
             },
             crate::models::Episode {
                 id: 0, series_id: 0, number: "13".into(), title: None,
                 // Same url the "135" episode already owns — the exact
                 // constraint clash observed live for series 5006.
-                url: "https://tioanime.com/ver/shingeki-no-kyojin-13.5".into(), released_at: None, seen: false,
+                url: "https://tioanime.com/ver/shingeki-no-kyojin-13.5".into(), released_at: None, seen: false, download_path: None, download_status: None,
             },
         ];
         // Must skip the colliding episode and finish normally — this used
@@ -616,7 +757,7 @@ mod tests {
         db.insert_episode(&crate::models::Episode {
             id: 0, series_id: sid, number: "135".into(), title: None,
             url: "https://tioanime.com/ver/shingeki-no-kyojin-13.5".into(),
-            released_at: None, seen: false,
+            released_at: None, seen: false, download_path: None, download_status: None,
         }).unwrap();
 
         // The site now labels that same URL "13.5" — an unknown *number*, so
@@ -624,7 +765,7 @@ mod tests {
         let scraped = vec![crate::models::Episode {
             id: 0, series_id: 0, number: "13.5".into(), title: None,
             url: "https://tioanime.com/ver/shingeki-no-kyojin-13.5".into(),
-            released_at: None, seen: false,
+            released_at: None, seen: false, download_path: None, download_status: None,
         }];
         let inserted = db.apply_episode_diff(sid, None, &scraped).unwrap();
         assert_eq!(inserted, 0, "nothing was actually written, so nothing is new");
@@ -646,19 +787,19 @@ mod tests {
         db.insert_episode(&crate::models::Episode {
             id: 0, series_id: sid, number: "13".into(), title: None,
             url: "https://tioanime.com/ver/shingeki-no-kyojin-13".into(),
-            released_at: None, seen: true,
+            released_at: None, seen: true, download_path: None, download_status: None,
         }).unwrap();
 
         let scraped = vec![
             crate::models::Episode {
                 id: 0, series_id: 0, number: "13".into(), title: None,
                 url: "https://tioanime.com/ver/shingeki-no-kyojin-13".into(),
-                released_at: None, seen: false,
+                released_at: None, seen: false, download_path: None, download_status: None,
             },
             crate::models::Episode {
                 id: 0, series_id: 0, number: "13.5".into(), title: None,
                 url: "https://tioanime.com/ver/shingeki-no-kyojin-13.5".into(),
-                released_at: None, seen: false,
+                released_at: None, seen: false, download_path: None, download_status: None,
             },
         ];
         let inserted = db.apply_episode_diff(sid, None, &scraped).unwrap();
@@ -684,7 +825,7 @@ mod tests {
         db.insert_episode(&crate::models::Episode {
             id: 0, series_id: sid, number: "14".into(), title: None,
             url: "https://tioanime.com/ver/shingeki-no-kyojin-14".into(),
-            released_at: None, seen: false,
+            released_at: None, seen: false, download_path: None, download_status: None,
         }).unwrap();
         db.set_seen_cascade(sid, "13.5", true).unwrap();
         let eps = db.list_series_episodes(sid).unwrap();
@@ -713,7 +854,7 @@ mod tests {
         for i in 1..=3 {
             db.insert_episode(&crate::models::Episode {
                 id: 0, series_id: sid_a, number: i.to_string(), title: None,
-                url: format!("https://site/a-{i}"), released_at: None, seen: false,
+                url: format!("https://site/a-{i}"), released_at: None, seen: false, download_path: None, download_status: None,
             }).unwrap();
         }
         assert_eq!(db.episode_count(sid_a).unwrap(), 3);
@@ -735,12 +876,12 @@ mod tests {
         let sid_a = db.upsert_series(src, &mk_airing("a", "A", None)).unwrap();
         db.insert_episode(&crate::models::Episode {
             id: 0, series_id: sid_a, number: "0 | Recap".to_string(), title: None,
-            url: "https://site/a-recap".to_string(), released_at: None, seen: false,
+            url: "https://site/a-recap".to_string(), released_at: None, seen: false, download_path: None, download_status: None,
         }).unwrap();
         for i in 1..=12 {
             db.insert_episode(&crate::models::Episode {
                 id: 0, series_id: sid_a, number: i.to_string(), title: None,
-                url: format!("https://site/a-{i}"), released_at: None, seen: false,
+                url: format!("https://site/a-{i}"), released_at: None, seen: false, download_path: None, download_status: None,
             }).unwrap();
         }
         assert_eq!(db.episode_count(sid_a).unwrap(), 13, "sanity: row count is 13");
@@ -750,11 +891,11 @@ mod tests {
         let sid_b = db.upsert_series(src, &mk_airing("b", "B", None)).unwrap();
         db.insert_episode(&crate::models::Episode {
             id: 0, series_id: sid_b, number: "1 | v2".to_string(), title: None,
-            url: "https://site/b-1".to_string(), released_at: None, seen: false,
+            url: "https://site/b-1".to_string(), released_at: None, seen: false, download_path: None, download_status: None,
         }).unwrap();
         db.insert_episode(&crate::models::Episode {
             id: 0, series_id: sid_b, number: "2 | v1".to_string(), title: None,
-            url: "https://site/b-2".to_string(), released_at: None, seen: false,
+            url: "https://site/b-2".to_string(), released_at: None, seen: false, download_path: None, download_status: None,
         }).unwrap();
         assert_eq!(db.max_episode_number(sid_b).unwrap(), 2);
 
@@ -776,7 +917,7 @@ mod tests {
         db.set_followed(sid_a, true).unwrap();
         db.insert_episode(&crate::models::Episode {
             id: 0, series_id: sid_a, number: "5".into(), title: None,
-            url: "https://site/a-5".into(), released_at: None, seen: false,
+            url: "https://site/a-5".into(), released_at: None, seen: false, download_path: None, download_status: None,
         }).unwrap();
 
         // Followed but no episodes yet -> absent from the map.
@@ -787,7 +928,7 @@ mod tests {
         let sid_c = db.upsert_series(src, &mk_airing("c", "C", None)).unwrap();
         db.insert_episode(&crate::models::Episode {
             id: 0, series_id: sid_c, number: "9".into(), title: None,
-            url: "https://site/c-9".into(), released_at: None, seen: false,
+            url: "https://site/c-9".into(), released_at: None, seen: false, download_path: None, download_status: None,
         }).unwrap();
 
         // Followed on a different source -> excluded from this source's map.
@@ -795,7 +936,7 @@ mod tests {
         db.set_followed(sid_other, true).unwrap();
         db.insert_episode(&crate::models::Episode {
             id: 0, series_id: sid_other, number: "3".into(), title: None,
-            url: "https://site/d-3".into(), released_at: None, seen: false,
+            url: "https://site/d-3".into(), released_at: None, seen: false, download_path: None, download_status: None,
         }).unwrap();
 
         let map = db.max_episode_numbers_for_source(src).unwrap();
@@ -818,15 +959,15 @@ mod tests {
         // Inserted out of order: 3, 1, 2.
         db.insert_episode(&crate::models::Episode {
             id: 0, series_id: sid, number: "3".into(), title: None,
-            url: "https://site/a-3".into(), released_at: Some("agosto 1, 2026".into()), seen: false,
+            url: "https://site/a-3".into(), released_at: Some("agosto 1, 2026".into()), seen: false, download_path: None, download_status: None,
         }).unwrap();
         db.insert_episode(&crate::models::Episode {
             id: 0, series_id: sid, number: "1".into(), title: None,
-            url: "https://site/a-1".into(), released_at: Some("junio 29, 2026".into()), seen: false,
+            url: "https://site/a-1".into(), released_at: Some("junio 29, 2026".into()), seen: false, download_path: None, download_status: None,
         }).unwrap();
         db.insert_episode(&crate::models::Episode {
             id: 0, series_id: sid, number: "2".into(), title: None,
-            url: "https://site/a-2".into(), released_at: Some("julio 15, 2026".into()), seen: false,
+            url: "https://site/a-2".into(), released_at: Some("julio 15, 2026".into()), seen: false, download_path: None, download_status: None,
         }).unwrap();
 
         let dates = db.first_episode_dates(src).unwrap();
@@ -840,7 +981,7 @@ mod tests {
         let sid = db.upsert_series(src, &mk_airing("a", "A", None)).unwrap();
         db.insert_episode(&crate::models::Episode {
             id: 0, series_id: sid, number: "1".into(), title: None,
-            url: "https://site/a-1".into(), released_at: None, seen: false,
+            url: "https://site/a-1".into(), released_at: None, seen: false, download_path: None, download_status: None,
         }).unwrap();
 
         let dates = db.first_episode_dates(src).unwrap();
@@ -858,13 +999,13 @@ mod tests {
         let sid_not_airing = db.upsert_series(src, &not_airing).unwrap();
         db.insert_episode(&crate::models::Episode {
             id: 0, series_id: sid_not_airing, number: "1".into(), title: None,
-            url: "https://site/na-1".into(), released_at: Some("mayo 1, 2026".into()), seen: false,
+            url: "https://site/na-1".into(), released_at: Some("mayo 1, 2026".into()), seen: false, download_path: None, download_status: None,
         }).unwrap();
 
         let sid_other = db.upsert_series(other_src, &mk_airing("o", "Other", None)).unwrap();
         db.insert_episode(&crate::models::Episode {
             id: 0, series_id: sid_other, number: "1".into(), title: None,
-            url: "https://other/o-1".into(), released_at: Some("mayo 1, 2026".into()), seen: false,
+            url: "https://other/o-1".into(), released_at: Some("mayo 1, 2026".into()), seen: false, download_path: None, download_status: None,
         }).unwrap();
 
         let dates = db.first_episode_dates(src).unwrap();
@@ -893,7 +1034,7 @@ mod tests {
         // Insert an episode with a non-null released_at.
         db.insert_episode(&crate::models::Episode {
             id: 0, series_id: sid, number: "1".into(), title: None,
-            url: "https://site/unfollowed-1".into(), released_at: Some("julio 15, 2026".into()), seen: false,
+            url: "https://site/unfollowed-1".into(), released_at: Some("julio 15, 2026".into()), seen: false, download_path: None, download_status: None,
         }).unwrap();
 
         // Unfollowed series with episode data IS included in first_episode_dates.
@@ -921,7 +1062,7 @@ mod tests {
 
         let mk = |n: &str, url: &str| crate::models::Episode {
             id: 0, series_id: sid, number: n.into(), title: None,
-            url: url.into(), released_at: None, seen: false,
+            url: url.into(), released_at: None, seen: false, download_path: None, download_status: None,
         };
         db.insert_episode(&mk("1x01", "https://site/e1")).unwrap();
         db.insert_episode(&mk("1x02", "https://site/e2")).unwrap();
@@ -953,7 +1094,7 @@ mod tests {
         let sid = db.upsert_series(src, &s).unwrap();
         let mk = |n: &str, url: &str| crate::models::Episode {
             id: 0, series_id: sid, number: n.into(), title: None,
-            url: url.into(), released_at: None, seen: false,
+            url: url.into(), released_at: None, seen: false, download_path: None, download_status: None,
         };
         let (e1, _) = db.insert_episode(&mk("1", "https://site/e1")).unwrap();
         let (e2, _) = db.insert_episode(&mk("2", "https://site/e2")).unwrap();
@@ -995,13 +1136,13 @@ mod tests {
         let (e1, _) = db
             .insert_episode(&crate::models::Episode {
                 id: 0, series_id: sid, number: "1".into(), title: None,
-                url: "https://site/e1".into(), released_at: None, seen: false,
+                url: "https://site/e1".into(), released_at: None, seen: false, download_path: None, download_status: None,
             })
             .unwrap();
         let (e2, _) = db
             .insert_episode(&crate::models::Episode {
                 id: 0, series_id: sid, number: "2".into(), title: None,
-                url: "https://site/e2".into(), released_at: None, seen: false,
+                url: "https://site/e2".into(), released_at: None, seen: false, download_path: None, download_status: None,
             })
             .unwrap();
 
@@ -1045,7 +1186,7 @@ mod tests {
         let (e1, _) = db
             .insert_episode(&crate::models::Episode {
                 id: 0, series_id: sid, number: "1".into(), title: None,
-                url: "https://site/e1".into(), released_at: None, seen: false,
+                url: "https://site/e1".into(), released_at: None, seen: false, download_path: None, download_status: None,
             })
             .unwrap();
 
@@ -1082,7 +1223,7 @@ mod tests {
         db.set_followed(sid, true).unwrap();
         let mk = |n: &str, url: &str| crate::models::Episode {
             id: 0, series_id: sid, number: n.into(), title: None,
-            url: url.into(), released_at: None, seen: false,
+            url: url.into(), released_at: None, seen: false, download_path: None, download_status: None,
         };
         // Insert out of numeric order to make sure ordering isn't just
         // reflecting insertion order.
@@ -1121,7 +1262,7 @@ mod tests {
         db.set_followed(sid, true).unwrap();
         db.insert_episode(&crate::models::Episode {
             id: 0, series_id: sid, number: "1".into(), title: None,
-            url: "https://site/e1".into(), released_at: None, seen: false,
+            url: "https://site/e1".into(), released_at: None, seen: false, download_path: None, download_status: None,
         })
         .unwrap();
         db.set_seen_cascade(sid, "1", true).unwrap();
@@ -1166,7 +1307,7 @@ mod tests {
 
         let ep = crate::models::Episode {
             id: 0, series_id: sid, number: "1".into(), title: None,
-            url: "https://site/ep1".into(), released_at: None, seen: false,
+            url: "https://site/ep1".into(), released_at: None, seen: false, download_path: None, download_status: None,
         };
         let (eid, was_new) = db.insert_episode(&ep).unwrap();
         assert!(was_new, "the first insert really does write a row");
@@ -1194,7 +1335,7 @@ mod tests {
         let sid = db.upsert_series(src, &s).unwrap();
         db.insert_episode(&crate::models::Episode {
             id: 0, series_id: sid, number: "1".into(), title: None,
-            url: "https://wwv.animeytx.net/anime/x-capitulo-1/".into(), released_at: None, seen: true,
+            url: "https://wwv.animeytx.net/anime/x-capitulo-1/".into(), released_at: None, seen: true, download_path: None, download_status: None,
         }).unwrap();
 
         let nums = db.existing_episode_numbers(sid).unwrap();
@@ -1234,7 +1375,7 @@ mod tests {
         for n in 1..=3 {
             db.insert_episode(&crate::models::Episode {
                 id: 0, series_id: sid, number: n.to_string(), title: None,
-                url: format!("e{n}"), released_at: None, seen: false,
+                url: format!("e{n}"), released_at: None, seen: false, download_path: None, download_status: None,
             }).unwrap();
         }
 
@@ -1272,5 +1413,51 @@ mod tests {
         let known = db.known_series_urls(src).unwrap();
         assert!(known.contains("https://site/tv/x/"));
         assert_eq!(known.len(), 1);
+    }
+
+    #[test]
+    fn download_bookkeeping_and_cascade_detection() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let sid = db.upsert_series(src, &mk_airing("a", "A", None)).unwrap();
+
+        let (ep1_id, _) = db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: sid, number: "1".into(), title: None,
+            url: "https://site/a-1".into(), released_at: None, seen: false,
+            download_path: None, download_status: None,
+        }).unwrap();
+        let (ep2_id, _) = db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: sid, number: "2".into(), title: None,
+            url: "https://site/a-2".into(), released_at: None, seen: false,
+            download_path: None, download_status: None,
+        }).unwrap();
+
+        // Initially no downloads
+        assert_eq!(db.downloaded_paths(&[ep1_id, ep2_id]).unwrap().len(), 0);
+
+        // Set ep1 downloaded
+        let temp_file = std::env::temp_dir().join(format!("aot_test_dl_{}.mp4", ep1_id));
+        std::fs::write(&temp_file, b"test-video").unwrap();
+        let path_str = temp_file.to_str().unwrap();
+
+        db.set_download_status(ep1_id, "downloaded", Some(path_str)).unwrap();
+
+        let ep1 = db.get_episode(ep1_id).unwrap();
+        assert_eq!(ep1.download_status.as_deref(), Some("downloaded"));
+        assert_eq!(ep1.download_path.as_deref(), Some(path_str));
+
+        let paths = db.downloaded_paths(&[ep1_id, ep2_id]).unwrap();
+        assert_eq!(paths.len(), 1);
+        assert_eq!(paths[0], (ep1_id, path_str.to_string()));
+
+        // Check cascade affected IDs: marking episode 2 seen affects 1 and 2
+        let cascade_ids = db.episode_ids_in_cascade(sid, "2", true).unwrap();
+        assert!(cascade_ids.contains(&ep1_id));
+        assert!(cascade_ids.contains(&ep2_id));
+
+        // Clean up
+        db.clear_download_columns(&[ep1_id]).unwrap();
+        assert_eq!(db.downloaded_paths(&[ep1_id]).unwrap().len(), 0);
+        let _ = std::fs::remove_file(&temp_file);
     }
 }

@@ -1581,7 +1581,7 @@ mod tests {
         db.set_anilist_id(with_eps, 100).unwrap();
         db.insert_episode(&crate::models::Episode {
             id: 0, series_id: with_eps, number: "1".into(), title: None,
-            url: "https://site/x-1".into(), released_at: None, seen: false,
+            url: "https://site/x-1".into(), released_at: None, seen: false, download_path: None, download_status: None,
         }).unwrap();
         assert!(!db.delete_orphan_synthetic_series(with_eps).unwrap());
         assert!(db.get_series_url(with_eps).unwrap().is_some());
@@ -1700,7 +1700,7 @@ mod tests {
             db.insert_episode(&crate::models::Episode {
                 id: 0, series_id: sid, number: n.to_string(), title: None,
                 url: format!("https://site/anime/ext1-capitulo-{n}/"),
-                released_at: None, seen: true,
+                released_at: None, seen: true, download_path: None, download_status: None,
             }).unwrap();
         }
 
@@ -1760,7 +1760,7 @@ mod tests {
         db.insert_episode(&crate::models::Episode {
             id: 0, series_id: unseen_id, number: "1".into(), title: None,
             url: "https://site/anime/unseen1-capitulo-1/".into(),
-            released_at: None, seen: false,
+            released_at: None, seen: false, download_path: None, download_status: None,
         }).unwrap();
 
         // Watched-externally, no scraped episodes — has watch evidence via
@@ -1800,7 +1800,7 @@ mod tests {
             db.insert_episode(&crate::models::Episode {
                 id: 0, series_id: sid, number: n.to_string(), title: None,
                 url: format!("https://site/anime/both1-capitulo-{n}/"),
-                released_at: None, seen: true,
+                released_at: None, seen: true, download_path: None, download_status: None,
             }).unwrap();
         }
 
@@ -2027,7 +2027,7 @@ mod tests {
         db.set_followed(sid_followed, true).unwrap();
         db.insert_episode(&crate::models::Episode {
             id: 0, series_id: sid_followed, number: "1".into(), title: None,
-            url: "ep1".into(), released_at: None, seen: true,
+            url: "ep1".into(), released_at: None, seen: true, download_path: None, download_status: None,
         }).unwrap();
 
         // "Ya lo vi" catalog row: watched_externally=1, followed=0, no episodes.
@@ -2131,7 +2131,7 @@ mod tests {
         db.insert_series_genres(sid, &["Seinen".to_string()]).unwrap();
         db.insert_episode(&crate::models::Episode {
             id: 0, series_id: sid, number: "1".into(), title: None,
-            url: "e1".into(), released_at: None, seen: false,
+            url: "e1".into(), released_at: None, seen: false, download_path: None, download_status: None,
         }).unwrap();
 
         db.delete_series(sid).unwrap();
@@ -2531,7 +2531,7 @@ mod tests {
         db.set_followed(has_eps, true).unwrap();
         db.insert_episode(&crate::models::Episode {
             id: 0, series_id: has_eps, number: "1".into(), title: None,
-            url: "https://example.com/has-eps-1".into(), released_at: None, seen: false,
+            url: "https://example.com/has-eps-1".into(), released_at: None, seen: false, download_path: None, download_status: None,
         }).unwrap();
 
         // Never fetched but NOT followed — must not show up either.

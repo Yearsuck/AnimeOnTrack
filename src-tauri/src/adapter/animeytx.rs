@@ -134,6 +134,8 @@ impl SiteAdapter for AnimeytxAdapter {
                 url,
                 released_at,
                 seen: false,
+                download_path: None,
+                download_status: None,
             });
         }
         Ok(out)

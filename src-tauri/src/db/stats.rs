@@ -2280,7 +2280,7 @@ mod tests {
             db.insert_episode(&crate::models::Episode {
                 id: 0, series_id: id, number: "1".into(), title: None,
                 url: format!("https://site/anime/{slug}-capitulo-1/"),
-                released_at: None, seen: false,
+                released_at: None, seen: false, download_path: None, download_status: None,
             }).unwrap();
             db.set_seen_cascade(id, "1", true).unwrap();
         }
@@ -2309,7 +2309,7 @@ mod tests {
             db.insert_episode(&crate::models::Episode {
                 id: 0, series_id: arc, number: n.to_string(), title: None,
                 url: format!("https://site/anime/op-elbaph-capitulo-{n}/"),
-                released_at: None, seen: false,
+                released_at: None, seen: false, download_path: None, download_status: None,
             }).unwrap();
         }
         db.set_seen_cascade(arc, "20", true).unwrap();
@@ -2320,7 +2320,7 @@ mod tests {
             db.insert_episode(&crate::models::Episode {
                 id: 0, series_id: season2, number: n.to_string(), title: None,
                 url: format!("https://site/anime/op-t2-capitulo-{n}/"),
-                released_at: None, seen: false,
+                released_at: None, seen: false, download_path: None, download_status: None,
             }).unwrap();
         }
         db.set_seen_cascade(season2, "5", true).unwrap();
@@ -2368,7 +2368,7 @@ mod tests {
             db.insert_episode(&crate::models::Episode {
                 id: 0, series_id: arc, number: n.to_string(), title: None,
                 url: format!("https://site/anime/op-arc-capitulo-{n}/"),
-                released_at: None, seen: false,
+                released_at: None, seen: false, download_path: None, download_status: None,
             }).unwrap();
         }
         db.set_seen_cascade(arc, "30", true).unwrap();
@@ -2460,7 +2460,7 @@ mod tests {
             title: None,
             url: "https://site/anime/airing1-capitulo-1/".into(),
             released_at: None,
-            seen: false,
+            seen: false, download_path: None, download_status: None,
         })
         .unwrap();
 
@@ -2476,7 +2476,7 @@ mod tests {
             title: None,
             url: "https://site/anime/finished1-capitulo-1/".into(),
             released_at: None,
-            seen: true,
+            seen: true, download_path: None, download_status: None,
         })
         .unwrap();
 
@@ -2536,7 +2536,7 @@ mod tests {
             db.insert_episode(&crate::models::Episode {
                 id: 0, series_id: airing_id, number: n.to_string(), title: None,
                 url: format!("https://site/anime/airing1-capitulo-{n}/"),
-                released_at: None, seen: false,
+                released_at: None, seen: false, download_path: None, download_status: None,
             }).unwrap();
         }
         db.set_seen_cascade(airing_id, "3", true).unwrap();
@@ -2552,7 +2552,7 @@ mod tests {
             db.insert_episode(&crate::models::Episode {
                 id: 0, series_id: finished_id, number: n.to_string(), title: None,
                 url: format!("https://site/anime/finished1-capitulo-{n}/"),
-                released_at: None, seen: true,
+                released_at: None, seen: true, download_path: None, download_status: None,
             }).unwrap();
         }
 
@@ -2635,7 +2635,7 @@ mod tests {
             db.insert_episode(&crate::models::Episode {
                 id: 0, series_id: sid, number: n.to_string(), title: None,
                 url: format!("https://site/anime/s1-capitulo-{n}/"),
-                released_at: None, seen: true,
+                released_at: None, seen: true, download_path: None, download_status: None,
             }).unwrap();
         }
 
@@ -3198,7 +3198,7 @@ mod tests {
         let series = db.upsert_series(src, &mk_airing("x", "X", None)).unwrap();
         db.insert_episode(&crate::models::Episode {
             id: 0, series_id: series, number: "1".into(), title: None,
-            url: "https://site/x-1".into(), released_at: None, seen: false,
+            url: "https://site/x-1".into(), released_at: None, seen: false, download_path: None, download_status: None,
         }).unwrap();
         let before = db.signature_counts().unwrap();
         db.set_seen_cascade(series, "1", true).unwrap();
@@ -3295,7 +3295,7 @@ mod tests {
         db.set_followed(dusty, true).unwrap();
         db.insert_episode(&crate::models::Episode {
             id: 0, series_id: dusty, number: "1".into(), title: None,
-            url: "https://site/dusty-1".into(), released_at: None, seen: true,
+            url: "https://site/dusty-1".into(), released_at: None, seen: true, download_path: None, download_status: None,
         }).unwrap();
         // Manually backdate seen_at to >90 days ago
         db.conn.execute(
@@ -3308,7 +3308,7 @@ mod tests {
         db.set_followed(fresh, true).unwrap();
         db.insert_episode(&crate::models::Episode {
             id: 0, series_id: fresh, number: "1".into(), title: None,
-            url: "https://site/fresh-1".into(), released_at: None, seen: true,
+            url: "https://site/fresh-1".into(), released_at: None, seen: true, download_path: None, download_status: None,
         }).unwrap();
         db.set_seen_cascade(fresh, "1", true).unwrap(); // stamps "now"
 
@@ -3317,7 +3317,7 @@ mod tests {
         db.set_followed(never, true).unwrap();
         db.insert_episode(&crate::models::Episode {
             id: 0, series_id: never, number: "1".into(), title: None,
-            url: "https://site/never-1".into(), released_at: None, seen: false,
+            url: "https://site/never-1".into(), released_at: None, seen: false, download_path: None, download_status: None,
         }).unwrap();
 
         let dusty_list = db.get_dusty_watchlist().unwrap();
@@ -3342,7 +3342,7 @@ mod tests {
         db.set_followed(dusty_a, true).unwrap();
         db.insert_episode(&crate::models::Episode {
             id: 0, series_id: dusty_a, number: "1".into(), title: None,
-            url: "https://site/dusty-1".into(), released_at: None, seen: true,
+            url: "https://site/dusty-1".into(), released_at: None, seen: true, download_path: None, download_status: None,
         }).unwrap();
         db.conn.execute(
             "UPDATE episodes SET seen_at = datetime('now', '-100 days') WHERE series_id=?1",
@@ -3353,7 +3353,7 @@ mod tests {
         db.set_followed(dusty_b, true).unwrap();
         db.insert_episode(&crate::models::Episode {
             id: 0, series_id: dusty_b, number: "1".into(), title: None,
-            url: "https://site/dusty-1".into(), released_at: None, seen: true,
+            url: "https://site/dusty-1".into(), released_at: None, seen: true, download_path: None, download_status: None,
         }).unwrap();
         db.conn.execute(
             "UPDATE episodes SET seen_at = datetime('now', '-120 days') WHERE series_id=?1",
@@ -3383,13 +3383,13 @@ mod tests {
         for i in 1..=3 {
             db.insert_episode(&crate::models::Episode {
                 id: 0, series_id: s1, number: format!("{i}"), title: None,
-                url: format!("https://site/s1-{i}"), released_at: None, seen: false,
+                url: format!("https://site/s1-{i}"), released_at: None, seen: false, download_path: None, download_status: None,
             }).unwrap();
         }
         for i in 1..=2 {
             db.insert_episode(&crate::models::Episode {
                 id: 0, series_id: s2, number: format!("{i}"), title: None,
-                url: format!("https://site/s2-{i}"), released_at: None, seen: false,
+                url: format!("https://site/s2-{i}"), released_at: None, seen: false, download_path: None, download_status: None,
             }).unwrap();
         }
         db.set_seen_cascade(s1, "3", true).unwrap(); // marks 1,2,3 seen
@@ -3400,7 +3400,7 @@ mod tests {
         for i in 1..=4 {
             db.insert_episode(&crate::models::Episode {
                 id: 0, series_id: s3, number: format!("{i}"), title: None,
-                url: format!("https://site/s3-{i}"), released_at: None, seen: false,
+                url: format!("https://site/s3-{i}"), released_at: None, seen: false, download_path: None, download_status: None,
             }).unwrap();
         }
         db.set_seen_cascade(s3, "4", true).unwrap(); // marks 1,2,3,4 seen
@@ -3422,7 +3422,7 @@ mod tests {
         for i in 5..=7 {
             db.insert_episode(&crate::models::Episode {
                 id: 0, series_id: s3, number: format!("{i}"), title: None,
-                url: format!("https://site/s3-{i}"), released_at: None, seen: false,
+                url: format!("https://site/s3-{i}"), released_at: None, seen: false, download_path: None, download_status: None,
             }).unwrap();
         }
         db.set_seen_cascade(s3, "7", true).unwrap(); // marks 5,6,7 seen (cascade from 4)
@@ -3552,7 +3552,7 @@ mod tests {
             db.insert_episode(&crate::models::Episode {
                 id: 0, series_id: id, number: n.to_string(), title: None,
                 url: format!("https://site/{}-capitulo-{}/", title, n),
-                released_at: None, seen: true,
+                released_at: None, seen: true, download_path: None, download_status: None,
             }).unwrap();
         }
         // Backdate first episode
@@ -3591,7 +3591,7 @@ mod tests {
         db.set_followed(id, true).unwrap();
         db.insert_episode(&crate::models::Episode {
             id: 0, series_id: id, number: "1".into(), title: None,
-            url: "https://site/s1-1/".into(), released_at: None, seen: false,
+            url: "https://site/s1-1/".into(), released_at: None, seen: false, download_path: None, download_status: None,
         }).unwrap();
 
         let avg = db.get_avg_completion_days().unwrap();
@@ -3640,7 +3640,7 @@ mod tests {
         for n in 1..=2 {
             db.insert_episode(&crate::models::Episode {
                 id: 0, series_id: airing_id, number: n.to_string(), title: None,
-                url: format!("https://site/showb-{}/", n), released_at: None, seen: true,
+                url: format!("https://site/showb-{}/", n), released_at: None, seen: true, download_path: None, download_status: None,
             }).unwrap();
         }
         db.conn
@@ -3677,7 +3677,7 @@ mod tests {
         for n in 1..=2 {
             db.insert_episode(&crate::models::Episode {
                 id: 0, series_id: id_a, number: n.to_string(), title: None,
-                url: format!("https://site/a-{}/", n), released_at: None, seen: true,
+                url: format!("https://site/a-{}/", n), released_at: None, seen: true, download_path: None, download_status: None,
             }).unwrap();
         }
         db.conn
@@ -3704,7 +3704,7 @@ mod tests {
         for n in 1..=2 {
             db.insert_episode(&crate::models::Episode {
                 id: 0, series_id: id_b, number: n.to_string(), title: None,
-                url: format!("https://site/b-{}/", n), released_at: None, seen: true,
+                url: format!("https://site/b-{}/", n), released_at: None, seen: true, download_path: None, download_status: None,
             }).unwrap();
         }
         db.conn
@@ -3744,7 +3744,7 @@ mod tests {
             db.insert_episode(&crate::models::Episode {
                 id: 0, series_id: sid, number: n.to_string(), title: None,
                 url: format!("https://site/sampled-capitulo-{n}/"),
-                released_at: None, seen: false,
+                released_at: None, seen: false, download_path: None, download_status: None,
             }).unwrap();
         }
         db.set_seen_cascade(sid, "1", true).unwrap();
@@ -4062,7 +4062,7 @@ mod tests {
         for (num, seen_at) in eps {
             let (ep, _) = db.insert_episode(&crate::models::Episode {
                 id: 0, series_id: series, number: num.into(), title: None,
-                url: format!("https://site/x-{num}/"), released_at: None, seen: true,
+                url: format!("https://site/x-{num}/"), released_at: None, seen: true, download_path: None, download_status: None,
             }).unwrap();
             // Overwrite seen_at to the exact timestamp we want (local time stored
             // as UTC in the DB; we rely on the query's 'localtime' conversion).
@@ -4108,7 +4108,7 @@ mod tests {
         let series = db.upsert_series(src, &mk_airing("x", "X", None)).unwrap();
         let (ep, _) = db.insert_episode(&crate::models::Episode {
             id: 0, series_id: series, number: "1".into(), title: None,
-            url: "https://site/x-1/".into(), released_at: None, seen: true,
+            url: "https://site/x-1/".into(), released_at: None, seen: true, download_path: None, download_status: None,
         }).unwrap();
         let past_year = this_year - 1;
         db.conn

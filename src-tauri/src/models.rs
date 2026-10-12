@@ -106,6 +106,15 @@ pub struct Episode {
     pub url: String,
     pub released_at: Option<String>,
     pub seen: bool,
+    /// Local filesystem path to the downloaded video file, set by
+    /// `download_episode` and cleared when the episode is marked seen
+    /// (auto-cleanup) or manually deleted.
+    #[serde(default)]
+    pub download_path: Option<String>,
+    /// Current download state: "downloading", "downloaded", "failed", or
+    /// NULL (not downloaded). Drives the UI's download button/badge.
+    #[serde(default)]
+    pub download_status: Option<String>,
 }
 
 /// A completed-anime card scraped off a genre-listing page (a `.bsx` card
@@ -397,6 +406,8 @@ mod tests {
             url: "https://wwv.animeytx.net/episodio/baki-dou-5/".into(),
             released_at: None,
             seen: false,
+            download_path: None,
+            download_status: None,
         };
         let j = serde_json::to_string(&e).unwrap();
         let back: Episode = serde_json::from_str(&j).unwrap();

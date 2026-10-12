@@ -792,6 +792,7 @@ mod tests {
         db.insert_episode(&crate::models::Episode {
             id: 0, series_id: sid, number: "1".into(), title: None,
             url: "e1".into(), released_at: None, seen: false,
+            download_path: None, download_status: None,
         }).unwrap();
         db.set_seen_cascade(sid, "1", true).unwrap();
 
@@ -806,6 +807,7 @@ mod tests {
         Episode {
             id: 0, series_id: 0, number: number.into(), title: None,
             url: format!("https://site.example/ep/{number}"), released_at: None, seen: false,
+            download_path: None, download_status: None,
         }
     }
 
