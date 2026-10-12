@@ -170,7 +170,12 @@ impl Db {
             SELECT s.id AS series_id, cg.genre
             FROM series s
             JOIN anilist_catalog_genres cg ON s.anilist_id = cg.anilist_id
-            UNION ALL
+            UNION
+            SELECT s.id AS series_id, ct.tag AS genre
+            FROM series s
+            JOIN anilist_catalog_tags ct ON s.anilist_id = ct.anilist_id
+            WHERE ct.rank >= 50
+            UNION
             SELECT sg.series_id, sg.genre
             FROM series_genres sg
             JOIN series s ON s.id = sg.series_id
@@ -178,6 +183,7 @@ impl Db {
                OR NOT EXISTS (SELECT 1 FROM anilist_catalog_genres WHERE anilist_id = s.anilist_id);
             "#,
         )?;
+
         // series_merges: the undo trail for `merge_series_into`.
         //
         // A catalog swipe writes a synthetic `anilist-{id}` series row and

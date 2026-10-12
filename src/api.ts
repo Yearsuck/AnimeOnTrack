@@ -190,6 +190,10 @@ export const listWatchedExternally = () =>
 export const getSeriesGenres = (seriesId: number) =>
   invoke<string[]>("get_series_genres", { seriesId });
 
+export const getSeriesGenresBatch = (seriesIds: number[]) =>
+  invoke<Record<number, string[]>>("get_series_genres_batch", { seriesIds });
+
+
 export const getTopGenres = (limit: number) =>
   invoke<GenreAffinity[]>("get_top_genres", { limit });
 

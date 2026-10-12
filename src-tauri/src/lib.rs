@@ -211,7 +211,9 @@ pub fn run() {
             commands::set_backlog_status,
             commands::reclassify_series,
             commands::get_series_genres,
+            commands::get_series_genres_batch,
             commands::get_top_genres,
+
             commands::get_anime_catalog,
             commands::get_catalog_facets,
             commands::sync_anime_catalog,
