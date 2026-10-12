@@ -22,6 +22,8 @@ export interface AiringItem {
   /** Unix timestamp (seconds) of the series' first scraped episode's release
    *  date, or null when unknown (no scraped episodes / unparseable date). */
   first_episode_at: number | null;
+  /** Wide landscape banner URL from AniList (Media.bannerImage) */
+  banner_url?: string | null;
 }
 
 export interface Episode {
@@ -32,6 +34,10 @@ export interface Episode {
   url: string;
   released_at: string | null;
   seen: boolean;
+  /** Local filesystem path to the downloaded video file. */
+  download_path?: string | null;
+  /** "downloading" | "downloaded" | "failed" | null */
+  download_status?: "downloading" | "downloaded" | "failed" | null;
 }
 
 export interface PendingItem {
@@ -234,6 +240,7 @@ export interface CatalogAnime {
   id: number;
   title: string;
   cover_url: string | null;
+  banner_url?: string | null;
   format: string | null;
   genres: string[];
   episodes: number | null;

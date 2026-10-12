@@ -166,6 +166,7 @@ pub fn run() {
             commands::scan_airing,
             commands::list_airing,
             commands::list_airing_season,
+            commands::get_series_banner,
             commands::list_library,
             commands::get_genre_stats,
             commands::get_genre_cards,
@@ -232,6 +233,11 @@ pub fn run() {
             commands::restore_latest,
             commands::auto_backup_if_due,
             commands::uninstall_app,
+            commands::download_episode,
+            commands::cancel_download,
+            commands::delete_download,
+            commands::get_downloads_size,
+            commands::clear_all_downloads,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -246,6 +246,8 @@ impl SiteAdapter for JkanimeAdapter {
                     url,
                     released_at,
                     seen: false,
+                    download_path: None,
+                    download_status: None,
                 })
             })
             .collect())

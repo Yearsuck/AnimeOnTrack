@@ -170,6 +170,8 @@ impl SiteAdapter for AnimeflvAdapter {
                 url: abs(href),
                 released_at: None,
                 seen: false,
+                download_path: None,
+                download_status: None,
             });
         }
         Ok(out)

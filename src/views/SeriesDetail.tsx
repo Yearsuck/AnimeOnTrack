@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import {
+  downloadEpisode,
   getCatalogInfoForSeries,
   linkCatalogSeries,
   listEpisodes,
@@ -270,6 +271,19 @@ export function SeriesDetail({
                 )}
               </div>
               <div className="ep-actions">
+                {ep.download_status === "downloaded" ? (
+                  <span className="dl-badge" title={t("download.downloaded")}>💾</span>
+                ) : ep.download_status === "downloading" ? (
+                  <span className="dl-badge dl-active" title={t("download.downloading", { percent: "…" })}>⏳</span>
+                ) : (
+                  <button
+                    className="btn btn-sm"
+                    title={t("download.download")}
+                    onClick={() => downloadEpisode(ep.id).catch(console.error)}
+                  >
+                    ⬇
+                  </button>
+                )}
                 <button className="btn" onClick={() => openEpisode(ep.url)}>
                   {t("common.watch")}
                 </button>

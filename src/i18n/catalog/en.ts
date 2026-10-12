@@ -411,4 +411,19 @@ export const en: Messages = {
   "stats.heatmapFri": "Fri",
   "stats.heatmapSat": "Sat",
   "stats.heatmapSun": "Sun",
+
+  // Offline downloads
+  "download.download": "⬇ Download",
+  "download.downloading": "Downloading… {percent}%",
+  "download.downloaded": "✓ Downloaded",
+  "download.failed": "Download failed",
+  "download.playOffline": "▶ Offline",
+  "download.cancel": "Cancel download",
+  "download.delete": "Delete download",
+  "download.autoDeleteHint": "Downloaded episodes are automatically deleted when marked as watched.",
+  "download.settingsHeading": "Offline downloads",
+  "download.storageUsed": "Storage used: {size}",
+  "download.clearAll": "Delete all downloads",
+  "download.clearAllConfirm": "Delete all downloaded files? This cannot be undone.",
+  "download.nothingDownloaded": "Nothing downloaded.",
 };

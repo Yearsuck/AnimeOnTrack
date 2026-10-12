@@ -1097,6 +1097,23 @@ textarea.input {
   gap: 6px;
   flex-shrink: 0;
 }
+.dl-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-round);
+  font-size: 14px;
+  flex-shrink: 0;
+}
+.dl-badge.dl-active {
+  animation: dl-pulse 1.5s ease-in-out infinite;
+}
+@keyframes dl-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
 .ep-row.seen {
   opacity: 0.55;
 }

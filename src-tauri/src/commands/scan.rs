@@ -416,6 +416,7 @@ pub fn list_airing_season(state: State<'_, AppState>) -> Result<Vec<AiringItem>,
     let series = db.list_airing(src).map_err(|e| e.to_string())?;
     let first_dates = db.first_episode_dates(src).map_err(|e| e.to_string())?;
     let catalog_dates = db.catalog_start_dates_by_normalized_title().map_err(|e| e.to_string())?;
+    let catalog_banners = db.catalog_banners_by_normalized_title().map_err(|e| e.to_string())?;
     Ok(series
         .into_iter()
         .map(|s| {
@@ -424,11 +425,47 @@ pub fn list_airing_season(state: State<'_, AppState>) -> Result<Vec<AiringItem>,
                 .and_then(|raw| parse_spanish_date(raw))
                 .and_then(|d| d.and_hms_opt(0, 0, 0))
                 .map(|dt| dt.and_utc().timestamp());
+            let norm = crate::matching::normalize_title(&s.title);
             let first_episode_at = scraped
-                .or_else(|| catalog_dates.get(&crate::matching::normalize_title(&s.title)).copied());
-            AiringItem { series: s, first_episode_at }
+                .or_else(|| catalog_dates.get(&norm).copied());
+            let banner_url = db.get_series_banner(s.id).ok().flatten()
+                .or_else(|| catalog_banners.get(&norm).cloned());
+            AiringItem { series: s, first_episode_at, banner_url }
         })
         .collect())
+}
+
+/// Retrieve or fetch on-demand the wide banner URL for a series from AniList.
+/// Checks the local DB first; if absent, queries AniList GraphQL by ID or title search,
+/// caches it in SQLite, and returns the banner URL.
+#[tauri::command]
+pub async fn get_series_banner(
+    state: State<'_, AppState>,
+    series_id: i64,
+) -> Result<Option<String>, String> {
+    let (cached_banner, title, anilist_id) = {
+        let db = state.db.lock().unwrap();
+        let cached = db.get_series_banner(series_id).map_err(|e| e.to_string())?;
+        let (title, anilist_id) = db.get_series_title_and_anilist_id(series_id).map_err(|e| e.to_string())?;
+        (cached, title, anilist_id)
+    };
+
+    if let Some(banner) = cached_banner {
+        return Ok(Some(banner));
+    }
+
+    match crate::anilist::fetch_banner_by_id_or_title(anilist_id, Some(&title)).await {
+        Ok(Some(banner_url)) => {
+            let db = state.db.lock().unwrap();
+            let _ = db.set_series_banner(series_id, &banner_url);
+            Ok(Some(banner_url))
+        }
+        Ok(None) => Ok(None),
+        Err(e) => {
+            eprintln!("[anilist] banner query failed for series {series_id} ({title}): {e}");
+            Ok(None)
+        }
+    }
 }
 
 /// Backfill genres/kind for every followed series still missing

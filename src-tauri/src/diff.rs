@@ -25,6 +25,7 @@ mod tests {
         Episode {
             id: 0, series_id: 1, number: number.into(), title: None,
             url: url.into(), released_at: None, seen: false,
+            download_path: None, download_status: None,
         }
     }
 

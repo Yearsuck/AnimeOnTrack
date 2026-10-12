@@ -21,6 +21,7 @@ pub(crate) fn insert_eps_seen_up_to(db: &Db, series_id: i64, total: i64, seen_up
         db.insert_episode(&crate::models::Episode {
             id: 0, series_id, number: i.to_string(), title: None,
             url: format!("https://site/{series_id}-{i}"), released_at: None, seen: false,
+            download_path: None, download_status: None,
         }).unwrap();
     }
     if seen_up_to >= 1 {
@@ -45,6 +46,7 @@ pub(crate) fn catalog_anime_with_popularity(
         title_english: None,
         synonyms: Vec::new(),
         cover_url: Some(format!("https://cdn/{id}.jpg")),
+        banner_url: None,
         format: Some("TV".into()),
         genres: genres.iter().map(|g| g.to_string()).collect(),
         episodes: Some(12),
@@ -76,6 +78,7 @@ pub(crate) fn catalog_anime_full(
         title_english: None,
         synonyms: Vec::new(),
         cover_url: None,
+        banner_url: None,
         format: Some(format.into()),
         genres: genres.iter().map(|g| g.to_string()).collect(),
         episodes,

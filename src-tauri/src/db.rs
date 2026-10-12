@@ -140,6 +140,10 @@ impl Db {
         // the only thing that can drive "continue watching, most recent
         // first" in the library view (see the library-redesign design doc).
         ensure_column(&self.conn, "episodes", "seen_at", "TEXT")?;
+        // Offline downloads: path to the local video file and its current
+        // download state ("downloading" | "downloaded" | "failed" | NULL).
+        ensure_column(&self.conn, "episodes", "download_path", "TEXT")?;
+        ensure_column(&self.conn, "episodes", "download_status", "TEXT")?;
         self.conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_series_next_ep ON series(source_id, is_airing, next_episode_at);",
         )?;
@@ -275,6 +279,10 @@ impl Db {
         // NULL when AniList has none (finished or not scheduled).
         ensure_column(&self.conn, "anilist_catalog", "next_airing_at", "INTEGER")?;
         ensure_column(&self.conn, "anilist_catalog", "next_episode", "INTEGER")?;
+        // banner_url: Wide landscape header image from AniList (Media.bannerImage)
+        // for airing hero banners and series detail headers.
+        ensure_column(&self.conn, "anilist_catalog", "banner_url", "TEXT")?;
+        ensure_column(&self.conn, "series", "banner_url", "TEXT")?;
         // metadata_version: which generation of the AniList field set this row
         // was last written with (see `db::catalog::CATALOG_METADATA_VERSION`).
         // `stale_catalog_ids` used to infer staleness from `title_romaji IS
@@ -608,7 +616,7 @@ mod tests {
             sid = db.upsert_series(src, &mk_airing("x", "X", None)).unwrap();
             let ep = |number: &str, url: &str, seen: bool| crate::models::Episode {
                 id: 0, series_id: sid, number: number.into(), title: None,
-                url: url.into(), released_at: None, seen,
+                url: url.into(), released_at: None, seen, download_path: None, download_status: None,
             };
             // The bug's exact shape: episode 1 seen on the old domain, then a
             // second unseen copy on the new domain; episode 2 unseen on both.
@@ -666,7 +674,7 @@ mod tests {
             let db = Db::open(path_str).unwrap();
             let ep = |url: &str, seen: bool| crate::models::Episode {
                 id: 0, series_id: sid, number: "1".into(), title: None,
-                url: url.into(), released_at: None, seen,
+                url: url.into(), released_at: None, seen, download_path: None, download_status: None,
             };
             db.insert_episode(&ep("https://old.example/x-capitulo-1/", true)).unwrap();
             db.insert_episode(&ep("https://new.example/x-capitulo-1/", false)).unwrap();
@@ -727,7 +735,7 @@ mod tests {
         db.set_followed(a2, true).unwrap();
         db.insert_episode(&crate::models::Episode {
             id: 0, series_id: a2, number: "0 | Recap".into(), title: None,
-            url: "https://site/a2-recap".into(), released_at: None, seen: false,
+            url: "https://site/a2-recap".into(), released_at: None, seen: false, download_path: None, download_status: None,
         }).unwrap();
 
         let a3 = db.upsert_series(src_a, &mk_airing("unfollowed", "Unfollowed Show", None)).unwrap();

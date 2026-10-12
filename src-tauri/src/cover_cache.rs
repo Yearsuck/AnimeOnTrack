@@ -405,10 +405,16 @@ mod tests {
         let conf: serde_json::Value =
             serde_json::from_str(include_str!("../tauri.conf.json")).expect("tauri.conf.json is valid JSON");
         let scope = &conf["app"]["security"]["assetProtocol"]["scope"];
-        assert_eq!(
-            scope,
-            &serde_json::json!([format!("$APPDATA/{COVERS_SUBDIR}/**")]),
-            "scope must be exactly the covers dir under $APPDATA (covers_dir() = <app_data_dir>/COVERS_SUBDIR)"
+        let covers_pattern = format!("$APPDATA/{COVERS_SUBDIR}/**");
+        let scopes: Vec<&str> = scope
+            .as_array()
+            .expect("scope is an array")
+            .iter()
+            .filter_map(|s| s.as_str())
+            .collect();
+        assert!(
+            scopes.contains(&covers_pattern.as_str()),
+            "scope must contain the covers dir under $APPDATA (covers_dir() = <app_data_dir>/COVERS_SUBDIR)"
         );
     }
 

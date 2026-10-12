@@ -245,3 +245,23 @@ export const restoreLatest = () => invoke<void>("restore_latest");
 // whatever the build was compiled with.
 export const setGoogleCredentials = (clientId: string, clientSecret: string) =>
   invoke<BackupStatus>("set_google_credentials", { clientId, clientSecret });
+
+// Offline downloads
+export const downloadEpisode = (episodeId: number) =>
+  invoke<void>("download_episode", { episodeId });
+
+export const cancelDownload = (episodeId: number) =>
+  invoke<void>("cancel_download", { episodeId });
+
+export const deleteDownload = (episodeId: number) =>
+  invoke<void>("delete_download", { episodeId });
+
+export const getDownloadsSize = () =>
+  invoke<number>("get_downloads_size");
+
+export const clearAllDownloads = () =>
+  invoke<number>("clear_all_downloads");
+
+export const getSeriesBanner = (seriesId: number) =>
+  invoke<string | null>("get_series_banner", { seriesId });
+

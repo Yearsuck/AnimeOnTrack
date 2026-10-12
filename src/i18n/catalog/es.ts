@@ -430,4 +430,19 @@ export const es = {
   "stats.heatmapFri": "Vie",
   "stats.heatmapSat": "Sáb",
   "stats.heatmapSun": "Dom",
+
+  // Offline downloads
+  "download.download": "⬇ Descargar",
+  "download.downloading": "Descargando… {percent}%",
+  "download.downloaded": "✓ Descargado",
+  "download.failed": "Error al descargar",
+  "download.playOffline": "▶ Offline",
+  "download.cancel": "Cancelar descarga",
+  "download.delete": "Borrar descarga",
+  "download.autoDeleteHint": "Los episodios descargados se borran automáticamente al marcarlos como vistos.",
+  "download.settingsHeading": "Descargas offline",
+  "download.storageUsed": "Espacio usado: {size}",
+  "download.clearAll": "Borrar todas las descargas",
+  "download.clearAllConfirm": "¿Borrar todos los archivos descargados? No se puede deshacer.",
+  "download.nothingDownloaded": "No hay nada descargado.",
 } as const;

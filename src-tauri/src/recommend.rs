@@ -180,6 +180,7 @@ mod tests {
             title_romaji: None,
             title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
             cover_url: None,
+            banner_url: None,
             format: Some(format.into()),
             genres: genres.iter().map(|g| g.to_string()).collect(),
             episodes: Some(12),

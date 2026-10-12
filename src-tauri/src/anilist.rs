@@ -41,6 +41,7 @@ const MEDIA_FIELDS: &str = r#"id
       title { romaji english }
       synonyms
       coverImage { large }
+      bannerImage
       format
       genres
       episodes
@@ -124,6 +125,8 @@ pub struct CatalogAnime {
     #[serde(default)]
     pub synonyms: Vec<String>,
     pub cover_url: Option<String>,
+    #[serde(default)]
+    pub banner_url: Option<String>,
     pub format: Option<String>,
     pub genres: Vec<String>,
     pub episodes: Option<i64>,
@@ -215,6 +218,8 @@ struct MediaEntry {
     synonyms: Option<Vec<Option<String>>>,
     #[serde(rename = "coverImage")]
     cover_image: Option<CoverImage>,
+    #[serde(rename = "bannerImage", default)]
+    banner_image: Option<String>,
     format: Option<String>,
     genres: Vec<String>,
     episodes: Option<i64>,
@@ -339,6 +344,7 @@ impl From<MediaEntry> for CatalogAnime {
             title_english: m.title.english,
             synonyms,
             cover_url: m.cover_image.and_then(|c| c.large),
+            banner_url: m.banner_image,
             format: m.format,
             genres: m.genres,
             episodes: m.episodes,
@@ -577,6 +583,67 @@ pub async fn search_anime(title: &str) -> Result<Vec<CatalogAnime>> {
         "variables": { "search": title },
     });
     Ok(execute_query(body, &format!("search '{title}'")).await?.items)
+}
+
+/// Query AniList for an anime's banner image by AniList ID or by search title.
+/// Returns Ok(Some(banner_url)) if found, Ok(None) if the media has no banner,
+/// or Err if the network request fails.
+pub async fn fetch_banner_by_id_or_title(
+    id: Option<i64>,
+    search_title: Option<&str>,
+) -> Result<Option<String>> {
+    let (query_str, vars) = if let Some(id_val) = id {
+        (
+            "query ($id: Int) { Media(id: $id, type: ANIME) { id bannerImage } }",
+            serde_json::json!({ "id": id_val }),
+        )
+    } else if let Some(title) = search_title {
+        (
+            "query ($search: String) { Media(search: $search, type: ANIME) { id bannerImage } }",
+            serde_json::json!({ "search": title }),
+        )
+    } else {
+        return Ok(None);
+    };
+
+    let body = serde_json::json!({
+        "query": query_str,
+        "variables": vars,
+    });
+
+    #[derive(Deserialize)]
+    struct SingleMediaData {
+        #[serde(rename = "Media")]
+        media: Option<MediaBannerOnly>,
+    }
+    #[derive(Deserialize)]
+    struct MediaBannerOnly {
+        #[serde(rename = "bannerImage")]
+        banner_image: Option<String>,
+    }
+    #[derive(Deserialize)]
+    struct SingleMediaResponse {
+        data: Option<SingleMediaData>,
+    }
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(ENDPOINT)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| anyhow!("AniList banner request failed: {e}"))?;
+
+    if !resp.status().is_success() {
+        return Ok(None);
+    }
+
+    let parsed: SingleMediaResponse = resp
+        .json()
+        .await
+        .map_err(|e| anyhow!("Failed to parse AniList response: {e}"))?;
+
+    Ok(parsed.data.and_then(|d| d.media).and_then(|m| m.banner_image))
 }
 
 /// Shared POST + 429-retry + error-unwrapping path for every AniList query in

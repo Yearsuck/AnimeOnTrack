@@ -554,7 +554,7 @@ mod tests {
         for n in 1..=total {
             db.insert_episode(&crate::models::Episode {
                 id: 0, series_id: sid, number: n.to_string(), title: None,
-                url: format!("https://site/{slug}-{n}"), released_at: None, seen: false,
+                url: format!("https://site/{slug}-{n}"), released_at: None, seen: false, download_path: None, download_status: None,
             }).unwrap();
         }
         if seen_up_to > 0 {
@@ -984,7 +984,7 @@ mod tests {
         for n in 1..=10 {
             db.insert_episode(&crate::models::Episode {
                 id: 0, series_id: ob, number: n.to_string(), title: None,
-                url: format!("https://site/shared-b-{n}"), released_at: None, seen: false,
+                url: format!("https://site/shared-b-{n}"), released_at: None, seen: false, download_path: None, download_status: None,
             }).unwrap();
         }
 
@@ -1088,7 +1088,7 @@ mod tests {
         for n in 6..=10 {
             db.insert_episode(&crate::models::Episode {
                 id: 0, series_id: ob, number: n.to_string(), title: None,
-                url: format!("https://site-b/x-{n}/"), released_at: None, seen: false,
+                url: format!("https://site-b/x-{n}/"), released_at: None, seen: false, download_path: None, download_status: None,
             }).unwrap();
         }
         assert_eq!(db.sync_seen_progress_across_sites().unwrap(), 1, "B must still be able to catch up once it has more episodes");

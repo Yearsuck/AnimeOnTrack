@@ -906,6 +906,7 @@ mod tests {
             title_english: None,
             synonyms: synonyms.iter().map(|s| s.to_string()).collect(),
             cover_url: None,
+            banner_url: None,
             format: Some(format.to_string()),
             genres: vec![],
             episodes: None,

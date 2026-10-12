@@ -15,8 +15,8 @@ type SiblingIndex = std::collections::HashMap<(String, i64), Vec<(i64, String, i
 /// `studio`/`start_date` as staleness. See the `metadata_version` migration in
 /// `db::init_schema`.
 ///
-/// Version 1 = id, title, title_romaji, title_english, cover_url, format,
-/// episodes, average_score, popularity, url, status, duration, studio,
+/// Version 1 = id, title, title_romaji, title_english, cover_url, banner_url,
+/// format, episodes, average_score, popularity, url, status, duration, studio,
 /// start_date, genres.
 /// Version 2 = synonyms.
 /// Version 3 = next airing episode and tags.
@@ -95,11 +95,13 @@ impl Db {
         sort_order: i64,
     ) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO anilist_catalog(id, title, title_romaji, title_english, cover_url, format, episodes, average_score, popularity, url, sort_order, status, duration, studio, start_date, metadata_version, next_airing_at, next_episode)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+            "INSERT INTO anilist_catalog(id, title, title_romaji, title_english, cover_url, banner_url, format, episodes, average_score, popularity, url, sort_order, status, duration, studio, start_date, metadata_version, next_airing_at, next_episode)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
              ON CONFLICT(id) DO UPDATE SET
                 title=excluded.title, title_romaji=excluded.title_romaji, title_english=excluded.title_english,
-                cover_url=excluded.cover_url, format=excluded.format,
+                cover_url=excluded.cover_url,
+                banner_url=COALESCE(excluded.banner_url, anilist_catalog.banner_url),
+                format=excluded.format,
                 episodes=excluded.episodes, average_score=excluded.average_score,
                 popularity=excluded.popularity, url=excluded.url, sort_order=excluded.sort_order,
                 status=excluded.status, duration=excluded.duration, studio=excluded.studio,
@@ -107,7 +109,8 @@ impl Db {
                 next_airing_at=excluded.next_airing_at, next_episode=excluded.next_episode",
             // rusqlite only implements `Params` for tuples up to 16 elements.
             rusqlite::params![
-                anime.id, &anime.title, &anime.title_romaji, &anime.title_english, &anime.cover_url, &anime.format,
+                anime.id, &anime.title, &anime.title_romaji, &anime.title_english, &anime.cover_url,
+                &anime.banner_url, &anime.format,
                 anime.episodes, anime.average_score, anime.popularity, &anime.url, sort_order, &anime.status,
                 anime.duration, &anime.studio, anime.start_date, CATALOG_METADATA_VERSION,
                 anime.next_airing_at, anime.next_episode,
@@ -737,7 +740,7 @@ impl Db {
         let offset = (page.max(1) - 1) * per_page;
         let (where_sql, mut params) = Self::build_catalog_where(filter);
         let sql = format!(
-            "SELECT id, title, title_romaji, title_english, cover_url, format, episodes, average_score, popularity, url, status, duration, studio, start_date, next_airing_at, next_episode
+            "SELECT id, title, title_romaji, title_english, cover_url, banner_url, format, episodes, average_score, popularity, url, status, duration, studio, start_date, next_airing_at, next_episode
              FROM anilist_catalog WHERE {where_sql}
              ORDER BY popularity DESC NULLS LAST, id LIMIT ? OFFSET ?"
         );
@@ -831,6 +834,62 @@ impl Db {
         Ok(map)
     }
 
+    /// Normalized-title -> banner_url map from every synced catalog row that has one.
+    pub fn catalog_banners_by_normalized_title(&self) -> Result<std::collections::HashMap<String, String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT title, title_romaji, title_english, banner_url FROM anilist_catalog WHERE banner_url IS NOT NULL AND banner_url != ''",
+        )?;
+        let rows: Vec<(String, Option<String>, Option<String>, String)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut map = std::collections::HashMap::new();
+        for (title, romaji, english, banner_url) in rows {
+            for variant in [Some(title), romaji, english].into_iter().flatten() {
+                map.entry(crate::matching::normalize_title(&variant)).or_insert_with(|| banner_url.clone());
+            }
+        }
+        Ok(map)
+    }
+
+    /// Query the banner URL for a specific series row, checking series.banner_url
+    /// first, then falling back to linked anilist_catalog.banner_url.
+    pub fn get_series_banner(&self, series_id: i64) -> Result<Option<String>> {
+        let opt: Option<Option<String>> = self
+            .conn
+            .query_row(
+                "SELECT COALESCE(s.banner_url, c.banner_url)
+                 FROM series s
+                 LEFT JOIN anilist_catalog c ON c.id = s.anilist_id
+                 WHERE s.id = ?1",
+                [series_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(opt.flatten())
+    }
+
+    /// Persist a banner URL for a series row (and its linked anilist_catalog entry, if any).
+    pub fn set_series_banner(&self, series_id: i64, banner_url: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE series SET banner_url = ?1 WHERE id = ?2",
+            rusqlite::params![banner_url, series_id],
+        )?;
+        self.conn.execute(
+            "UPDATE anilist_catalog SET banner_url = ?1 WHERE id = (SELECT anilist_id FROM series WHERE id = ?2 AND anilist_id IS NOT NULL)",
+            rusqlite::params![banner_url, series_id],
+        )?;
+        Ok(())
+    }
+
+    /// Retrieve title and anilist_id for a series.
+    pub fn get_series_title_and_anilist_id(&self, series_id: i64) -> Result<(String, Option<i64>)> {
+        Ok(self.conn.query_row(
+            "SELECT title, anilist_id FROM series WHERE id = ?1",
+            [series_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?)
+    }
+
     /// Normalized-title -> `anilist_catalog.id`, mirroring
     /// `catalog_start_dates_by_normalized_title`'s "try every synced title
     /// variant" approach — shared lookup behind `catalog_id_for_series`'s
@@ -885,7 +944,7 @@ impl Db {
     pub fn catalog_info_for_series(&self, series_id: i64) -> Result<Option<crate::anilist::CatalogAnime>> {
         let Some(id) = self.catalog_id_for_series(series_id)? else { return Ok(None) };
         let mut stmt = self.conn.prepare(
-            "SELECT id, title, title_romaji, title_english, cover_url, format, episodes, average_score, popularity, url, status, duration, studio, start_date, next_airing_at, next_episode
+            "SELECT id, title, title_romaji, title_english, cover_url, banner_url, format, episodes, average_score, popularity, url, status, duration, studio, start_date, next_airing_at, next_episode
              FROM anilist_catalog WHERE id=?1",
         )?;
         let mut anime = stmt.query_row([id], Self::row_to_catalog_anime)?;
@@ -903,6 +962,7 @@ impl Db {
             title_english: r.get("title_english")?,
             synonyms: Vec::new(),
             cover_url: r.get("cover_url")?,
+            banner_url: r.get("banner_url")?,
             format: r.get("format")?,
             episodes: r.get("episodes")?,
             average_score: r.get("average_score")?,
@@ -1116,7 +1176,7 @@ impl Db {
             )
         };
         let sql = format!(
-            "SELECT c.id, c.title, c.title_romaji, c.title_english, c.cover_url, c.format, c.episodes, c.average_score, c.popularity, c.url, c.status, c.duration, c.studio, c.start_date, c.next_airing_at, c.next_episode
+            "SELECT c.id, c.title, c.title_romaji, c.title_english, c.cover_url, c.banner_url, c.format, c.episodes, c.average_score, c.popularity, c.url, c.status, c.duration, c.studio, c.start_date, c.next_airing_at, c.next_episode
              FROM anilist_catalog c
              JOIN anilist_catalog_genres g ON g.anilist_id = c.id
              WHERE g.genre = ?
@@ -2416,6 +2476,7 @@ mod tests {
             title_english: Some("Attack on Titan".into()),
             synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
             cover_url: None,
+            banner_url: None,
             format: Some("TV".into()),
             genres: vec!["Action".into()],
             episodes: Some(25),
@@ -2446,6 +2507,7 @@ mod tests {
             title_romaji: None,
             title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
             cover_url: None,
+            banner_url: None,
             format: Some("TV".into()),
             genres: vec![],
             episodes: Some(12),
@@ -2467,6 +2529,7 @@ mod tests {
             title_romaji: None,
             title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
             cover_url: None,
+            banner_url: None,
             format: Some("TV".into()),
             genres: vec![],
             episodes: Some(12),
@@ -2498,6 +2561,7 @@ mod tests {
             title_romaji: None,
             title_english: None, synonyms: Vec::new(),
             cover_url: None,
+            banner_url: None,
             format: Some("TV".into()),
             genres: vec![],
             episodes: Some(12),
@@ -2521,6 +2585,7 @@ mod tests {
             title_romaji: None,
             title_english: None, synonyms: Vec::new(),
             cover_url: None,
+            banner_url: None,
             format: Some("TV".into()),
             genres: vec![],
             episodes: Some(12),
@@ -2552,6 +2617,7 @@ mod tests {
             title_romaji: None,
             title_english: None, synonyms: Vec::new(),
             cover_url: None,
+            banner_url: None,
             format: Some("TV".into()),
             genres: vec![],
             episodes: Some(12),
@@ -2572,6 +2638,7 @@ mod tests {
             title_romaji: None,
             title_english: None, synonyms: Vec::new(),
             cover_url: None,
+            banner_url: None,
             format: Some("TV".into()),
             genres: vec![],
             episodes: Some(12),
@@ -2602,7 +2669,7 @@ mod tests {
         db.upsert_catalog_anime(
             &crate::anilist::CatalogAnime {
                 id: 50, title: "Attack on Titan".into(), title_romaji: Some("Shingeki no Kyojin".into()),
-                title_english: Some("Attack on Titan".into()), synonyms: Vec::new(), cover_url: None, format: Some("TV".into()),
+                title_english: Some("Attack on Titan".into()), synonyms: Vec::new(), cover_url: None, banner_url: None, format: Some("TV".into()),
                 genres: vec![], episodes: Some(25), average_score: None, popularity: None,
                 url: "https://anilist.co/anime/50".into(), status: None, duration: None, studio: None,
                 start_date: Some(1_776_211_200),
@@ -2616,7 +2683,7 @@ mod tests {
         db.upsert_catalog_anime(
             &crate::anilist::CatalogAnime {
                 id: 51, title: "Unsynced Show".into(), title_romaji: None, title_english: None, synonyms: Vec::new(),
-                cover_url: None, format: Some("TV".into()), genres: vec![], episodes: None,
+                cover_url: None, banner_url: None, format: Some("TV".into()), genres: vec![], episodes: None,
                 average_score: None, popularity: None, url: "https://anilist.co/anime/51".into(),
                 status: None, duration: None, studio: None, start_date: None,
                 next_airing_at: None, next_episode: None, tags: Vec::new(),
@@ -2634,7 +2701,7 @@ mod tests {
     fn mk_catalog_anime(id: i64, title: &str, url: &str) -> crate::anilist::CatalogAnime {
         crate::anilist::CatalogAnime {
             id, title: title.into(), title_romaji: None, title_english: None, synonyms: Vec::new(), cover_url: None,
-            format: Some("TV".into()), genres: vec![], episodes: Some(12), average_score: None,
+            banner_url: None, format: Some("TV".into()), genres: vec![], episodes: Some(12), average_score: None,
             popularity: None, url: url.into(), status: None, duration: None, studio: None, start_date: None,
             next_airing_at: None, next_episode: None, tags: Vec::new(),
         }
@@ -2684,7 +2751,7 @@ mod tests {
     fn mk_full_catalog_anime(id: i64, title: &str, genres: &[&str]) -> crate::anilist::CatalogAnime {
         crate::anilist::CatalogAnime {
             id, title: title.into(), title_romaji: None, title_english: None, synonyms: Vec::new(),
-            cover_url: Some(format!("https://img/{id}")), format: Some("TV".into()),
+            cover_url: Some(format!("https://img/{id}")), banner_url: None, format: Some("TV".into()),
             genres: genres.iter().map(|g| g.to_string()).collect(), episodes: Some(24),
             average_score: Some(88), popularity: Some(5000), url: format!("https://anilist.co/anime/{id}"),
             status: Some("FINISHED".into()), duration: Some(24), studio: Some("Studio X".into()),
