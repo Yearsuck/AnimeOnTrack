@@ -60,6 +60,7 @@ export default function App() {
   // switching tabs and back doesn't rebuild the renderer or re-scramble the
   // layout. Lazy: only mounts on first visit, not eagerly at app start.
   const [statsVisited, setStatsVisited] = useState(false);
+  const [descubrirSubView, setDescubrirSubView] = useState<"swipe" | "listas">("swipe");
 
   const refreshBadge = useCallback(async () => {
     try {
@@ -162,6 +163,7 @@ export default function App() {
   const panelRef = useRef<HTMLDivElement | null>(null);
   function navigate(next: View) {
     if (panelRef.current) scrollPositions.current[view] = panelRef.current.scrollTop;
+    setSelected(null);
     setView(next);
   }
   useEffect(() => {
@@ -294,12 +296,22 @@ export default function App() {
         )}
         {view === "library" && (
           <div className="view-panel" ref={panelRef}>
-            <Library onOpenSeries={setSelected} />
+            <Library
+              onOpenSeries={setSelected}
+              onGoToListas={() => {
+                setDescubrirSubView("listas");
+                navigate("descubrir");
+              }}
+            />
           </div>
         )}
         {view === "descubrir" && (
           <div className="view-panel" ref={panelRef}>
-            <Descubrir onOpenSeries={setSelected} />
+            <Descubrir
+              onOpenSeries={setSelected}
+              initialSubView={descubrirSubView}
+              onSubViewChange={setDescubrirSubView}
+            />
           </div>
         )}
         {view === "catalog" && (

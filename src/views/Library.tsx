@@ -323,7 +323,13 @@ const libraryFilterCache = createFilterCache<{
   studioFilter: string;
 }>();
 
-export function Library({ onOpenSeries }: { onOpenSeries: (s: Series) => void }) {
+export function Library({
+  onOpenSeries,
+  onGoToListas,
+}: {
+  onOpenSeries: (s: Series) => void;
+  onGoToListas?: () => void;
+}) {
   const t = useT();
   const [items, setItems] = useState<LibraryItem[]>([]);
   const [query, setQuery] = useState(() => libraryFilterCache.current?.query ?? "");
@@ -793,18 +799,39 @@ export function Library({ onOpenSeries }: { onOpenSeries: (s: Series) => void })
                   />
                 ))}
               {showPlan && (
-                <LibrarySection
-                  title={t("library.planToWatch")}
-                  items={plan}
-                  defaultOpen
-                  showAction
-                  showMenu={false}
-                  onOpenSeries={onOpenSeries}
-                  onChanged={load}
-                  selectMode={selectMode}
-                  selected={selected}
-                  onToggleSelect={toggleSelect}
-                />
+                <>
+                  {onGoToListas && (
+                    <div className="backlog-shortcut-banner">
+                      <div className="backlog-shortcut-text">
+                        <span className="backlog-shortcut-title">
+                          {t("library.backlogBannerTitle") || "¿Buscas tu lista de «Quiero ver»?"}
+                        </span>
+                        <span className="muted text-sm">
+                          {t("library.backlogBannerDesc") || "Gestiona los animes guardados desde Descubrir para empezarlos a ver."}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        className="btn btn-primary btn-sm"
+                        onClick={onGoToListas}
+                      >
+                        {t("library.backlogBannerBtn") || "Abrir «Quiero ver»"} →
+                      </button>
+                    </div>
+                  )}
+                  <LibrarySection
+                    title={t("library.planToWatch")}
+                    items={plan}
+                    defaultOpen
+                    showAction
+                    showMenu={false}
+                    onOpenSeries={onOpenSeries}
+                    onChanged={load}
+                    selectMode={selectMode}
+                    selected={selected}
+                    onToggleSelect={toggleSelect}
+                  />
+                </>
               )}
               {showCompleted && (
                 <LibrarySection

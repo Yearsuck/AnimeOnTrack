@@ -55,6 +55,7 @@ export const es = {
   "airing.dayFri": "Vie",
   "airing.daySat": "Sáb",
   "airing.daySun": "Dom",
+  "airing.airingNow": "En emisión",
 
   // AiringSpotlight.tsx
   "spotlight.ariaLabel": "Destacados en emisión",
@@ -63,6 +64,7 @@ export const es = {
   "spotlight.nextBtn": "Siguiente",
   "spotlight.dotsAria": "Diapositivas",
   "spotlight.slideAria": "Diapositiva",
+  "spotlight.thisSeason": "Esta temporada",
 
   // Pending.tsx
   "pending.episodesToWatch": "{count} episodios por ver",
@@ -154,6 +156,9 @@ export const es = {
   "library.emptyHint": 'Ve a "En emisión" y dale a Seguir.',
   "library.watching": "Viendo",
   "library.planToWatch": "Pendientes de empezar",
+  "library.backlogBannerTitle": "¿Buscas tu lista de «Quiero ver»?",
+  "library.backlogBannerDesc": "Gestiona los animes guardados desde Descubrir para empezarlos a ver.",
+  "library.backlogBannerBtn": "Abrir «Quiero ver»",
   "library.completed": "Completadas",
   "library.filterLabel": "Mostrar:",
   "library.filterAll": "Todos",

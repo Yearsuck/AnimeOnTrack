@@ -1558,12 +1558,21 @@ progress.scanbar-track::-webkit-progress-value {
   border-color: var(--surface-3);
 }
 .listas-poster {
-  width: 42px;
-  height: 60px;
+  width: 54px;
+  height: 78px;
   flex-shrink: 0;
   border-radius: var(--radius-sm);
   overflow: hidden;
   background: var(--surface-2);
+  border: 1px solid var(--border);
+  transition: transform var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+.listas-poster.clickable {
+  cursor: pointer;
+}
+.listas-poster.clickable:hover {
+  transform: scale(1.04);
+  border-color: var(--accent);
 }
 .listas-poster img {
   width: 100%;
@@ -1576,12 +1585,18 @@ progress.scanbar-track::-webkit-progress-value {
   font-weight: var(--fw-bold);
   color: var(--muted);
   background: var(--surface-2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
 }
 .listas-card-head {
   display: flex;
   align-items: center;
   gap: 8px;
   min-width: 0;
+  flex-wrap: wrap;
 }
 .listas-title {
   font-weight: var(--fw-semibold);
@@ -1616,6 +1631,35 @@ progress.scanbar-track::-webkit-progress-value {
 .listas-chip-watched {
   background: var(--success-dim);
   color: var(--success);
+}
+.listas-chip-airing {
+  background: rgba(59, 130, 246, 0.15);
+  color: #60a5fa;
+}
+.listas-chip-eps {
+  background: var(--surface-3);
+  color: var(--muted);
+}
+.backlog-shortcut-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  padding: var(--sp-3) var(--sp-5);
+  background: var(--surface-2);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  margin-bottom: var(--sp-4);
+}
+.backlog-shortcut-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.backlog-shortcut-title {
+  font-weight: var(--fw-semibold);
+  font-size: var(--fs-sm);
+  color: var(--text);
 }
 
 /* ---------- Stats · bar chart & ring grid ---------- */
@@ -2348,11 +2392,23 @@ select.lib-filter-select {
   object-fit: cover;
   display: block;
 }
+.spotlight-blur-bg {
+  position: absolute;
+  inset: -20px;
+  width: calc(100% + 40px);
+  height: calc(100% + 40px);
+  object-fit: cover;
+  filter: blur(28px) brightness(0.35);
+  transform: scale(1.05);
+  display: block;
+  pointer-events: none;
+}
 .spotlight-scrim {
   position: absolute;
   inset: 0;
   background: linear-gradient(
     180deg,
+    rgba(0, 0, 0, 0.1) 0%,
     transparent 40%,
     var(--surface) 85%,
     var(--surface) 100%
@@ -2366,12 +2422,63 @@ select.lib-filter-select {
   right: 0;
   padding: var(--sp-6) var(--sp-6) var(--sp-5);
   z-index: 1;
+  display: flex;
+  align-items: flex-end;
+  gap: var(--sp-5);
+}
+.spotlight-poster-card {
+  width: 90px;
+  height: 128px;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  flex-shrink: 0;
+  transition: transform var(--dur-fast) var(--ease);
+  cursor: pointer;
+}
+.spotlight-poster-card:hover {
+  transform: scale(1.04);
+}
+.spotlight-poster-card img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.spotlight-info {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: var(--sp-2);
+}
+.spotlight-badges {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.spotlight-badge {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
+  padding: 2px 8px;
+  border-radius: var(--radius-round);
+  letter-spacing: 0.3px;
+}
+.spotlight-badge.badge-season {
+  background: rgba(255, 255, 255, 0.15);
+  color: var(--text);
+  backdrop-filter: blur(4px);
+}
+.spotlight-badge.badge-score {
+  background: var(--accent);
+  color: #fff;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
 }
 .spotlight-title {
   font-size: var(--fs-2xl);
   font-weight: var(--fw-bold);
   line-height: var(--lh-tight);
-  margin: 0 0 var(--sp-3);
+  margin: 0;
   color: var(--text);
   text-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
 }
@@ -2379,6 +2486,8 @@ select.lib-filter-select {
   min-height: 40px;
   padding: 0 var(--sp-5);
   font-size: var(--fs-md);
+  align-self: flex-start;
+  margin-top: var(--sp-1);
 }
 .spotlight-controls {
   position: absolute;
