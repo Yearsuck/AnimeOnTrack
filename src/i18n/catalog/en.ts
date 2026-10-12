@@ -308,6 +308,8 @@ export const en: Messages = {
   "catalog.searchPlaceholder": "Search by title…",
   "catalog.anyFormat": "Any format",
   "catalog.anyStudio": "Any studio",
+  "catalog.hideWatched": "Hide watched",
+  "catalog.hideWatchedTooltip": "Hide anime that you have already marked as watched or have watched episodes",
   "catalog.clearFilters": "Clear filters",
   "catalog.resultsCount": "{count} results",
   "catalog.noResultsFiltered": "No results with these filters.",

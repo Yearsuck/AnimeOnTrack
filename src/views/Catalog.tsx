@@ -39,6 +39,7 @@ const catalogFilterCache = createFilterCache<{
   minScore: string;
   episodes: string;
   studio: string;
+  hideWatched: boolean;
   page: number;
 }>();
 
@@ -84,11 +85,12 @@ export function Catalog() {
   const [minScore, setMinScore] = useState(() => catalogFilterCache.current?.minScore ?? "");
   const [episodes, setEpisodes] = useState(() => catalogFilterCache.current?.episodes ?? "");
   const [studio, setStudio] = useState(() => catalogFilterCache.current?.studio ?? "");
+  const [hideWatched, setHideWatched] = useState(() => catalogFilterCache.current?.hideWatched ?? false);
 
   // Persist filter state to the module-level cache on every change
   useEffect(() => {
-    catalogFilterCache.write({ searchInput, search, selectedGenres, format, minScore, episodes, studio, page });
-  }, [searchInput, search, selectedGenres, format, minScore, episodes, studio, page]);
+    catalogFilterCache.write({ searchInput, search, selectedGenres, format, minScore, episodes, studio, hideWatched, page });
+  }, [searchInput, search, selectedGenres, format, minScore, episodes, studio, hideWatched, page]);
 
   // Multi-select + batch actions. The selected map holds the full card object
   // (not just the id) so a selection survives pagination / scroll-out.
@@ -165,8 +167,9 @@ export function Catalog() {
       min_score: minScore ? Number(minScore) : undefined,
       episodes: episodes || undefined,
       studio: studio || undefined,
+      hide_watched: hideWatched || undefined,
     }),
-    [search, selectedGenres, format, minScore, episodes, studio]
+    [search, selectedGenres, format, minScore, episodes, studio, hideWatched]
   );
 
   const anyFilterActive =
@@ -175,7 +178,8 @@ export function Catalog() {
     format !== "" ||
     minScore !== "" ||
     episodes !== "" ||
-    studio !== "";
+    studio !== "" ||
+    hideWatched;
 
   // Monotonic id for the newest in-flight load, same guard Stats.tsx uses.
   // Several triggers can overlap — a "Cargar más" click, the debounced
@@ -316,6 +320,7 @@ export function Catalog() {
     setMinScore("");
     setEpisodes("");
     setStudio("");
+    setHideWatched(false);
   }
 
   return (
@@ -417,6 +422,15 @@ export function Catalog() {
               </option>
             ))}
           </select>
+          <button
+            type="button"
+            className={`chip-toggle${hideWatched ? " active" : ""}`}
+            onClick={() => setHideWatched((v) => !v)}
+            aria-pressed={hideWatched}
+            title={t("catalog.hideWatchedTooltip")}
+          >
+            {hideWatched ? "✓ " : ""}{t("catalog.hideWatched")}
+          </button>
           {anyFilterActive && (
             <button className="btn btn-ghost" onClick={clearFilters}>
               {t("catalog.clearFilters")}

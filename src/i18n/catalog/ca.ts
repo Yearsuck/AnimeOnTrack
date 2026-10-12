@@ -319,6 +319,8 @@ export const ca: Messages = {
   "catalog.searchPlaceholder": "Cerca pel títol…",
   "catalog.anyFormat": "Qualsevol format",
   "catalog.anyStudio": "Qualsevol estudi",
+  "catalog.hideWatched": "Amagar ja vistos",
+  "catalog.hideWatchedTooltip": "Amagar animes que ja has marcat com a vistos o que tenen episodis vistos",
   "catalog.clearFilters": "Neteja els filtres",
   "catalog.resultsCount": "{count} resultats",
   "catalog.noResultsFiltered": "Sense resultats amb aquests filtres.",

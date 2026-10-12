@@ -323,6 +323,8 @@ export const es = {
   "catalog.searchPlaceholder": "Buscar por título…",
   "catalog.anyFormat": "Cualquier formato",
   "catalog.anyStudio": "Cualquier estudio",
+  "catalog.hideWatched": "Ocultar ya vistos",
+  "catalog.hideWatchedTooltip": "Ocultar animes que ya has marcado como vistos o que tienen episodios vistos",
   "catalog.clearFilters": "Limpiar filtros",
   "catalog.resultsCount": "{count} resultados",
   "catalog.noResultsFiltered": "Sin resultados con estos filtros.",

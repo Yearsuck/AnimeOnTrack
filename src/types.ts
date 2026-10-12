@@ -269,6 +269,7 @@ export interface CatalogFilter {
   min_score?: number;
   episodes?: string;
   studio?: string;
+  hide_watched?: boolean;
 }
 
 export interface CatalogFacets {

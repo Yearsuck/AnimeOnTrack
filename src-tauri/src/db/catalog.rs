@@ -44,6 +44,9 @@ pub struct CatalogFilter {
     pub episodes: Option<String>,
     /// Exact match against `anilist_catalog.studio`.
     pub studio: Option<String>,
+    /// When true, exclude anime the user has already watched (watched_externally=1 or seen episodes).
+    #[serde(default)]
+    pub hide_watched: bool,
 }
 
 /// The query behind `Db::stale_status_ids`, shared with its regression test so the
@@ -734,6 +737,25 @@ impl Db {
                 params.push(Value::Text((*genre).to_string()));
                 params.push(Value::Text((*genre).to_string()));
             }
+        }
+
+        if filter.hide_watched {
+            conditions.push(
+                "id NOT IN ( \
+                    SELECT s.anilist_id FROM series s \
+                    WHERE s.anilist_id IS NOT NULL \
+                      AND (s.watched_externally = 1 OR EXISTS (SELECT 1 FROM episodes e WHERE e.series_id = s.id AND e.seen = 1)) \
+                    UNION \
+                    SELECT c2.id FROM anilist_catalog c2 \
+                    JOIN series s ON ( \
+                        s.title = c2.title COLLATE NOCASE \
+                        OR (c2.title_romaji IS NOT NULL AND s.title = c2.title_romaji COLLATE NOCASE) \
+                        OR (c2.title_english IS NOT NULL AND s.title = c2.title_english COLLATE NOCASE) \
+                    ) \
+                    WHERE s.watched_externally = 1 OR EXISTS (SELECT 1 FROM episodes e WHERE e.series_id = s.id AND e.seen = 1) \
+                 )"
+                    .to_string(),
+            );
         }
 
         (conditions.join(" AND "), params)
@@ -3392,6 +3414,64 @@ mod tests {
         assert!(genres.contains(&"Isekai".to_string()));
     }
 
+    #[test]
+    fn test_catalog_filter_hide_watched_excludes_watched_externally_and_seen_episodes() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "https://animeyt.es", "animeytx").unwrap();
+
+        let a1 = catalog_anime(1001, "Seen Externally Show", &[]);
+        let a2 = catalog_anime(1002, "Watched In App Show", &[]);
+        let a3 = catalog_anime(1003, "Unwatched Show", &[]);
+        let a4 = catalog_anime(1004, "Unlinked Watched Show", &[]);
+
+        db.upsert_catalog_anime(&a1, 0).unwrap();
+        db.upsert_catalog_anime(&a2, 1).unwrap();
+        db.upsert_catalog_anime(&a3, 2).unwrap();
+        db.upsert_catalog_anime(&a4, 3).unwrap();
+
+        // s1: linked to 1001, watched_externally = 1
+        let s1_item = mk_airing("s1", "Seen Externally Show", None);
+        let s1 = db.upsert_series(src, &s1_item).unwrap();
+        db.set_anilist_id(s1, 1001).unwrap();
+        db.set_watched_externally(s1, true).unwrap();
+
+        // s2: linked to 1002, seen episode
+        let s2_item = mk_airing("s2", "Watched In App Show", None);
+        let s2 = db.upsert_series(src, &s2_item).unwrap();
+        db.set_anilist_id(s2, 1002).unwrap();
+        db.conn.execute(
+            "INSERT INTO episodes (series_id, number, title, url, seen) VALUES (?1, '1', 'Ep 1', 'https://ep1', 1)",
+            [s2],
+        ).unwrap();
+
+        // s3: linked to 1003, followed=1, 0 episodes seen, watched_externally=0
+        let s3_item = mk_airing("s3", "Unwatched Show", None);
+        let s3 = db.upsert_series(src, &s3_item).unwrap();
+        db.set_anilist_id(s3, 1003).unwrap();
+
+        // s4: unlinked (anilist_id is NULL), title matches a4, watched_externally=1
+        let s4_item = mk_airing("s4", "Unlinked Watched Show", None);
+        let s4 = db.upsert_series(src, &s4_item).unwrap();
+        db.set_watched_externally(s4, true).unwrap();
+
+        // When hide_watched is false: all 4 are returned
+        let default_filter = CatalogFilter::default();
+        let results = db.list_catalog_filtered(1, 10, &default_filter).unwrap();
+        assert_eq!(results.len(), 4);
+
+        // When hide_watched is true: only a3 (1003) is returned!
+        let hide_watched_filter = CatalogFilter {
+            hide_watched: true,
+            ..Default::default()
+        };
+        let filtered = db.list_catalog_filtered(1, 10, &hide_watched_filter).unwrap();
+        let total = db.catalog_count_filtered(&hide_watched_filter).unwrap();
+        assert_eq!(total, 1);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].id, 1003);
+    }
+
 }
+
 
 
