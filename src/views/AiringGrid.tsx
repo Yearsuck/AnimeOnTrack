@@ -45,7 +45,7 @@ export function countdownLabel(
 // "Esta temporada" cutoff: the series' first scraped episode aired within
 // the last 3 calendar months. Computed frontend-side (see the design spec)
 // so "now" is the user's own clock and a day-rollover never needs a re-query.
-function isWithinLastThreeMonths(firstEpisodeAt: number): boolean {
+export function isWithinLastThreeMonths(firstEpisodeAt: number): boolean {
   const cutoff = new Date();
   cutoff.setMonth(cutoff.getMonth() - 3);
   return firstEpisodeAt * 1000 >= cutoff.getTime();

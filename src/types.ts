@@ -24,6 +24,8 @@ export interface AiringItem {
   first_episode_at: number | null;
   /** Wide landscape banner URL from AniList (Media.bannerImage) */
   banner_url?: string | null;
+  /** Average score (0-100 scale from AniList catalog) */
+  score?: number | null;
 }
 
 export interface Episode {

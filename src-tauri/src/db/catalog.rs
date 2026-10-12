@@ -868,6 +868,56 @@ impl Db {
         Ok(opt.flatten())
     }
 
+    /// Normalized-title -> average_score map from every synced catalog row that has one.
+    pub fn catalog_scores_by_normalized_title(&self) -> Result<std::collections::HashMap<String, f64>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT title, title_romaji, title_english, average_score FROM anilist_catalog WHERE average_score IS NOT NULL",
+        )?;
+        let rows: Vec<(String, Option<String>, Option<String>, f64)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut map = std::collections::HashMap::new();
+        for (title, romaji, english, score) in rows {
+            for variant in [Some(title), romaji, english].into_iter().flatten() {
+                map.entry(crate::matching::normalize_title(&variant)).or_insert(score);
+            }
+        }
+        Ok(map)
+    }
+
+    /// Normalized-title -> cover_url map from every synced catalog row that has one.
+    pub fn catalog_covers_by_normalized_title(&self) -> Result<std::collections::HashMap<String, String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT title, title_romaji, title_english, cover_url FROM anilist_catalog WHERE cover_url IS NOT NULL AND cover_url != ''",
+        )?;
+        let rows: Vec<(String, Option<String>, Option<String>, String)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut map = std::collections::HashMap::new();
+        for (title, romaji, english, cover_url) in rows {
+            for variant in [Some(title), romaji, english].into_iter().flatten() {
+                map.entry(crate::matching::normalize_title(&variant)).or_insert_with(|| cover_url.clone());
+            }
+        }
+        Ok(map)
+    }
+
+    /// Query the average score for a specific series row from linked anilist_catalog.
+    pub fn get_series_score(&self, series_id: i64) -> Result<Option<f64>> {
+        let opt: Option<Option<f64>> = self
+            .conn
+            .query_row(
+                "SELECT c.average_score
+                 FROM series s
+                 LEFT JOIN anilist_catalog c ON c.id = s.anilist_id
+                 WHERE s.id = ?1",
+                [series_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(opt.flatten())
+    }
+
     /// Persist a banner URL for a series row (and its linked anilist_catalog entry, if any).
     pub fn set_series_banner(&self, series_id: i64, banner_url: &str) -> Result<()> {
         self.conn.execute(
