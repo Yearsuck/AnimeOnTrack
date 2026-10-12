@@ -16,7 +16,7 @@ import { StatsGraph } from "./StatsGraph";
 import { StatsRings } from "./StatsRings";
 import { StatsInsights } from "./StatsInsights";
 
-type StatsView = "grafo" | "barras";
+type StatsView = "resumen" | "grafo" | "generos";
 
 export function Stats({ active }: { active: boolean }) {
   const t = useT();
@@ -27,7 +27,7 @@ export function Stats({ active }: { active: boolean }) {
   const [genres, setGenres] = useState<GenreCard[]>([]);
   const [types, setTypes] = useState<TypeStat[]>([]);
   const [graph, setGraph] = useState<SeriesGraphNode[]>([]);
-  const [view, setView] = useState<StatsView>("grafo");
+  const [view, setView] = useState<StatsView>("resumen");
   const [backfilling, setBackfilling] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -125,6 +125,39 @@ export function Stats({ active }: { active: boolean }) {
     <div className="page">
       <div className="page-head">
         <h2 className="page-title">{t("nav.stats")}</h2>
+        <div className="tabs" role="tablist">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={view === "resumen"}
+            className={`tab ${view === "resumen" ? "active" : ""}`}
+            onClick={() => setView("resumen")}
+          >
+            {t("stats.insightsHeading")}
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={view === "grafo"}
+            className={`tab ${view === "grafo" ? "active" : ""}`}
+            onClick={() => setView("grafo")}
+          >
+            {t("stats.tabGraph")}
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={view === "generos"}
+            className={`tab ${view === "generos" ? "active" : ""}`}
+            onClick={() => setView("generos")}
+          >
+            {t("stats.byGenre")}
+          </button>
+        </div>
+        <div className="spacer" />
+        <button className="btn btn-ghost" onClick={runBackfill} disabled={backfilling}>
+          {backfilling ? t("stats.backfilling") : t("stats.backfillButton")}
+        </button>
       </div>
 
       {error && (
@@ -148,78 +181,60 @@ export function Stats({ active }: { active: boolean }) {
         </div>
       )}
 
-      {summary && (
-        <div className="stat-grid">
-          <div className="stat-card">
-            <div className="stat-label">{t("stats.episodesWatched")}</div>
-            <div className="stat-value">
-              {n(summary.episodes_watched + summary.episodes_watched_external)}
-            </div>
-            <div className="stat-help">
-              {t("stats.episodesWatchedHelp", {
-                real: n(summary.episodes_watched),
-                external: n(summary.episodes_watched_external),
-              })}
-            </div>
-          </div>
-          <div className="stat-card">
-            <div className="stat-label">{t("stats.distinctAnime")}</div>
-            <div className="stat-value">{n(summary.distinct_anime)}</div>
-            <div className="stat-help">{t("stats.distinctAnimeHelp")}</div>
-          </div>
-          <div className="stat-card">
-            <div className="stat-label">{t("stats.followedSeries")}</div>
-            <div className="stat-value">{n(summary.airing_followed)}</div>
-          </div>
-          <div className="stat-card">
-            <div className="stat-label">{t("stats.backlogPending")}</div>
-            <div className="stat-value">{n(summary.pending_to_watch)}</div>
-            <div className="stat-help">{t("stats.backlogPendingHelp")}</div>
-          </div>
-          <div className="stat-card">
-            <div className="stat-label">{t("stats.wishlist")}</div>
-            <div className="stat-value">{n(summary.backlog_want)}</div>
-            <div className="stat-help">{t("stats.wishlistHelp")}</div>
-          </div>
-        </div>
-      )}
-
-      {summary && insights && <StatsInsights insights={insights} summary={summary} popularityBias={popularityBias} />}
-
-      {/* Gated on `loaded`: `graph`/`genres`/`types` start out as empty arrays,
-          and rendering them before the first load resolves flashes an
-          emphatic "no followed series yet" at users who have dozens. */}
       {loaded && (
-      <>
-      <div className="section-toolbar">
-        <div className="tabs">
-          <button
-            className={`tab ${view === "grafo" ? "active" : ""}`}
-            onClick={() => setView("grafo")}
-          >
-            {t("stats.tabGraph")}
-          </button>
-          <button
-            className={`tab ${view === "barras" ? "active" : ""}`}
-            onClick={() => setView("barras")}
-          >
-            {t("stats.tabBars")}
-          </button>
-        </div>
-        <div className="spacer" />
-        <button className="btn btn-ghost" onClick={runBackfill} disabled={backfilling}>
-          {backfilling ? t("stats.backfilling") : t("stats.backfillButton")}
-        </button>
-      </div>
+        <>
+          <div style={{ display: view === "resumen" ? "block" : "none" }}>
+            {summary && (
+              <div className="stat-grid">
+                <div className="stat-card">
+                  <div className="stat-label">{t("stats.episodesWatched")}</div>
+                  <div className="stat-value">
+                    {n(summary.episodes_watched + summary.episodes_watched_external)}
+                  </div>
+                  <div className="stat-help">
+                    {t("stats.episodesWatchedHelp", {
+                      real: n(summary.episodes_watched),
+                      external: n(summary.episodes_watched_external),
+                    })}
+                  </div>
+                </div>
+                <div className="stat-card">
+                  <div className="stat-label">{t("stats.distinctAnime")}</div>
+                  <div className="stat-value">{n(summary.distinct_anime)}</div>
+                  <div className="stat-help">{t("stats.distinctAnimeHelp")}</div>
+                </div>
+                <div className="stat-card">
+                  <div className="stat-label">{t("stats.followedSeries")}</div>
+                  <div className="stat-value">{n(summary.airing_followed)}</div>
+                </div>
+                <div className="stat-card">
+                  <div className="stat-label">{t("stats.backlogPending")}</div>
+                  <div className="stat-value">{n(summary.pending_to_watch)}</div>
+                  <div className="stat-help">{t("stats.backlogPendingHelp")}</div>
+                </div>
+                <div className="stat-card">
+                  <div className="stat-label">{t("stats.wishlist")}</div>
+                  <div className="stat-value">{n(summary.backlog_want)}</div>
+                  <div className="stat-help">{t("stats.wishlistHelp")}</div>
+                </div>
+              </div>
+            )}
 
-      {view === "grafo" ? (
-        <div className="series-block">
-          <StatsGraph seriesList={graph} active={active} />
-        </div>
-      ) : (
-        <StatsRings genres={genres} types={types} />
-      )}
-      </>
+            {summary && insights && (
+              <StatsInsights insights={insights} summary={summary} popularityBias={popularityBias} />
+            )}
+          </div>
+
+          <div style={{ display: view === "grafo" ? "block" : "none" }}>
+            <div className="series-block">
+              <StatsGraph seriesList={graph} active={active && view === "grafo"} />
+            </div>
+          </div>
+
+          <div style={{ display: view === "generos" ? "block" : "none" }}>
+            <StatsRings genres={genres} types={types} />
+          </div>
+        </>
       )}
     </div>
   );

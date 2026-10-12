@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useLang, useT } from "../i18n";
 import type { WatchInsights, WatchSummary, DustyEntry, BingeRecord, HourCount, PopularityBias } from "../types";
 import { BarChart, CategoryBlock, ShapeToggle } from "./StatsRings";
@@ -48,8 +48,7 @@ function axisDay(iso: string, locale: string): string {
 // Compact 30-day activity chart: one thin vertical column per day in a single
 // fixed-height row, instead of BarChart's 30 stacked full-width rows (which
 // dominated the whole Stats page). Bars share one max, so height is
-// comparable; a native title gives the exact date + count on hover, and the
-// first/middle/last day are labelled so the axis reads without 30 tick labels.
+// comparable; keyboard focusable with aria-label for accessibility (WCAG AA).
 function DayActivityChart({
   data,
   locale,
@@ -76,11 +75,15 @@ function DayActivityChart({
       >
         {data.map((d, i) => {
           const pct = grown ? (d.count / max) * 100 : 0;
+          const dayLabel = `${axisDay(d.day, locale)}: ${d.count}`;
           return (
             <div
               className={`dayact-col${d.count > 0 ? " has" : ""}`}
               key={d.day}
-              title={`${axisDay(d.day, locale)}: ${d.count}`}
+              tabIndex={0}
+              role="img"
+              aria-label={dayLabel}
+              title={dayLabel}
             >
               <div className="dayact-fill" style={{ height: `${pct}%` }} />
               {labelAt.has(i) && <span className="dayact-tick">{axisDay(d.day, locale)}</span>}
@@ -92,9 +95,9 @@ function DayActivityChart({
   );
 }
 
-// Hourly distribution chart: 24 small vertical bars (0-23), inline height
-// proportional to count/max. Data-driven inline style is expected here per
-// codebase rule. Shows "daytime watcher" / "night owl" label based on peak hour.
+// Hourly distribution chart: 24 vertical bars (0-23), inline height
+// proportional to count/max. Shows "daytime watcher" / "night owl" label based on peak hour.
+// Keyboard focusable with aria-label for accessibility (WCAG AA).
 function HourlyDistributionChart({
   data,
   t,
@@ -117,11 +120,15 @@ function HourlyDistributionChart({
       <div className="hourly-dist-bars" role="img" aria-label={`${data.reduce((s, d) => s + d.count, 0)} — ${label}`}>
         {data.map((d) => {
           const pct = grown ? (d.count / max) * 100 : 0;
+          const hourLabel = `${d.hour}:00 — ${d.count}`;
           return (
             <div
               className={`hourly-col${d.count > 0 ? " has" : ""}`}
               key={d.hour}
-              title={`${d.hour}:00 — ${d.count}`}
+              tabIndex={0}
+              role="img"
+              aria-label={hourLabel}
+              title={hourLabel}
             >
               <div className="hourly-fill" style={{ height: `${pct}%` }} />
               <span className="hourly-tick">{d.hour}</span>
@@ -148,27 +155,28 @@ export function StatsInsights({
   const { lang } = useLang();
   const [shape, setShape] = useStatsShape();
   const [dusty, setDusty] = useState<DustyEntry[]>([]);
-
-  useEffect(() => {
-    getDustyWatchlist().then(setDusty).catch(() => setDusty([]));
-  }, []);
-
   const [bingeRecord, setBingeRecord] = useState<BingeRecord | null>(null);
-
-  useEffect(() => {
-    getBingeRecord().then(setBingeRecord).catch(() => setBingeRecord({ day: null, count: 0, top_series: [] }));
-  }, []);
-
   const [hourlyDist, setHourlyDist] = useState<HourCount[] | null>(null);
-
-  useEffect(() => {
-    getHourlyDistribution().then(setHourlyDist).catch(() => setHourlyDist([]));
-  }, []);
-
   const [avgDays, setAvgDays] = useState<number | null>(null);
 
+  // Parallel coordinated fetch: avoids 4 independent waterfalls and 4 cascading re-renders
   useEffect(() => {
-    getAvgCompletionDays().then(setAvgDays).catch(() => setAvgDays(null));
+    let mounted = true;
+    Promise.all([
+      getDustyWatchlist().catch(() => [] as DustyEntry[]),
+      getBingeRecord().catch(() => ({ day: null, count: 0, top_series: [] } as BingeRecord)),
+      getHourlyDistribution().catch(() => [] as HourCount[]),
+      getAvgCompletionDays().catch(() => null),
+    ]).then(([d, b, h, a]) => {
+      if (!mounted) return;
+      setDusty(d);
+      setBingeRecord(b);
+      setHourlyDist(h);
+      setAvgDays(a);
+    });
+    return () => {
+      mounted = false;
+    };
   }, []);
 
   const totalMinutes = insights.estimated_minutes_tracked + insights.estimated_minutes_external;
@@ -177,17 +185,29 @@ export function StatsInsights({
       ? Math.round((summary.episodes_watched / summary.episodes_total) * 100)
       : 0;
 
-  const topSeriesData = insights.top_series.map((s) => ({ name: s.title, count: s.count }));
-  const funnelData = [
-    { name: t("stats.funnelFollowed"), count: insights.followed_airing + insights.followed_finished },
-    { name: t("stats.funnelWant"), count: insights.want },
-    { name: t("stats.funnelDiscarded"), count: insights.discarded },
-    { name: t("stats.funnelWatched"), count: insights.watched_externally },
-  ];
-  const airingVsFinishedData = [
-    { name: t("stats.airing"), count: insights.followed_airing },
-    { name: t("stats.finished"), count: insights.followed_finished },
-  ];
+  const topSeriesData = useMemo(
+    () => insights.top_series.map((s) => ({ name: s.title, count: s.count })),
+    [insights.top_series]
+  );
+
+  const funnelData = useMemo(
+    () => [
+      { name: t("stats.funnelFollowed"), count: insights.followed_airing + insights.followed_finished },
+      { name: t("stats.funnelWant"), count: insights.want },
+      { name: t("stats.funnelDiscarded"), count: insights.discarded },
+      { name: t("stats.funnelWatched"), count: insights.watched_externally },
+    ],
+    [insights.followed_airing, insights.followed_finished, insights.want, insights.discarded, insights.watched_externally, t]
+  );
+
+  const airingVsFinishedData = useMemo(
+    () => [
+      { name: t("stats.airing"), count: insights.followed_airing },
+      { name: t("stats.finished"), count: insights.followed_finished },
+    ],
+    [insights.followed_airing, insights.followed_finished, t]
+  );
+
   const hasMarks = insights.marks_by_day.some((d) => d.count > 0);
   const hasHourly = (hourlyDist ?? []).some((d) => d.count > 0);
 
