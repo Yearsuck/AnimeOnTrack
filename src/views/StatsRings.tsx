@@ -70,15 +70,16 @@ export function RingGrid({ data }: { data: Datum[] }) {
     const id = requestAnimationFrame(() => setGrown(true));
     return () => cancelAnimationFrame(id);
   }, []);
-  const max = Math.max(1, ...data.map((d) => d.count));
+  const sum = Math.max(1, data.reduce((s, d) => s + d.count, 0));
   return (
     <div className="ringgrid" role="list">
       {data.map((d) => {
-        const frac = grown ? d.count / max : 0;
+        const pct = Math.round((d.count / sum) * 100);
+        const frac = grown ? d.count / sum : 0;
         const dash = RING_C * frac;
         return (
           <div className="ringcell" key={d.name} role="listitem">
-            <svg width={RING} height={RING} viewBox={`0 0 ${RING} ${RING}`} role="img" aria-label={`${d.name}: ${d.count}`}>
+            <svg width={RING} height={RING} viewBox={`0 0 ${RING} ${RING}`} role="img" aria-label={`${d.name}: ${d.count} (${pct}%)`}>
               <circle cx={RING / 2} cy={RING / 2} r={RING_R} fill="none" stroke="var(--surface-3)" strokeWidth={RING_STROKE} />
               <circle
                 cx={RING / 2}
@@ -102,7 +103,7 @@ export function RingGrid({ data }: { data: Datum[] }) {
                 {d.count}
               </text>
             </svg>
-            <div className="ringcell-label" title={d.name}>
+            <div className="ringcell-label" title={`${d.name}: ${d.count} (${pct}%)`}>
               {d.name}
             </div>
           </div>

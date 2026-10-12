@@ -64,7 +64,7 @@ export function WantRow({
 
   return (
     <div className="listas-card">
-      <PosterThumb series={series} />
+      <PosterThumb series={series} onClick={() => onOpenSeries(series)} />
       <div className="backlog-main">
         <div className="listas-card-head">
           <span
@@ -75,6 +75,14 @@ export function WantRow({
             {series.title}
           </span>
           <span className="listas-chip listas-chip-want">{t("discover.chipWant")}</span>
+          {series.is_airing && (
+            <span className="listas-chip listas-chip-airing">
+              {t("airing.airingNow") || "En emisión"}
+            </span>
+          )}
+          {series.site_episode_count != null && (
+            <span className="listas-chip listas-chip-eps">{series.site_episode_count} eps</span>
+          )}
         </div>
         {genres.length > 0 && <div className="backlog-genres">{genres.join(", ")}</div>}
         {unlinked && (
@@ -89,7 +97,19 @@ export function WantRow({
         )}
       </div>
       <div className="listas-actions">
-        <button className="btn btn-primary" onClick={handleStartWatching} disabled={starting}>
+        <button
+          type="button"
+          className="btn btn-ghost"
+          onClick={() => onOpenSeries(series)}
+        >
+          {t("discover.viewDetails") || "Detalles"}
+        </button>
+        <button
+          type="button"
+          className="btn btn-primary"
+          onClick={handleStartWatching}
+          disabled={starting}
+        >
           {starting ? t("discover.searchingBtn") : t("discover.startWatching")}
         </button>
         <OverflowMenu

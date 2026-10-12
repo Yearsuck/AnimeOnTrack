@@ -47,6 +47,7 @@ export const en: Messages = {
   "airing.dayFri": "Fri",
   "airing.daySat": "Sat",
   "airing.daySun": "Sun",
+  "airing.airingNow": "Airing",
 
   // AiringSpotlight.tsx
   "spotlight.ariaLabel": "Featured airing",
@@ -55,6 +56,7 @@ export const en: Messages = {
   "spotlight.nextBtn": "Next",
   "spotlight.dotsAria": "Slides",
   "spotlight.slideAria": "Slide",
+  "spotlight.thisSeason": "This season",
 
   "pending.episodesToWatch": "{count} episodes to watch",
   "pending.sortLabel": "Sort:",
@@ -142,6 +144,9 @@ export const en: Messages = {
   "library.emptyHint": 'Go to "Airing" and hit Follow.',
   "library.watching": "Watching",
   "library.planToWatch": "Plan to watch",
+  "library.backlogBannerTitle": "Looking for your Watchlist?",
+  "library.backlogBannerDesc": "Manage anime saved from Discover to start watching.",
+  "library.backlogBannerBtn": "Open Watchlist",
   "library.completed": "Completed",
   "library.filterLabel": "Show:",
   "library.filterAll": "All",

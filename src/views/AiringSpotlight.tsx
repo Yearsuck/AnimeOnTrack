@@ -3,6 +3,7 @@ import { useT } from "../i18n";
 import { resolveCoverUrl } from "../lib/posterFallback";
 import { getSeriesBanner } from "../api";
 import type { AiringItem } from "../types";
+import { isWithinLastThreeMonths } from "./AiringGrid";
 
 type AiringSpotlightProps = {
   items: AiringItem[];
@@ -25,34 +26,39 @@ function highResCover(url: string): string {
 
 export function AiringSpotlight({ items, onOpenSeries }: AiringSpotlightProps) {
   const t = useT();
-  // What's on screen is tracked by the item's own series id, not by its
-  // position. `featuredItems` is re-sorted by `next_episode_at` on every
-  // `items` change, so two countdowns crossing each other reorders the list
-  // without changing its length — a stored index would keep the same number
-  // while silently pointing at a different show, swapping the banner
-  // mid-view. `null` (nothing shown yet) resolves to the first slide.
   const [currentId, setCurrentId] = useState<number | null>(null);
   const [isHovering, setIsHovering] = useState(false);
   // On-demand fetched wide banner images from AniList
   const [banners, setBanners] = useState<Record<number, string>>({});
   // If a banner image fails to load, fall back to cover poster
   const [bannerFailedIds, setBannerFailedIds] = useState<Set<number>>(new Set());
-  // A series' cover_url can be a remote URL the app's CSP blocks (see
-  // AiringGrid's AiringPoster) — the background <img> then fails to load.
-  // Tracked by id so a blocked slide degrades to the plain scrim/gradient
-  // background instead of sitting on a broken-image icon.
-  // Keyed by id AND url so a slide whose cover later changes (blocked thumbnail ->
-  // cached file) is retried instead of staying marked as failed.
+  // A series' cover_url can be a remote URL the app's CSP blocks —
+  // tracked so a blocked slide degrades gracefully to the ambient gradient
   const [failedIds, setFailedIds] = useState<Set<string>>(new Set());
 
+  // Prioritize anime of the current season that the user DOES NOT follow,
+  // ordered by highest AniList score, then next upcoming episode.
   const featuredItems = useMemo(() => {
-    const withCover = items.filter((it) => it.series.cover_url);
-    if (withCover.length === 0) return items.slice(0, 4);
-    const sorted = [...withCover].sort((a, b) => {
+    // Only series the user DOES NOT follow:
+    const notFollowed = items.filter((it) => !it.series.followed);
+    const candidatePool = notFollowed.length > 0 ? notFollowed : items;
+
+    const sorted = [...candidatePool].sort((a, b) => {
+      const aIsSeason = a.first_episode_at != null && isWithinLastThreeMonths(a.first_episode_at);
+      const bIsSeason = b.first_episode_at != null && isWithinLastThreeMonths(b.first_episode_at);
+      if (aIsSeason !== bIsSeason) {
+        return aIsSeason ? -1 : 1;
+      }
+      const scoreA = a.score ?? -1;
+      const scoreB = b.score ?? -1;
+      if (scoreB !== scoreA) {
+        return scoreB - scoreA;
+      }
       const aTime = a.series.next_episode_at ?? Infinity;
       const bTime = b.series.next_episode_at ?? Infinity;
       return aTime - bTime;
     });
+
     return sorted.slice(0, 4);
   }, [items]);
 
@@ -72,13 +78,6 @@ export function AiringSpotlight({ items, onOpenSeries }: AiringSpotlightProps) {
     });
   }, [featuredItems, banners, bannerFailedIds]);
 
-  // Re-derived from the id after every re-sort, so the banner follows the
-  // show it was showing rather than the slot it was in. This also subsumes
-  // the clamp this component used to need: `featuredItems` can shrink out
-  // from under the selection (AiringGrid switching from "Todas" to "Esta
-  // temporada" without remounting the spotlight, or the shown series no
-  // longer airing), and a missing id falls back to index 0 instead of
-  // computing a translateX past -100% and rendering a blank banner.
   const currentIndex = useMemo(() => {
     if (featuredItems.length === 0) return 0;
     const idx = featuredItems.findIndex((it) => it.series.id === currentId);
@@ -100,10 +99,6 @@ export function AiringSpotlight({ items, onOpenSeries }: AiringSpotlightProps) {
     return () => clearInterval(id);
   }, [isHovering, goNext, featuredItems.length]);
 
-  // All hooks above must run unconditionally on every render (Rules of
-  // Hooks) — `items` arrives async from AiringGrid, so featuredItems can be
-  // empty on the first render and non-empty later; an early return before
-  // the hooks would change the hook count between renders and crash React.
   if (featuredItems.length === 0) return null;
 
   return (
@@ -119,54 +114,91 @@ export function AiringSpotlight({ items, onOpenSeries }: AiringSpotlightProps) {
         style={{ transform: `translateX(-${currentIndex * (100 / featuredItems.length)}%)` }}
       >
         {featuredItems.map((item) => {
-          // Priority 1: Wide horizontal banner from AniList (item.banner_url or fetched on-demand)
+          // Priority 1: Wide horizontal banner from AniList
           const banner = !bannerFailedIds.has(item.series.id)
             ? (banners[item.series.id] || item.banner_url)
             : null;
 
           const isBanner = Boolean(banner);
           const rawCover = item.series.cover_url ?? "";
-          let bgSrc: string | null = null;
-          if (banner) {
-            bgSrc = banner;
-          } else if (item.series.cover_url) {
-            // Priority 2: Fall back to vertical poster cover
-            bgSrc = resolveCoverUrl(/^https?:/i.test(rawCover) ? highResCover(rawCover) : rawCover);
-          }
+          const resolvedCover = item.series.cover_url
+            ? resolveCoverUrl(/^https?:/i.test(rawCover) ? highResCover(rawCover) : rawCover)
+            : null;
 
+          const bannerSrc = isBanner ? banner : null;
+          const bgSrc = bannerSrc || resolvedCover;
           const coverKey = `${item.series.id}|${rawCover}`;
-          const isFailed = isBanner ? false : failedIds.has(coverKey);
+          const isFailed = failedIds.has(coverKey);
+
+          const isSeason =
+            item.first_episode_at != null && isWithinLastThreeMonths(item.first_episode_at);
 
           return (
             <div key={item.series.id} className="spotlight-slide">
-              {bgSrc && !isFailed && (
+              {/* Wide landscape banner if present */}
+              {bannerSrc && (
                 <img
                   className="spotlight-bg"
+                  src={bannerSrc}
+                  alt=""
+                  aria-hidden="true"
+                  onError={() => {
+                    setBannerFailedIds((prev) => new Set(prev).add(item.series.id));
+                  }}
+                />
+              )}
+
+              {/* Ambient blurred backdrop when no wide banner exists */}
+              {!bannerSrc && bgSrc && !isFailed && (
+                <img
+                  className="spotlight-blur-bg"
                   src={bgSrc}
                   alt=""
                   aria-hidden="true"
                   onError={() => {
-                    if (isBanner) {
-                      setBannerFailedIds((prev) => new Set(prev).add(item.series.id));
-                    } else {
-                      setFailedIds((prev) => (prev.has(coverKey) ? prev : new Set(prev).add(coverKey)));
-                    }
+                    setFailedIds((prev) => (prev.has(coverKey) ? prev : new Set(prev).add(coverKey)));
                   }}
                 />
               )}
+
               <div className="spotlight-scrim" />
 
               <div className="spotlight-content">
-                <h3 className="spotlight-title">{item.series.title}</h3>
-                <button
-                  className="btn btn-primary spotlight-btn"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onOpenSeries(item.series);
-                  }}
-                >
-                  {t("spotlight.watchBtn")}
-                </button>
+                {/* Crisp vertical poster thumbnail card when wide banner is absent */}
+                {!bannerSrc && resolvedCover && !isFailed && (
+                  <div
+                    className="spotlight-poster-card clickable"
+                    onClick={() => onOpenSeries(item.series)}
+                    title={item.series.title}
+                  >
+                    <img src={resolvedCover} alt="" />
+                  </div>
+                )}
+
+                <div className="spotlight-info">
+                  <div className="spotlight-badges">
+                    {isSeason && (
+                      <span className="spotlight-badge badge-season">
+                        {t("spotlight.thisSeason") || "Esta temporada"}
+                      </span>
+                    )}
+                    {item.score != null && item.score > 0 && (
+                      <span className="spotlight-badge badge-score">
+                        ★ {Math.round(item.score)}%
+                      </span>
+                    )}
+                  </div>
+                  <h3 className="spotlight-title">{item.series.title}</h3>
+                  <button
+                    className="btn btn-primary spotlight-btn"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onOpenSeries(item.series);
+                    }}
+                  >
+                    {t("spotlight.watchBtn")}
+                  </button>
+                </div>
               </div>
             </div>
           );

@@ -45,6 +45,9 @@ pub struct AiringItem {
     /// for hero spotlight displays.
     #[serde(default)]
     pub banner_url: Option<String>,
+    /// Average score (0-100 scale from AniList catalog) for ranking top anime.
+    #[serde(default)]
+    pub score: Option<f64>,
 }
 
 /// The lowest-numbered unseen episode of a followed series (`LibraryItem`'s
@@ -395,6 +398,7 @@ mod tests {
             },
             first_episode_at: Some(1_780_000_000),
             banner_url: Some("https://s4.anilist.co/banner.jpg".into()),
+            score: Some(85.5),
         };
         let j = serde_json::to_string(&item).unwrap();
         let back: AiringItem = serde_json::from_str(&j).unwrap();

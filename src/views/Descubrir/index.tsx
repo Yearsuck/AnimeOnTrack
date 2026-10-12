@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useT } from "../../i18n";
 import type { Series } from "../../types";
 import type { SubView } from "./types";
@@ -11,9 +11,26 @@ import { ListasView } from "./ListasView";
 // opened on an unlinked catalog row" — see SeriesDetail.tsx's link-on-open
 // effect) actually reachable: without a click-through here, an unfollowed
 // catalog row had no UI path into SeriesDetail at all.
-export function Descubrir({ onOpenSeries }: { onOpenSeries: (s: Series) => void }) {
+export function Descubrir({
+  onOpenSeries,
+  initialSubView = "swipe",
+  onSubViewChange,
+}: {
+  onOpenSeries: (s: Series) => void;
+  initialSubView?: SubView;
+  onSubViewChange?: (v: SubView) => void;
+}) {
   const t = useT();
-  const [subView, setSubView] = useState<SubView>("swipe");
+  const [subView, setSubView] = useState<SubView>(initialSubView);
+
+  useEffect(() => {
+    setSubView(initialSubView);
+  }, [initialSubView]);
+
+  function handleSetSubView(v: SubView) {
+    setSubView(v);
+    onSubViewChange?.(v);
+  }
 
   return (
     <div className="page">
@@ -23,13 +40,13 @@ export function Descubrir({ onOpenSeries }: { onOpenSeries: (s: Series) => void 
       <div className="tabs discover-tabs">
         <button
           className={`tab ${subView === "swipe" ? "active" : ""}`}
-          onClick={() => setSubView("swipe")}
+          onClick={() => handleSetSubView("swipe")}
         >
           {t("discover.tabSwipe")}
         </button>
         <button
           className={`tab ${subView === "listas" ? "active" : ""}`}
-          onClick={() => setSubView("listas")}
+          onClick={() => handleSetSubView("listas")}
         >
           {t("discover.tabLists")}
         </button>

@@ -51,6 +51,7 @@ export const ca: Messages = {
   "airing.dayFri": "Dv",
   "airing.daySat": "Ds",
   "airing.daySun": "Dg",
+  "airing.airingNow": "En emissió",
 
   // AiringSpotlight.tsx
   "spotlight.ariaLabel": "Destacats en emissió",
@@ -59,6 +60,7 @@ export const ca: Messages = {
   "spotlight.nextBtn": "Següent",
   "spotlight.dotsAria": "Diapositives",
   "spotlight.slideAria": "Diapositiva",
+  "spotlight.thisSeason": "Aquesta temporada",
 
   // Pending.tsx
   "pending.episodesToWatch": "{count} episodis per veure",
@@ -150,6 +152,9 @@ export const ca: Messages = {
   "library.emptyHint": "Ves a «En emissió» i prem Segueix.",
   "library.watching": "Mirant",
   "library.planToWatch": "Pendents de començar",
+  "library.backlogBannerTitle": "Busques la teva llista de «Vull veure»?",
+  "library.backlogBannerDesc": "Gestiona els animes desats des de Descobrir per començar a veure'ls.",
+  "library.backlogBannerBtn": "Obrir «Vull veure»",
   "library.completed": "Completades",
   "library.filterLabel": "Mostra:",
   "library.filterAll": "Tots",

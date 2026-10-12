@@ -417,9 +417,11 @@ pub fn list_airing_season(state: State<'_, AppState>) -> Result<Vec<AiringItem>,
     let first_dates = db.first_episode_dates(src).map_err(|e| e.to_string())?;
     let catalog_dates = db.catalog_start_dates_by_normalized_title().map_err(|e| e.to_string())?;
     let catalog_banners = db.catalog_banners_by_normalized_title().map_err(|e| e.to_string())?;
+    let catalog_covers = db.catalog_covers_by_normalized_title().map_err(|e| e.to_string())?;
+    let catalog_scores = db.catalog_scores_by_normalized_title().map_err(|e| e.to_string())?;
     Ok(series
         .into_iter()
-        .map(|s| {
+        .map(|mut s| {
             let scraped = first_dates
                 .get(&s.id)
                 .and_then(|raw| parse_spanish_date(raw))
@@ -428,9 +430,17 @@ pub fn list_airing_season(state: State<'_, AppState>) -> Result<Vec<AiringItem>,
             let norm = crate::matching::normalize_title(&s.title);
             let first_episode_at = scraped
                 .or_else(|| catalog_dates.get(&norm).copied());
+            // If series cover is not CSP-displayable, fall back to AniList catalog cover
+            if !crate::db::is_csp_displayable_cover(s.cover_url.as_deref()) {
+                if let Some(cat_cover) = catalog_covers.get(&norm) {
+                    s.cover_url = Some(cat_cover.clone());
+                }
+            }
             let banner_url = db.get_series_banner(s.id).ok().flatten()
                 .or_else(|| catalog_banners.get(&norm).cloned());
-            AiringItem { series: s, first_episode_at, banner_url }
+            let score = db.get_series_score(s.id).ok().flatten()
+                .or_else(|| catalog_scores.get(&norm).copied());
+            AiringItem { series: s, first_episode_at, banner_url, score }
         })
         .collect())
 }

@@ -315,12 +315,18 @@ impl Db {
     /// merge's effect, not the user's own earlier decisions.
     pub fn merge_series_into(&self, existing_id: i64, synthetic_id: i64) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
-        let (followed, backlog_status, watched_externally, title): (i64, Option<String>, i64, String) = tx
-            .query_row(
-                "SELECT followed, backlog_status, watched_externally, title FROM series WHERE id=?1",
-                [synthetic_id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-            )?;
+        let (followed, backlog_status, watched_externally, title, synthetic_cover, synthetic_anilist_id): (
+            i64,
+            Option<String>,
+            i64,
+            String,
+            Option<String>,
+            Option<i64>,
+        ) = tx.query_row(
+            "SELECT followed, backlog_status, watched_externally, title, cover_url, anilist_id FROM series WHERE id=?1",
+            [synthetic_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+        )?;
         let (survivor_followed, survivor_backlog, survivor_watched): (i64, Option<String>, i64) = tx.query_row(
             "SELECT followed, backlog_status, watched_externally FROM series WHERE id=?1",
             [existing_id],
@@ -330,9 +336,15 @@ impl Db {
             "UPDATE series SET
                 followed = followed OR ?1,
                 watched_externally = watched_externally OR ?2,
-                backlog_status = COALESCE(backlog_status, ?3)
-             WHERE id=?4",
-            (followed, watched_externally, &backlog_status, existing_id),
+                backlog_status = COALESCE(backlog_status, ?3),
+                cover_url = CASE
+                    WHEN (cover_url IS NULL OR cover_url = '') THEN ?4
+                    WHEN cover_url NOT LIKE 'https://%.anilist.co/%' AND ?4 LIKE 'https://%.anilist.co/%' AND cover_url NOT LIKE 'file:%' AND cover_url NOT LIKE 'data:%' THEN ?4
+                    ELSE cover_url
+                END,
+                anilist_id = COALESCE(anilist_id, ?5)
+             WHERE id=?6",
+            (followed, watched_externally, &backlog_status, &synthetic_cover, synthetic_anilist_id, existing_id),
         )?;
         // What this merge changed, and only that. `OR`/`COALESCE` above mean a
         // field changed exactly when the survivor didn't already have it and
@@ -442,7 +454,14 @@ impl Db {
         kind: &str,
     ) -> Result<()> {
         self.conn.execute(
-            "UPDATE series SET slug=?1, url=?2, cover_url=?3, kind=?4 WHERE id=?5",
+            "UPDATE series SET slug=?1, url=?2,
+                cover_url = CASE
+                    WHEN cover_url IS NOT NULL AND cover_url != '' THEN cover_url
+                    WHEN ?3 IS NOT NULL AND ?3 != '' THEN ?3
+                    ELSE (SELECT cover_url FROM anilist_catalog WHERE id = series.anilist_id)
+                END,
+                kind=?4
+             WHERE id=?5",
             (slug, url, cover_url, kind, series_id),
         )?;
         Ok(())
@@ -812,8 +831,16 @@ impl Db {
     /// catalog swipe decision — see the `anilist_id` column comment in
     /// `init_schema`.
     pub fn set_anilist_id(&self, series_id: i64, anilist_id: i64) -> Result<()> {
-        self.conn
-            .execute("UPDATE series SET anilist_id=?1 WHERE id=?2", (anilist_id, series_id))?;
+        self.conn.execute(
+            "UPDATE series SET anilist_id=?1,
+                cover_url = CASE
+                    WHEN cover_url IS NULL OR cover_url = '' OR (cover_url NOT LIKE 'file:%' AND cover_url NOT LIKE 'data:%' AND cover_url NOT LIKE 'https://%anilist.co%')
+                    THEN COALESCE((SELECT cover_url FROM anilist_catalog WHERE id=?1), cover_url)
+                    ELSE cover_url
+                END
+             WHERE id=?2",
+            (anilist_id, series_id),
+        )?;
         Ok(())
     }
 
