@@ -13,9 +13,7 @@ import {
 
 import { useT } from "../i18n";
 import { isUnlinkedCatalogRow } from "../lib/catalogLink";
-import { parseReleasedAtToUnixSeconds } from "../lib/parseReleasedAt";
 import { resolveCoverUrl } from "../lib/posterFallback";
-import { countdownLabel } from "./AiringGrid";
 import type { CatalogAnime, Episode, Series } from "../types";
 
 // Strict numeric parse, matching Rust's `str::parse::<f64>()` rather than
@@ -202,7 +200,7 @@ export function SeriesDetail({
           <img className="detail-cover" src={detailCover} alt="" />
         )}
         <div className="detail-main">
-          <h2 className="page-title detail-title">{series.title}</h2>
+          <h2 className="page-title detail-title">{catalogInfo?.title ?? series.title}</h2>
           <a
             // The "open page" link points at AniList — the reliable source of
             // truth for anime info. The pirate site only supplies episodes (the
@@ -292,16 +290,8 @@ export function SeriesDetail({
               <span className="ep-num">{ep.number}</span>
               <div className="ep-main">
                 <div className="ep-title" onClick={() => openEpisode(ep.url)}>
-                  {ep.title ?? t("common.episodeNumber", { number: ep.number })}
+                  {t("common.episodeNumber", { number: ep.number })}
                 </div>
-                {ep.released_at && (
-                  <div className="ep-date">
-                    {(() => {
-                      const ts = parseReleasedAtToUnixSeconds(ep.released_at);
-                      return ts != null ? countdownLabel(ts, t) : ep.released_at;
-                    })()}
-                  </div>
-                )}
               </div>
               <div className="ep-actions">
                 {ep.download_status === "downloaded" ? (

@@ -169,12 +169,17 @@ async fn run_episode_fallback(app: AppHandle) -> Result<(), String> {
                         return SiteOutcome::DefinitiveMiss; // Skip if still 0 episodes
                     }
 
-                    let detail = match a.parse_series_detail(&scraped.html) {
-                        Ok(d) => d,
-                        Err(_) => return SiteOutcome::TransientError,
+                    let (detail, kind) = if candidate.anilist_id.is_some() {
+                        (None, matched.kind.clone())
+                    } else {
+                        let d = match a.parse_series_detail(&scraped.html) {
+                            Ok(d) => d,
+                            Err(_) => return SiteOutcome::TransientError,
+                        };
+                        let k = d.kind.clone().unwrap_or(matched.kind.clone());
+                        (Some(d), k)
                     };
 
-                    let kind = detail.kind.clone().unwrap_or(matched.kind.clone());
                     let new_slug = crate::commands::scan::slug_from_url(&matched.url);
 
                     let is_releasing = if let Some(al_id) = candidate.anilist_id {
@@ -190,7 +195,7 @@ async fn run_episode_fallback(app: AppHandle) -> Result<(), String> {
                             mirrors: &mirrors,
                             matched: &matched,
                             candidate: &candidate,
-                            detail: &detail,
+                            detail: detail.as_ref(),
                             episodes: &episodes,
                             new_slug: &new_slug,
                             kind: &kind,
@@ -249,7 +254,7 @@ struct ResolverStep<'a> {
     mirrors: &'a [String],
     matched: &'a crate::models::FinishedCard,
     candidate: &'a crate::db::EpisodeSourceCandidate,
-    detail: &'a crate::models::SeriesDetail,
+    detail: Option<&'a crate::models::SeriesDetail>,
     episodes: &'a [crate::models::Episode],
     new_slug: &'a str,
     kind: &'a str,
@@ -304,8 +309,26 @@ fn perform_resolver_db_step(
         let _ = db.set_anilist_id(sid, al_id);
     }
 
-    db.relink_series(sid, step.new_slug, &step.matched.url, step.matched.poster_url.as_deref(), step.kind)?;
-    db.replace_series_genres(sid, &step.detail.genres)?;
+    let kind_to_write = if let Some(al_id) = step.candidate.anilist_id {
+        db.conn
+            .query_row("SELECT format FROM anilist_catalog WHERE id=?1", [al_id], |r| r.get(0))
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| {
+                db.conn
+                    .query_row("SELECT COALESCE(kind, '') FROM series WHERE id=?1", [sid], |r| r.get(0))
+                    .unwrap_or_default()
+            })
+    } else {
+        step.kind.to_string()
+    };
+
+    db.relink_series(sid, step.new_slug, &step.matched.url, step.matched.poster_url.as_deref(), &kind_to_write)?;
+    if step.candidate.anilist_id.is_none() {
+        if let Some(detail) = step.detail {
+            db.replace_series_genres(sid, &detail.genres)?;
+        }
+    }
     db.apply_episode_diff(sid, None, step.episodes)?;
     db.set_followed_canonical(sid, true)?;
 
@@ -405,7 +428,7 @@ mod tests {
             mirrors: &mirrors,
             matched: &matched,
             candidate: &candidate,
-            detail: &detail,
+            detail: Some(&detail),
             episodes: &episodes,
             new_slug: "test-show",
             kind: "TV",
@@ -419,6 +442,10 @@ mod tests {
         let source_count: i64 = db.conn.query_row("SELECT count(*) FROM sources", [], |r| r.get(0)).unwrap();
         assert_eq!(source_count, 1);
 
+        // Linked candidate: site genres are not written (AniList source of truth)
+        let site_genres_count: i64 = db.conn.query_row("SELECT count(*) FROM series_genres WHERE series_id=?1", [sid], |r| r.get(0)).unwrap();
+        assert_eq!(site_genres_count, 0, "linked series must not have site genres written");
+
         // Check scan-owned fields weren't clobbered
         let (is_airing, next, count): (i64, Option<i64>, Option<i64>) = db.conn.query_row(
             "SELECT is_airing, next_episode_at, site_episode_count FROM series WHERE id=?1",
@@ -429,6 +456,49 @@ mod tests {
         assert_eq!(is_airing, 1);
         assert_eq!(next, Some(12345));
         assert_eq!(count, Some(10));
+    }
+
+    #[test]
+    fn test_perform_resolver_db_step_writes_genres_for_unlinked_candidate() {
+        let db = Db::open(":memory:").unwrap();
+
+        let site = SiteInfo { id: "testsite", name: "TestSite", default_base_url: "https://test.com" };
+        let mirrors = vec!["https://test.com".to_string()];
+
+        let matched = crate::models::FinishedCard {
+            title: "Unlinked Show".into(),
+            url: "https://test.com/unlinked-show".into(),
+            poster_url: None,
+            kind: "OVA".into(),
+            matched_genre: None,
+        };
+
+        let candidate = crate::db::EpisodeSourceCandidate {
+            canon_key: "unlinked-show".into(),
+            anilist_id: None,
+            title: "Unlinked Show".into(),
+        };
+
+        let detail = crate::models::SeriesDetail { genres: vec!["Sci-Fi".into()], kind: Some("OVA".into()), synopsis: None };
+        let episodes = vec![];
+
+        let step = ResolverStep {
+            site: &site,
+            mirrors: &mirrors,
+            matched: &matched,
+            candidate: &candidate,
+            detail: Some(&detail),
+            episodes: &episodes,
+            new_slug: "unlinked-show",
+            kind: "OVA",
+            is_releasing: false,
+        };
+        let (sid, written) = perform_resolver_db_step(&db, &step).unwrap();
+
+        assert!(written);
+        assert_eq!(db.list_series_genres(sid).unwrap(), vec!["Sci-Fi".to_string()]);
+        let kind: String = db.conn.query_row("SELECT kind FROM series WHERE id=?1", [sid], |r| r.get(0)).unwrap();
+        assert_eq!(kind, "OVA");
     }
 
     #[test]

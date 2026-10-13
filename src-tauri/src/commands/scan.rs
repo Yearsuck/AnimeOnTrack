@@ -139,7 +139,8 @@ pub async fn fetch_series_detail(
     details.into_iter().next().ok_or_else(|| "empty series detail page".to_string())
 }
 
-/// Backfill one series' genres/kind if it has no `series_genres` rows yet.
+/// Backfill one series' genres/kind if it has no `series_genres` rows yet
+/// and is not linked to AniList.
 /// Returns true if a fetch was attempted (regardless of success) — used by
 /// the caller to decide whether to apply the polite inter-series delay.
 /// Locks `db` only for the short sync checks/writes, never across the

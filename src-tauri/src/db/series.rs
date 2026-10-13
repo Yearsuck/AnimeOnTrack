@@ -910,12 +910,18 @@ impl Db {
 
 
     /// `true` if this series has no `series_genres` rows yet (needs a
-    /// detail-page fetch to backfill). Split out as a plain sync check so the
-    /// async fetch decision can be unit-tested without a scraper/AppHandle.
+    /// detail-page fetch to backfill) and is NOT linked to AniList.
+    /// Linked series take all metadata from AniList as the source of truth,
+    /// so the site detail fetch is skipped.
     pub fn series_needs_genre_backfill(&self, series_id: i64) -> Result<bool> {
-        // Deliberately the SITE table, not the effective-genres view: a linked
-        // series always has catalog genres, which would report "no backfill
-        // needed" and skip the detail fetch that also stores the site's kind.
+        let is_linked: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM series WHERE id=?1 AND anilist_id IS NOT NULL)",
+            [series_id],
+            |r| r.get(0),
+        )?;
+        if is_linked {
+            return Ok(false);
+        }
         let has_site_genres: bool = self.conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM series_genres WHERE series_id=?1)",
             [series_id],
@@ -2649,7 +2655,7 @@ mod tests {
     }
 
     #[test]
-    fn a_linked_series_with_catalog_genres_still_needs_its_site_genre_backfill() {
+    fn a_linked_series_does_not_need_site_genre_backfill() {
         let db = Db::open(":memory:").unwrap();
         let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
         db.upsert_catalog_anime(&crate::db::test_support::catalog_anime(100, "X", &["Action"]), 0).unwrap();
@@ -2659,7 +2665,8 @@ mod tests {
         };
         let sid = db.upsert_series(src, &s).unwrap();
         db.set_anilist_id(sid, 100).unwrap();
-        assert!(db.series_needs_genre_backfill(sid).unwrap(), "catalog genres must not mask the missing site rows");
+        // Linked series: AniList is the source of truth, so backfill is false even with zero site rows.
+        assert!(!db.series_needs_genre_backfill(sid).unwrap(), "linked series must not need site genre backfill");
         db.insert_series_genres(sid, &["Seinen".into()]).unwrap();
         assert!(!db.series_needs_genre_backfill(sid).unwrap());
     }
@@ -2674,6 +2681,7 @@ mod tests {
         };
         let sid = db.upsert_series(src, &s).unwrap();
 
+        // Unlinked series: site rows decide (true with zero rows, false once populated).
         assert!(db.series_needs_genre_backfill(sid).unwrap());
         db.insert_series_genres(sid, &["Seinen".to_string()]).unwrap();
         assert!(!db.series_needs_genre_backfill(sid).unwrap());
