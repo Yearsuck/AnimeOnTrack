@@ -614,5 +614,11 @@ export const es = {
   "settings.backupAdvancedGoogle": "Configuración de Google (avanzado)",
   "settings.forceRefreshDesc": "Comprueba todas tus series seguidas una a una para detectar episodios que hayan podido pasarse por alto si la web falló.",
   "settings.uninstallDesc": "Elimina la aplicación de tu equipo abriendo el desinstalador de Windows. Tus datos guardados se conservarán.",
+  "settings.sitePriorityHeading": "Prioridad de sitios",
+  "settings.sitePriorityHint": "La aplicación consulta los sitios de arriba a abajo cuando falta un anime o episodio.",
+  "settings.sitePriorityUp": "Subir",
+  "settings.sitePriorityDown": "Bajar",
+  "settings.sitePriorityMoveUp": "Subir prioridad de {site}",
+  "settings.sitePriorityMoveDown": "Bajar prioridad de {site}",
 } as const;
 

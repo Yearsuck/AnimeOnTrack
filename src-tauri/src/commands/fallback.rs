@@ -89,7 +89,12 @@ async fn run_episode_fallback(app: AppHandle) -> Result<(), String> {
             misses
         };
 
-        let sites_to_try = next_sites_to_try(all_sites, &active_site_id, &site_misses);
+        let priority = {
+            let db = state.db.lock().unwrap();
+            let known: Vec<&str> = all_sites.iter().map(|s| s.id).collect();
+            db.get_site_priority(&known).unwrap_or_default()
+        };
+        let sites_to_try = next_sites_to_try(all_sites, &active_site_id, &site_misses, &priority);
         let mut outcomes = Vec::new();
 
         for site in sites_to_try {
@@ -339,11 +344,19 @@ fn next_sites_to_try<'a>(
     all_sites: &'a [crate::adapter::SiteInfo],
     active_site_id: &str,
     misses: &[String],
+    priority: &[String],
 ) -> Vec<&'a crate::adapter::SiteInfo> {
-    all_sites
+    let mut sites: Vec<&'a crate::adapter::SiteInfo> = all_sites
         .iter()
         .filter(|s| s.id != active_site_id && !misses.iter().any(|m| m == s.id))
-        .collect()
+        .collect();
+    sites.sort_by_key(|s| {
+        priority
+            .iter()
+            .position(|p| p == s.id)
+            .unwrap_or(usize::MAX)
+    });
+    sites
 }
 
 fn mirrors_or_default(loaded: Result<Vec<String>, String>, default_url: &str) -> Vec<String> {
@@ -368,10 +381,65 @@ mod tests {
         ];
 
         // Active is "b", misses is ["d"]
-        let to_try = next_sites_to_try(&sites, "b", &["d".to_string()]);
+        let to_try = next_sites_to_try(&sites, "b", &["d".to_string()], &[]);
 
         let ids: Vec<&str> = to_try.iter().map(|s| s.id).collect();
         assert_eq!(ids, vec!["a", "c"]);
+    }
+
+    #[test]
+    fn test_next_sites_to_try_orders_by_priority() {
+        let sites = vec![
+            SiteInfo { id: "a", name: "A", default_base_url: "" },
+            SiteInfo { id: "b", name: "B", default_base_url: "" },
+            SiteInfo { id: "c", name: "C", default_base_url: "" },
+            SiteInfo { id: "d", name: "D", default_base_url: "" },
+        ];
+        let priority = vec!["d".to_string(), "c".to_string(), "a".to_string(), "b".to_string()];
+        let to_try = next_sites_to_try(&sites, "b", &["d".to_string()], &priority);
+        let ids: Vec<&str> = to_try.iter().map(|s| s.id).collect();
+        assert_eq!(ids, vec!["c", "a"]);
+    }
+
+    #[test]
+    fn test_next_sites_to_try_empty_priority_uses_registry_order() {
+        let sites = vec![
+            SiteInfo { id: "a", name: "A", default_base_url: "" },
+            SiteInfo { id: "b", name: "B", default_base_url: "" },
+            SiteInfo { id: "c", name: "C", default_base_url: "" },
+            SiteInfo { id: "d", name: "D", default_base_url: "" },
+        ];
+        let to_try = next_sites_to_try(&sites, "b", &["d".to_string()], &[]);
+        let ids: Vec<&str> = to_try.iter().map(|s| s.id).collect();
+        assert_eq!(ids, vec!["a", "c"]);
+    }
+
+    #[test]
+    fn test_next_sites_to_try_site_missing_from_priority_goes_last() {
+        let sites = vec![
+            SiteInfo { id: "a", name: "A", default_base_url: "" },
+            SiteInfo { id: "b", name: "B", default_base_url: "" },
+            SiteInfo { id: "c", name: "C", default_base_url: "" },
+            SiteInfo { id: "d", name: "D", default_base_url: "" },
+        ];
+        let priority = vec!["c".to_string()];
+        let to_try = next_sites_to_try(&sites, "b", &[], &priority);
+        let ids: Vec<&str> = to_try.iter().map(|s| s.id).collect();
+        assert_eq!(ids, vec!["c", "a", "d"]);
+    }
+
+    #[test]
+    fn test_next_sites_to_try_never_returns_active_or_misses_even_with_high_priority() {
+        let sites = vec![
+            SiteInfo { id: "a", name: "A", default_base_url: "" },
+            SiteInfo { id: "b", name: "B", default_base_url: "" },
+            SiteInfo { id: "c", name: "C", default_base_url: "" },
+            SiteInfo { id: "d", name: "D", default_base_url: "" },
+        ];
+        let priority = vec!["b".to_string(), "c".to_string(), "d".to_string(), "a".to_string()];
+        let to_try = next_sites_to_try(&sites, "b", &["c".to_string()], &priority);
+        let ids: Vec<&str> = to_try.iter().map(|s| s.id).collect();
+        assert_eq!(ids, vec!["d", "a"]);
     }
 
     #[test]
