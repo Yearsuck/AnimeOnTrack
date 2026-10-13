@@ -10,6 +10,8 @@ import { Descubrir } from "./views/Descubrir";
 import { Catalog } from "./views/Catalog";
 import { ProgressBar } from "./views/ProgressBar";
 import { WindowControls } from "./views/WindowControls";
+import { ShortcutsOverlay } from "./views/ShortcutsOverlay";
+import { shortcutFor } from "./lib/shortcuts";
 import {
   listAiring,
   refresh,
@@ -62,6 +64,7 @@ export default function App() {
   // layout. Lazy: only mounts on first visit, not eagerly at app start.
   const [statsVisited, setStatsVisited] = useState(false);
   const [descubrirSubView, setDescubrirSubView] = useState<"swipe" | "listas">("swipe");
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
 
   const refreshBadge = useCallback(async () => {
     try {
@@ -210,6 +213,70 @@ export default function App() {
     navigate("airing");
   }
 
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName?.toUpperCase();
+      const targetIsEditable =
+        tag === "INPUT" ||
+        tag === "TEXTAREA" ||
+        tag === "SELECT" ||
+        Boolean(target?.isContentEditable);
+
+      const action = shortcutFor({
+        key: e.key,
+        ctrlKey: e.ctrlKey,
+        metaKey: e.metaKey,
+        altKey: e.altKey,
+        shiftKey: e.shiftKey,
+        targetIsEditable,
+      });
+
+      if (!action) return;
+
+      switch (action.kind) {
+        case "navigate":
+          if (view !== "loading" && view !== "onboarding") {
+            navigate(action.view);
+          }
+          break;
+        case "refresh":
+          if (!refreshing) {
+            void doRefresh();
+          }
+          break;
+        case "search":
+          e.preventDefault();
+          navigate("catalog");
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+              const input = document.querySelector<HTMLInputElement>("input[data-shortcut-search]");
+              input?.focus();
+            });
+          });
+          break;
+        case "help":
+          e.preventDefault();
+          setShortcutsOpen((prev) => !prev);
+          break;
+        case "escape":
+          if (shortcutsOpen) {
+            e.preventDefault();
+            setShortcutsOpen(false);
+          } else if (selected) {
+            e.preventDefault();
+            setSelected(null);
+          }
+          break;
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [view, refreshing, shortcutsOpen, selected]);
+
   // Frameless window: every screen needs *some* draggable strip with the
   // window controls, or the loading/onboarding views (which don't render the
   // main topbar) would leave the user unable to move or close the window.
@@ -357,6 +424,7 @@ export default function App() {
           </div>
         )}
       </div>
+      <ShortcutsOverlay open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
     </div>
   );
 }

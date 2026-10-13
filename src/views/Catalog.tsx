@@ -441,6 +441,7 @@ export function Catalog() {
           <div className="search">
             <span className="icon">⌕</span>
             <input
+              data-shortcut-search
               className="input"
               placeholder={t("catalog.searchPlaceholder")}
               value={searchInput}

@@ -601,5 +601,14 @@ export const en: Messages = {
   "settings.sitePriorityDown": "Down",
   "settings.sitePriorityMoveUp": "Increase priority of {site}",
   "settings.sitePriorityMoveDown": "Decrease priority of {site}",
+
+  // keyboard shortcuts
+  "shortcuts.title": "Keyboard shortcuts",
+  "shortcuts.close": "Close",
+  "shortcuts.nav": "Switch tab (1-7)",
+  "shortcuts.refresh": "Refresh catalog and episodes",
+  "shortcuts.search": "Search catalog",
+  "shortcuts.help": "Show or hide this help",
+  "shortcuts.escape": "Close detail or this help",
 };
 

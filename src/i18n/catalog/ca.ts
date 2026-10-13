@@ -616,5 +616,14 @@ export const ca: Messages = {
   "settings.sitePriorityDown": "Baixar",
   "settings.sitePriorityMoveUp": "Pujar prioritat de {site}",
   "settings.sitePriorityMoveDown": "Baixar prioritat de {site}",
+
+  // keyboard shortcuts
+  "shortcuts.title": "Dreceres de teclat",
+  "shortcuts.close": "Tancar",
+  "shortcuts.nav": "Canviar de pestanya (1-7)",
+  "shortcuts.refresh": "Actualitzar catàleg i episodis",
+  "shortcuts.search": "Cercar al catàleg",
+  "shortcuts.help": "Mostrar o amagar aquesta ajuda",
+  "shortcuts.escape": "Tancar detall o aquesta ajuda",
 };
 

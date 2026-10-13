@@ -620,5 +620,14 @@ export const es = {
   "settings.sitePriorityDown": "Bajar",
   "settings.sitePriorityMoveUp": "Subir prioridad de {site}",
   "settings.sitePriorityMoveDown": "Bajar prioridad de {site}",
+
+  // keyboard shortcuts
+  "shortcuts.title": "Atajos de teclado",
+  "shortcuts.close": "Cerrar",
+  "shortcuts.nav": "Cambiar de pestaña (1-7)",
+  "shortcuts.refresh": "Actualizar catálogo y episodios",
+  "shortcuts.search": "Buscar en el catálogo",
+  "shortcuts.help": "Mostrar u ocultar esta ayuda",
+  "shortcuts.escape": "Cerrar detalle o esta ayuda",
 } as const;
 
