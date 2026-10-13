@@ -276,6 +276,7 @@ async fn scrape_via_mirrors_with_script<T>(
         Some(m) => prioritize_mirror(mirrors, m),
         None => mirrors.to_vec(),
     };
+    let ordered = crate::domain_breaker::order_for_attempt(&ordered);
     let mut last_err = String::new();
     for mirror in &ordered {
         let url = format!("{mirror}{path}");
@@ -298,22 +299,28 @@ async fn scrape_via_mirrors_with_script<T>(
             }
         }
         match fetch_html_with_script(app, &url, extra_script).await {
-            Ok(scraped) => match parse(&scraped) {
-                Ok(items) if !items.is_empty() => {
-                    let state = app.state::<AppState>();
-                    let mut cache = state.html_cache.lock().unwrap();
-                    cache.put(&url, scraped.html.clone(), std::time::Instant::now());
-                    remember_working_mirror(app, mirror);
-                    return Ok((scraped, items, mirror.clone()));
+            Ok(scraped) => {
+                crate::domain_breaker::record_success(&url);
+                match parse(&scraped) {
+                    Ok(items) if !items.is_empty() => {
+                        let state = app.state::<AppState>();
+                        let mut cache = state.html_cache.lock().unwrap();
+                        cache.put(&url, scraped.html.clone(), std::time::Instant::now());
+                        remember_working_mirror(app, mirror);
+                        return Ok((scraped, items, mirror.clone()));
+                    }
+                    Ok(_) => {
+                        last_err = format!(
+                            "{mirror}: la página cargó pero no encajaba con este sitio (¿no es un mirror real?)"
+                        )
+                    }
+                    Err(e) => last_err = format!("{mirror}: {e}"),
                 }
-                Ok(_) => {
-                    last_err = format!(
-                        "{mirror}: la página cargó pero no encajaba con este sitio (¿no es un mirror real?)"
-                    )
-                }
-                Err(e) => last_err = format!("{mirror}: {e}"),
-            },
-            Err(e) => last_err = format!("{mirror}: {e}"),
+            }
+            Err(e) => {
+                crate::domain_breaker::record_failure(&url);
+                last_err = format!("{mirror}: {e}");
+            }
         }
     }
     Err(format!("ninguna web funcionó; último error: {last_err}"))
