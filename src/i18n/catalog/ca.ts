@@ -633,5 +633,9 @@ export const ca: Messages = {
   "settings.diagnosticsExporting": "Exportant…",
   "settings.diagnosticsSaved": "Informe desat a: {path}",
   "settings.diagnosticsReveal": "Mostra la carpeta",
-};
 
+  // continue watching
+  "continue.title": "Continuar veient",
+  "continue.play": "Reprodueix",
+  "continue.discover": "Descobrir anime",
+};

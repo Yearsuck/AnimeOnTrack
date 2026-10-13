@@ -618,5 +618,9 @@ export const en: Messages = {
   "settings.diagnosticsExporting": "Exporting…",
   "settings.diagnosticsSaved": "Report saved to: {path}",
   "settings.diagnosticsReveal": "Show in folder",
-};
 
+  // continue watching
+  "continue.title": "Continue watching",
+  "continue.play": "Play",
+  "continue.discover": "Discover anime",
+};

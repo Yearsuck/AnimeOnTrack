@@ -637,5 +637,9 @@ export const es = {
   "settings.diagnosticsExporting": "Exportando…",
   "settings.diagnosticsSaved": "Informe guardado en: {path}",
   "settings.diagnosticsReveal": "Mostrar carpeta",
-} as const;
 
+  // continue watching
+  "continue.title": "Continuar viendo",
+  "continue.play": "Reproducir",
+  "continue.discover": "Descubrir anime",
+} as const;
