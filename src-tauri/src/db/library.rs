@@ -1,6 +1,10 @@
 use super::*;
 use std::collections::HashMap;
 
+/// How long after the last scan that listed a series it still counts as "on the
+/// site's airing listing" for `sync_status_from_catalog`.
+const LISTED_GRACE_SECS: i64 = 3 * 86400;
+
 /// One entry in the **site-agnostic library** (see
 /// docs/cross-site-library-investigation.md, option C). Identity is canonical —
 /// an AniList id when known, a normalized title otherwise — so the same show
@@ -60,6 +64,20 @@ fn merge_backlog(current: Option<String>, incoming: Option<String>) -> Option<St
     } else {
         current
     }
+}
+
+/// `candidate` is `base` followed by a season marker ("X" -> "X Season 3", "X 2nd Season",
+/// "X Part 2", "X Final Season", "X III"): a later season of the same show, not a spin-off
+/// or a different series that merely shares a title prefix ("Love Live!" -> "Love Live! Superstar!!").
+fn extends_with_season_marker(candidate: &str, base: &str) -> bool {
+    let (c, b) = (candidate.to_lowercase(), base.to_lowercase());
+    let Some(rest) = c.strip_prefix(&b) else { return false };
+    let Some(tail) = rest.strip_prefix(' ') else { return false };
+    let tail = tail.trim();
+    let first = tail.split_whitespace().next().unwrap_or("");
+    matches!(first, "season" | "part" | "cour" | "final" | "ii" | "iii" | "iv" | "v" | "vi")
+        || tail.starts_with("the final")
+        || first.chars().next().is_some_and(|ch| ch.is_ascii_digit())
 }
 
 impl Db {
@@ -253,6 +271,59 @@ impl Db {
         Ok(changed)
     }
 
+    /// Find the AniList id of a RELEASING/HIATUS sequel in the catalog whose
+    /// title extends one of `titles` ("X" -> "X Season 3") and whose premiere
+    /// `start_date` is later than the own entry's. When multiple candidates
+    /// qualify, the one with the latest `start_date` wins.
+    pub(crate) fn releasing_sequel_id(&self, titles: &[String], own_id: i64) -> Result<Option<i64>> {
+        let own_start_date: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT start_date FROM anilist_catalog WHERE id = ?1",
+                [own_id],
+                |r| r.get::<_, Option<i64>>(0),
+            )
+            .optional()?
+            .flatten();
+
+        let mut stmt = self.conn.prepare(
+            "SELECT id, start_date, title, title_romaji, title_english FROM anilist_catalog
+             WHERE status IN ('RELEASING', 'HIATUS') AND id != ?1
+               AND start_date IS NOT NULL
+               AND (format = 'TV' OR format IS NULL)
+               AND (title LIKE ?2 ESCAPE '!' OR title_romaji LIKE ?2 ESCAPE '!' OR title_english LIKE ?2 ESCAPE '!')",
+        )?;
+        let mut best: Option<(i64, i64)> = None; // (start_date, id)
+        for t in titles {
+            let escaped = t.replace('!', "!!").replace('%', "!%").replace('_', "!_");
+            let pattern = format!("{escaped} %");
+            let mut rows = stmt.query((own_id, &pattern))?;
+            while let Some(row) = rows.next()? {
+                let id: i64 = row.get(0)?;
+                let start_date: i64 = row.get(1)?;
+                let cand_titles: Vec<String> = (2..5)
+                    .filter_map(|i| row.get::<_, Option<String>>(i).transpose())
+                    .collect::<rusqlite::Result<_>>()?;
+                if !cand_titles.iter().any(|c| extends_with_season_marker(c, t)) {
+                    continue;
+                }
+                if own_start_date.is_none_or(|own| start_date > own) {
+                    match best {
+                        Some((best_date, best_id)) => {
+                            if start_date > best_date || (start_date == best_date && id > best_id) {
+                                best = Some((start_date, id));
+                            }
+                        }
+                        None => {
+                            best = Some((start_date, id));
+                        }
+                    }
+                }
+            }
+        }
+        Ok(best.map(|(_, id)| id))
+    }
+
     /// Synchronize a linked series' `is_airing` flag with AniList's catalog status.
     ///
     /// Every site adapter's airing-listing parser hardcodes `is_airing: true` on
@@ -263,7 +334,9 @@ impl Db {
     /// - `RELEASING` or `HIATUS` -> `is_airing = 1`
     /// - `FINISHED` or `CANCELLED` -> `is_airing = 0` (EXCEPT when the site
     ///   announced a future episode, i.e. `next_episode_at > current unix time`,
-    ///   since concrete site evidence beats a stale catalog)
+    ///   since concrete site evidence beats a stale catalog; or when listed
+    ///   recently on the site and a later season is releasing in the catalog, in
+    ///   which case the row is relinked to that sequel and kept airing)
     /// - `NOT_YET_RELEASED` or `NULL` -> untouched
     ///
     /// Unlinked series and mislinked series are left untouched. Returns the
@@ -272,7 +345,7 @@ impl Db {
         let now = chrono::Utc::now().timestamp();
 
         let mut stmt = self.conn.prepare(
-            "SELECT s.id, s.title, s.anilist_id, c.status
+            "SELECT s.id, s.title, s.anilist_id, c.status, s.last_listed_at, s.watched_externally
              FROM series s
              JOIN anilist_catalog c ON c.id = s.anilist_id
              WHERE
@@ -281,7 +354,14 @@ impl Db {
         )?;
         let candidates = stmt
             .query_map([now], |r| {
-                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, String>(3)?))
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, Option<i64>>(4)?,
+                    r.get::<_, i64>(5)? != 0,
+                ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
 
@@ -294,8 +374,9 @@ impl Db {
         let mut titles_of: std::collections::HashMap<i64, Vec<String>> = std::collections::HashMap::new();
         let mut to_update_0 = Vec::new();
         let mut to_update_1 = Vec::new();
+        let mut to_relink = Vec::new();
 
-        for (id, title, anilist_id, status) in candidates {
+        for (id, title, anilist_id, status, last_listed_at, watched_externally) in candidates {
             if let std::collections::hash_map::Entry::Vacant(e) = titles_of.entry(anilist_id) {
                 let v = title_stmt.query_row([anilist_id], |r| {
                     let mut v = vec![r.get::<_, String>(0)?];
@@ -307,9 +388,28 @@ impl Db {
             }
             let refs: Vec<&str> = titles_of[&anilist_id].iter().map(String::as_str).collect();
             if !crate::matching::season_consistent(&title, &refs) {
+                // A link the title cannot vouch for (e.g. a row relinked to "X Season 3") is
+                // not trusted to flip a show on, but once the site stopped listing it a
+                // finished entry must still un-air it, or it would stay airing forever.
+                let listed_recently = last_listed_at.is_some_and(|t| t >= now - LISTED_GRACE_SECS);
+                if (status == "FINISHED" || status == "CANCELLED") && !listed_recently {
+                    to_update_0.push(id);
+                }
                 continue;
             }
             if status == "FINISHED" || status == "CANCELLED" {
+                // A site that keeps every season under one slug links to the
+                // first (FINISHED) season while a later one airs: if listed
+                // recently and the catalog has a releasing sequel with a later
+                // premiere date, relink the row to the sequel so title, cover
+                // and season match what is actually airing.
+                let listed_recently = last_listed_at.is_some_and(|t| t >= now - LISTED_GRACE_SECS);
+                if !watched_externally && listed_recently {
+                    if let Some(seq) = self.releasing_sequel_id(&titles_of[&anilist_id], anilist_id)? {
+                        to_relink.push((id, seq));
+                        continue;
+                    }
+                }
                 to_update_0.push(id);
             } else if status == "RELEASING" || status == "HIATUS" {
                 to_update_1.push(id);
@@ -326,6 +426,12 @@ impl Db {
                 let sql = format!("UPDATE series SET is_airing = {value} WHERE id IN ({ph})");
                 changed += tx.execute(&sql, rusqlite::params_from_iter(chunk.iter()))?;
             }
+        }
+        for (id, seq) in to_relink {
+            changed += tx.execute(
+                "UPDATE series SET anilist_id = ?1, is_airing = 1 WHERE id = ?2",
+                (seq, id),
+            )?;
         }
         tx.commit()?;
 
@@ -697,7 +803,7 @@ mod tests {
         // A finished show (only finished rows are reconciled — airing shows the
         // user may be catching up on are protected).
         db.conn.execute("UPDATE series SET is_airing=0 WHERE id=?1", [yb]).unwrap();
-        assert_eq!(db.list_pending(b, crate::db::PendingSort::RemainingAsc).unwrap().len(), 5, "starts flooded");
+        assert_eq!(db.list_pending(b, crate::db::PendingSort::RemainingAsc, &[]).unwrap().len(), 5, "starts flooded");
 
         let fixed = db.reconcile_completion_across_sites().unwrap();
         assert_eq!(fixed, 1);
@@ -705,7 +811,7 @@ mod tests {
         let eps = db.list_series_episodes(yb).unwrap();
         assert!(eps.iter().all(|e| !e.seen), "episodes NOT mutated (no data loss)");
         // …and the pending filter keeps the completed show out of the queue.
-        assert!(db.list_pending(b, crate::db::PendingSort::RemainingAsc).unwrap().is_empty(), "no longer pending");
+        assert!(db.list_pending(b, crate::db::PendingSort::RemainingAsc, &[]).unwrap().is_empty(), "no longer pending");
         // Idempotent: a second run changes nothing.
         assert_eq!(db.reconcile_completion_across_sites().unwrap(), 0);
     }
@@ -727,7 +833,7 @@ mod tests {
         assert_eq!(db.reconcile_completion_across_sites().unwrap(), 0, "airing row not reconciled");
         let seen = db.list_series_episodes(ob).unwrap().iter().filter(|e| e.seen).count();
         assert_eq!(seen, 3, "real progress preserved, 2 still pending");
-        assert_eq!(db.list_pending(b, crate::db::PendingSort::RemainingAsc).unwrap().len(), 2);
+        assert_eq!(db.list_pending(b, crate::db::PendingSort::RemainingAsc, &[]).unwrap().len(), 2);
     }
 
     #[test]
@@ -750,7 +856,7 @@ mod tests {
         // Stays visible in the airing grid (not flagged watched_externally).
         let airing = db.list_airing(b).unwrap();
         assert!(airing.iter().any(|s| s.id == ob), "still in the airing grid");
-        assert!(db.list_pending(b, crate::db::PendingSort::RemainingAsc).unwrap().is_empty());
+        assert!(db.list_pending(b, crate::db::PendingSort::RemainingAsc, &[]).unwrap().is_empty());
     }
 
     #[test]
@@ -804,6 +910,9 @@ mod tests {
     }
     fn get_is_airing(db: &Db, sid: i64) -> bool {
         db.conn.query_row("SELECT is_airing FROM series WHERE id=?1", [sid], |r| r.get(0)).unwrap()
+    }
+    fn get_anilist_id(db: &Db, sid: i64) -> Option<i64> {
+        db.conn.query_row("SELECT anilist_id FROM series WHERE id=?1", [sid], |r| r.get(0)).unwrap()
     }
 
     #[test]
@@ -912,6 +1021,319 @@ mod tests {
         assert!(!get_is_airing(&db, s_nyr), "NOT_YET_RELEASED untouched");
         assert!(get_is_airing(&db, s_mismatch), "season-mismatched FINISHED untouched (stays 1)");
         assert!(!get_is_airing(&db, s_mismatch2), "season-mismatched RELEASING untouched (stays 0)");
+    }
+
+    #[test]
+    fn sync_status_keeps_listed_series_airing_when_a_later_season_is_releasing() {
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("TioAnime", "a", "tioanime").unwrap();
+        let mut s1 = crate::db::test_support::catalog_anime(71, "Appraisal Skill", &[]);
+        s1.status = Some("FINISHED".into());
+        s1.start_date = Some(100);
+        db.upsert_catalog_anime(&s1, 0).unwrap();
+        let mut s3 = crate::db::test_support::catalog_anime(73, "Appraisal Skill Season 3", &[]);
+        s3.status = Some("RELEASING".into());
+        s3.start_date = Some(300);
+        db.upsert_catalog_anime(&s3, 1).unwrap();
+        let sid = db.upsert_series(a, &mk_airing("appraisal", "Appraisal Skill", None)).unwrap();
+        db.set_anilist_id(sid, 71).unwrap();
+
+        assert_eq!(db.sync_status_from_catalog().unwrap(), 1, "relinked 1 row");
+        assert_eq!(get_anilist_id(&db, sid), Some(73), "relinked to season 3");
+        assert!(get_is_airing(&db, sid), "stays airing");
+
+        assert_eq!(db.sync_status_from_catalog().unwrap(), 0, "second call changes nothing");
+    }
+
+    #[test]
+    fn sync_status_relinks_to_sequel_with_latest_start_date() {
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("TioAnime", "a", "tioanime").unwrap();
+        let mut s1 = crate::db::test_support::catalog_anime(100, "My Hero", &[]);
+        s1.status = Some("FINISHED".into());
+        s1.start_date = Some(100);
+        db.upsert_catalog_anime(&s1, 0).unwrap();
+
+        let mut s2 = crate::db::test_support::catalog_anime(101, "My Hero Season 2", &[]);
+        s2.status = Some("RELEASING".into());
+        s2.start_date = Some(300);
+        db.upsert_catalog_anime(&s2, 1).unwrap();
+
+        let mut s3 = crate::db::test_support::catalog_anime(102, "My Hero Season 3", &[]);
+        s3.status = Some("RELEASING".into());
+        s3.start_date = Some(500);
+        db.upsert_catalog_anime(&s3, 2).unwrap();
+
+        let sid = db.upsert_series(a, &mk_airing("my-hero", "My Hero", None)).unwrap();
+        db.set_anilist_id(sid, 100).unwrap();
+
+        assert_eq!(db.sync_status_from_catalog().unwrap(), 1);
+        assert_eq!(get_anilist_id(&db, sid), Some(102), "relinks to the sequel with latest start_date (500)");
+        assert!(get_is_airing(&db, sid));
+    }
+
+    #[test]
+    fn sync_status_does_not_relink_when_sequel_start_date_is_earlier_than_own() {
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("TioAnime", "a", "tioanime").unwrap();
+        let mut s_own = crate::db::test_support::catalog_anime(200, "Prequel Story", &[]);
+        s_own.status = Some("FINISHED".into());
+        s_own.start_date = Some(500);
+        db.upsert_catalog_anime(&s_own, 0).unwrap();
+
+        let mut s_cand = crate::db::test_support::catalog_anime(201, "Prequel Story Zero", &[]);
+        s_cand.status = Some("RELEASING".into());
+        s_cand.start_date = Some(200); // earlier than own 500!
+        db.upsert_catalog_anime(&s_cand, 1).unwrap();
+
+        // 1) With last_listed_at recent and no valid sequel, row is un-aired
+        let sid = db.upsert_series(a, &mk_airing("prequel-story", "Prequel Story", None)).unwrap();
+        db.set_anilist_id(sid, 200).unwrap();
+
+        assert_eq!(db.sync_status_from_catalog().unwrap(), 1, "flips airing 1 to 0");
+        assert_eq!(get_anilist_id(&db, sid), Some(200), "not relinked");
+        assert!(!get_is_airing(&db, sid), "un-aired");
+
+        // 2) When not listed recently, row is also un-aired
+        let sid2 = db.upsert_series(a, &mk_airing("prequel-story-2", "Prequel Story", None)).unwrap();
+        db.set_anilist_id(sid2, 200).unwrap();
+        db.conn.execute("UPDATE series SET last_listed_at=0 WHERE id=?1", [sid2]).unwrap();
+
+        assert_eq!(db.sync_status_from_catalog().unwrap(), 1);
+        assert_eq!(get_anilist_id(&db, sid2), Some(200), "not relinked");
+        assert!(!get_is_airing(&db, sid2), "un-aired");
+    }
+
+    #[test]
+    fn sync_status_does_not_relink_when_row_not_listed_recently() {
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("TioAnime", "a", "tioanime").unwrap();
+        let mut s1 = crate::db::test_support::catalog_anime(300, "Old Anime", &[]);
+        s1.status = Some("FINISHED".into());
+        s1.start_date = Some(100);
+        db.upsert_catalog_anime(&s1, 0).unwrap();
+
+        let mut s2 = crate::db::test_support::catalog_anime(301, "Old Anime Season 2", &[]);
+        s2.status = Some("RELEASING".into());
+        s2.start_date = Some(300);
+        db.upsert_catalog_anime(&s2, 1).unwrap();
+
+        // last_listed_at = 0
+        let sid = db.upsert_series(a, &mk_airing("old-anime-0", "Old Anime", None)).unwrap();
+        db.set_anilist_id(sid, 300).unwrap();
+        db.conn.execute("UPDATE series SET last_listed_at=0 WHERE id=?1", [sid]).unwrap();
+
+        // last_listed_at = NULL
+        let b = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let sid_null = db.upsert_series(b, &mk_airing("old-anime-null", "Old Anime", None)).unwrap();
+        db.set_anilist_id(sid_null, 300).unwrap();
+        db.conn.execute("UPDATE series SET last_listed_at=NULL WHERE id=?1", [sid_null]).unwrap();
+
+        assert_eq!(db.sync_status_from_catalog().unwrap(), 2);
+        assert_eq!(get_anilist_id(&db, sid), Some(300), "not relinked");
+        assert!(!get_is_airing(&db, sid), "un-aired (FINISHED rule)");
+        assert_eq!(get_anilist_id(&db, sid_null), Some(300), "not relinked");
+        assert!(!get_is_airing(&db, sid_null), "un-aired (FINISHED rule)");
+    }
+
+    #[test]
+    fn sync_status_never_relinks_watched_externally_row() {
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("TioAnime", "a", "tioanime").unwrap();
+        let mut s1 = crate::db::test_support::catalog_anime(400, "Completed Franchise", &[]);
+        s1.status = Some("FINISHED".into());
+        s1.start_date = Some(100);
+        db.upsert_catalog_anime(&s1, 0).unwrap();
+
+        let mut s2 = crate::db::test_support::catalog_anime(401, "Completed Franchise Season 2", &[]);
+        s2.status = Some("RELEASING".into());
+        s2.start_date = Some(300);
+        db.upsert_catalog_anime(&s2, 1).unwrap();
+
+        let sid = db.upsert_series(a, &mk_airing("completed-franchise", "Completed Franchise", None)).unwrap();
+        db.set_anilist_id(sid, 400).unwrap();
+        db.set_watched_externally(sid, true).unwrap();
+
+        assert_eq!(db.sync_status_from_catalog().unwrap(), 1, "flips airing to 0");
+        assert_eq!(get_anilist_id(&db, sid), Some(400), "never relinked when watched_externally");
+        assert!(!get_is_airing(&db, sid), "un-aired");
+    }
+
+    #[test]
+    fn sync_status_never_relinks_a_row_whose_linked_entry_is_releasing() {
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("TioAnime", "a", "tioanime").unwrap();
+        let mut s1 = crate::db::test_support::catalog_anime(500, "Ongoing Series", &[]);
+        s1.status = Some("RELEASING".into());
+        s1.start_date = Some(100);
+        db.upsert_catalog_anime(&s1, 0).unwrap();
+
+        let mut s2 = crate::db::test_support::catalog_anime(501, "Ongoing Series Season 2", &[]);
+        s2.status = Some("RELEASING".into());
+        s2.start_date = Some(300);
+        db.upsert_catalog_anime(&s2, 1).unwrap();
+
+        let sid = db.upsert_series(a, &mk_airing("ongoing-series", "Ongoing Series", None)).unwrap();
+        db.set_anilist_id(sid, 500).unwrap();
+
+        assert_eq!(db.sync_status_from_catalog().unwrap(), 0, "no changes");
+        assert_eq!(get_anilist_id(&db, sid), Some(500), "releasing entry is never relinked");
+        assert!(get_is_airing(&db, sid));
+    }
+
+    #[test]
+    fn sync_status_does_not_treat_title_sharing_letters_without_space_as_sequel() {
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("TioAnime", "a", "tioanime").unwrap();
+        let mut s1 = crate::db::test_support::catalog_anime(600, "Bleach", &[]);
+        s1.status = Some("FINISHED".into());
+        s1.start_date = Some(100);
+        db.upsert_catalog_anime(&s1, 0).unwrap();
+
+        // "Bleachers" shares letters with "Bleach", but is NOT "Bleach <tail>"!
+        let mut s2 = crate::db::test_support::catalog_anime(601, "Bleachers", &[]);
+        s2.status = Some("RELEASING".into());
+        s2.start_date = Some(300);
+        db.upsert_catalog_anime(&s2, 1).unwrap();
+
+        let sid = db.upsert_series(a, &mk_airing("bleach", "Bleach", None)).unwrap();
+        db.set_anilist_id(sid, 600).unwrap();
+
+        // Helper check: releasing_sequel_id must return None
+        let titles = vec!["Bleach".to_string()];
+        assert_eq!(db.releasing_sequel_id(&titles, 600).unwrap(), None);
+
+        // Status sync un-airs the row and does not relink
+        assert_eq!(db.sync_status_from_catalog().unwrap(), 1);
+        assert_eq!(get_anilist_id(&db, sid), Some(600), "not relinked");
+        assert!(!get_is_airing(&db, sid), "un-aired");
+    }
+
+    #[test]
+    fn releasing_sequel_id_handles_null_start_date_and_like_escaping() {
+        let db = Db::open(":memory:").unwrap();
+
+        // Case A: own start_date is None -> accepts candidate with non-null start_date
+        let mut s1 = crate::db::test_support::catalog_anime(700, "Null Date Show", &[]);
+        s1.status = Some("FINISHED".into());
+        s1.start_date = None;
+        db.upsert_catalog_anime(&s1, 0).unwrap();
+
+        let mut s2 = crate::db::test_support::catalog_anime(701, "Null Date Show Season 2", &[]);
+        s2.status = Some("RELEASING".into());
+        s2.start_date = Some(200);
+        db.upsert_catalog_anime(&s2, 1).unwrap();
+
+        assert_eq!(
+            db.releasing_sequel_id(&["Null Date Show".into()], 700).unwrap(),
+            Some(701),
+            "when own start_date is NULL, accepts sequel with non-NULL start_date"
+        );
+
+        // Case B: candidate start_date is None -> rejected
+        let mut s_base = crate::db::test_support::catalog_anime(710, "Base Only", &[]);
+        s_base.status = Some("FINISHED".into());
+        s_base.start_date = Some(100);
+        db.upsert_catalog_anime(&s_base, 2).unwrap();
+
+        let mut s_cand_null = crate::db::test_support::catalog_anime(711, "Base Only Season 2", &[]);
+        s_cand_null.status = Some("RELEASING".into());
+        s_cand_null.start_date = None;
+        db.upsert_catalog_anime(&s_cand_null, 3).unwrap();
+
+        assert_eq!(
+            db.releasing_sequel_id(&["Base Only".into()], 710).unwrap(),
+            None,
+            "candidate with NULL start_date is never accepted"
+        );
+
+        // Case C: LIKE escaping of special characters: '%', '_', '!'
+        let mut s_esc = crate::db::test_support::catalog_anime(720, "100%_Pascal!", &[]);
+        s_esc.status = Some("FINISHED".into());
+        s_esc.start_date = Some(100);
+        db.upsert_catalog_anime(&s_esc, 4).unwrap();
+
+        let mut s_esc_seq = crate::db::test_support::catalog_anime(721, "100%_Pascal! Season 2", &[]);
+        s_esc_seq.status = Some("RELEASING".into());
+        s_esc_seq.start_date = Some(200);
+        db.upsert_catalog_anime(&s_esc_seq, 5).unwrap();
+
+        // A trick title that would match unescaped '%' or '_'
+        let mut s_esc_fake = crate::db::test_support::catalog_anime(722, "10000XPascal! Season 2", &[]);
+        s_esc_fake.status = Some("RELEASING".into());
+        s_esc_fake.start_date = Some(300);
+        db.upsert_catalog_anime(&s_esc_fake, 6).unwrap();
+
+        assert_eq!(
+            db.releasing_sequel_id(&["100%_Pascal!".into()], 720).unwrap(),
+            Some(721),
+            "special LIKE characters are escaped properly"
+        );
+    }
+
+    #[test]
+    fn sequel_must_carry_a_season_marker_and_be_tv() {
+        assert!(extends_with_season_marker("My Hero Season 3", "My Hero"));
+        assert!(extends_with_season_marker("My Hero 2nd Season", "My Hero"));
+        assert!(extends_with_season_marker("My Hero Part 2", "My Hero"));
+        assert!(extends_with_season_marker("My Hero The Final Season", "My Hero"));
+        assert!(extends_with_season_marker("My Hero III", "My Hero"));
+        assert!(!extends_with_season_marker("Love Live! Superstar!!", "Love Live!"));
+        assert!(!extends_with_season_marker("Yu-Gi-Oh! Go Rush!!", "Yu-Gi-Oh!"));
+        assert!(!extends_with_season_marker("My Hero: The Movie", "My Hero"));
+        assert!(!extends_with_season_marker("My Hero", "My Hero"));
+    }
+
+    #[test]
+    fn sync_status_never_relinks_to_a_spin_off_or_a_non_tv_entry() {
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("TioAnime", "a", "tioanime").unwrap();
+        let mut base = crate::db::test_support::catalog_anime(600, "Love Live!", &[]);
+        base.status = Some("FINISHED".into());
+        base.start_date = Some(100);
+        db.upsert_catalog_anime(&base, 0).unwrap();
+        let mut spin = crate::db::test_support::catalog_anime(601, "Love Live! Superstar!!", &[]);
+        spin.status = Some("RELEASING".into());
+        spin.start_date = Some(900);
+        db.upsert_catalog_anime(&spin, 1).unwrap();
+        let mut ova = crate::db::test_support::catalog_anime(602, "Love Live! Season 2", &[]);
+        ova.status = Some("RELEASING".into());
+        ova.start_date = Some(800);
+        db.upsert_catalog_anime(&ova, 2).unwrap();
+        db.conn.execute("UPDATE anilist_catalog SET format='OVA' WHERE id=602", []).unwrap();
+
+        let sid = db.upsert_series(a, &mk_airing("love-live", "Love Live!", None)).unwrap();
+        db.set_anilist_id(sid, 600).unwrap();
+
+        db.sync_status_from_catalog().unwrap();
+        assert_eq!(get_anilist_id(&db, sid), Some(600), "not relinked to a spin-off or an OVA");
+        assert!(!get_is_airing(&db, sid));
+    }
+
+    #[test]
+    fn a_relinked_row_is_un_aired_once_its_season_finishes_and_the_site_stops_listing_it() {
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("TioAnime", "a", "tioanime").unwrap();
+        let mut s1 = crate::db::test_support::catalog_anime(700, "Show", &[]);
+        s1.status = Some("FINISHED".into());
+        s1.start_date = Some(100);
+        db.upsert_catalog_anime(&s1, 0).unwrap();
+        let mut s3 = crate::db::test_support::catalog_anime(702, "Show Season 3", &[]);
+        s3.status = Some("RELEASING".into());
+        s3.start_date = Some(300);
+        db.upsert_catalog_anime(&s3, 1).unwrap();
+        let sid = db.upsert_series(a, &mk_airing("show", "Show", None)).unwrap();
+        db.set_anilist_id(sid, 700).unwrap();
+        db.sync_status_from_catalog().unwrap();
+        assert_eq!(get_anilist_id(&db, sid), Some(702));
+
+        // Season 3 ends; the site still lists it for a while, then stops.
+        db.conn.execute("UPDATE anilist_catalog SET status='FINISHED' WHERE id=702", []).unwrap();
+        db.sync_status_from_catalog().unwrap();
+        assert!(get_is_airing(&db, sid), "still listed recently -> stays");
+        db.conn.execute("UPDATE series SET last_listed_at=0 WHERE id=?1", [sid]).unwrap();
+        db.sync_status_from_catalog().unwrap();
+        assert!(!get_is_airing(&db, sid), "not listed any more -> un-aired");
     }
 
     // ---- sync_seen_progress_across_sites (2026-08-13 site-switch bug) ----

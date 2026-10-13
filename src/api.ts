@@ -89,6 +89,11 @@ export const getMirrors = () => invoke<string[]>("get_mirrors");
 
 export const setMirrors = (urls: string[]) => invoke<void>("set_mirrors", { urls });
 
+export const getSitePriority = () => invoke<string[]>("get_site_priority");
+
+export const setSitePriority = (order: string[]) =>
+  invoke<void>("set_site_priority", { order });
+
 export const listSites = () => invoke<SiteSummary[]>("list_sites");
 
 export const getActiveSite = () => invoke<SiteSummary>("get_active_site");

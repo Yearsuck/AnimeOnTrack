@@ -7,6 +7,8 @@ import {
   listSites,
   getActiveSite,
   setActiveSite,
+  getSitePriority,
+  setSitePriority,
 } from "../../api";
 import { useT } from "../../i18n";
 import type { SiteSummary } from "../../types";
@@ -17,7 +19,7 @@ interface SourcesSectionProps {
 
 export function SourcesSection({ onSiteChanged }: SourcesSectionProps) {
   const t = useT();
-  const [firstUrl, setFirstUrl] = useState("https://wwv.animeytx.net");
+  const [firstUrl, setFirstUrl] = useState("https://animeyt.cc");
   const [mirrorsText, setMirrorsText] = useState("");
   const [busy, setBusy] = useState(false);
   const [savingMirrors, setSavingMirrors] = useState(false);
@@ -30,6 +32,8 @@ export function SourcesSection({ onSiteChanged }: SourcesSectionProps) {
   // dropdown never switches anything by itself.
   const [pendingSiteId, setPendingSiteId] = useState<string | null>(null);
   const [switchingSite, setSwitchingSite] = useState(false);
+  const [priorityOrder, setPriorityOrder] = useState<string[]>([]);
+  const [savingPriority, setSavingPriority] = useState(false);
 
   async function loadMirrors() {
     const list = await getMirrors();
@@ -43,10 +47,38 @@ export function SourcesSection({ onSiteChanged }: SourcesSectionProps) {
     setFirstUrl(active.default_base_url);
   }
 
+  async function loadPriority() {
+    try {
+      const p = await getSitePriority();
+      setPriorityOrder(p);
+    } catch (e) {
+      setMsg(t("errors.generic", { detail: String(e) }));
+    }
+  }
+
   useEffect(() => {
     loadMirrors();
     loadSites();
+    loadPriority();
   }, []);
+
+  async function movePriority(index: number, direction: -1 | 1) {
+    const targetIndex = index + direction;
+    if (targetIndex < 0 || targetIndex >= priorityOrder.length) return;
+    const newOrder = [...priorityOrder];
+    const [moved] = newOrder.splice(index, 1);
+    newOrder.splice(targetIndex, 0, moved);
+    setSavingPriority(true);
+    setMsg(null);
+    try {
+      await setSitePriority(newOrder);
+      await loadPriority();
+    } catch (e) {
+      setMsg(t("errors.generic", { detail: String(e) }));
+    } finally {
+      setSavingPriority(false);
+    }
+  }
 
   const pendingSite = sites.find((s) => s.id === pendingSiteId) ?? null;
 
@@ -165,6 +197,39 @@ export function SourcesSection({ onSiteChanged }: SourcesSectionProps) {
             </div>
           </div>
         )}
+      </div>
+
+      <div className="settings-field">
+        <label className="settings-field-label">{t("settings.sitePriorityHeading")}</label>
+        <p className="settings-section-desc">{t("settings.sitePriorityHint")}</p>
+        {priorityOrder.map((siteId, index) => {
+          const site = sites.find((s) => s.id === siteId);
+          const name = site ? site.name : siteId;
+          return (
+            <div key={siteId} className="row settings-cred-row">
+              <span>{name}</span>
+              <span className="spacer" />
+              <button
+                type="button"
+                className="btn btn-sm"
+                disabled={index === 0 || savingPriority}
+                onClick={() => movePriority(index, -1)}
+                aria-label={t("settings.sitePriorityMoveUp", { site: name })}
+              >
+                {t("settings.sitePriorityUp")}
+              </button>
+              <button
+                type="button"
+                className="btn btn-sm"
+                disabled={index === priorityOrder.length - 1 || savingPriority}
+                onClick={() => movePriority(index, 1)}
+                aria-label={t("settings.sitePriorityMoveDown", { site: name })}
+              >
+                {t("settings.sitePriorityDown")}
+              </button>
+            </div>
+          );
+        })}
       </div>
 
       <details className="settings-details">

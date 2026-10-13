@@ -156,7 +156,7 @@ Six adapters are bundled out of the box, all conforming to a pluggable `SiteAdap
 
 | Site | Default Domain | Adapter ID | Primary Language | Mirror Failover |
 |:---|:---|:---|:---:|:---:|
-| **AnimeYT** | `wwv.animeytx.net` | `animeytx` | Spanish (Castilian / LatAm) | Automatic |
+| **AnimeYT** | `animeyt.cc` | `animeytx` | Spanish (Castilian / LatAm) | Automatic |
 | **TioAnime** | `tioanime.com` | `tioanime` | Spanish (Castilian / LatAm) | Automatic |
 | **AnimeFLV** | `www4.animeflv.net` | `animeflv` | Spanish (Castilian / LatAm) | Automatic |
 | **JKanime** | `jkanime.net` | `jkanime` | Spanish (Castilian / LatAm) | Automatic |

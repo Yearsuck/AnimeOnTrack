@@ -610,5 +610,11 @@ export const ca: Messages = {
   "settings.backupAdvancedGoogle": "Configuració de Google (avançat)",
   "settings.forceRefreshDesc": "Comprova totes les teves sèries seguides una a una per detectar episodis que hagin pogut passar-se per alt si el web va fallar.",
   "settings.uninstallDesc": "Elimina l'aplicació del teu equip obrint el desinstal·lador de Windows. Les teves dades desades es conservaran.",
+  "settings.sitePriorityHeading": "Prioritat de llocs",
+  "settings.sitePriorityHint": "L'aplicació consulta els llocs de dalt a baix quan falta un anime o episodi.",
+  "settings.sitePriorityUp": "Pujar",
+  "settings.sitePriorityDown": "Baixar",
+  "settings.sitePriorityMoveUp": "Pujar prioritat de {site}",
+  "settings.sitePriorityMoveDown": "Baixar prioritat de {site}",
 };
 
