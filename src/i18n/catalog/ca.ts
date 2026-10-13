@@ -638,4 +638,13 @@ export const ca: Messages = {
   "continue.title": "Continuar veient",
   "continue.play": "Reprodueix",
   "continue.discover": "Descobrir anime",
+
+  // notifications
+  "notify.title": "AnimeOnTrack",
+  "notify.body": "{count} episodis nous",
+  "settings.notifyLabel": "Notificacions",
+  "settings.notifyOn": "Activades",
+  "settings.notifyOff": "Desactivades",
+  "settings.notifyHint":
+    "Avís de Windows quan una actualització troba episodis nous i la finestra està en segon pla.",
 };

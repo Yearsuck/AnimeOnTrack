@@ -642,4 +642,13 @@ export const es = {
   "continue.title": "Continuar viendo",
   "continue.play": "Reproducir",
   "continue.discover": "Descubrir anime",
+
+  // notifications
+  "notify.title": "AnimeOnTrack",
+  "notify.body": "{count} episodios nuevos",
+  "settings.notifyLabel": "Notificaciones",
+  "settings.notifyOn": "Activadas",
+  "settings.notifyOff": "Desactivadas",
+  "settings.notifyHint":
+    "Aviso de Windows cuando una actualización encuentra episodios nuevos y la ventana está en segundo plano.",
 } as const;

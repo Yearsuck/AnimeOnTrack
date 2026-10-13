@@ -24,6 +24,7 @@ import {
   refreshCatalogStatus,
   listLibrary,
 } from "./api";
+import { notifyNewEpisodes, readNotifyPref, shouldNotify } from "./lib/notify";
 import { useT } from "./i18n";
 import type { Series } from "./types";
 
@@ -95,8 +96,9 @@ export default function App() {
         await listAiring(); // throws if no source configured
         setView("pending");
         setRefreshing(true);
-        await refresh().catch(() => 0);
+        const n = await refresh().catch(() => 0);
         setRefreshing(false);
+        maybeNotify(n);
         // Pending is already mounted by now (it's the first screen), so it has
         // fetched the *pre*-refresh list — reload it, not just the badge.
         await onPendingDataChanged();
@@ -128,6 +130,18 @@ export default function App() {
     })();
   }, [onPendingDataChanged]);
 
+  function maybeNotify(n: number) {
+    if (
+      shouldNotify({
+        newCount: n,
+        enabled: readNotifyPref(),
+        windowFocused: document.hasFocus(),
+      })
+    ) {
+      void notifyNewEpisodes(n, t("notify.title"), t("notify.body", { count: n }));
+    }
+  }
+
   async function doRefresh() {
     setRefreshing(true);
     try {
@@ -137,7 +151,8 @@ export default function App() {
         await rescanAiring().catch(() => 0);
         setAiringRefreshSignal((n) => n + 1);
       }
-      await refresh();
+      const n = await refresh();
+      maybeNotify(n);
     } finally {
       setRefreshing(false);
       // Reloads Pendientes as well as its badge — this is the "Actualizar"
