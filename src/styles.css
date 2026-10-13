@@ -2884,3 +2884,10 @@ select.lib-filter-select {
 .empty-actions {
   margin-top: var(--sp-4);
 }
+
+.settings-field-hint {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  margin-top: var(--sp-2);
+  margin-bottom: 0;
+}

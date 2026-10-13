@@ -623,4 +623,13 @@ export const en: Messages = {
   "continue.title": "Continue watching",
   "continue.play": "Play",
   "continue.discover": "Discover anime",
+
+  // notifications
+  "notify.title": "AnimeOnTrack",
+  "notify.body": "{count} new episodes",
+  "settings.notifyLabel": "Notifications",
+  "settings.notifyOn": "On",
+  "settings.notifyOff": "Off",
+  "settings.notifyHint":
+    "Windows notification when a refresh finds new episodes and the window is in the background.",
 };
