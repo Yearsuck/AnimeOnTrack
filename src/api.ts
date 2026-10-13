@@ -296,3 +296,7 @@ export const clearAllDownloads = () =>
 export const getSeriesBanner = (seriesId: number) =>
   invoke<string | null>("get_series_banner", { seriesId });
 
+export const exportDiagnostics = () => invoke<string>("export_diagnostics");
+export const revealInFolder = (path: string) =>
+  invoke<void>("reveal_in_folder", { path });
+
