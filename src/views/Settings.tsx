@@ -1,638 +1,147 @@
-import { useEffect, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
-import {
-  scanAiring,
-  rescanAiring,
-  getMirrors,
-  setMirrors,
-  refresh,
-  listSites,
-  getActiveSite,
-  setActiveSite,
-  backupStatus,
-  connectDrive,
-  disconnectDrive,
-  backupNow,
-  restoreLatest,
-  setGoogleCredentials,
-  importLibraryToActiveSite,
-  uninstallApp,
-  listMonitors,
-  getPlayerSettings,
-  setPlayerSettings,
-} from "../api";
-import { LANGS, useLang, useT } from "../i18n";
-import { THEMES, useTheme } from "../theme";
-import type { SiteSummary, BackupStatus, MonitorOption } from "../types";
+import { useState } from "react";
+import { useT } from "../i18n";
+import type { SiteSummary } from "../types";
+import "../styles/settings.css";
+import { AppearanceSection } from "./settings/AppearanceSection";
+import { PlayerSettingsCard } from "./settings/PlayerSettingsCard";
+import { SourcesSection } from "./settings/SourcesSection";
+import { LibraryImportCard } from "./settings/LibraryImportCard";
+import { BackupCard } from "./settings/BackupCard";
+import { MaintenanceSection } from "./settings/MaintenanceSection";
+import { UninstallCard } from "./settings/UninstallCard";
 
-/// Player preferences card: select target screen and windowed vs full-screen mode.
-function PlayerSettingsCard() {
-  const t = useT();
-  const [monitors, setMonitors] = useState<MonitorOption[]>([]);
-  const [targetMonitor, setTargetMonitor] = useState<string>("");
-  const [fullscreen, setFullscreen] = useState(false);
-  const [loading, setLoading] = useState(true);
+type SettingsTab = "general" | "sources" | "data" | "maintenance";
 
-  useEffect(() => {
-    Promise.all([listMonitors(), getPlayerSettings()])
-      .then(([mons, settings]) => {
-        setMonitors(mons);
-        setTargetMonitor(settings.monitor ?? "");
-        setFullscreen(settings.fullscreen);
-      })
-      .catch((err) => console.error("Error loading player settings:", err))
-      .finally(() => setLoading(false));
-  }, []);
+const TAB_STORAGE_KEY = "aot.settings.tab";
 
-  const handleMonitorChange = async (val: string) => {
-    setTargetMonitor(val);
-    try {
-      await setPlayerSettings(val.trim() === "" ? null : val, fullscreen);
-    } catch (err) {
-      console.error("Failed to save monitor setting:", err);
+function getInitialTab(): SettingsTab {
+  try {
+    const saved = localStorage.getItem(TAB_STORAGE_KEY);
+    if (saved === "general" || saved === "sources" || saved === "data" || saved === "maintenance") {
+      return saved;
     }
-  };
-
-  const handleFullscreenChange = async (fs: boolean) => {
-    setFullscreen(fs);
-    try {
-      await setPlayerSettings(targetMonitor.trim() === "" ? null : targetMonitor, fs);
-    } catch (err) {
-      console.error("Failed to save fullscreen setting:", err);
-    }
-  };
-
-  if (loading) return null;
-
-  return (
-    <div className="settings-section">
-      <h3 className="settings-section-title">{t("settings.playerHeading")}</h3>
-      <p className="settings-section-desc">{t("settings.playerHelp")}</p>
-
-      <div className="settings-field">
-        <label className="settings-field-label">{t("settings.playerMonitor")}</label>
-        <select
-          className="input settings-select"
-          value={targetMonitor}
-          onChange={(e) => handleMonitorChange(e.target.value)}
-        >
-          <option value="">{t("settings.playerMonitorDefault")}</option>
-          {monitors.map((m) => {
-            const label =
-              t("settings.playerMonitorOption", {
-                index: m.index + 1,
-                width: m.width,
-                height: m.height,
-              }) + (m.is_primary ? t("settings.playerMonitorPrimaryTag") : "");
-            return (
-              <option key={m.id} value={m.id}>
-                {label}
-              </option>
-            );
-          })}
-        </select>
-      </div>
-
-      <div className="settings-field">
-        <label className="settings-field-label">{t("settings.playerMode")}</label>
-        <div className="row">
-          <button
-            type="button"
-            className={`chip-toggle ${!fullscreen ? "active" : ""}`}
-            onClick={() => handleFullscreenChange(false)}
-          >
-            🗗 {t("settings.playerWindowed")}
-          </button>
-          <button
-            type="button"
-            className={`chip-toggle ${fullscreen ? "active" : ""}`}
-            onClick={() => handleFullscreenChange(true)}
-          >
-            ⛶ {t("settings.playerFullscreen")}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-
-/// Setup form shown until a Google OAuth client is configured.
-///
-/// The credentials used to be compile-time only, which meant the backup was
-/// unreachable for anyone who hadn't edited `.cargo/config.toml` and rebuilt —
-/// i.e. everyone. A Desktop-type OAuth client's id and secret are documented
-/// by Google as non-confidential for installed apps (the reason this flow uses
-/// PKCE), so accepting them at runtime and storing them next to the refresh
-/// token adds no exposure the app didn't already have.
-function GoogleCredentialsForm({ onConfigured }: { onConfigured: (s: BackupStatus) => void }) {
-  const t = useT();
-  const [clientId, setClientId] = useState("");
-  const [clientSecret, setClientSecret] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const save = async () => {
-    setSaving(true);
-    setError(null);
-    try {
-      onConfigured(await setGoogleCredentials(clientId, clientSecret));
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <div>
-      <p className="muted text-sm">
-        {t("settings.backupSetupSteps")}
-      </p>
-      <div className="row settings-cred-row">
-        <input
-          className="input"
-          value={clientId}
-          onChange={(e) => setClientId(e.target.value)}
-          placeholder={t("settings.backupClientId")}
-          aria-label={t("settings.backupClientId")}
-          spellCheck={false}
-          autoComplete="off"
-        />
-        <input
-          className="input"
-          type="password"
-          value={clientSecret}
-          onChange={(e) => setClientSecret(e.target.value)}
-          placeholder={t("settings.backupClientSecret")}
-          aria-label={t("settings.backupClientSecret")}
-          spellCheck={false}
-          autoComplete="off"
-        />
-        <button
-          className="btn btn-primary"
-          disabled={saving || !clientId.trim() || !clientSecret.trim()}
-          onClick={save}
-        >
-          {saving ? t("common.saving") : t("settings.backupSaveCredentials")}
-        </button>
-      </div>
-      {error && (
-        <p className="muted text-sm text-danger">
-          {t("settings.backupError", { msg: error })}
-        </p>
-      )}
-    </div>
-  );
-}
-
-/// "Copia de seguridad" card: connect/disconnect Google Drive, back up now,
-/// restore the latest backup. Self-contained (fetches its own status) so it
-/// drops into Settings without threading state through the parent.
-function BackupCard() {
-  const t = useT();
-  const [status, setStatus] = useState<BackupStatus | null>(null);
-  // "disconnect" is its own kind, not a reuse of "connect": the two buttons
-  // read the same `busy` value for their labels, so sharing a kind made the
-  // Connect button flash "Conectando…" during (and right after) a
-  // disconnect, which is the opposite of what was happening.
-  type BusyKind = "connect" | "disconnect" | "backup" | "restore";
-  const [busy, setBusy] = useState<null | BusyKind>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    backupStatus().then(setStatus).catch((e) => setError(String(e)));
-  }, []);
-
-  const run = async (kind: BusyKind, fn: () => Promise<unknown>) => {
-    setBusy(kind);
-    setError(null);
-    try {
-      const r = await fn();
-      if (kind !== "restore") setStatus(r as BackupStatus);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  if (!status) return null;
-
-  return (
-    <div className="settings-section">
-      <h3 className="settings-section-title">{t("settings.backupHeading")}</h3>
-      <p className="settings-section-desc">{t("settings.backupIntro")}</p>
-
-      {!status.configured ? (
-        <GoogleCredentialsForm onConfigured={setStatus} />
-      ) : !status.connected ? (
-        <button
-          className="btn btn-primary"
-          disabled={busy !== null}
-          onClick={() => run("connect", connectDrive)}
-        >
-          {busy === "connect" ? t("settings.backupConnecting") : t("settings.backupConnect")}
-        </button>
-      ) : (
-        <>
-          <p className="muted">{t("settings.backupConnected")}</p>
-          <p className="muted text-sm">
-            {status.last_at ? t("settings.backupLast", { when: status.last_at }) : t("settings.backupNever")}
-            {status.size_bytes
-              ? ` · ${t("settings.backupSize", { size: `${Math.round(status.size_bytes / 1024)} KB` })}`
-              : ""}
-          </p>
-          {status.last_error && (
-            <p className="muted text-sm text-danger">
-              {t("settings.backupLastError", { error: status.last_error })}
-            </p>
-          )}
-          <div className="row">
-            <button className="btn btn-primary" disabled={busy !== null} onClick={() => run("backup", backupNow)}>
-              {busy === "backup" ? t("settings.backupWorking") : t("settings.backupNow")}
-            </button>
-            <button
-              className="btn"
-              disabled={busy !== null}
-              onClick={() => {
-                if (confirm(t("settings.backupRestoreConfirm"))) run("restore", restoreLatest);
-              }}
-            >
-              {busy === "restore" ? t("settings.backupRestoring") : t("settings.backupRestore")}
-            </button>
-            <button className="btn btn-ghost" disabled={busy !== null} onClick={() => run("disconnect", disconnectDrive)}>
-              {t("settings.backupDisconnect")}
-            </button>
-          </div>
-        </>
-      )}
-      {error && (
-        <p className="muted text-sm text-danger">
-          {t("settings.backupError", { msg: error })}
-        </p>
-      )}
-    </div>
-  );
-}
-
-/// "Traer mi biblioteca a este sitio": resolves your whole canonical library
-/// onto the active site (searches + links the ones not present here, replaying
-/// watched progress). Self-contained; listens to the paced import's progress.
-function LibraryImportCard() {
-  const t = useT();
-  const [running, setRunning] = useState(false);
-  const [progress, setProgress] = useState<{ done: number; total: number; title: string } | null>(null);
-  const [result, setResult] = useState<string | null>(null);
-
-  useEffect(() => {
-    const un = listen<{ done: number; total: number; title: string }>(
-      "library-import-progress",
-      (e) => setProgress(e.payload)
-    );
-    return () => {
-      un.then((f) => f());
-    };
-  }, []);
-
-  async function run() {
-    setRunning(true);
-    setResult(null);
-    setProgress(null);
-    try {
-      const r = await importLibraryToActiveSite();
-      setResult(t("settings.importDone", { linked: r.linked, total: r.total, skipped: r.skipped }));
-    } catch (e) {
-      setResult(String(e));
-    } finally {
-      setRunning(false);
-      setProgress(null);
-    }
+  } catch {
+    // localStorage unavailable, fallback to default
   }
-
-  return (
-    <div className="settings-section">
-      <h3 className="settings-section-title">{t("settings.importHeading")}</h3>
-      <p className="settings-section-desc">{t("settings.importHelp")}</p>
-      <button className="btn btn-primary" onClick={run} disabled={running}>
-        {running ? t("settings.importing") : t("settings.importButton")}
-      </button>
-      {running && progress && progress.total > 0 && (
-        <p className="muted settings-msg">
-          {t("settings.importProgress", {
-            done: progress.done + 1,
-            total: progress.total,
-            title: progress.title,
-          })}
-        </p>
-      )}
-      {result && <p className="muted settings-msg">{result}</p>}
-    </div>
-  );
+  return "general";
 }
 
-function UninstallCard() {
-  const t = useT();
-  // Two-step confirm: the first click reveals the confirmation panel, so the
-  // irreversible action is never one stray click away.
-  const [confirming, setConfirming] = useState(false);
-  const [running, setRunning] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function doUninstall() {
-    setRunning(true);
-    setError(null);
-    try {
-      // On success the backend quits the app, so control never returns here;
-      // a rejection means there was nothing to uninstall (dev/unpacked build).
-      await uninstallApp();
-    } catch (e) {
-      setError(String(e));
-      setRunning(false);
-      setConfirming(false);
-    }
+function saveTab(tab: SettingsTab) {
+  try {
+    localStorage.setItem(TAB_STORAGE_KEY, tab);
+  } catch {
+    // localStorage unavailable, ignore
   }
-
-  return (
-    <div className="settings-section danger-zone">
-      <h3 className="settings-section-title">{t("settings.uninstallHeading")}</h3>
-      <p className="settings-section-desc">{t("settings.uninstallHelp")}</p>
-      {!confirming ? (
-        <button className="btn btn-danger" onClick={() => setConfirming(true)}>
-          {t("settings.uninstallButton")}
-        </button>
-      ) : (
-        <div className="settings-inline-panel">
-          <p className="settings-confirm-text">{t("settings.uninstallConfirm")}</p>
-          <div className="row">
-            <button className="btn btn-danger" onClick={doUninstall} disabled={running}>
-              {running ? t("settings.uninstalling") : t("settings.uninstallConfirmYes")}
-            </button>
-            <button className="btn" onClick={() => setConfirming(false)} disabled={running}>
-              {t("common.cancel")}
-            </button>
-          </div>
-        </div>
-      )}
-      {error && <p className="muted settings-msg text-danger">{error}</p>}
-    </div>
-  );
 }
 
 export function Settings({ onSiteChanged }: { onSiteChanged?: (site: SiteSummary) => void }) {
   const t = useT();
-  const { lang, setLang } = useLang();
-  const { theme, setTheme } = useTheme();
-  const [firstUrl, setFirstUrl] = useState("https://wwv.animeytx.net");
-  const [mirrorsText, setMirrorsText] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [savingMirrors, setSavingMirrors] = useState(false);
-  const [forcing, setForcing] = useState(false);
-  const [msg, setMsg] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<SettingsTab>(getInitialTab);
 
-  const [sites, setSites] = useState<SiteSummary[]>([]);
-  const [activeSite, setActiveSiteState] = useState<SiteSummary | null>(null);
-  // The site picked in the <select> but not yet confirmed — drives the
-  // confirmation panel below it. Separate from activeSite so changing the
-  // dropdown never switches anything by itself.
-  const [pendingSiteId, setPendingSiteId] = useState<string | null>(null);
-  const [switchingSite, setSwitchingSite] = useState(false);
-
-  async function loadMirrors() {
-    const list = await getMirrors();
-    setMirrorsText(list.join("\n"));
-  }
-  async function loadSites() {
-    const [all, active] = await Promise.all([listSites(), getActiveSite()]);
-    setSites(all);
-    setActiveSiteState(active);
-    setFirstUrl(active.default_base_url);
-  }
-  useEffect(() => {
-    loadMirrors();
-    loadSites();
-  }, []);
-
-  const pendingSite = sites.find((s) => s.id === pendingSiteId) ?? null;
-
-  async function confirmSiteSwitch() {
-    if (!pendingSite) return;
-    setSwitchingSite(true);
-    setMsg(null);
-    try {
-      const result = await setActiveSite(pendingSite.id);
-      const s = await scanAiring(result.site.default_base_url);
-      setActiveSiteState(result.site);
-      setPendingSiteId(null);
-      await loadMirrors();
-      setMsg(t("settings.siteChanged", { site: result.site.name, count: s.length }));
-      onSiteChanged?.(result.site);
-    } catch (e) {
-      setMsg(t("errors.generic", { detail: String(e) }));
-    } finally {
-      setSwitchingSite(false);
-    }
-  }
-
-  async function addFirstUrl() {
-    setBusy(true);
-    setMsg(null);
-    try {
-      const s = await scanAiring(firstUrl.trim());
-      setMsg(t("settings.foundSeries", { count: s.length }));
-      await loadMirrors();
-    } catch (e) {
-      setMsg(t("errors.generic", { detail: String(e) }));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function saveMirrors() {
-    setSavingMirrors(true);
-    // Cleared BEFORE the await, not only on success: `set_mirrors` rejects
-    // the whole list if any entry fails `is_safe_external_url` (a bare
-    // domain typed without `https://` is enough — the URL parser needs a
-    // scheme), and without this the previous "Lista de webs guardada."
-    // stayed on screen under the textarea claiming a save that never
-    // happened.
-    setMsg(null);
-    try {
-      const urls = mirrorsText.split("\n").map((u) => u.trim()).filter(Boolean);
-      await setMirrors(urls);
-      // Even a successful save can persist something other than what was
-      // typed: `set_mirrors` force-reinserts the active site's `base_url`
-      // when the edit dropped it (commands/mirrors.rs refuses to strand the
-      // active site). Re-read the stored list — same call the mount does —
-      // so the textarea shows what is actually saved instead of the edit
-      // the backend partly overrode.
-      await loadMirrors();
-      setMsg(t("settings.mirrorsSaved"));
-    } catch (e) {
-      setMsg(t("errors.generic", { detail: String(e) }));
-    } finally {
-      setSavingMirrors(false);
-    }
-  }
-
-  async function doRescan() {
-    setBusy(true);
-    setMsg(null);
-    try {
-      const s = await rescanAiring();
-      setMsg(t("settings.foundSeries", { count: s.length }));
-    } catch (e) {
-      setMsg(t("errors.generic", { detail: String(e) }));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  // Escape hatch for the refresh skip logic: re-fetch every followed
-  // series' episode list, ignoring the "can't have changed" rules. Slow
-  // (one page per followed series) but guaranteed exhaustive.
-  async function doForceRefresh() {
-    setForcing(true);
-    setMsg(null);
-    try {
-      const n = await refresh(true);
-      setMsg(t("settings.forceRefreshDone", { count: n }));
-    } catch (e) {
-      setMsg(t("errors.generic", { detail: String(e) }));
-    } finally {
-      setForcing(false);
-    }
-  }
+  const selectTab = (tab: SettingsTab) => {
+    setActiveTab(tab);
+    saveTab(tab);
+  };
 
   return (
-    <div className="page settings-page">
+    <div className="page settings-page settings-page-wide">
       <div className="page-head">
         <h2 className="page-title">{t("nav.settings")}</h2>
       </div>
 
-      <div className="settings-section">
-        <h3 className="settings-section-title">{t("settings.appearanceHeading")}</h3>
-        <div className="settings-field">
-          <label className="settings-field-label">{t("settings.theme")}</label>
-          <div className="row">
-            {THEMES.map((th) => (
-              <button
-                key={th.code}
-                type="button"
-                className={`chip-toggle ${theme === th.code ? "active" : ""}`}
-                onClick={() => setTheme(th.code)}
-              >
-                {t(th.labelKey)}
-              </button>
-            ))}
-          </div>
-        </div>
-        <div className="settings-field">
-          <label className="settings-field-label">{t("settings.language")}</label>
-          <div className="row">
-            {LANGS.map((l) => (
-              <button
-                key={l.code}
-                type="button"
-                className={`chip-toggle ${lang === l.code ? "active" : ""}`}
-                onClick={() => setLang(l.code)}
-              >
-                {l.label}
-              </button>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      <PlayerSettingsCard />
-
-      <div className="settings-section">
-
-        <h3 className="settings-section-title">{t("settings.siteHeading")}</h3>
-        <div className="settings-field">
-          <label className="settings-field-label">{t("settings.activeSiteHelp")}</label>
-          <select
-            className="input settings-select"
-            value={pendingSiteId ?? activeSite?.id ?? ""}
-            disabled={switchingSite || sites.length === 0}
-            onChange={(e) => {
-              const id = e.target.value;
-              setPendingSiteId(id === activeSite?.id ? null : id);
-            }}
+      <div className="settings-layout">
+        <nav className="settings-nav" role="tablist" aria-label={t("settings.tablistAria")}>
+          <button
+            id="tab-general"
+            role="tab"
+            type="button"
+            className={`settings-nav-item ${activeTab === "general" ? "active" : ""}`}
+            aria-selected={activeTab === "general"}
+            aria-controls="panel-general"
+            onClick={() => selectTab("general")}
           >
-            {sites.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name}
-                {s.id === activeSite?.id ? t("settings.activeSuffix") : ""}
-              </option>
-            ))}
-          </select>
+            {t("settings.tabGeneral")}
+          </button>
+          <button
+            id="tab-sources"
+            role="tab"
+            type="button"
+            className={`settings-nav-item ${activeTab === "sources" ? "active" : ""}`}
+            aria-selected={activeTab === "sources"}
+            aria-controls="panel-sources"
+            onClick={() => selectTab("sources")}
+          >
+            {t("settings.tabSources")}
+          </button>
+          <button
+            id="tab-data"
+            role="tab"
+            type="button"
+            className={`settings-nav-item ${activeTab === "data" ? "active" : ""}`}
+            aria-selected={activeTab === "data"}
+            aria-controls="panel-data"
+            onClick={() => selectTab("data")}
+          >
+            {t("settings.tabData")}
+          </button>
+          <button
+            id="tab-maintenance"
+            role="tab"
+            type="button"
+            className={`settings-nav-item ${activeTab === "maintenance" ? "active" : ""}`}
+            aria-selected={activeTab === "maintenance"}
+            aria-controls="panel-maintenance"
+            onClick={() => selectTab("maintenance")}
+          >
+            {t("settings.tabMaintenance")}
+          </button>
+        </nav>
 
-          {pendingSite && (
-            <div className="settings-inline-panel">
-              <p className="settings-confirm-text">
-                {t("settings.switchSiteConfirm", {
-                  site: pendingSite.name,
-                  currentSite: activeSite?.name ?? t("settings.currentSiteFallback"),
-                })}
-              </p>
-              <div className="row">
-                <button className="btn btn-primary" onClick={confirmSiteSwitch} disabled={switchingSite}>
-                  {switchingSite ? t("settings.switching") : t("settings.switchTo", { site: pendingSite.name })}
-                </button>
-                <button className="btn" onClick={() => setPendingSiteId(null)} disabled={switchingSite}>
-                  {t("common.cancel")}
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
+        <div className="settings-panels">
+                      <section
+              hidden={activeTab !== "general"}
+              id="panel-general"
+              role="tabpanel"
+              aria-labelledby="tab-general"
+              className="settings-panel"
+            >
+              <AppearanceSection />
+              <PlayerSettingsCard />
+            </section>
 
-        <div className="settings-field">
-          <label className="settings-field-label">{t("settings.addNewSiteLabel")}</label>
-          <div className="row">
-            <input className="input settings-url-input" value={firstUrl} onChange={(e) => setFirstUrl(e.target.value)} />
-            <button className="btn btn-primary" onClick={addFirstUrl} disabled={busy}>
-              {busy ? t("common.scanning") : t("common.scan")}
-            </button>
-          </div>
-        </div>
+                      <section
+              hidden={activeTab !== "sources"}
+              id="panel-sources"
+              role="tabpanel"
+              aria-labelledby="tab-sources"
+              className="settings-panel"
+            >
+              <SourcesSection onSiteChanged={onSiteChanged} />
+            </section>
 
-        <div className="settings-field">
-          <label className="settings-field-label">
-            {t("settings.mirrorsLabel", { site: activeSite?.name ?? t("settings.activeSiteFallback") })}
-          </label>
-          <textarea
-            className="input textarea-mono"
-            rows={5}
-            value={mirrorsText}
-            onChange={(e) => setMirrorsText(e.target.value)}
-          />
-          <div className="row settings-actions">
-            <button className="btn" onClick={saveMirrors} disabled={savingMirrors}>
-              {savingMirrors ? t("settings.saving") : t("settings.saveMirrors")}
-            </button>
-            <button className="btn btn-primary" onClick={doRescan} disabled={busy}>
-              {busy ? t("common.scanning") : t("settings.rescan")}
-            </button>
-          </div>
-          {msg && <p className="muted settings-msg">{msg}</p>}
+                      <section
+              hidden={activeTab !== "data"}
+              id="panel-data"
+              role="tabpanel"
+              aria-labelledby="tab-data"
+              className="settings-panel"
+            >
+              <LibraryImportCard />
+              <BackupCard />
+            </section>
+
+                      <section
+              hidden={activeTab !== "maintenance"}
+              id="panel-maintenance"
+              role="tabpanel"
+              aria-labelledby="tab-maintenance"
+              className="settings-panel"
+            >
+              <MaintenanceSection />
+              <UninstallCard />
+            </section>
         </div>
       </div>
-
-      <LibraryImportCard />
-
-      <BackupCard />
-
-      <div className="settings-section danger-zone">
-        <h3 className="settings-section-title">{t("settings.maintenanceHeading")}</h3>
-        <p className="settings-section-desc">{t("settings.forceRefreshHelp")}</p>
-        <button className="btn" onClick={doForceRefresh} disabled={forcing}>
-          {forcing ? t("settings.forcing") : t("settings.forceRefresh")}
-        </button>
-      </div>
-
-      <UninstallCard />
     </div>
   );
 }

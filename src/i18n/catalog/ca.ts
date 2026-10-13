@@ -591,5 +591,24 @@ export const ca: Messages = {
   "stats.graphEpisodesWatched": "Episodis vistos",
   "stats.graphSeriesCount": "{count} sèries",
   "stats.graphEpisodesCount": "{count} episodis",
+
+  // settings (v0.6.5)
+  "settings.tablistAria": "Seccions d'ajustos",
+  "settings.tabGeneral": "General",
+  "settings.tabSources": "Fonts d'episodis",
+  "settings.tabData": "Dades i còpia",
+  "settings.tabMaintenance": "Manteniment",
+  "settings.appearanceDesc": "Personalitza el tema visual i l'idioma de l'aplicació.",
+  "settings.playerDesc": "Tria a quina pantalla es reprodueixen els episodis i si s'han d'obrir a pantalla completa o en finestra.",
+  "settings.sourcesIntro": "AniList proporciona la informació, portades i catàleg; els llocs web només subministren els enllaços de reproducció de cada episodi.",
+  "settings.sourcesActiveLabel": "Lloc actiu (cada lloc manté la seva pròpia biblioteca i progrés)",
+  "settings.sourcesAdvanced": "Avançat",
+  "settings.addNewSiteDesc": "Afegeix una adreça web per escanejar animes en emissió d'aquesta font.",
+  "settings.mirrorsDesc": "Adreces alternatives de {site} (per si el web principal no respon; una per línia, en ordre de preferència):",
+  "settings.importDesc": "Copia les teves sèries seguides i episodis vistos al lloc actiu per no començar de zero si canvies de web.",
+  "settings.backupDesc": "Guarda una còpia de la teva biblioteca i progrés al teu Google Drive privat per no perdre res o restaurar-ho en un altre equip.",
+  "settings.backupAdvancedGoogle": "Configuració de Google (avançat)",
+  "settings.forceRefreshDesc": "Comprova totes les teves sèries seguides una a una per detectar episodis que hagin pogut passar-se per alt si el web va fallar.",
+  "settings.uninstallDesc": "Elimina l'aplicació del teu equip obrint el desinstal·lador de Windows. Les teves dades desades es conservaran.",
 };
 
