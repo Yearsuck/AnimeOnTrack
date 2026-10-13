@@ -19,7 +19,7 @@ debug sandbox `node tools/sandbox/start.mjs`, which uses a COPY of your data).
 
 ## Not done yet (needs a decision or a live check)
 ani.zip numbering, AniList progress sync (needs an AniList OAuth client), Tauri updater (needs a signing
-key), real download engine, Windows toast notifications, diagnostics export + rotating log.
+key), real download engine, Windows toast notifications, taskbar badge, rotating file log.
 
 ## Batch 3 - visible changes (done, validated)
 | Change | What it does | How to check it |
