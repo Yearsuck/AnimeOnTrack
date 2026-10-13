@@ -803,7 +803,7 @@ mod tests {
         // A finished show (only finished rows are reconciled — airing shows the
         // user may be catching up on are protected).
         db.conn.execute("UPDATE series SET is_airing=0 WHERE id=?1", [yb]).unwrap();
-        assert_eq!(db.list_pending(b, crate::db::PendingSort::RemainingAsc).unwrap().len(), 5, "starts flooded");
+        assert_eq!(db.list_pending(b, crate::db::PendingSort::RemainingAsc, &[]).unwrap().len(), 5, "starts flooded");
 
         let fixed = db.reconcile_completion_across_sites().unwrap();
         assert_eq!(fixed, 1);
@@ -811,7 +811,7 @@ mod tests {
         let eps = db.list_series_episodes(yb).unwrap();
         assert!(eps.iter().all(|e| !e.seen), "episodes NOT mutated (no data loss)");
         // …and the pending filter keeps the completed show out of the queue.
-        assert!(db.list_pending(b, crate::db::PendingSort::RemainingAsc).unwrap().is_empty(), "no longer pending");
+        assert!(db.list_pending(b, crate::db::PendingSort::RemainingAsc, &[]).unwrap().is_empty(), "no longer pending");
         // Idempotent: a second run changes nothing.
         assert_eq!(db.reconcile_completion_across_sites().unwrap(), 0);
     }
@@ -833,7 +833,7 @@ mod tests {
         assert_eq!(db.reconcile_completion_across_sites().unwrap(), 0, "airing row not reconciled");
         let seen = db.list_series_episodes(ob).unwrap().iter().filter(|e| e.seen).count();
         assert_eq!(seen, 3, "real progress preserved, 2 still pending");
-        assert_eq!(db.list_pending(b, crate::db::PendingSort::RemainingAsc).unwrap().len(), 2);
+        assert_eq!(db.list_pending(b, crate::db::PendingSort::RemainingAsc, &[]).unwrap().len(), 2);
     }
 
     #[test]
@@ -856,7 +856,7 @@ mod tests {
         // Stays visible in the airing grid (not flagged watched_externally).
         let airing = db.list_airing(b).unwrap();
         assert!(airing.iter().any(|s| s.id == ob), "still in the airing grid");
-        assert!(db.list_pending(b, crate::db::PendingSort::RemainingAsc).unwrap().is_empty());
+        assert!(db.list_pending(b, crate::db::PendingSort::RemainingAsc, &[]).unwrap().is_empty());
     }
 
     #[test]

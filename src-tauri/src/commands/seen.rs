@@ -114,15 +114,26 @@ pub fn set_seen_cascade(
     seen: bool,
 ) -> Result<(), String> {
     let db = state.db.lock().unwrap();
+    let mut sids = db
+        .canonical_series_ids(series_id)
+        .unwrap_or_else(|_| vec![series_id]);
+    if sids.is_empty() {
+        sids.push(series_id);
+    }
     // Collect the IDs that will flip to seen BEFORE the cascade runs, so we
     // know which downloads to clean up afterwards.
     let affected_ids = if seen {
-        db.episode_ids_in_cascade(series_id, &number, true)
-            .unwrap_or_default()
+        let mut ids = Vec::new();
+        for &sid in &sids {
+            if let Ok(ep_ids) = db.episode_ids_in_cascade(sid, &number, true) {
+                ids.extend(ep_ids);
+            }
+        }
+        ids
     } else {
         vec![]
     };
-    db.set_seen_cascade(series_id, &number, seen)
+    db.set_seen_cascade_in(&sids, &number, seen)
         .map_err(|e| e.to_string())?;
     if seen && !affected_ids.is_empty() {
         cleanup_downloads(&db, &affected_ids);

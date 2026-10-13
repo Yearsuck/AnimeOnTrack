@@ -40,6 +40,9 @@ pub(crate) fn is_csp_displayable_cover(cover_url: Option<&str>) -> bool {
 /// stopped (finished or dropped) even if the site still lists it.
 const STALE_AIRING_SECS: i64 = 21 * 86400;
 
+/// A chosen pending episode: (episode id, owning series id, ranking score).
+type ChosenEpisode = (i64, i64, (usize, i64, i64));
+
 impl Db {
     /// The **canonical** "En emisión" list — the union of every site's airing
     /// shows, deduped to one entry per canonical identity (`anilist_id`, else
@@ -247,29 +250,81 @@ impl Db {
         });
         Ok(out)
     }
+}
 
-    fn get_fallback_series_ids(&self, active_source_id: i64) -> Result<Vec<i64>> {
+fn site_rank(site_id: Option<&str>, priority: &[String]) -> usize {
+    match site_id {
+        Some(s) => priority.iter().position(|p| p == s).unwrap_or(priority.len()),
+        None => priority.len(),
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum EpKey {
+    Numeric(u64), // f64::to_bits()
+    Text(String),
+}
+
+impl EpKey {
+    fn cmp_key(&self, other: &Self) -> std::cmp::Ordering {
+        match (self, other) {
+            (EpKey::Numeric(a), EpKey::Numeric(b)) => {
+                let fa = f64::from_bits(*a);
+                let fb = f64::from_bits(*b);
+                fa.partial_cmp(&fb).unwrap_or(std::cmp::Ordering::Equal)
+            }
+            (EpKey::Numeric(_), EpKey::Text(_)) => std::cmp::Ordering::Less,
+            (EpKey::Text(_), EpKey::Numeric(_)) => std::cmp::Ordering::Greater,
+            (EpKey::Text(a), EpKey::Text(b)) => a.cmp(b),
+        }
+    }
+}
+
+impl Db {
+    fn merged_pending_episodes(&self, priority: &[String]) -> Result<Vec<(i64, Vec<i64>)>> {
         let mut stmt = self.conn.prepare(
             "SELECT s.id, s.source_id, s.anilist_id, s.title, c.title AS catalog_title,
-                    s.watched_externally, s.followed
+                    s.watched_externally, s.followed, so.site_id
              FROM series s
-             LEFT JOIN anilist_catalog c ON c.id = s.anilist_id"
+             LEFT JOIN sources so ON so.id = s.source_id
+             LEFT JOIN anilist_catalog c ON c.id = s.anilist_id",
         )?;
-        struct Row { id: i64, source_id: i64, anilist_id: Option<i64>, title: String, catalog_title: Option<String>, watched_externally: bool, followed: bool }
-        let rows = stmt.query_map([], |r| Ok(Row {
-            id: r.get(0)?, source_id: r.get(1)?, anilist_id: r.get(2)?, title: r.get(3)?, catalog_title: r.get(4)?,
-            watched_externally: r.get::<_, i64>(5)? != 0,
-            followed: r.get::<_, i64>(6)? != 0,
-        }))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        struct Row {
+            id: i64,
+            anilist_id: Option<i64>,
+            title: String,
+            catalog_title: Option<String>,
+            watched_externally: bool,
+            followed: bool,
+            site_id: Option<String>,
+        }
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(Row {
+                    id: r.get(0)?,
+                    anilist_id: r.get(2)?,
+                    title: r.get(3)?,
+                    catalog_title: r.get(4)?,
+                    watched_externally: r.get::<_, i64>(5)? != 0,
+                    followed: r.get::<_, i64>(6)? != 0,
+                    site_id: r.get(7)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
 
-        let mut groups: std::collections::HashMap<String, Vec<Row>> = std::collections::HashMap::new();
+        let mut groups: std::collections::HashMap<String, Vec<Row>> =
+            std::collections::HashMap::new();
 
         // normalized catalog title -> AniList id (lowest id wins, so grouping is deterministic)
-        let mut tkey_to_anilist: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+        let mut tkey_to_anilist: std::collections::HashMap<String, i64> =
+            std::collections::HashMap::new();
         for r in &rows {
             if let (Some(al_id), Some(cat_title)) = (r.anilist_id, &r.catalog_title) {
                 let tkey = format!("t:{}", crate::matching::normalize_title(cat_title));
-                tkey_to_anilist.entry(tkey).and_modify(|id| *id = (*id).min(al_id)).or_insert(al_id);
+                tkey_to_anilist
+                    .entry(tkey)
+                    .and_modify(|id| *id = (*id).min(al_id))
+                    .or_insert(al_id);
             }
         }
 
@@ -292,7 +347,9 @@ impl Db {
         for group in groups.values() {
             if group.iter().any(|r| r.followed) {
                 for r in group {
-                    candidate_ids.push(r.id);
+                    if !r.watched_externally {
+                        candidate_ids.push(r.id);
+                    }
                 }
             }
         }
@@ -301,52 +358,126 @@ impl Db {
             return Ok(vec![]);
         }
 
-        let ids_str = candidate_ids.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(",");
-        let mut ep_stmt = self.conn.prepare(&format!(
-            "SELECT series_id, COUNT(id), SUM(CASE WHEN seen = 0 THEN 1 ELSE 0 END)
-             FROM episodes WHERE series_id IN ({}) GROUP BY series_id", ids_str
-        ))?;
-        let mut ep_counts = std::collections::HashMap::new();
-        let ep_rows = ep_stmt.query_map([], |r| Ok((
-            r.get::<_, i64>(0)?,
-            r.get::<_, i64>(1)?,
-            r.get::<_, Option<i64>>(2)?.unwrap_or(0)
-        )))?;
-        for (sid, total, unseen) in ep_rows.flatten() {
-            ep_counts.insert(sid, (total, unseen));
+        struct EpRow {
+            id: i64,
+            series_id: i64,
+            number: String,
+            seen: bool,
         }
 
-        let mut winners = Vec::new();
-        for (_, group) in groups {
+        let mut eps_by_series: std::collections::HashMap<i64, Vec<EpRow>> =
+            std::collections::HashMap::new();
+        for chunk in candidate_ids.chunks(5000) {
+            let ids_str = chunk.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(",");
+            let sql = format!(
+                "SELECT id, series_id, number, seen FROM episodes WHERE series_id IN ({ids_str})"
+            );
+            let mut ep_stmt = self.conn.prepare(&sql)?;
+            let ep_rows = ep_stmt.query_map([], |r| {
+                Ok(EpRow {
+                    id: r.get(0)?,
+                    series_id: r.get(1)?,
+                    number: r.get(2)?,
+                    seen: r.get::<_, i64>(3)? != 0,
+                })
+            })?;
+            for ep in ep_rows {
+                let ep = ep?;
+                eps_by_series.entry(ep.series_id).or_default().push(ep);
+            }
+        }
+
+        let mut show_results = Vec::new();
+
+        for (_group_key, group) in groups {
             if !group.iter().any(|r| r.followed) {
                 continue;
             }
+            let candidate_members: Vec<&Row> =
+                group.iter().filter(|r| !r.watched_externally).collect();
+            if candidate_members.is_empty() {
+                continue;
+            }
 
-            let active_member = group.iter().find(|r| r.source_id == active_source_id);
-            if let Some(active) = active_member {
-                let (active_total, active_unseen) = ep_counts.get(&active.id).copied().unwrap_or((0, 0));
-                if active_total > 0 {
-                    if active_unseen > 0 && !active.watched_externally {
-                        winners.push(active.id);
+            // W = the highest numeric episode number that is seen=1 over all members (0 if none).
+            let mut w: f64 = 0.0;
+            for m in &candidate_members {
+                if let Some(eps) = eps_by_series.get(&m.id) {
+                    for ep in eps {
+                        if ep.seen {
+                            if let Some(num) = crate::db::episodes::parse_ep_number(&ep.number) {
+                                if num > w {
+                                    w = num;
+                                }
+                            }
+                        }
                     }
-                    continue;
                 }
             }
 
-            let winner = group.into_iter().filter(|r| r.source_id != active_source_id && !r.watched_externally).max_by(|a, b| {
-                let (a_total, a_unseen) = ep_counts.get(&a.id).copied().unwrap_or((0, 0));
-                let (b_total, b_unseen) = ep_counts.get(&b.id).copied().unwrap_or((0, 0));
-                let rank = |total: i64, unseen: i64, id: i64| (total, total - unseen, -id);
-                rank(a_total, a_unseen, a.id).cmp(&rank(b_total, b_unseen, b.id))
-            });
-            if let Some(w) = winner {
-                let (_, w_unseen) = ep_counts.get(&w.id).copied().unwrap_or((0, 0));
-                if w_unseen > 0 {
-                    winners.push(w.id);
+            // For each distinct episode number > W that exists unseen in some member, choose the
+            // member whose site ranks first in priority (rank of the member's sources.site_id;
+            // unknown site = last; ties by lowest series id). That member's episode row is the chosen one.
+            let mut best_by_key: std::collections::HashMap<EpKey, ChosenEpisode> =
+                std::collections::HashMap::new();
+
+            for m in &candidate_members {
+                let rank = site_rank(m.site_id.as_deref(), priority);
+                if let Some(eps) = eps_by_series.get(&m.id) {
+                    for ep in eps {
+                        if ep.seen {
+                            continue;
+                        }
+                        let key = match crate::db::episodes::parse_ep_number(&ep.number) {
+                            Some(v) => {
+                                if v <= w {
+                                    continue;
+                                }
+                                EpKey::Numeric(v.to_bits())
+                            }
+                            None => EpKey::Text(ep.number.trim().to_string()),
+                        };
+                        let score = (rank, m.id, ep.id);
+                        match best_by_key.get(&key) {
+                            Some((_, _, cur_score)) if *cur_score <= score => {}
+                            _ => {
+                                best_by_key.insert(key, (ep.id, m.id, score));
+                            }
+                        }
+                    }
                 }
             }
+
+            if best_by_key.is_empty() {
+                continue;
+            }
+
+            // Representative series = the member that owns the most chosen episodes,
+            // ties broken by priority rank then id.
+            let mut member_chosen_counts: std::collections::HashMap<i64, usize> =
+                std::collections::HashMap::new();
+            for (_, series_id, _) in best_by_key.values() {
+                *member_chosen_counts.entry(*series_id).or_default() += 1;
+            }
+
+            let rep = candidate_members
+                .iter()
+                .min_by_key(|m| {
+                    let count = member_chosen_counts.get(&m.id).copied().unwrap_or(0);
+                    let rank = site_rank(m.site_id.as_deref(), priority);
+                    (std::cmp::Reverse(count), rank, m.id)
+                })
+                .unwrap();
+
+            let mut sorted_keys: Vec<EpKey> = best_by_key.keys().cloned().collect();
+            sorted_keys.sort_by(|a, b| a.cmp_key(b));
+            let chosen_episodes: Vec<i64> =
+                sorted_keys.into_iter().map(|k| best_by_key[&k].0).collect();
+
+            show_results.push((rep.id, chosen_episodes));
         }
-        Ok(winners)
+
+        Ok(show_results)
     }
 
     /// Returns followed canonical shows with no row that has episodes on ANY site
@@ -493,82 +624,147 @@ impl Db {
         Ok(candidates)
     }
 
-    /// Unseen episodes of currently-followed series only, falling back
-    /// to other sites if the active site has no episodes for the show.
-    pub fn pending_count(&self, source_id: i64) -> Result<i64> {
-        let winners = self.get_fallback_series_ids(source_id)?;
-        if winners.is_empty() { return Ok(0); }
-        let ids_str = winners.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(",");
-        let sql = format!(
-            "SELECT count(*) FROM episodes e JOIN series s ON s.id = e.series_id
-             WHERE e.seen=0 AND s.id IN ({ids_str})"
-        );
-        let n: i64 = self.conn.query_row(&sql, [], |r| r.get(0))?;
-        Ok(n)
+    /// Unseen episodes of currently-followed series only, merged across
+    /// all sites by priority order.
+    pub fn pending_count(&self, _source_id: i64, priority: &[String]) -> Result<i64> {
+        let shows = self.merged_pending_episodes(priority)?;
+        let count: usize = shows.iter().map(|(_, eps)| eps.len()).sum();
+        Ok(count as i64)
     }
 
-    /// Unseen episodes of currently-followed series, grouped and ordered.
-    /// Falls back to other sites if the active site has no episodes.
+    /// Unseen episodes of currently-followed series, merged across all sites
+    /// by priority order, grouped and ordered.
     pub fn list_pending(
         &self,
-        source_id: i64,
+        _source_id: i64,
         sort: PendingSort,
+        priority: &[String],
     ) -> Result<Vec<(crate::models::Series, crate::models::Episode)>> {
-        let winners = self.get_fallback_series_ids(source_id)?;
-        if winners.is_empty() { return Ok(vec![]); }
-        let ids_str = winners.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(",");
-        let dir = match sort {
-            PendingSort::RemainingAsc => "ASC",
-            PendingSort::RemainingDesc => "DESC",
-        };
-        let sql = format!(
-            "SELECT s.id, s.slug, COALESCE(c.title, s.title) AS title, s.url,
-                    COALESCE(
-                        c.cover_url,
-                        CASE WHEN s.cover_url LIKE 'file:%' OR s.cover_url LIKE 'data:%' OR s.cover_url LIKE 'https://%anilist.co%' THEN s.cover_url ELSE NULL END,
-                        s.cover_url
-                    ) AS cover_url,
-                    s.is_airing, s.followed,
-                    e.id, e.series_id, e.number, e.title, e.url, e.released_at, e.seen,
-                    s.next_episode_at, s.site_episode_count,
-                    COUNT(*) OVER (PARTITION BY s.id) AS remaining,
-                    e.download_path, e.download_status
-             FROM episodes e
-             JOIN series s ON s.id = e.series_id
-             LEFT JOIN anilist_catalog c ON c.id = s.anilist_id
-             WHERE e.seen=0 AND s.watched_externally=0 AND s.id IN ({ids_str})
-             ORDER BY remaining {dir}, COALESCE(c.title, s.title), CAST(e.number AS INTEGER) ASC, e.id ASC"
-        );
-        let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt
-            .query_map([], |r| {
-                let series = crate::models::Series {
+        let shows = self.merged_pending_episodes(priority)?;
+        if shows.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let rep_ids: Vec<i64> = shows.iter().map(|(rep_id, _)| *rep_id).collect();
+        let all_ep_ids: Vec<i64> = shows.iter().flat_map(|(_, eps)| eps.iter().copied()).collect();
+
+        let mut reps_by_id = std::collections::HashMap::new();
+        for chunk in rep_ids.chunks(5000) {
+            let ids_str = chunk.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(",");
+            let sql = format!(
+                "SELECT s.id, s.slug, COALESCE(c.title, s.title) AS title, s.url,
+                        COALESCE(
+                            c.cover_url,
+                            CASE WHEN s.cover_url LIKE 'file:%' OR s.cover_url LIKE 'data:%' OR s.cover_url LIKE 'https://%anilist.co%' THEN s.cover_url ELSE NULL END,
+                            s.cover_url
+                        ) AS cover_url,
+                        s.is_airing, s.followed,
+                        s.next_episode_at, s.site_episode_count
+                 FROM series s
+                 LEFT JOIN anilist_catalog c ON c.id = s.anilist_id
+                 WHERE s.id IN ({ids_str})"
+            );
+            let mut stmt = self.conn.prepare(&sql)?;
+            let rows = stmt.query_map([], |r| {
+                Ok(crate::models::Series {
                     id: r.get(0)?,
                     slug: r.get(1)?,
                     title: r.get(2)?,
                     url: r.get(3)?,
                     cover_url: r.get(4)?,
                     is_airing: r.get::<_, i64>(5)? != 0,
-                    // Force followed to true since we selected it because *some* canonical row is followed
                     followed: true,
-                    next_episode_at: r.get("next_episode_at")?,
-                    site_episode_count: r.get("site_episode_count")?,
-                };
-                let ep = crate::models::Episode {
-                    id: r.get(7)?,
-                    series_id: r.get(8)?,
-                    number: r.get(9)?,
-                    title: r.get(10)?,
-                    url: r.get(11)?,
-                    released_at: r.get(12)?,
-                    seen: r.get::<_, i64>(13)? != 0,
-                    download_path: r.get("download_path")?,
-                    download_status: r.get("download_status")?,
-                };
-                Ok((series, ep))
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
+                    next_episode_at: r.get(7)?,
+                    site_episode_count: r.get(8)?,
+                })
+            })?;
+            for s in rows {
+                let s = s?;
+                reps_by_id.insert(s.id, s);
+            }
+        }
+
+        let mut episodes_by_id = std::collections::HashMap::new();
+        for chunk in all_ep_ids.chunks(5000) {
+            let ids_str = chunk.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(",");
+            let sql = format!(
+                "SELECT id, series_id, number, title, url, released_at, seen, download_path, download_status
+                 FROM episodes WHERE id IN ({ids_str})"
+            );
+            let mut stmt = self.conn.prepare(&sql)?;
+            let rows = stmt.query_map([], |r| {
+                Ok(crate::models::Episode {
+                    id: r.get(0)?,
+                    series_id: r.get(1)?,
+                    number: r.get(2)?,
+                    title: r.get(3)?,
+                    url: r.get(4)?,
+                    released_at: r.get(5)?,
+                    seen: r.get::<_, i64>(6)? != 0,
+                    download_path: r.get(7)?,
+                    download_status: r.get(8)?,
+                })
+            })?;
+            for ep in rows {
+                let ep = ep?;
+                episodes_by_id.insert(ep.id, ep);
+            }
+        }
+
+        struct ShowGroup {
+            series: crate::models::Series,
+            remaining: usize,
+            episodes: Vec<crate::models::Episode>,
+        }
+
+        let mut show_groups = Vec::new();
+        for (rep_id, ep_ids) in shows {
+            let Some(series) = reps_by_id.get(&rep_id).cloned() else {
+                continue;
+            };
+            let mut episodes = Vec::new();
+            for ep_id in ep_ids {
+                if let Some(ep) = episodes_by_id.get(&ep_id).cloned() {
+                    episodes.push(ep);
+                }
+            }
+            episodes.sort_by(|a, b| {
+                let num_a = crate::db::episodes::parse_ep_number(&a.number);
+                let num_b = crate::db::episodes::parse_ep_number(&b.number);
+                match (num_a, num_b) {
+                    (Some(va), Some(vb)) => va.partial_cmp(&vb).unwrap_or(std::cmp::Ordering::Equal),
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    (None, None) => a.number.cmp(&b.number),
+                }
+                .then_with(|| a.id.cmp(&b.id))
+            });
+            let remaining = episodes.len();
+            show_groups.push(ShowGroup {
+                series,
+                remaining,
+                episodes,
+            });
+        }
+
+        show_groups.sort_by(|a, b| {
+            let rem_cmp = match sort {
+                PendingSort::RemainingAsc => a.remaining.cmp(&b.remaining),
+                PendingSort::RemainingDesc => b.remaining.cmp(&a.remaining),
+            };
+            rem_cmp
+                .then_with(|| a.series.title.cmp(&b.series.title))
+                .then_with(|| a.series.id.cmp(&b.series.id))
+        });
+
+        let mut out = Vec::new();
+        for group in show_groups {
+            for ep in group.episodes {
+                out.push((group.series.clone(), ep));
+            }
+        }
+
+        Ok(out)
     }
 }
 
@@ -941,24 +1137,31 @@ mod tests {
         let unfollowed = db.upsert_series(src_b, &mk("unf", "Unfollowed")).unwrap();
         db.insert_episode(&crate::models::Episode { id: 0, series_id: unfollowed, number: "1".into(), title: None, url: "u/1".into(), released_at: None, seen: false, download_path: None, download_status: None }).unwrap();
 
-        // Expected counts for active source (A):
-        // Active Has Eps: 1
-        // Only Other: 1 (from B)
-        // Two Others: 2 (from C, because 2 > 1)
-        // Active Zero: 1 (from B, because A has 0)
+        // Expected for active source (A), merged per episode number across sites:
+        // Active Has Eps: 1 (A)
+        // Only Other: 1 (B)
+        // Two Others: 2 (episode 1 from B, the lowest id on a priority tie; episode 2 only exists on C)
+        // Active Zero: 1 (B, because A has none)
         // Total pending count = 1 + 1 + 2 + 1 = 5.
-        assert_eq!(db.pending_count(src_a).unwrap(), 5);
+        assert_eq!(db.pending_count(src_a, &[]).unwrap(), 5);
 
-        let pending = db.list_pending(src_a, PendingSort::RemainingAsc).unwrap();
+        let pending = db.list_pending(src_a, PendingSort::RemainingAsc, &[]).unwrap();
         assert_eq!(pending.len(), 5);
-        let ids: Vec<i64> = pending.iter().map(|(s, _)| s.id).collect();
-        assert!(ids.contains(&active_has_eps));
-        assert!(ids.contains(&only_other));
-        assert!(ids.contains(&two_c));
-        assert!(!ids.contains(&two_b));
-        assert!(ids.contains(&zero_b));
-        assert!(!ids.contains(&active_zero));
-        assert!(!ids.contains(&unfollowed));
+        // The episode keeps its own row; the series is the group's representative.
+        let owners: Vec<i64> = pending.iter().map(|(_, e)| e.series_id).collect();
+        assert!(owners.contains(&active_has_eps));
+        assert!(owners.contains(&only_other));
+        assert!(owners.contains(&two_c), "episode 2 only exists on the third site");
+        assert!(owners.contains(&two_b), "episode 1 comes from the lowest id on a tie");
+        assert!(owners.contains(&zero_b));
+        assert!(!owners.contains(&active_zero));
+        assert!(!owners.contains(&unfollowed));
+        let two_others: Vec<&str> = pending
+            .iter()
+            .filter(|(s, _)| s.title == "Two Others")
+            .map(|(_, e)| e.number.as_str())
+            .collect();
+        assert_eq!(two_others, vec!["1", "2"], "one entry per episode number");
     }
 
     #[test]
@@ -986,11 +1189,11 @@ mod tests {
         }
 
         // Ascending: the 1-episode series' rows come before the 3-episode one.
-        let asc = db.list_pending(src, PendingSort::RemainingAsc).unwrap();
+        let asc = db.list_pending(src, PendingSort::RemainingAsc, &[]).unwrap();
         assert_eq!(asc.first().unwrap().0.id, few);
         assert_eq!(asc.last().unwrap().0.id, many);
         // Descending: reversed.
-        let desc = db.list_pending(src, PendingSort::RemainingDesc).unwrap();
+        let desc = db.list_pending(src, PendingSort::RemainingDesc, &[]).unwrap();
         assert_eq!(desc.first().unwrap().0.id, many);
         assert_eq!(desc.last().unwrap().0.id, few);
         // Each series' episodes stay contiguous (no interleaving).
@@ -1018,7 +1221,7 @@ mod tests {
             }).unwrap();
         }
 
-        let pending = db.list_pending(src, PendingSort::RemainingAsc).unwrap();
+        let pending = db.list_pending(src, PendingSort::RemainingAsc, &[]).unwrap();
         let numbers: Vec<&str> = pending.iter().map(|(_, e)| e.number.as_str()).collect();
         assert_eq!(numbers, vec!["1", "2", "10"], "numeric order, not insertion order or string order");
     }
@@ -1498,7 +1701,8 @@ mod tests {
         }).unwrap();
 
         // Active site has episodes, so it stays authoritative. Since its eps are seen, pending_count is 0.
-        assert_eq!(db.pending_count(src_a).unwrap(), 0);
+        let priority = vec!["animeytx".to_string(), "tioanime".to_string()];
+        assert_eq!(db.pending_count(src_a, &priority).unwrap(), 0);
     }
 
     #[test]
@@ -1516,7 +1720,8 @@ mod tests {
             download_path: None, download_status: None,
         }).unwrap();
 
-        assert_eq!(db.pending_count(src_a).unwrap(), 0, "watched_externally should yield 0 pending");
+        let priority = vec!["animeytx".to_string()];
+        assert_eq!(db.pending_count(src_a, &priority).unwrap(), 0, "watched_externally should yield 0 pending");
     }
 
     #[test]
@@ -1542,9 +1747,10 @@ mod tests {
         let row_a = db.upsert_series(src_a, &mk("act", "Show")).unwrap();
         db.set_followed(row_a, true).unwrap(); // Marks canonical group followed!
 
+        let priority = vec!["animeytx".to_string(), "tioanime".to_string()];
         // Since the canonical group is followed, and A has no episodes, it falls back to B.
-        assert_eq!(db.pending_count(src_a).unwrap(), 1);
-        let pending = db.list_pending(src_a, PendingSort::RemainingAsc).unwrap();
+        assert_eq!(db.pending_count(src_a, &priority).unwrap(), 1);
+        let pending = db.list_pending(src_a, PendingSort::RemainingAsc, &priority).unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].0.id, row_b);
     }
@@ -1567,8 +1773,9 @@ mod tests {
             download_path: None, download_status: None,
         }).unwrap();
 
-        let count = db.pending_count(src_a).unwrap();
-        let pending = db.list_pending(src_a, PendingSort::RemainingAsc).unwrap();
+        let priority = vec!["animeytx".to_string()];
+        let count = db.pending_count(src_a, &priority).unwrap();
+        let pending = db.list_pending(src_a, PendingSort::RemainingAsc, &priority).unwrap();
         assert_eq!(count as usize, pending.len());
     }
 
@@ -1599,12 +1806,13 @@ mod tests {
         }
         tx.commit().unwrap();
 
+        let priority = vec!["animeytx".to_string(), "tioanime".to_string()];
         let start = std::time::Instant::now();
-        let count = db.pending_count(src_a).unwrap();
+        let count = db.pending_count(src_a, &priority).unwrap();
         let elapsed = start.elapsed();
 
         let start2 = std::time::Instant::now();
-        let list = db.list_pending(src_a, PendingSort::RemainingAsc).unwrap();
+        let list = db.list_pending(src_a, PendingSort::RemainingAsc, &priority).unwrap();
         let elapsed2 = start2.elapsed();
 
         assert!(elapsed.as_millis() < 1500, "pending_count took (debug build, limit 1500) {} ms", elapsed.as_millis());
@@ -1645,7 +1853,8 @@ mod tests {
             download_status: None,
         }).unwrap();
 
-        let pending = db.list_pending(src, PendingSort::RemainingAsc).unwrap();
+        let priority = vec!["animeytx".to_string()];
+        let pending = db.list_pending(src, PendingSort::RemainingAsc, &priority).unwrap();
         assert_eq!(pending.len(), 1);
         let (series, _) = &pending[0];
         assert_eq!(series.title, "As a Reincarnated Aristocrat");
@@ -1682,7 +1891,8 @@ mod tests {
             download_status: None,
         }).unwrap();
 
-        let pending = db.list_pending(src, PendingSort::RemainingAsc).unwrap();
+        let priority = vec!["animeytx".to_string()];
+        let pending = db.list_pending(src, PendingSort::RemainingAsc, &priority).unwrap();
         assert_eq!(pending.len(), 1);
         let (series, _) = &pending[0];
         assert_eq!(series.title, "Unlinked Site Title");
@@ -1724,10 +1934,239 @@ mod tests {
             download_status: None,
         }).unwrap();
 
-        let pending = db.list_pending(src, PendingSort::RemainingAsc).unwrap();
+        let priority = vec!["animeytx".to_string()];
+        let pending = db.list_pending(src, PendingSort::RemainingAsc, &priority).unwrap();
         assert_eq!(pending.len(), 1);
         let (series, _) = &pending[0];
         assert_eq!(series.title, "Catalog Title");
         assert_eq!(series.cover_url.as_deref(), Some("file:C:/covers/site.jpg"));
+    }
+
+    #[test]
+    fn merged_pending_priority_and_link_selection() {
+        let db = Db::open(":memory:").unwrap();
+        let src_a = db.upsert_source("AnimeYT", "https://a.example", "animeytx").unwrap();
+        let src_b = db.upsert_source("TioAnime", "https://b.example", "tioanime").unwrap();
+
+        let mk = |slug: &str, title: &str| crate::models::Series {
+            id: 0, slug: slug.into(), title: title.into(), url: format!("https://site/{slug}"),
+            cover_url: None, is_airing: true, followed: true, next_episode_at: None, site_episode_count: None,
+        };
+
+        let row_a = db.upsert_series(src_a, &mk("act", "Show")).unwrap();
+        db.set_followed(row_a, true).unwrap();
+        for i in 1..=3 {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: row_a, number: i.to_string(), title: None,
+                url: format!("https://a/{i}"), released_at: None, seen: false,
+                download_path: None, download_status: None,
+            }).unwrap();
+        }
+
+        let row_b = db.upsert_series(src_b, &mk("oth", "Show")).unwrap();
+        db.set_followed(row_b, true).unwrap();
+        for i in 1..=4 {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: row_b, number: i.to_string(), title: None,
+                url: format!("https://b/{i}"), released_at: None, seen: false,
+                download_path: None, download_status: None,
+            }).unwrap();
+        }
+
+        // Priority [A, B]: pending = A1, A2, A3, B4 under representative A
+        let p_ab = vec!["animeytx".to_string(), "tioanime".to_string()];
+        let pending_ab = db.list_pending(src_a, PendingSort::RemainingAsc, &p_ab).unwrap();
+        assert_eq!(pending_ab.len(), 4);
+        assert_eq!(pending_ab[0].0.id, row_a); // representative is A
+        assert_eq!(pending_ab[1].0.id, row_a);
+        assert_eq!(pending_ab[2].0.id, row_a);
+        assert_eq!(pending_ab[3].0.id, row_a);
+
+        assert_eq!(pending_ab[0].1.url, "https://a/1");
+        assert_eq!(pending_ab[1].1.url, "https://a/2");
+        assert_eq!(pending_ab[2].1.url, "https://a/3");
+        assert_eq!(pending_ab[3].1.url, "https://b/4");
+
+        // Priority [B, A]: pending = B1, B2, B3, B4 under representative B
+        let p_ba = vec!["tioanime".to_string(), "animeytx".to_string()];
+        let pending_ba = db.list_pending(src_a, PendingSort::RemainingAsc, &p_ba).unwrap();
+        assert_eq!(pending_ba.len(), 4);
+        assert_eq!(pending_ba[0].0.id, row_b); // representative is B
+        assert_eq!(pending_ba[0].1.url, "https://b/1");
+        assert_eq!(pending_ba[1].1.url, "https://b/2");
+        assert_eq!(pending_ba[2].1.url, "https://b/3");
+        assert_eq!(pending_ba[3].1.url, "https://b/4");
+    }
+
+    #[test]
+    fn merged_pending_with_seen_watermark() {
+        let db = Db::open(":memory:").unwrap();
+        let src_a = db.upsert_source("AnimeYT", "https://a.example", "animeytx").unwrap();
+        let src_b = db.upsert_source("TioAnime", "https://b.example", "tioanime").unwrap();
+
+        let mk = |slug: &str, title: &str| crate::models::Series {
+            id: 0, slug: slug.into(), title: title.into(), url: format!("https://site/{slug}"),
+            cover_url: None, is_airing: true, followed: true, next_episode_at: None, site_episode_count: None,
+        };
+
+        let row_a = db.upsert_series(src_a, &mk("act", "Show")).unwrap();
+        db.set_followed(row_a, true).unwrap();
+        for i in 1..=3 {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: row_a, number: i.to_string(), title: None,
+                url: format!("https://a/{i}"), released_at: None, seen: i <= 2, // 1 and 2 seen!
+                download_path: None, download_status: None,
+            }).unwrap();
+        }
+
+        let row_b = db.upsert_series(src_b, &mk("oth", "Show")).unwrap();
+        db.set_followed(row_b, true).unwrap();
+        for i in 1..=4 {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: row_b, number: i.to_string(), title: None,
+                url: format!("https://b/{i}"), released_at: None, seen: false, // unseen on B!
+                download_path: None, download_status: None,
+            }).unwrap();
+        }
+
+        // Priority [A, B]: user has seen 1-2 (on A).
+        // Pending must be 3 (from A) and 4 (from B).
+        // Neither 1 nor 2 should reappear even though unseen on B!
+        let priority = vec!["animeytx".to_string(), "tioanime".to_string()];
+        let pending = db.list_pending(src_a, PendingSort::RemainingAsc, &priority).unwrap();
+        assert_eq!(pending.len(), 2);
+        assert_eq!(pending[0].1.number, "3");
+        assert_eq!(pending[0].1.url, "https://a/3");
+        assert_eq!(pending[1].1.number, "4");
+        assert_eq!(pending[1].1.url, "https://b/4");
+    }
+
+    #[test]
+    fn merged_pending_only_other_site_has_episodes() {
+        let db = Db::open(":memory:").unwrap();
+        let src_a = db.upsert_source("AnimeYT", "https://a.example", "animeytx").unwrap();
+        let src_b = db.upsert_source("TioAnime", "https://b.example", "tioanime").unwrap();
+
+        let mk = |slug: &str, title: &str| crate::models::Series {
+            id: 0, slug: slug.into(), title: title.into(), url: format!("https://site/{slug}"),
+            cover_url: None, is_airing: true, followed: true, next_episode_at: None, site_episode_count: None,
+        };
+
+        let row_a = db.upsert_series(src_a, &mk("act", "Show")).unwrap();
+        db.set_followed(row_a, true).unwrap();
+
+        let row_b = db.upsert_series(src_b, &mk("oth", "Show")).unwrap();
+        db.set_followed(row_b, true).unwrap();
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: row_b, number: "1".into(), title: None,
+            url: "https://b/1".into(), released_at: None, seen: false,
+            download_path: None, download_status: None,
+        }).unwrap();
+
+        let priority = vec!["animeytx".to_string(), "tioanime".to_string()];
+        let pending = db.list_pending(src_a, PendingSort::RemainingAsc, &priority).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].0.id, row_b);
+        assert_eq!(pending[0].1.url, "https://b/1");
+    }
+
+    #[test]
+    fn missing_site_in_priority_ranks_last() {
+        let db = Db::open(":memory:").unwrap();
+        let src_a = db.upsert_source("AnimeYT", "https://a.example", "animeytx").unwrap();
+        let src_b = db.upsert_source("Other", "https://b.example", "unknown_site").unwrap();
+
+        let mk = |slug: &str, title: &str| crate::models::Series {
+            id: 0, slug: slug.into(), title: title.into(), url: format!("https://site/{slug}"),
+            cover_url: None, is_airing: true, followed: true, next_episode_at: None, site_episode_count: None,
+        };
+
+        let row_a = db.upsert_series(src_a, &mk("act", "Show")).unwrap();
+        db.set_followed(row_a, true).unwrap();
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: row_a, number: "1".into(), title: None,
+            url: "https://a/1".into(), released_at: None, seen: false,
+            download_path: None, download_status: None,
+        }).unwrap();
+
+        let row_b = db.upsert_series(src_b, &mk("oth", "Show")).unwrap();
+        db.set_followed(row_b, true).unwrap();
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: row_b, number: "1".into(), title: None,
+            url: "https://b/1".into(), released_at: None, seen: false,
+            download_path: None, download_status: None,
+        }).unwrap();
+
+        // Priority only contains animeytx. unknown_site is missing, so ranks last.
+        let priority = vec!["animeytx".to_string()];
+        let pending = db.list_pending(src_a, PendingSort::RemainingAsc, &priority).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].1.url, "https://a/1");
+    }
+
+    #[test]
+    fn no_duplicate_episode_numbers() {
+        let db = Db::open(":memory:").unwrap();
+        let src_a = db.upsert_source("AnimeYT", "https://a.example", "animeytx").unwrap();
+        let src_b = db.upsert_source("TioAnime", "https://b.example", "tioanime").unwrap();
+
+        let mk = |slug: &str, title: &str| crate::models::Series {
+            id: 0, slug: slug.into(), title: title.into(), url: format!("https://site/{slug}"),
+            cover_url: None, is_airing: true, followed: true, next_episode_at: None, site_episode_count: None,
+        };
+
+        let row_a = db.upsert_series(src_a, &mk("act", "Show")).unwrap();
+        db.set_followed(row_a, true).unwrap();
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: row_a, number: "1".into(), title: None,
+            url: "https://a/1".into(), released_at: None, seen: false,
+            download_path: None, download_status: None,
+        }).unwrap();
+
+        let row_b = db.upsert_series(src_b, &mk("oth", "Show")).unwrap();
+        db.set_followed(row_b, true).unwrap();
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: row_b, number: "1".into(), title: None,
+            url: "https://b/1".into(), released_at: None, seen: false,
+            download_path: None, download_status: None,
+        }).unwrap();
+
+        let priority = vec!["animeytx".to_string(), "tioanime".to_string()];
+        let pending = db.list_pending(src_a, PendingSort::RemainingAsc, &priority).unwrap();
+        assert_eq!(pending.len(), 1, "Must never have the same episode number twice");
+    }
+
+    #[test]
+    fn unfollowed_and_watched_externally_shows_never_appear() {
+        let db = Db::open(":memory:").unwrap();
+        let src_a = db.upsert_source("AnimeYT", "https://a.example", "animeytx").unwrap();
+
+        let mk = |slug: &str, title: &str| crate::models::Series {
+            id: 0, slug: slug.into(), title: title.into(), url: format!("https://site/{slug}"),
+            cover_url: None, is_airing: true, followed: false, next_episode_at: None, site_episode_count: None,
+        };
+
+        // Unfollowed
+        let s_unfollowed = db.upsert_series(src_a, &mk("unf", "Unfollowed")).unwrap();
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: s_unfollowed, number: "1".into(), title: None,
+            url: "https://a/unf/1".into(), released_at: None, seen: false,
+            download_path: None, download_status: None,
+        }).unwrap();
+
+        // Watched externally
+        let s_ext = db.upsert_series(src_a, &mk("ext", "Watched Externally")).unwrap();
+        db.set_followed(s_ext, true).unwrap();
+        db.conn.execute("UPDATE series SET watched_externally=1 WHERE id=?1", [s_ext]).unwrap();
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: s_ext, number: "1".into(), title: None,
+            url: "https://a/ext/1".into(), released_at: None, seen: false,
+            download_path: None, download_status: None,
+        }).unwrap();
+
+        let priority = vec!["animeytx".to_string()];
+        assert_eq!(db.pending_count(src_a, &priority).unwrap(), 0);
+        let pending = db.list_pending(src_a, PendingSort::RemainingAsc, &priority).unwrap();
+        assert!(pending.is_empty());
     }
 }

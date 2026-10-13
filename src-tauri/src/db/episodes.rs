@@ -317,6 +317,113 @@ impl Db {
         Ok(())
     }
 
+    /// Returns the series IDs for every row in the same canonical group as `series_id`.
+    pub fn canonical_series_ids(&self, series_id: i64) -> Result<Vec<i64>> {
+        let (al_id, title): (Option<i64>, String) = match self.conn.query_row(
+            "SELECT anilist_id, title FROM series WHERE id=?1",
+            [series_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        ) {
+            Ok(v) => v,
+            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(vec![]),
+            Err(e) => return Err(e.into()),
+        };
+
+        let mut stmt = self.conn.prepare(
+            "SELECT s.id, s.anilist_id, s.title, c.title AS catalog_title
+             FROM series s
+             LEFT JOIN anilist_catalog c ON c.id = s.anilist_id"
+        )?;
+        struct Row {
+            id: i64,
+            anilist_id: Option<i64>,
+            title: String,
+            catalog_title: Option<String>,
+        }
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(Row {
+                    id: r.get(0)?,
+                    anilist_id: r.get(1)?,
+                    title: r.get(2)?,
+                    catalog_title: r.get(3)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        let mut tkey_to_anilist: std::collections::HashMap<String, i64> =
+            std::collections::HashMap::new();
+        for r in &rows {
+            if let (Some(al_id), Some(cat_title)) = (r.anilist_id, &r.catalog_title) {
+                let tkey = format!("t:{}", crate::matching::normalize_title(cat_title));
+                tkey_to_anilist
+                    .entry(tkey)
+                    .and_modify(|id| *id = (*id).min(al_id))
+                    .or_insert(al_id);
+            }
+        }
+
+        let target_key = match al_id {
+            Some(id) => format!("al:{id}"),
+            None => {
+                let tkey = format!("t:{}", crate::matching::normalize_title(&title));
+                if let Some(al_id) = tkey_to_anilist.get(&tkey).copied() {
+                    format!("al:{al_id}")
+                } else {
+                    tkey
+                }
+            }
+        };
+
+        let mut out = Vec::new();
+        for r in rows {
+            let key = match r.anilist_id {
+                Some(id) => format!("al:{id}"),
+                None => {
+                    let tkey = format!("t:{}", crate::matching::normalize_title(&r.title));
+                    if let Some(al_id) = tkey_to_anilist.get(&tkey).copied() {
+                        format!("al:{al_id}")
+                    } else {
+                        tkey
+                    }
+                }
+            };
+            if key == target_key {
+                out.push(r.id);
+            }
+        }
+        Ok(out)
+    }
+
+    #[cfg(test)]
+    /// Mark seen/unseen across all series rows in the same canonical group
+    /// that have at least one episode row.
+    pub fn set_seen_cascade_canonical(
+        &self,
+        series_id: i64,
+        number: &str,
+        seen: bool,
+    ) -> Result<()> {
+        let sids = self.canonical_series_ids(series_id)?;
+        self.set_seen_cascade_in(&sids, number, seen)
+    }
+
+    /// Same as `set_seen_cascade_canonical` for a group the caller already resolved, so the
+    /// full-table group scan in `canonical_series_ids` is not repeated per click.
+    pub fn set_seen_cascade_in(&self, sids: &[i64], number: &str, seen: bool) -> Result<()> {
+        for &sid in sids {
+            let has_ep: bool = self.conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM episodes WHERE series_id=?1)",
+                [sid],
+                |r| r.get(0),
+            )?;
+            if has_ep {
+                self.set_seen_cascade(sid, number, seen)?;
+            }
+        }
+        Ok(())
+    }
+
     /// All episodes of a series (seen or not), oldest number first — the
     /// progress view for "which episode am I on".
     pub fn list_series_episodes(&self, series_id: i64) -> Result<Vec<crate::models::Episode>> {
@@ -1319,9 +1426,9 @@ mod tests {
             "a conflicting insert writes nothing and must report itself as not-new"
         );
 
-        assert_eq!(db.pending_count(src).unwrap(), 1);
+        assert_eq!(db.pending_count(src, &[]).unwrap(), 1);
         db.set_seen(eid, true).unwrap();
-        assert_eq!(db.pending_count(src).unwrap(), 0);
+        assert_eq!(db.pending_count(src, &[]).unwrap(), 0);
     }
 
     #[test]
@@ -1459,5 +1566,79 @@ mod tests {
         db.clear_download_columns(&[ep1_id]).unwrap();
         assert_eq!(db.downloaded_paths(&[ep1_id]).unwrap().len(), 0);
         let _ = std::fs::remove_file(&temp_file);
+    }
+
+    #[test]
+    fn set_seen_cascade_canonical_syncs_across_canonical_group() {
+        let db = Db::open(":memory:").unwrap();
+        let src_a = db.upsert_source("AnimeYT", "https://a.example", "animeytx").unwrap();
+        let src_b = db.upsert_source("TioAnime", "https://b.example", "tioanime").unwrap();
+
+        let mk = |slug: &str, title: &str| crate::models::Series {
+            id: 0,
+            slug: slug.into(),
+            title: title.into(),
+            url: format!("https://site/{slug}"),
+            cover_url: None,
+            is_airing: true,
+            followed: true,
+            next_episode_at: None,
+            site_episode_count: None,
+        };
+
+        let row_a = db.upsert_series(src_a, &mk("show-a", "Shared Show")).unwrap();
+        db.set_followed(row_a, true).unwrap();
+        let row_b = db.upsert_series(src_b, &mk("show-b", "Shared Show")).unwrap();
+        db.set_followed(row_b, true).unwrap();
+
+        for i in 1..=3 {
+            db.insert_episode(&crate::models::Episode {
+                id: 0,
+                series_id: row_a,
+                number: i.to_string(),
+                title: None,
+                url: format!("https://a/{i}"),
+                released_at: None,
+                seen: false,
+                download_path: None,
+                download_status: None,
+            })
+            .unwrap();
+        }
+        for i in 1..=4 {
+            db.insert_episode(&crate::models::Episode {
+                id: 0,
+                series_id: row_b,
+                number: i.to_string(),
+                title: None,
+                url: format!("https://b/{i}"),
+                released_at: None,
+                seen: false,
+                download_path: None,
+                download_status: None,
+            })
+            .unwrap();
+        }
+
+        // Marking 3 seen on A cascades 1-3 on BOTH rows
+        db.set_seen_cascade_canonical(row_a, "3", true).unwrap();
+        let eps_a = db.list_series_episodes(row_a).unwrap();
+        let eps_b = db.list_series_episodes(row_b).unwrap();
+        assert!(eps_a.iter().all(|e| e.seen), "A has 1-3 seen");
+        assert_eq!(eps_b.iter().filter(|e| e.seen).count(), 3, "B has 1-3 seen");
+        assert!(!eps_b.iter().find(|e| e.number == "4").unwrap().seen, "B's ep 4 is still unseen");
+
+        // Un-marking 2 marks 2-4 unseen on both
+        db.set_seen_cascade_canonical(row_a, "2", false).unwrap();
+        let eps_a = db.list_series_episodes(row_a).unwrap();
+        let eps_b = db.list_series_episodes(row_b).unwrap();
+        assert!(eps_a.iter().find(|e| e.number == "1").unwrap().seen, "A's ep 1 stays seen");
+        assert!(!eps_a.iter().find(|e| e.number == "2").unwrap().seen, "A's ep 2 unseen");
+        assert!(!eps_a.iter().find(|e| e.number == "3").unwrap().seen, "A's ep 3 unseen");
+
+        assert!(eps_b.iter().find(|e| e.number == "1").unwrap().seen, "B's ep 1 stays seen");
+        assert!(!eps_b.iter().find(|e| e.number == "2").unwrap().seen, "B's ep 2 unseen");
+        assert!(!eps_b.iter().find(|e| e.number == "3").unwrap().seen, "B's ep 3 unseen");
+        assert!(!eps_b.iter().find(|e| e.number == "4").unwrap().seen, "B's ep 4 unseen");
     }
 }
