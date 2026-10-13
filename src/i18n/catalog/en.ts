@@ -567,5 +567,14 @@ export const en: Messages = {
   "stats.activityTab30Days": "Last 30 days",
   "stats.librarySection": "Library and progress",
   "stats.milestonesSection": "Milestones and habits",
+
+  // stats graph (v0.6.5)
+  "stats.graphOpenSeries": "Open series",
+  "stats.graphCenterCamera": "Center camera",
+  "stats.graphClose": "Close",
+  "stats.graphGenres": "Genres",
+  "stats.graphEpisodesWatched": "Episodes watched",
+  "stats.graphSeriesCount": "{count} series",
+  "stats.graphEpisodesCount": "{count} episodes",
 };
 

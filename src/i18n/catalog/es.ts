@@ -586,5 +586,14 @@ export const es = {
   "stats.activityTab30Days": "Últimos 30 días",
   "stats.librarySection": "Biblioteca y progreso",
   "stats.milestonesSection": "Hitos y hábitos",
+
+  // stats graph (v0.6.5)
+  "stats.graphOpenSeries": "Abrir serie",
+  "stats.graphCenterCamera": "Centrar cámara",
+  "stats.graphClose": "Cerrar",
+  "stats.graphGenres": "Géneros",
+  "stats.graphEpisodesWatched": "Episodios vistos",
+  "stats.graphSeriesCount": "{count} series",
+  "stats.graphEpisodesCount": "{count} episodios",
 } as const;
 

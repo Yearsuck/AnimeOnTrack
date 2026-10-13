@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
   getGenreCards,
@@ -8,9 +8,10 @@ import {
   getPopularityBias,
   getStatsGraph,
   backfillGenres,
+  listLibrary,
 } from "../api";
 import { useT } from "../i18n";
-import type { TypeStat, WatchSummary, WatchInsights, PopularityBias, SeriesGraphNode, GenreCard } from "../types";
+import type { TypeStat, WatchSummary, WatchInsights, PopularityBias, SeriesGraphNode, GenreCard, LibraryItem } from "../types";
 import { StatsGraph } from "./StatsGraph";
 import { StatsRings } from "./StatsRings";
 import { StatsInsights } from "./StatsInsights";
@@ -18,7 +19,13 @@ import "../styles/stats.css";
 
 type StatsView = "resumen" | "grafo" | "generos";
 
-export function Stats({ active }: { active: boolean }) {
+export function Stats({
+  active,
+  onOpenSeries,
+}: {
+  active: boolean;
+  onOpenSeries?: (seriesId: number) => void;
+}) {
   const t = useT();
   const [summary, setSummary] = useState<WatchSummary | null>(null);
   const [insights, setInsights] = useState<WatchInsights | null>(null);
@@ -26,10 +33,25 @@ export function Stats({ active }: { active: boolean }) {
   const [genres, setGenres] = useState<GenreCard[]>([]);
   const [types, setTypes] = useState<TypeStat[]>([]);
   const [graph, setGraph] = useState<SeriesGraphNode[]>([]);
+  const [library, setLibrary] = useState<LibraryItem[]>([]);
   const [view, setView] = useState<StatsView>("resumen");
   const [backfilling, setBackfilling] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const watchedMap = useMemo(() => {
+    const map = new Map<number, number>();
+    for (const item of library) {
+      const eps =
+        item.seen_episodes > 0
+          ? item.seen_episodes
+          : item.watched_externally
+          ? Math.max(item.total_episodes, 1)
+          : 0;
+      map.set(item.series.id, eps);
+    }
+    return map;
+  }, [library]);
   // Monotonic id for the newest in-flight load. Three independent triggers
   // (mount, scan-finished event, tab activation) can each start one, so
   // without this the state would reflect whichever Promise.all happened to
@@ -54,13 +76,14 @@ export function Stats({ active }: { active: boolean }) {
   async function load() {
     const seq = ++loadSeq.current;
     try {
-      const [s, i, p, g, t, gr] = await Promise.all([
+      const [s, i, p, g, t, gr, lib] = await Promise.all([
         getWatchSummary(),
         getWatchInsights(),
         getPopularityBias(),
         getGenreCards(),
         getTypeStats(),
         getStatsGraph(),
+        listLibrary().catch(() => []),
       ]);
       if (seq !== loadSeq.current) return;
       setSummary(s);
@@ -69,6 +92,7 @@ export function Stats({ active }: { active: boolean }) {
       setGenres(g);
       setTypes(t);
       setGraph(gr);
+      setLibrary(lib ?? []);
       setError(null);
     } catch (e) {
       if (seq !== loadSeq.current) return;
@@ -190,7 +214,12 @@ export function Stats({ active }: { active: boolean }) {
 
           <div className={view === "grafo" ? "tab-panel" : "tab-panel hidden"}>
             <div className="series-block">
-              <StatsGraph seriesList={graph} active={active && view === "grafo"} />
+              <StatsGraph
+                seriesList={graph}
+                active={active && view === "grafo"}
+                onOpenSeries={onOpenSeries}
+                watchedEpisodes={watchedMap}
+              />
             </div>
           </div>
 

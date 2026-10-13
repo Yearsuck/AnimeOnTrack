@@ -582,5 +582,14 @@ export const ca: Messages = {
   "stats.activityTab30Days": "Últims 30 dies",
   "stats.librarySection": "Biblioteca i progrés",
   "stats.milestonesSection": "Fites i hàbits",
+
+  // stats graph (v0.6.5)
+  "stats.graphOpenSeries": "Obrir sèrie",
+  "stats.graphCenterCamera": "Centrar càmera",
+  "stats.graphClose": "Tancar",
+  "stats.graphGenres": "Gèneres",
+  "stats.graphEpisodesWatched": "Episodis vistos",
+  "stats.graphSeriesCount": "{count} sèries",
+  "stats.graphEpisodesCount": "{count} episodis",
 };
 
