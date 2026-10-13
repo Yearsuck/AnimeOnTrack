@@ -740,22 +740,15 @@ impl Db {
         }
 
         if filter.hide_watched {
-            conditions.push(
-                "id NOT IN ( \
-                    SELECT s.anilist_id FROM series s \
-                    WHERE s.anilist_id IS NOT NULL \
-                      AND (s.watched_externally = 1 OR EXISTS (SELECT 1 FROM episodes e WHERE e.series_id = s.id AND e.seen = 1)) \
-                    UNION \
-                    SELECT c2.id FROM anilist_catalog c2 \
-                    JOIN series s ON ( \
-                        s.title = c2.title COLLATE NOCASE \
-                        OR (c2.title_romaji IS NOT NULL AND s.title = c2.title_romaji COLLATE NOCASE) \
-                        OR (c2.title_english IS NOT NULL AND s.title = c2.title_english COLLATE NOCASE) \
-                    ) \
-                    WHERE s.watched_externally = 1 OR EXISTS (SELECT 1 FROM episodes e WHERE e.series_id = s.id AND e.seen = 1) \
-                 )"
-                    .to_string(),
-            );
+            // Every comparison is `x NOT IN (uncorrelated subquery)`, which
+            // SQLite evaluates once into an ephemeral index. The previous
+            // form joined every catalog row against every series row on three
+            // OR-ed title comparisons (22k x 6k) and took ~18 s while holding
+            // the DB mutex, freezing the UI on every filter change.
+            const WATCHED: &str = "FROM series s WHERE (s.watched_externally = 1                  OR s.id IN (SELECT series_id FROM episodes WHERE seen = 1))";
+            conditions.push(format!(
+                "(id NOT IN (SELECT s.anilist_id {WATCHED} AND s.anilist_id IS NOT NULL)                   AND title COLLATE NOCASE NOT IN (SELECT s.title {WATCHED})                   AND (title_romaji IS NULL OR title_romaji COLLATE NOCASE NOT IN (SELECT s.title {WATCHED}))                   AND (title_english IS NULL OR title_english COLLATE NOCASE NOT IN (SELECT s.title {WATCHED})))"
+            ));
         }
 
         (conditions.join(" AND "), params)
