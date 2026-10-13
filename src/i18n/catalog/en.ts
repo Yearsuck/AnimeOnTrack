@@ -555,5 +555,17 @@ export const en: Messages = {
   "discover.listas.unlinkedBadge": "Not linked to site",
   "discover.listas.selectItemAria": "Select {title}",
   "discover.listas.searchKeyboardHint": "Press / to search, Esc to clear",
+
+  // stats (v0.6.5)
+  "stats.heatmapYearSummary": "{count} episodes in {year}",
+  "stats.heatmapBestDay": "Best day: {date} ({count} eps)",
+  "stats.heatmapNoActivity": "No activity recorded",
+  "stats.heatmapPrevYear": "Previous year",
+  "stats.heatmapNextYear": "Next year",
+  "stats.activitySection": "Watching activity",
+  "stats.activityTabYear": "Full year",
+  "stats.activityTab30Days": "Last 30 days",
+  "stats.librarySection": "Library and progress",
+  "stats.milestonesSection": "Milestones and habits",
 };
 

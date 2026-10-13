@@ -574,5 +574,17 @@ export const es = {
   "discover.listas.unlinkedBadge": "Sin enlazar al sitio",
   "discover.listas.selectItemAria": "Seleccionar {title}",
   "discover.listas.searchKeyboardHint": "Pulsa / para buscar, Esc para limpiar",
+
+  // stats (v0.6.5)
+  "stats.heatmapYearSummary": "{count} episodios en {year}",
+  "stats.heatmapBestDay": "Mejor día: {date} ({count} eps)",
+  "stats.heatmapNoActivity": "Sin actividad registrada",
+  "stats.heatmapPrevYear": "Año anterior",
+  "stats.heatmapNextYear": "Año siguiente",
+  "stats.activitySection": "Actividad de visionado",
+  "stats.activityTabYear": "Año completo",
+  "stats.activityTab30Days": "Últimos 30 días",
+  "stats.librarySection": "Biblioteca y progreso",
+  "stats.milestonesSection": "Hitos y hábitos",
 } as const;
 

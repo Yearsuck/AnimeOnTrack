@@ -10,17 +10,16 @@ import {
   backfillGenres,
 } from "../api";
 import { useT } from "../i18n";
-import { useFormatNumber } from "../lib/formatNumber";
 import type { TypeStat, WatchSummary, WatchInsights, PopularityBias, SeriesGraphNode, GenreCard } from "../types";
 import { StatsGraph } from "./StatsGraph";
 import { StatsRings } from "./StatsRings";
 import { StatsInsights } from "./StatsInsights";
+import "../styles/stats.css";
 
 type StatsView = "resumen" | "grafo" | "generos";
 
 export function Stats({ active }: { active: boolean }) {
   const t = useT();
-  const n = useFormatNumber();
   const [summary, setSummary] = useState<WatchSummary | null>(null);
   const [insights, setInsights] = useState<WatchInsights | null>(null);
   const [popularityBias, setPopularityBias] = useState<PopularityBias | null>(null);
@@ -122,7 +121,7 @@ export function Stats({ active }: { active: boolean }) {
   }
 
   return (
-    <div className="page">
+    <div className="page stats-page">
       <div className="page-head">
         <h2 className="page-title">{t("nav.stats")}</h2>
         <div className="tabs" role="tablist">
@@ -170,12 +169,12 @@ export function Stats({ active }: { active: boolean }) {
       )}
 
       {!loaded && !error && (
-        <div className="stat-grid" role="status" aria-label={t("stats.loading")}>
-          {[0, 1, 2, 3, 4].map((i) => (
-            <div className="stat-card" key={i}>
-              <div className="skeleton skeleton-text" style={{ width: "55%" }} />
-              <div className="skeleton skeleton-title" style={{ width: "35%", height: 26 }} />
-              <div className="skeleton skeleton-text" style={{ width: "80%" }} />
+        <div className="kpi-strip" role="status" aria-label={t("stats.loading")}>
+          {[0, 1, 2, 3].map((i) => (
+            <div className="kpi-card" key={i}>
+              <div className="skeleton skeleton-kpi-label" />
+              <div className="skeleton skeleton-kpi-val" />
+              <div className="skeleton skeleton-kpi-sub" />
             </div>
           ))}
         </div>
@@ -183,55 +182,19 @@ export function Stats({ active }: { active: boolean }) {
 
       {loaded && (
         <>
-          <div style={{ display: view === "resumen" ? "block" : "none" }}>
-            {summary && (
-              <div className="stat-grid">
-                <div className="stat-card">
-                  <div className="stat-label">{t("stats.episodesWatched")}</div>
-                  <div className="stat-value">
-                    {n(summary.episodes_watched + summary.episodes_watched_external)}
-                  </div>
-                  <div className="stat-help">
-                    {t("stats.episodesWatchedHelp", {
-                      real: n(summary.episodes_watched),
-                      external: n(summary.episodes_watched_external),
-                    })}
-                  </div>
-                </div>
-                <div className="stat-card">
-                  <div className="stat-label">{t("stats.distinctAnime")}</div>
-                  <div className="stat-value">{n(summary.distinct_anime)}</div>
-                  <div className="stat-help">{t("stats.distinctAnimeHelp")}</div>
-                </div>
-                <div className="stat-card">
-                  <div className="stat-label">{t("stats.followedSeries")}</div>
-                  <div className="stat-value">{n(summary.airing_followed)}</div>
-                </div>
-                <div className="stat-card">
-                  <div className="stat-label">{t("stats.backlogPending")}</div>
-                  <div className="stat-value">{n(summary.pending_to_watch)}</div>
-                  <div className="stat-help">{t("stats.backlogPendingHelp")}</div>
-                </div>
-                <div className="stat-card">
-                  <div className="stat-label">{t("stats.wishlist")}</div>
-                  <div className="stat-value">{n(summary.backlog_want)}</div>
-                  <div className="stat-help">{t("stats.wishlistHelp")}</div>
-                </div>
-              </div>
-            )}
-
+          <div className={view === "resumen" ? "tab-panel" : "tab-panel hidden"}>
             {summary && insights && (
               <StatsInsights insights={insights} summary={summary} popularityBias={popularityBias} />
             )}
           </div>
 
-          <div style={{ display: view === "grafo" ? "block" : "none" }}>
+          <div className={view === "grafo" ? "tab-panel" : "tab-panel hidden"}>
             <div className="series-block">
               <StatsGraph seriesList={graph} active={active && view === "grafo"} />
             </div>
           </div>
 
-          <div style={{ display: view === "generos" ? "block" : "none" }}>
+          <div className={view === "generos" ? "tab-panel" : "tab-panel hidden"}>
             <StatsRings genres={genres} types={types} />
           </div>
         </>

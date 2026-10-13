@@ -570,5 +570,17 @@ export const ca: Messages = {
   "discover.listas.unlinkedBadge": "Sense enllaçar al lloc",
   "discover.listas.selectItemAria": "Selecciona {title}",
   "discover.listas.searchKeyboardHint": "Prem / per cercar, Esc per netejar",
+
+  // stats (v0.6.5)
+  "stats.heatmapYearSummary": "{count} episodis el {year}",
+  "stats.heatmapBestDay": "Millor dia: {date} ({count} eps)",
+  "stats.heatmapNoActivity": "Sense activitat registrada",
+  "stats.heatmapPrevYear": "Any anterior",
+  "stats.heatmapNextYear": "Any següent",
+  "stats.activitySection": "Activitat de visionat",
+  "stats.activityTabYear": "Any complet",
+  "stats.activityTab30Days": "Últims 30 dies",
+  "stats.librarySection": "Biblioteca i progrés",
+  "stats.milestonesSection": "Fites i hàbits",
 };
 
