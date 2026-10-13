@@ -325,6 +325,20 @@ pub fn set_deck_bans(
     Ok(())
 }
 
+/// Read the current discover niche/cult bias setting.
+#[tauri::command]
+pub fn get_discover_niche(state: State<'_, AppState>) -> Result<f64, String> {
+    let db = state.db.lock().unwrap();
+    db.get_discover_niche().map_err(|e| e.to_string())
+}
+
+/// Persist the discover niche/cult bias setting in [-1.0, 1.0].
+#[tauri::command]
+pub fn set_discover_niche(state: State<'_, AppState>, value: f64) -> Result<(), String> {
+    let db = state.db.lock().unwrap();
+    db.set_discover_niche(value).map_err(|e| e.to_string())
+}
+
 
 /// Bounded retry count for `discover_catalog_card`'s genre pick: if the
 /// weighted-picked genre turns out to have no undecided candidate left
@@ -420,7 +434,9 @@ pub async fn discover_catalog_card(
     // Taste signals (tags and studios) for the inner per-candidate score.
     // Built once per call, empty in "Aleatorio" mode.
     let taste_signals = if recommended {
-        db.get_taste_signals_across_sites().map_err(|e| e.to_string())?
+        let mut signals = db.get_taste_signals_across_sites().map_err(|e| e.to_string())?;
+        signals.niche_bias = db.get_discover_niche().map_err(|e| e.to_string())?;
+        signals
     } else {
         crate::recommend::TasteSignals::default()
     };

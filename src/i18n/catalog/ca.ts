@@ -647,4 +647,10 @@ export const ca: Messages = {
   "settings.notifyOff": "Desactivades",
   "settings.notifyHint":
     "Avís de Windows quan una actualització troba episodis nous i la finestra està en segon pla.",
+
+  // niche slider
+  "niche.label": "Gustos: populars <-> de culte",
+  "niche.mainstream": "Populars",
+  "niche.niche": "De culte",
+  "niche.hint": "Només afecta al mode Recomanat.",
 };

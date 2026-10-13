@@ -651,4 +651,10 @@ export const es = {
   "settings.notifyOff": "Desactivadas",
   "settings.notifyHint":
     "Aviso de Windows cuando una actualización encuentra episodios nuevos y la ventana está en segundo plano.",
+
+  // niche slider
+  "niche.label": "Gustos: populares <-> de culto",
+  "niche.mainstream": "Populares",
+  "niche.niche": "De culto",
+  "niche.hint": "Solo afecta al modo Recomendado.",
 } as const;

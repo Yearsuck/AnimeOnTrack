@@ -236,6 +236,8 @@ pub fn run() {
             commands::undo_swipe_entry,
             commands::get_deck_bans,
             commands::set_deck_bans,
+            commands::get_discover_niche,
+            commands::set_discover_niche,
             commands::backup_status,
             commands::set_google_credentials,
             commands::connect_drive,

@@ -52,6 +52,10 @@ pub const W_RECENCY: f64 = 0.35;
 /// can meaningfully break ties and elevate matching titles.
 pub const W_TAG: f64 = 0.5;
 pub const W_STUDIO: f64 = 0.3;
+/// Weight for popularity/niche bias term in `score_candidate`. Sits at the
+/// same level as `W_QUALITY` (0.25) so niche bias provides a meaningful nudge
+/// without overriding genre/format taste signals.
+pub const W_POPULARITY: f64 = 0.25;
 /// Half-life-ish decay constant (years) for `recency_term`: a title released
 /// this many years ago scores 0.5. 3 years keeps "still airing / just
 /// finished" shows clearly ahead of a decade-old catalog entry while never
@@ -120,6 +124,7 @@ pub fn recency_term(start_date: Option<i64>, now_unix: i64) -> f64 {
 pub struct TasteSignals {
     pub tag_affinity: HashMap<String, f64>,
     pub studio_affinity: HashMap<String, f64>,
+    pub niche_bias: f64,
 }
 
 impl TasteSignals {
@@ -130,6 +135,7 @@ impl TasteSignals {
         Self {
             tag_affinity: normalize_affinity_map(raw_tags),
             studio_affinity: normalize_affinity_map(raw_studios),
+            niche_bias: 0.0,
         }
     }
 }
@@ -189,6 +195,28 @@ pub fn studio_term(studio: Option<&str>, studio_affinity: &HashMap<String, f64>)
     0.0
 }
 
+/// Computes the popularity / niche bias term in `[0, 1]` for a candidate.
+/// Normalizes AniList popularity via log-scale: `norm = ln(1+pop) / ln(1+300000)` clamped to `[0, 1]`.
+/// Unknown popularity (`None`) is treated as 0.5 (neutral).
+/// The term is `0.5 + niche_bias.clamp(-1, 1) * (0.5 - norm)` clamped to `[0, 1]`:
+/// - `niche_bias = 0.0`: constant 0.5 for all candidates (neutral, preserves ranking).
+/// - `niche_bias = 1.0`: `1 - norm` (favors niche / lower-popularity titles).
+/// - `niche_bias = -1.0`: `norm` (favors mainstream / higher-popularity titles).
+pub fn popularity_term(popularity: Option<i64>, niche_bias: f64) -> f64 {
+    let bias = if niche_bias.is_nan() { 0.0 } else { niche_bias.clamp(-1.0, 1.0) };
+    let norm = match popularity {
+        Some(pop) => {
+            let pop_f = (pop.max(0)) as f64;
+            let denom = (1.0 + 300_000.0_f64).ln();
+            let raw_norm = (1.0 + pop_f).ln() / denom;
+            if raw_norm.is_nan() { 0.5 } else { raw_norm.clamp(0.0, 1.0) }
+        }
+        None => 0.5,
+    };
+    let term = 0.5 + bias * (0.5 - norm);
+    if term.is_nan() { 0.5 } else { term.clamp(0.0, 1.0) }
+}
+
 /// Per-candidate taste score. Pure — no DB/State, so it's directly
 /// unit-testable. `chosen_genre` (the outer weighted pick that produced this
 /// `survivors` batch) is excluded from the genre-overlap sum so the score
@@ -220,12 +248,14 @@ pub fn score_candidate(
     let recency = recency_term(cand.start_date, now_unix);
     let tag = tag_term(&cand.tags, &signals.tag_affinity);
     let studio = studio_term(cand.studio.as_deref(), &signals.studio_affinity);
+    let pop = popularity_term(cand.popularity, signals.niche_bias);
     W_GENRE * genre_term
         + W_FORMAT * format_term
         + W_QUALITY * quality_term
         + W_RECENCY * recency
         + W_TAG * tag
         + W_STUDIO * studio
+        + W_POPULARITY * pop
 }
 
 /// Rank `survivors` (already exclusion/ban/quality-filtered by the caller —
@@ -378,7 +408,11 @@ mod tests {
         genre_affinity.insert("Action".to_string(), 100.0);
         let format_affinity = HashMap::new();
         let cand = anime(1, "OnlyAction", &["Action"], "TV", Some(0));
-        assert_eq!(score_candidate(&cand, &genre_affinity, &format_affinity, &TasteSignals::default(), "Action", 0), 0.0);
+        assert_eq!(
+            score_candidate(&cand, &genre_affinity, &format_affinity, &TasteSignals::default(), "Action", 0)
+                - W_POPULARITY * 0.5,
+            0.0
+        );
     }
 
     #[test]
@@ -604,7 +638,10 @@ mod tests {
             + W_RECENCY * 0.0;
 
         let default_score = score_candidate(&cand, &genre_affinity, &format_affinity, &TasteSignals::default(), "Action", 0);
-        assert!((default_score - old_expected).abs() < 1e-6, "default signals must equal old formula");
+        assert!(
+            ((default_score - W_POPULARITY * 0.5) - old_expected).abs() < 1e-6,
+            "default signals minus neutral popularity constant must equal old formula"
+        );
 
         // With matching tag and studio affinity, score is strictly higher
         let mut signals = TasteSignals::default();
@@ -668,5 +705,76 @@ mod tests {
         let score_no_tags = score_candidate(&cand_no_tags, &HashMap::new(), &HashMap::new(), &TasteSignals::default(), "Action", 0);
         assert!(score_no_tags >= 0.0);
         assert!(!score_no_tags.is_nan());
+    }
+
+    // --- popularity_term & niche bias ---------------------------------------
+
+    #[test]
+    fn popularity_term_neutral_bias_is_constant_half() {
+        assert_eq!(popularity_term(Some(300_000), 0.0), 0.5);
+        assert_eq!(popularity_term(Some(5), 0.0), 0.5);
+        assert_eq!(popularity_term(None, 1.0), 0.5);
+        assert_eq!(popularity_term(None, 0.0), 0.5);
+        assert_eq!(popularity_term(None, -1.0), 0.5);
+    }
+
+    #[test]
+    fn popularity_term_niche_vs_mainstream_bias() {
+        let niche_pop = 500;
+        let mainstream_pop = 200_000;
+
+        // Bias +1: niche title scores strictly higher than mainstream title; both in [0, 1]
+        let score_niche = popularity_term(Some(niche_pop), 1.0);
+        let score_mainstream = popularity_term(Some(mainstream_pop), 1.0);
+        assert!(score_niche > score_mainstream, "niche={score_niche} mainstream={score_mainstream}");
+        assert!((0.0..=1.0).contains(&score_niche));
+        assert!((0.0..=1.0).contains(&score_mainstream));
+
+        // Bias -1: mainstream title scores strictly higher than niche title; both in [0, 1]
+        let score_niche_neg = popularity_term(Some(niche_pop), -1.0);
+        let score_mainstream_neg = popularity_term(Some(mainstream_pop), -1.0);
+        assert!(score_mainstream_neg > score_niche_neg, "mainstream={score_mainstream_neg} niche={score_niche_neg}");
+        assert!((0.0..=1.0).contains(&score_niche_neg));
+        assert!((0.0..=1.0).contains(&score_mainstream_neg));
+    }
+
+    #[test]
+    fn popularity_term_never_produces_nan_or_out_of_bounds() {
+        let test_cases = [
+            (None, 0.0),
+            (None, 1.0),
+            (None, -1.0),
+            (Some(0), 0.5),
+            (Some(-10), 0.5),
+            (Some(i64::MAX), 0.5),
+            (Some(100), f64::NAN),
+            (Some(100), 5.0),
+            (Some(100), -5.0),
+        ];
+        for (pop, bias) in test_cases {
+            let res = popularity_term(pop, bias);
+            assert!(!res.is_nan(), "popularity_term({pop:?}, {bias}) was NaN");
+            assert!((0.0..=1.0).contains(&res), "popularity_term({pop:?}, {bias}) = {res} out of [0, 1]");
+        }
+    }
+
+    #[test]
+    fn neutral_niche_bias_preserves_candidate_ordering() {
+        let genre_affinity = HashMap::new();
+        let format_affinity = HashMap::new();
+        let mut small_pop = anime(1, "Small", &["Action"], "TV", Some(80));
+        small_pop.popularity = Some(500);
+        let mut big_pop = anime(2, "Big", &["Action"], "TV", Some(50));
+        big_pop.popularity = Some(200_000);
+
+        let s_small = score_candidate(&small_pop, &genre_affinity, &format_affinity, &TasteSignals::default(), "Action", 0);
+        let s_big = score_candidate(&big_pop, &genre_affinity, &format_affinity, &TasteSignals::default(), "Action", 0);
+        assert!(s_small > s_big, "neutral setting must preserve ordering based on other signals");
+
+        // When niche bias is +1, the niche title gets an additional boost
+        let niche_signals = TasteSignals { niche_bias: 1.0, ..TasteSignals::default() };
+        let s_small_niche = score_candidate(&small_pop, &genre_affinity, &format_affinity, &niche_signals, "Action", 0);
+        let s_big_niche = score_candidate(&big_pop, &genre_affinity, &format_affinity, &niche_signals, "Action", 0);
+        assert!(s_small_niche - s_big_niche > s_small - s_big, "niche bias should widen lead of small pop title");
     }
 }

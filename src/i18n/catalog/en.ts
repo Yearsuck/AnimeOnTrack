@@ -632,4 +632,10 @@ export const en: Messages = {
   "settings.notifyOff": "Off",
   "settings.notifyHint":
     "Windows notification when a refresh finds new episodes and the window is in the background.",
+
+  // niche slider
+  "niche.label": "Taste: mainstream <-> cult",
+  "niche.mainstream": "Mainstream",
+  "niche.niche": "Cult",
+  "niche.hint": "Only affects Recommended mode.",
 };
