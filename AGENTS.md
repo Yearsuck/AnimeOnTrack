@@ -111,3 +111,14 @@ The Tauri command surface is split across **`src-tauri/src/commands/`** (`scan.r
 The logo is `src-tauri/app-icon.png` (AOT monogram, red on white, rounded); the full icon set is regenerated from it via `npx tauri icon`. The Windows exe embeds the icon at **compile time** via `build.rs` (`tauri_build`) — changing `icons/icon.ico` may need a forced relink (`touch src-tauri/build.rs`) and a Windows icon-cache refresh for the new icon to show on the taskbar/desktop.
 
 Scan/refresh progress is pushed from Rust via Tauri events (`refresh-progress` for per-series X/Y progress, `scrape-stage` for sub-steps; `catalog-sync-progress`, `catalog-backfill-progress`), consumed by the relevant views — no polling from the frontend. `App.tsx` guards its startup effect with a `useRef` flag against React StrictMode's dev-only double-invoke, and keeps Stats mounted (hidden via CSS) once visited to preserve the 3D graph's three.js/d3-force state.
+
+<!-- ai-hub:delegation:start -->
+## Delegation (orchestrating agents only)
+
+If you are the orchestrating agent (Claude, Codex, ...) and not an `agy` agent launched from a
+`.agy-spec-*.md` file: whenever possible and the model quota is not exhausted, investigate and
+implement through `agy` agents with the `agy-agents` skill (`~/.claude/skills/agy-agents/SKILL.md`).
+Models: `gemini-3.8-flash-high` (default) or `claude-opus-4-6-thinking`; one out of quota -> use
+the other. Long prompts go in a spec `.md` inside the agent's worktree (templates in the skill),
+never typed into the terminal. Full rule: `~/Documents/GitHub/ai-hub/rules/delegation.md`.
+<!-- ai-hub:delegation:end -->
