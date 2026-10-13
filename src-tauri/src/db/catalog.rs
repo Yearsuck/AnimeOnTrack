@@ -1271,9 +1271,9 @@ impl Db {
     /// biases toward higher `average_score` rather than being genuinely
     /// uniform — see docs/superpowers/specs/2026-07-13-discover-recommendation-toggle-design.md.
     // The knobs are all independent recommendation inputs; bundling them into
-    // a struct would just move the same eight fields elsewhere.
+    // a struct would just move the same nine fields elsewhere.
     #[allow(clippy::too_many_arguments)]
-    pub fn random_catalog_anime_in_genre(
+    pub fn random_catalog_anime_in_genre_with_signals(
         &self,
         genre: &str,
         banned_formats: &[String],
@@ -1281,6 +1281,7 @@ impl Db {
         excluded_norm_titles: &std::collections::HashSet<String>,
         genre_affinity: &std::collections::HashMap<String, f64>,
         format_affinity: &std::collections::HashMap<String, f64>,
+        taste_signals: &crate::recommend::TasteSignals,
         recommended: bool,
         hide_upcoming: bool,
         min_start_date: Option<i64>,
@@ -1391,17 +1392,60 @@ impl Db {
         };
         let mut survivors: Vec<crate::anilist::CatalogAnime> =
             batch.into_iter().filter(|a| !is_engaged_by_title(a)).collect();
+        // A per-id list_catalog_tags loop is acceptable when survivors <= 50.
         for anime in &mut survivors {
             anime.genres = self.list_catalog_genres(anime.id)?;
-            anime.tags = self.list_catalog_tags(anime.id)?;
+            if anime.tags.is_empty() {
+                anime.tags = self.list_catalog_tags(anime.id)?;
+            }
         }
 
         if recommended {
             let now_unix = chrono::Utc::now().timestamp();
-            Ok(crate::recommend::pick_recommended(survivors, genre_affinity, format_affinity, genre, now_unix))
+            Ok(crate::recommend::pick_recommended(
+                survivors,
+                genre_affinity,
+                format_affinity,
+                taste_signals,
+                genre,
+                now_unix,
+            ))
         } else {
             Ok(survivors.into_iter().next())
         }
+    }
+
+    /// Same pick without taste signals (tags/studios); the app calls `_with_signals`, tests keep this shape.
+    #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn random_catalog_anime_in_genre(
+        &self,
+        genre: &str,
+        banned_formats: &[String],
+        banned_genres: &[String],
+        excluded_norm_titles: &std::collections::HashSet<String>,
+        genre_affinity: &std::collections::HashMap<String, f64>,
+        format_affinity: &std::collections::HashMap<String, f64>,
+        recommended: bool,
+        hide_upcoming: bool,
+        min_start_date: Option<i64>,
+        max_start_date: Option<i64>,
+        min_score: Option<i64>,
+    ) -> Result<Option<crate::anilist::CatalogAnime>> {
+        self.random_catalog_anime_in_genre_with_signals(
+            genre,
+            banned_formats,
+            banned_genres,
+            excluded_norm_titles,
+            genre_affinity,
+            format_affinity,
+            &crate::recommend::TasteSignals::default(),
+            recommended,
+            hide_upcoming,
+            min_start_date,
+            max_start_date,
+            min_score,
+        )
     }
 
     /// Normalized-title exclusion set input: titles of `series` rows the

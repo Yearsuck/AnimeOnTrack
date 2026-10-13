@@ -736,6 +736,146 @@ impl Db {
         Ok(scores)
     }
 
+    /// Taste signals over the AniList catalog tags and studios across the **whole library**,
+    /// deduped across sites per canonical show (`super::library::canon_key`).
+    ///
+    /// Follows the same per-canonical-show verdict (+2 followed, +1 "want", -1.5 discarded,
+    /// with followed outranking want outranking discarded) as `get_genre_affinity_across_sites`.
+    /// Tags are gathered from linked series (`series.anilist_id` joined to `anilist_catalog_tags`),
+    /// ignoring tags with rank < 50. Studios are gathered from `anilist_catalog.studio`
+    /// (non-NULL and non-empty).
+    /// Unlinked rows (`anilist_id IS NULL`) contribute nothing.
+    ///
+    /// Both tag and studio affinity scores are normalized to `[0, 1]` by their maximum
+    /// positive raw value; entries with raw score <= 0 are dropped. If no positive signals
+    /// exist, returns empty maps (cold start).
+    pub fn get_taste_signals_across_sites(&self) -> Result<crate::recommend::TasteSignals> {
+        let mut tag_stmt = self.conn.prepare(
+            "SELECT s.anilist_id, s.title, s.followed, s.backlog_status, act.tag
+             FROM series s
+             JOIN anilist_catalog_tags act ON act.anilist_id = s.anilist_id
+             WHERE s.anilist_id IS NOT NULL AND act.rank >= 50",
+        )?;
+        struct TagRow {
+            canon_key: String,
+            followed: bool,
+            backlog_status: Option<String>,
+            tag: String,
+        }
+        let tag_rows: Vec<TagRow> = tag_stmt
+            .query_map([], |r| {
+                let anilist_id: i64 = r.get(0)?;
+                let title: String = r.get(1)?;
+                Ok(TagRow {
+                    canon_key: super::library::canon_key(Some(anilist_id), &title),
+                    followed: r.get::<_, i64>(2)? != 0,
+                    backlog_status: r.get(3)?,
+                    tag: r.get(4)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        #[derive(Default)]
+        struct CanonicalTagShow {
+            followed: bool,
+            want: bool,
+            discarded: bool,
+            tags: HashSet<String>,
+        }
+        let mut tag_shows: HashMap<String, CanonicalTagShow> = HashMap::new();
+        for row in tag_rows {
+            let entry = tag_shows.entry(row.canon_key).or_default();
+            entry.followed |= row.followed;
+            match row.backlog_status.as_deref() {
+                Some("want") => entry.want = true,
+                Some("discarded") => entry.discarded = true,
+                _ => {}
+            }
+            entry.tags.insert(row.tag);
+        }
+
+        let mut raw_tags: HashMap<String, f64> = HashMap::new();
+        for show in tag_shows.values() {
+            let delta = if show.followed {
+                2.0
+            } else if show.want {
+                1.0
+            } else if show.discarded {
+                -1.5
+            } else {
+                0.0
+            };
+            for tag in &show.tags {
+                *raw_tags.entry(tag.clone()).or_insert(0.0) += delta;
+            }
+        }
+
+        let mut studio_stmt = self.conn.prepare(
+            "SELECT s.anilist_id, s.title, s.followed, s.backlog_status, c.studio
+             FROM series s
+             JOIN anilist_catalog c ON c.id = s.anilist_id
+             WHERE s.anilist_id IS NOT NULL AND c.studio IS NOT NULL AND c.studio != ''",
+        )?;
+        struct StudioRow {
+            canon_key: String,
+            followed: bool,
+            backlog_status: Option<String>,
+            studio: String,
+        }
+        let studio_rows: Vec<StudioRow> = studio_stmt
+            .query_map([], |r| {
+                let anilist_id: i64 = r.get(0)?;
+                let title: String = r.get(1)?;
+                Ok(StudioRow {
+                    canon_key: super::library::canon_key(Some(anilist_id), &title),
+                    followed: r.get::<_, i64>(2)? != 0,
+                    backlog_status: r.get(3)?,
+                    studio: r.get(4)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        #[derive(Default)]
+        struct CanonicalStudioShow {
+            followed: bool,
+            want: bool,
+            discarded: bool,
+            studios: HashSet<String>,
+        }
+        let mut studio_shows: HashMap<String, CanonicalStudioShow> = HashMap::new();
+        for row in studio_rows {
+            let entry = studio_shows.entry(row.canon_key).or_default();
+            entry.followed |= row.followed;
+            match row.backlog_status.as_deref() {
+                Some("want") => entry.want = true,
+                Some("discarded") => entry.discarded = true,
+                _ => {}
+            }
+            let trimmed = row.studio.trim();
+            if !trimmed.is_empty() {
+                entry.studios.insert(trimmed.to_string());
+            }
+        }
+
+        let mut raw_studios: HashMap<String, f64> = HashMap::new();
+        for show in studio_shows.values() {
+            let delta = if show.followed {
+                2.0
+            } else if show.want {
+                1.0
+            } else if show.discarded {
+                -1.5
+            } else {
+                0.0
+            };
+            for studio in &show.studios {
+                *raw_studios.entry(studio.clone()).or_insert(0.0) += delta;
+            }
+        }
+
+        Ok(crate::recommend::TasteSignals::from_raw(raw_tags, raw_studios))
+    }
+
     /// This user's top `limit` genres by cross-site affinity, positive scores
     /// only, strongest first — the "Tus géneros favoritos" chip row. Ties break
     /// alphabetically: the scores come out of a `HashMap`, so without a
@@ -4433,6 +4573,106 @@ mod tests {
             !deck_scores.contains_key("Mecha"),
             "the per-site affinity the swipe deck uses still sees only site A"
         );
+    }
+
+    #[test]
+    fn taste_signals_across_sites_weights_tags_and_studios() {
+        let db = Db::open(":memory:").unwrap();
+
+        // 0. Empty DB -> both maps empty (cold start)
+        let empty = db.get_taste_signals_across_sites().unwrap();
+        assert!(empty.tag_affinity.is_empty(), "empty DB -> tag_affinity empty");
+        assert!(empty.studio_affinity.is_empty(), "empty DB -> studio_affinity empty");
+
+        let src_a = db.upsert_source("SiteA", "https://a.example", "site_a").unwrap();
+        let src_b = db.upsert_source("SiteB", "https://b.example", "site_b").unwrap();
+
+        // Catalog entries:
+        // Anime 1: tag "Isekai" (rank 80), tag "LowRank" (rank 40), studio "Bones"
+        let anime1 = crate::anilist::CatalogAnime {
+            id: 1, title: "Isekai Bones".into(), title_romaji: None, title_english: None,
+            cover_url: None, banner_url: None, format: None, episodes: None, average_score: None, popularity: None,
+            url: "x".into(), genres: vec![], synonyms: vec![],
+            tags: vec![
+                crate::anilist::CatalogTag { name: "Isekai".into(), rank: 80 },
+                crate::anilist::CatalogTag { name: "LowRank".into(), rank: 40 },
+            ],
+            relations: vec![], status: None, duration: None,
+            studio: Some("Bones".into()),
+            start_date: None, next_airing_at: None, next_episode: None,
+        };
+        db.upsert_catalog_anime(&anime1, 0).unwrap();
+
+        // Anime 2: tag "Isekai" (rank 75), studio "Mappa"
+        let anime2 = crate::anilist::CatalogAnime {
+            id: 2, title: "Isekai Mappa".into(), title_romaji: None, title_english: None,
+            cover_url: None, banner_url: None, format: None, episodes: None, average_score: None, popularity: None,
+            url: "x".into(), genres: vec![], synonyms: vec![],
+            tags: vec![
+                crate::anilist::CatalogTag { name: "Isekai".into(), rank: 75 },
+            ],
+            relations: vec![], status: None, duration: None,
+            studio: Some("Mappa".into()),
+            start_date: None, next_airing_at: None, next_episode: None,
+        };
+        db.upsert_catalog_anime(&anime2, 1).unwrap();
+
+        // Anime 3: tag "Gore" (rank 90), studio "Wit"
+        let anime3 = crate::anilist::CatalogAnime {
+            id: 3, title: "Gore Wit".into(), title_romaji: None, title_english: None,
+            cover_url: None, banner_url: None, format: None, episodes: None, average_score: None, popularity: None,
+            url: "x".into(), genres: vec![], synonyms: vec![],
+            tags: vec![
+                crate::anilist::CatalogTag { name: "Gore".into(), rank: 90 },
+            ],
+            relations: vec![], status: None, duration: None,
+            studio: Some("Wit".into()),
+            start_date: None, next_airing_at: None, next_episode: None,
+        };
+        db.upsert_catalog_anime(&anime3, 2).unwrap();
+
+        // Followed linked show (Anime 1) on Site A:
+        let s1_a = db.upsert_series(src_a, &mk_airing("s1-a", "Isekai Bones", None)).unwrap();
+        db.set_followed(s1_a, true).unwrap();
+        db.set_anilist_id(s1_a, 1).unwrap();
+
+        // Duplicate of Anime 1 on Site B (followed): same show on two sites must count once (+2 once)
+        let s1_b = db.upsert_series(src_b, &mk_airing("s1-b", "Isekai Bones", None)).unwrap();
+        db.set_followed(s1_b, true).unwrap();
+        db.set_anilist_id(s1_b, 1).unwrap();
+
+        // 'want' show (Anime 2) on Site A (+1):
+        let s2 = db.upsert_series(src_a, &mk_airing("s2", "Isekai Mappa", None)).unwrap();
+        db.conn.execute("UPDATE series SET backlog_status = 'want' WHERE id = ?1", [s2]).unwrap();
+        db.set_anilist_id(s2, 2).unwrap();
+
+        // Discarded show (Anime 3) on Site A (-1.5):
+        let s3 = db.upsert_series(src_a, &mk_airing("s3", "Gore Wit", None)).unwrap();
+        db.conn.execute("UPDATE series SET backlog_status = 'discarded' WHERE id = ?1", [s3]).unwrap();
+        db.set_anilist_id(s3, 3).unwrap();
+
+        // Unlinked series on Site A (followed=1, but anilist_id is NULL) -> must contribute nothing
+        let unlinked = db.upsert_series(src_a, &mk_airing("unlinked", "Unlinked Show", None)).unwrap();
+        db.set_followed(unlinked, true).unwrap();
+
+        let signals = db.get_taste_signals_across_sites().unwrap();
+
+        // Isekai had raw 2.0 (from Anime 1, counted once) + 1.0 (from Anime 2) = 3.0. Max raw = 3.0 -> normalized to 1.0.
+        assert_eq!(signals.tag_affinity.get("Isekai"), Some(&1.0));
+
+        // Gore had raw -1.5 (from Anime 3 discarded) -> negative, dropped
+        assert!(!signals.tag_affinity.contains_key("Gore"));
+
+        // LowRank had rank 40 < 50 -> ignored
+        assert!(!signals.tag_affinity.contains_key("LowRank"));
+
+        // Bones had raw 2.0 (Anime 1 counted once despite two sites).
+        // Mappa had raw 1.0 (Anime 2 want).
+        // Wit had raw -1.5 (Anime 3 discarded) -> dropped.
+        // Max positive studio = 2.0 (Bones). Bones = 2.0/2.0 = 1.0. Mappa = 1.0/2.0 = 0.5.
+        assert_eq!(signals.studio_affinity.get("Bones"), Some(&1.0));
+        assert_eq!(signals.studio_affinity.get("Mappa"), Some(&0.5));
+        assert!(!signals.studio_affinity.contains_key("Wit"));
     }
 
     #[test]
