@@ -1,11 +1,13 @@
 use super::*;
 
-/// A followed canonical show that lacks episodes on all tracked sites.
+/// A followed canonical show that lacks episodes on all tracked sites, or is
+/// behind what AniList says has aired.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EpisodeSourceCandidate {
     pub canon_key: String,
     pub anilist_id: Option<i64>,
     pub title: String,
+    pub known_rows: Vec<(i64 /*series id*/, String /*site_id*/, String /*series url*/)>,
 }
 
 /// Ordering for the pending queue, by how many episodes each series still
@@ -347,23 +349,51 @@ impl Db {
         Ok(winners)
     }
 
-    /// Returns followed canonical shows with no row that has episodes on ANY site,
+    /// Returns followed canonical shows with no row that has episodes on ANY site
+    /// (old rule), or followed releasing shows behind what AniList says has aired,
     /// minus those with a fresh miss marker.
     pub fn shows_needing_episode_source(&self, _active_source_id: i64, now: i64) -> Result<Vec<EpisodeSourceCandidate>> {
         let mut stmt = self.conn.prepare(
-            "SELECT s.id, s.anilist_id, s.title, c.title AS catalog_title, s.followed,
-                    COUNT(e.id) AS total_ep, c.status AS catalog_status,
+            "SELECT s.id, COALESCE(src.site_id, '') AS site_id, s.url, s.anilist_id, s.title,
+                    c.title AS catalog_title, s.followed,
+                    COUNT(e.id) AS total_ep,
+                    COALESCE(MAX(CAST(e.number AS INTEGER)), 0) AS max_ep,
+                    c.status AS catalog_status,
+                    c.next_episode AS catalog_next_episode,
                     s.watched_externally
              FROM series s
+             LEFT JOIN sources src ON src.id = s.source_id
              LEFT JOIN anilist_catalog c ON c.id = s.anilist_id
              LEFT JOIN episodes e ON e.series_id = s.id
              GROUP BY s.id"
         )?;
-        struct Row { anilist_id: Option<i64>, title: String, catalog_title: Option<String>, followed: bool, total_ep: i64, catalog_status: Option<String>, watched_ext: bool }
+        struct Row {
+            id: i64,
+            site_id: String,
+            url: String,
+            anilist_id: Option<i64>,
+            title: String,
+            catalog_title: Option<String>,
+            followed: bool,
+            total_ep: i64,
+            max_ep: i64,
+            catalog_status: Option<String>,
+            catalog_next_episode: Option<i64>,
+            watched_ext: bool,
+        }
         let rows = stmt.query_map([], |r| Ok(Row {
-            anilist_id: r.get(1)?, title: r.get(2)?, catalog_title: r.get(3)?,
-            followed: r.get::<_, i64>(4)? != 0, total_ep: r.get(5)?,
-            catalog_status: r.get(6)?, watched_ext: r.get::<_, i64>(7)? != 0
+            id: r.get(0)?,
+            site_id: r.get(1)?,
+            url: r.get(2)?,
+            anilist_id: r.get(3)?,
+            title: r.get(4)?,
+            catalog_title: r.get(5)?,
+            followed: r.get::<_, i64>(6)? != 0,
+            total_ep: r.get(7)?,
+            max_ep: r.get(8)?,
+            catalog_status: r.get(9)?,
+            catalog_next_episode: r.get(10)?,
+            watched_ext: r.get::<_, i64>(11)? != 0,
         }))?.collect::<rusqlite::Result<Vec<_>>>()?;
 
         let mut groups: std::collections::HashMap<String, Vec<Row>> = std::collections::HashMap::new();
@@ -397,8 +427,8 @@ impl Db {
             if !group.iter().any(|r| r.followed) {
                 continue; // Not followed
             }
-            if group.iter().any(|r| r.total_ep > 0) {
-                continue; // Has episodes on at least one site
+            if group.iter().any(|r| r.watched_ext) {
+                continue; // Watched externally
             }
             if self.has_recent_episode_fallback_miss(&key, now)? {
                 continue; // Fresh miss marker
@@ -409,26 +439,51 @@ impl Db {
                 continue;
             }
 
-            let mut valid_rep = None;
-            for r in group {
-                if r.anilist_id.is_none() { continue; }
-                if r.watched_ext { continue; }
+            let valid_rep = group.iter().find(|r| r.anilist_id.is_some() && !r.watched_ext);
+            let rep = match valid_rep {
+                Some(r) => r,
+                None => continue,
+            };
 
-                let valid_status = r.catalog_status.as_deref() == Some("RELEASING") ||
-                                   r.catalog_status.as_deref() == Some("FINISHED") ||
-                                   r.catalog_status.as_deref() == Some("HIATUS");
+            let no_episodes_anywhere = group.iter().all(|r| r.total_ep == 0);
+            if no_episodes_anywhere {
+                let valid_status = rep.catalog_status.as_deref() == Some("RELEASING") ||
+                                   rep.catalog_status.as_deref() == Some("FINISHED") ||
+                                   rep.catalog_status.as_deref() == Some("HIATUS");
                 if valid_status {
-                    valid_rep = Some(r);
-                    break;
+                    candidates.push(EpisodeSourceCandidate {
+                        canon_key: key,
+                        anilist_id: rep.anilist_id,
+                        title: rep.title.clone(),
+                        known_rows: Vec::new(),
+                    });
                 }
-            }
-
-            if let Some(rep) = valid_rep {
-                candidates.push(EpisodeSourceCandidate {
-                    canon_key: key,
-                    anilist_id: rep.anilist_id,
-                    title: rep.title,
-                });
+            } else {
+                if rep.catalog_status.as_deref() != Some("RELEASING") {
+                    continue;
+                }
+                let next_ep = match rep.catalog_next_episode {
+                    Some(n) => n,
+                    None => continue,
+                };
+                let expected = next_ep - 1;
+                if expected <= 0 {
+                    continue;
+                }
+                let max_ep = group.iter().map(|r| r.max_ep).max().unwrap_or(0);
+                if max_ep < expected {
+                    let mut known_rows: Vec<(i64, String, String)> = group.iter()
+                        .filter(|r| !r.url.trim().is_empty())
+                        .map(|r| (r.id, r.site_id.clone(), r.url.clone()))
+                        .collect();
+                    known_rows.sort_by_key(|r| r.0);
+                    candidates.push(EpisodeSourceCandidate {
+                        canon_key: key,
+                        anilist_id: rep.anilist_id,
+                        title: rep.title.clone(),
+                        known_rows,
+                    });
+                }
             }
         }
 
@@ -600,6 +655,223 @@ mod tests {
         let candidates = db.shows_needing_episode_source(src_a, now).unwrap();
         let titles: Vec<&str> = candidates.iter().map(|c| c.title.as_str()).collect();
         assert_eq!(titles, vec!["Candidate Eight", "Candidate Five", "Candidate One"]);
+    }
+
+    #[test]
+    fn shows_needing_episode_source_releasing_behind_ani_list_is_candidate() {
+        let db = Db::open(":memory:").unwrap();
+        let src_a = db.upsert_source("AnimeYT", "https://a.example", "animeytx").unwrap();
+        let now = 10_000_000;
+
+        let mk = |slug: &str, title: &str, url: &str| crate::models::Series {
+            id: 0, slug: slug.into(), title: title.into(), url: url.into(),
+            cover_url: None, is_airing: true, followed: false, next_episode_at: None, site_episode_count: None,
+        };
+
+        // Catalog: RELEASING, next_episode = 6 (expected 5)
+        db.upsert_catalog_anime(&crate::db::test_support::catalog_anime(100, "Airing Show", &[]), 0).unwrap();
+        db.conn.execute(
+            "UPDATE anilist_catalog SET status = 'RELEASING', next_episode = 6 WHERE id = 100",
+            [],
+        ).unwrap();
+
+        // Series on site A, followed, linked to 100
+        let s_a = db.upsert_series(src_a, &mk("airing-show", "Airing Show", "https://a.example/tv/airing-show/")).unwrap();
+        db.set_anilist_id(s_a, 100).unwrap();
+        db.set_followed(s_a, true).unwrap();
+
+        // Episodes 1 to 4 on site A (highest is 4 < 5)
+        for ep in 1..=4 {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: s_a, number: ep.to_string(), title: None,
+                url: format!("https://a.example/ep-{ep}"), released_at: None, seen: false,
+                download_path: None, download_status: None,
+            }).unwrap();
+        }
+
+        let candidates = db.shows_needing_episode_source(src_a, now).unwrap();
+        assert_eq!(candidates.len(), 1);
+        let c = &candidates[0];
+        assert_eq!(c.canon_key, "al:100");
+        assert_eq!(c.anilist_id, Some(100));
+        assert_eq!(c.title, "Airing Show");
+        assert_eq!(c.known_rows, vec![(s_a, "animeytx".to_string(), "https://a.example/tv/airing-show/".to_string())]);
+    }
+
+    #[test]
+    fn shows_needing_episode_source_caught_up_is_not_candidate() {
+        let db = Db::open(":memory:").unwrap();
+        let src_a = db.upsert_source("AnimeYT", "https://a.example", "animeytx").unwrap();
+        let now = 10_000_000;
+
+        let mk = |slug: &str, title: &str| crate::models::Series {
+            id: 0, slug: slug.into(), title: title.into(), url: format!("u-{slug}"),
+            cover_url: None, is_airing: true, followed: false, next_episode_at: None, site_episode_count: None,
+        };
+
+        db.upsert_catalog_anime(&crate::db::test_support::catalog_anime(100, "Airing Show", &[]), 0).unwrap();
+        db.conn.execute(
+            "UPDATE anilist_catalog SET status = 'RELEASING', next_episode = 6 WHERE id = 100",
+            [],
+        ).unwrap();
+
+        let s_a = db.upsert_series(src_a, &mk("airing-show", "Airing Show")).unwrap();
+        db.set_anilist_id(s_a, 100).unwrap();
+        db.set_followed(s_a, true).unwrap();
+
+        // Episodes 1 to 5 on A (5 == expected 5)
+        for ep in 1..=5 {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: s_a, number: ep.to_string(), title: None,
+                url: format!("https://a.example/ep-{ep}"), released_at: None, seen: false,
+                download_path: None, download_status: None,
+            }).unwrap();
+        }
+
+        let candidates = db.shows_needing_episode_source(src_a, now).unwrap();
+        assert!(candidates.is_empty(), "caught-up show (ep 5 == expected 5) must not be candidate");
+    }
+
+    #[test]
+    fn shows_needing_episode_source_finished_or_null_next_with_episodes_not_candidate() {
+        let db = Db::open(":memory:").unwrap();
+        let src_a = db.upsert_source("AnimeYT", "https://a.example", "animeytx").unwrap();
+        let now = 10_000_000;
+
+        let mk = |slug: &str, title: &str| crate::models::Series {
+            id: 0, slug: slug.into(), title: title.into(), url: format!("u-{slug}"),
+            cover_url: None, is_airing: true, followed: false, next_episode_at: None, site_episode_count: None,
+        };
+
+        // FINISHED show with episodes
+        db.upsert_catalog_anime(&crate::db::test_support::catalog_anime(201, "Finished Show", &[]), 0).unwrap();
+        db.conn.execute(
+            "UPDATE anilist_catalog SET status = 'FINISHED', next_episode = 6 WHERE id = 201",
+            [],
+        ).unwrap();
+        let s1 = db.upsert_series(src_a, &mk("finished-show", "Finished Show")).unwrap();
+        db.set_anilist_id(s1, 201).unwrap();
+        db.set_followed(s1, true).unwrap();
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: s1, number: "1".into(), title: None,
+            url: "u/1".into(), released_at: None, seen: false, download_path: None, download_status: None,
+        }).unwrap();
+
+        // RELEASING show with next_episode NULL and episodes present
+        db.upsert_catalog_anime(&crate::db::test_support::catalog_anime(202, "Null Next Show", &[]), 0).unwrap();
+        db.conn.execute(
+            "UPDATE anilist_catalog SET status = 'RELEASING', next_episode = NULL WHERE id = 202",
+            [],
+        ).unwrap();
+        let s2 = db.upsert_series(src_a, &mk("null-next-show", "Null Next Show")).unwrap();
+        db.set_anilist_id(s2, 202).unwrap();
+        db.set_followed(s2, true).unwrap();
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: s2, number: "1".into(), title: None,
+            url: "u/2".into(), released_at: None, seen: false, download_path: None, download_status: None,
+        }).unwrap();
+
+        let candidates = db.shows_needing_episode_source(src_a, now).unwrap();
+        assert!(candidates.is_empty(), "FINISHED with eps and NULL next_episode with eps must not be candidates");
+    }
+
+    #[test]
+    fn shows_needing_episode_source_fresh_group_miss_marker_skips_candidate() {
+        let db = Db::open(":memory:").unwrap();
+        let src_a = db.upsert_source("AnimeYT", "https://a.example", "animeytx").unwrap();
+        let now = 10_000_000;
+
+        let mk = |slug: &str, title: &str| crate::models::Series {
+            id: 0, slug: slug.into(), title: title.into(), url: format!("u-{slug}"),
+            cover_url: None, is_airing: true, followed: false, next_episode_at: None, site_episode_count: None,
+        };
+
+        db.upsert_catalog_anime(&crate::db::test_support::catalog_anime(300, "Miss Show", &[]), 0).unwrap();
+        db.conn.execute(
+            "UPDATE anilist_catalog SET status = 'RELEASING', next_episode = 6 WHERE id = 300",
+            [],
+        ).unwrap();
+        let s = db.upsert_series(src_a, &mk("miss-show", "Miss Show")).unwrap();
+        db.set_anilist_id(s, 300).unwrap();
+        db.set_followed(s, true).unwrap();
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: s, number: "1".into(), title: None,
+            url: "u/1".into(), released_at: None, seen: false, download_path: None, download_status: None,
+        }).unwrap();
+
+        db.record_episode_fallback_miss("al:300", now - 3600).unwrap();
+
+        let candidates = db.shows_needing_episode_source(src_a, now).unwrap();
+        assert!(candidates.is_empty(), "show with fresh miss marker must not be candidate");
+    }
+
+    #[test]
+    fn shows_needing_episode_source_zero_episodes_old_behaviour_intact() {
+        let db = Db::open(":memory:").unwrap();
+        let src_a = db.upsert_source("AnimeYT", "https://a.example", "animeytx").unwrap();
+        let now = 10_000_000;
+
+        let mk = |slug: &str, title: &str| crate::models::Series {
+            id: 0, slug: slug.into(), title: title.into(), url: format!("u-{slug}"),
+            cover_url: None, is_airing: true, followed: false, next_episode_at: None, site_episode_count: None,
+        };
+
+        db.upsert_catalog_anime(&crate::db::test_support::catalog_anime(400, "Zero Eps Show", &[]), 0).unwrap();
+        db.conn.execute(
+            "UPDATE anilist_catalog SET status = 'FINISHED' WHERE id = 400",
+            [],
+        ).unwrap();
+        let s = db.upsert_series(src_a, &mk("zero-eps", "Zero Eps Show")).unwrap();
+        db.set_anilist_id(s, 400).unwrap();
+        db.set_followed(s, true).unwrap();
+
+        let candidates = db.shows_needing_episode_source(src_a, now).unwrap();
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].canon_key, "al:400");
+        assert!(candidates[0].known_rows.is_empty(), "old behaviour: empty known_rows");
+    }
+
+    #[test]
+    fn shows_needing_episode_source_unfollowed_or_watched_externally_never_candidate() {
+        let db = Db::open(":memory:").unwrap();
+        let src_a = db.upsert_source("AnimeYT", "https://a.example", "animeytx").unwrap();
+        let now = 10_000_000;
+
+        let mk = |slug: &str, title: &str| crate::models::Series {
+            id: 0, slug: slug.into(), title: title.into(), url: format!("u-{slug}"),
+            cover_url: None, is_airing: true, followed: false, next_episode_at: None, site_episode_count: None,
+        };
+
+        // Unfollowed behind show
+        db.upsert_catalog_anime(&crate::db::test_support::catalog_anime(501, "Unfollowed", &[]), 0).unwrap();
+        db.conn.execute(
+            "UPDATE anilist_catalog SET status = 'RELEASING', next_episode = 6 WHERE id = 501",
+            [],
+        ).unwrap();
+        let s1 = db.upsert_series(src_a, &mk("unfollowed", "Unfollowed")).unwrap();
+        db.set_anilist_id(s1, 501).unwrap();
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: s1, number: "1".into(), title: None,
+            url: "u/1".into(), released_at: None, seen: false, download_path: None, download_status: None,
+        }).unwrap();
+
+        // Followed but watched_externally show
+        db.upsert_catalog_anime(&crate::db::test_support::catalog_anime(502, "Watched Ext", &[]), 0).unwrap();
+        db.conn.execute(
+            "UPDATE anilist_catalog SET status = 'RELEASING', next_episode = 6 WHERE id = 502",
+            [],
+        ).unwrap();
+        let s2 = db.upsert_series(src_a, &mk("watched-ext", "Watched Ext")).unwrap();
+        db.set_anilist_id(s2, 502).unwrap();
+        db.set_followed(s2, true).unwrap();
+        db.conn.execute("UPDATE series SET watched_externally = 1 WHERE id = ?1", [s2]).unwrap();
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: s2, number: "1".into(), title: None,
+            url: "u/2".into(), released_at: None, seen: false, download_path: None, download_status: None,
+        }).unwrap();
+
+        let candidates = db.shows_needing_episode_source(src_a, now).unwrap();
+        assert!(candidates.is_empty(), "unfollowed or watched_externally must never be a candidate");
     }
 
     #[test]

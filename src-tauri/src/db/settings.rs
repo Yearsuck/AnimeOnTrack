@@ -193,6 +193,22 @@ impl Db {
     }
 
     /// Record that a specific site failed to yield episodes for this show.
+    /// Cool-down between two attempts at the same show by the background episode fallback.
+    const EPISODE_FALLBACK_ATTEMPT_COOLDOWN_SECS: i64 = 30 * 60;
+
+    pub fn record_episode_fallback_attempt(&self, canon_key: &str, now: i64) -> Result<()> {
+        self.set_setting(&format!("episode_fallback_attempt:{}", canon_key), &now.to_string())
+    }
+
+    pub fn recently_attempted_episode_fallback(&self, canon_key: &str, now: i64) -> Result<bool> {
+        if let Some(v) = self.get_setting(&format!("episode_fallback_attempt:{}", canon_key))? {
+            if let Ok(t) = v.parse::<i64>() {
+                return Ok(now - t < Self::EPISODE_FALLBACK_ATTEMPT_COOLDOWN_SECS);
+            }
+        }
+        Ok(false)
+    }
+
     pub fn record_episode_fallback_site_miss(&self, canon_key: &str, site_id: &str, now: i64) -> Result<()> {
         self.set_setting(&format!("episode_fallback_site_miss:{}:{}", site_id, canon_key), &now.to_string())
     }
