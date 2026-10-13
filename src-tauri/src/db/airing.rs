@@ -34,6 +34,10 @@ pub(crate) fn is_csp_displayable_cover(cover_url: Option<&str>) -> bool {
         .is_some_and(|host| host == "anilist.co" || host.ends_with(".anilist.co"))
 }
 
+/// An unfollowed airing row whose last scraped release is older than this has
+/// stopped (finished or dropped) even if the site still lists it.
+const STALE_AIRING_SECS: i64 = 21 * 86400;
+
 impl Db {
     /// The **canonical** "En emisión" list — the union of every site's airing
     /// shows, deduped to one entry per canonical identity (`anilist_id`, else
@@ -65,7 +69,7 @@ impl Db {
                     c.next_airing_at AS catalog_next,
                     s.title AS site_title, c.title AS c_title,
                     c.title_romaji AS c_romaji, c.title_english AS c_english,
-                    s.site_episode_count,
+                    s.site_episode_count, c.format AS c_format, c.status AS c_status,
                     (SELECT COUNT(*) FROM episodes e WHERE e.series_id = s.id) AS total_ep
              FROM series s LEFT JOIN anilist_catalog c ON c.id = s.anilist_id
              WHERE s.is_airing = 1",
@@ -75,6 +79,14 @@ impl Db {
             anilist_id: Option<i64>,
             followed: bool,
             total_ep: i64,
+            /// AniList format of the linked catalog entry (OVA/SPECIAL/...),
+            /// only when it is the same season as the scraped row.
+            catalog_format: Option<String>,
+            /// AniList says the linked (same-season) entry is still releasing
+            /// or on hiatus, so a stale scraped date alone must not hide it.
+            catalog_active: bool,
+            /// The catalog confirms an upcoming episode of this very season.
+            catalog_upcoming: bool,
             series: crate::models::Series,
         }
         let now = chrono::Utc::now().timestamp();
@@ -86,16 +98,23 @@ impl Db {
                 let catalog_next: Option<i64> = r.get("catalog_next")?;
 
                 let mut effective_next = scraped_next;
-                if let (Some(_), Some(cat)) = (anilist_id, catalog_next) {
-                    if cat > now {
-                        let site_title: String = r.get("site_title")?;
-                        let titles: Vec<String> = ["c_title", "c_romaji", "c_english"]
-                            .into_iter()
-                            .filter_map(|col| r.get::<_, Option<String>>(col).transpose())
-                            .collect::<rusqlite::Result<_>>()?;
-                        let refs: Vec<&str> = titles.iter().map(String::as_str).collect();
-                        if crate::matching::season_consistent(&site_title, &refs) {
+                let mut catalog_upcoming = false;
+                let mut catalog_active = false;
+                let mut catalog_format: Option<String> = None;
+                if anilist_id.is_some() && r.get::<_, Option<String>>("c_title")?.is_some() {
+                    let site_title: String = r.get("site_title")?;
+                    let titles: Vec<String> = ["c_title", "c_romaji", "c_english"]
+                        .into_iter()
+                        .filter_map(|col| r.get::<_, Option<String>>(col).transpose())
+                        .collect::<rusqlite::Result<_>>()?;
+                    let refs: Vec<&str> = titles.iter().map(String::as_str).collect();
+                    if crate::matching::season_consistent(&site_title, &refs) {
+                        catalog_format = r.get("c_format")?;
+                        let status: Option<String> = r.get("c_status")?;
+                        catalog_active = matches!(status.as_deref(), Some("RELEASING" | "HIATUS"));
+                        if let Some(cat) = catalog_next.filter(|&cat| cat > now) {
                             effective_next = Some(cat);
+                            catalog_upcoming = true;
                         }
                     }
                 }
@@ -105,6 +124,9 @@ impl Db {
                     anilist_id,
                     followed,
                     total_ep: r.get("total_ep")?,
+                    catalog_format,
+                    catalog_active,
+                    catalog_upcoming,
                     series: crate::models::Series {
                         id: r.get("id")?,
                         slug: r.get("slug")?,
@@ -153,6 +175,21 @@ impl Db {
             // happens to be active — otherwise a stale active-site member
             // silently drags the whole show to the bottom of the list.
             let freshest_next_episode_at = group.iter().filter_map(|m| m.series.next_episode_at).max();
+            // A site keeps listing OVAs, "Specials" and shows that stopped
+            // weeks ago on its airing page. Hide them at read time (nothing is
+            // rewritten) unless the user follows them or AniList confirms an
+            // upcoming episode of this season.
+            if !followed_any && !group.iter().any(|m| m.catalog_upcoming) {
+                let side_content = group.iter().any(|m| {
+                    matches!(m.catalog_format.as_deref(), Some("OVA" | "SPECIAL" | "MUSIC" | "MOVIE"))
+                        || crate::matching::is_special_title(&m.series.title)
+                });
+                let stale = !group.iter().any(|m| m.catalog_active)
+                    && freshest_next_episode_at.is_some_and(|t| t < now - STALE_AIRING_SECS);
+                if side_content || stale {
+                    continue;
+                }
+            }
             // A show airing on several sites is only cover-fetched on
             // whichever one is currently active (see commands/scan.rs's
             // airing_series_needing_cover_fetch — WebView2 scraping is
@@ -569,10 +606,11 @@ mod tests {
     fn list_airing_orders_newest_first_nulls_last_title_tiebreak() {
         let db = Db::open(":memory:").unwrap();
         let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
-        db.upsert_series(src, &mk_airing("older", "Older", Some(1_000_000))).unwrap();
-        db.upsert_series(src, &mk_airing("newer", "Newer", Some(2_000_000))).unwrap();
+        let base = chrono::Utc::now().timestamp() - 5 * 86400;
+        db.upsert_series(src, &mk_airing("older", "Older", Some(base))).unwrap();
+        db.upsert_series(src, &mk_airing("newer", "Newer", Some(base + 86400))).unwrap();
         db.upsert_series(src, &mk_airing("nodate", "NoDate", None)).unwrap();
-        db.upsert_series(src, &mk_airing("tie-b", "Tie B", Some(1_000_000))).unwrap();
+        db.upsert_series(src, &mk_airing("tie-b", "Tie B", Some(base))).unwrap();
 
         let titles: Vec<String> = db.list_airing(src).unwrap().into_iter().map(|s| s.title).collect();
         assert_eq!(titles, vec!["Newer", "Older", "Tie B", "NoDate"]);
@@ -1060,6 +1098,84 @@ mod tests {
         assert!(titles.contains(&"Another: Live Action".to_string()), "a followed one stays");
         assert!(!titles.iter().any(|t| t.contains("One Piece: Live Action")));
         let _ = anime;
+    }
+
+    fn set_catalog_format(db: &Db, id: i64, format: &str) {
+        db.conn.execute("UPDATE anilist_catalog SET format = ?1 WHERE id = ?2", (format, id)).unwrap();
+    }
+
+    fn airing_titles(db: &Db, source: i64) -> Vec<String> {
+        db.list_airing(source).unwrap().into_iter().map(|s| s.title).collect()
+    }
+
+    #[test]
+    fn list_airing_hides_unfollowed_ova_without_an_upcoming_episode() {
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("AnimeYT", "https://a", "animeytx").unwrap();
+        db.upsert_catalog_anime(&crate::db::test_support::catalog_anime(1, "Noble Rose", &[]), 0).unwrap();
+        set_catalog_format(&db, 1, "OVA");
+        let sid = db.upsert_series(a, &mk_airing("nr", "Noble Rose", None)).unwrap();
+        db.set_anilist_id(sid, 1).unwrap();
+        assert!(airing_titles(&db, a).is_empty(), "OVA with no future catalog airing is hidden");
+
+        db.set_followed(sid, true).unwrap();
+        assert_eq!(airing_titles(&db, a), vec!["Noble Rose".to_string()], "followed stays");
+    }
+
+    #[test]
+    fn list_airing_keeps_an_ova_that_has_a_future_catalog_airing() {
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("AnimeYT", "https://a", "animeytx").unwrap();
+        db.upsert_catalog_anime(&crate::db::test_support::catalog_anime(1, "Noble Rose", &[]), 0).unwrap();
+        set_catalog_format(&db, 1, "OVA");
+        let now = chrono::Utc::now().timestamp();
+        db.conn.execute("UPDATE anilist_catalog SET next_airing_at = ?1 WHERE id = 1", [now + 86400]).unwrap();
+        let sid = db.upsert_series(a, &mk_airing("nr", "Noble Rose", None)).unwrap();
+        db.set_anilist_id(sid, 1).unwrap();
+        assert_eq!(airing_titles(&db, a).len(), 1);
+    }
+
+    #[test]
+    fn list_airing_hides_unlinked_specials_and_stale_unfollowed_rows() {
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("AnimeYT", "https://a", "animeytx").unwrap();
+        let now = chrono::Utc::now().timestamp();
+        let day = 86400;
+        db.upsert_series(a, &mk_airing("sp", "Slime 3rd Season Specials", Some(now - day))).unwrap();
+        db.upsert_series(a, &mk_airing("stale", "Stale Show", Some(now - 30 * day))).unwrap();
+        db.upsert_series(a, &mk_airing("fresh", "Fresh Show", Some(now - 6 * day))).unwrap();
+        db.upsert_series(a, &mk_airing("nodate", "Undated Show", None)).unwrap();
+        let followed = db.upsert_series(a, &mk_airing("fstale", "Followed Stale", Some(now - 60 * day))).unwrap();
+        db.set_followed(followed, true).unwrap();
+
+        let mut titles = airing_titles(&db, a);
+        titles.sort();
+        assert_eq!(titles, vec!["Followed Stale", "Fresh Show", "Undated Show"]);
+    }
+
+    #[test]
+    fn list_airing_keeps_a_stale_scraped_row_when_the_catalog_says_releasing() {
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("AnimeYT", "https://a", "animeytx").unwrap();
+        let now = chrono::Utc::now().timestamp();
+        let mut anime = crate::db::test_support::catalog_anime(3, "Biweekly Show", &[]);
+        anime.status = Some("RELEASING".into());
+        db.upsert_catalog_anime(&anime, 0).unwrap();
+        let sid = db.upsert_series(a, &mk_airing("bw", "Biweekly Show", Some(now - 40 * 86400))).unwrap();
+        db.set_anilist_id(sid, 3).unwrap();
+        assert_eq!(airing_titles(&db, a).len(), 1);
+    }
+
+    #[test]
+    fn list_airing_keeps_a_stale_scraped_row_when_the_catalog_has_a_future_airing() {
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("AnimeYT", "https://a", "animeytx").unwrap();
+        let now = chrono::Utc::now().timestamp();
+        db.upsert_catalog_anime(&crate::db::test_support::catalog_anime(2, "Slow Show", &[]), 0).unwrap();
+        db.conn.execute("UPDATE anilist_catalog SET next_airing_at = ?1 WHERE id = 2", [now + 3 * 86400]).unwrap();
+        let sid = db.upsert_series(a, &mk_airing("slow", "Slow Show", Some(now - 40 * 86400))).unwrap();
+        db.set_anilist_id(sid, 2).unwrap();
+        assert_eq!(airing_titles(&db, a).len(), 1);
     }
 
     #[test]

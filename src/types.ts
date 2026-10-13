@@ -11,6 +11,9 @@ export interface Series {
   next_episode_at: number | null;
   /** The site's own episode-count badge; null when non-numeric ("??"). */
   site_episode_count: number | null;
+  score?: number | null;
+  format?: string | null;
+  start_date?: number | null;
 }
 
 // One airing series plus its parsed first-episode date, for the "Esta
@@ -209,6 +212,7 @@ export interface DeckBans {
   status_data_synced: boolean;
   min_start_date: number | null;
   max_start_date: number | null;
+  min_score: number | null;
 }
 
 export type LinkOutcome =
@@ -267,8 +271,14 @@ export interface CatalogFilter {
   genres?: string[];
   format?: string;
   min_score?: number;
+  max_score?: number;
+  min_start_date?: number;
+  max_start_date?: number;
+  status?: string;
+  sort?: string;
   episodes?: string;
   studio?: string;
+  hide_watched?: boolean;
 }
 
 export interface CatalogFacets {
@@ -303,4 +313,19 @@ export interface PlayerSettings {
   monitor: string | null;
   fullscreen: boolean;
 }
+
+export interface ListEntryMeta {
+  series_id: number;
+  anilist_id: number | null;
+  score: number | null;
+  format: string | null;
+  status: string | null;
+  episodes: number | null;
+  start_date: number | null;
+  studio: string | null;
+  popularity: number | null;
+  genres: string[];
+  cover_url: string | null;
+}
+
 

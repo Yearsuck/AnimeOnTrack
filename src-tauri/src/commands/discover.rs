@@ -284,6 +284,8 @@ pub struct DeckBans {
     /// `None` as "today", but *today* changes daily, so freezing that into a
     /// stored default at save time would be wrong.
     pub max_start_date: Option<i64>,
+    /// Minimum score floor (0-100 scale), `None` = unbounded (all scores).
+    pub min_score: Option<i64>,
 }
 
 /// Read the current deck bans for the Descubrir "Filtros" sub-view.
@@ -296,7 +298,8 @@ pub fn get_deck_bans(state: State<'_, AppState>) -> Result<DeckBans, String> {
     let status_data_synced = db.has_synced_catalog_status().map_err(|e| e.to_string())?;
     let min_start_date = db.get_deck_min_start_date().map_err(|e| e.to_string())?;
     let max_start_date = db.get_deck_max_start_date().map_err(|e| e.to_string())?;
-    Ok(DeckBans { genres, formats, hide_upcoming, status_data_synced, min_start_date, max_start_date })
+    let min_score = db.get_deck_min_score().map_err(|e| e.to_string())?;
+    Ok(DeckBans { genres, formats, hide_upcoming, status_data_synced, min_start_date, max_start_date, min_score })
 }
 
 /// Persist the deck bans. Takes effect on the very next `discover_catalog_card`
@@ -310,6 +313,7 @@ pub fn set_deck_bans(
     hide_upcoming: bool,
     min_start_date: Option<i64>,
     max_start_date: Option<i64>,
+    min_score: Option<i64>,
 ) -> Result<(), String> {
     let db = state.db.lock().unwrap();
     db.set_banned_genres(&genres).map_err(|e| e.to_string())?;
@@ -317,6 +321,7 @@ pub fn set_deck_bans(
     db.set_hide_upcoming_releases(hide_upcoming).map_err(|e| e.to_string())?;
     db.set_deck_min_start_date(min_start_date).map_err(|e| e.to_string())?;
     db.set_deck_max_start_date(max_start_date).map_err(|e| e.to_string())?;
+    db.set_deck_min_score(min_score).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -376,7 +381,7 @@ fn filter_candidate_genres(all_genres: Vec<String>, banned_genres: &[String]) ->
 /// empty genre/format maps, still biasing toward high `average_score` — see
 /// docs/superpowers/specs/2026-07-13-discover-recommendation-toggle-design.md.
 #[tauri::command]
-pub fn discover_catalog_card(
+pub async fn discover_catalog_card(
     state: State<'_, AppState>,
     recommended: bool,
 ) -> Result<Option<FinishedCard>, String> {
@@ -428,6 +433,7 @@ pub fn discover_catalog_card(
             .and_hms_opt(23, 59, 59)
             .map(|dt| dt.and_utc().timestamp())
     });
+    let min_score = db.get_deck_min_score().map_err(|e| e.to_string())?;
     let candidates = filter_candidate_genres(
         db.distinct_catalog_genres().map_err(|e| e.to_string())?,
         &banned_genres,
@@ -480,6 +486,7 @@ pub fn discover_catalog_card(
                 hide_upcoming,
                 min_start_date,
                 max_start_date,
+                min_score,
             )
             .map_err(|e| e.to_string())?
         {
@@ -608,3 +615,13 @@ mod tests {
         assert_eq!(decision_for_history_row(&none), "none");
     }
 }
+
+#[tauri::command]
+pub fn get_list_entry_meta(
+    state: State<'_, AppState>,
+    series_ids: Vec<i64>,
+) -> Result<Vec<crate::models::ListEntryMeta>, String> {
+    let db = state.db.lock().unwrap();
+    db.list_entry_meta(&series_ids).map_err(|e| e.to_string())
+}
+

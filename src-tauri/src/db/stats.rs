@@ -805,7 +805,8 @@ impl Db {
         }
         let mut stmt = self
             .conn
-            .prepare("SELECT s.id, s.anilist_id, s.title, s.kind, s.cover_url, c.format
+            .prepare("SELECT s.id, s.anilist_id, s.title, s.kind,
+                             COALESCE(c.cover_url, s.cover_url), c.format
                       FROM series s
                       LEFT JOIN anilist_catalog c ON c.id = s.anilist_id
                       WHERE s.followed=1")?;
@@ -835,7 +836,13 @@ impl Db {
             if entry.kind.is_none() {
                 entry.kind = effective_kind(row.catalog_format.as_deref(), row.kind.as_deref());
             }
-            if entry.cover_url.is_none() {
+            // A scraped site thumbnail is blocked by the CSP and renders as
+            // initials, so any member with a displayable cover (AniList's, a
+            // cached file, a data URI) replaces one that is not.
+            let displayable = |c: &Option<String>| crate::db::is_csp_displayable_cover(c.as_deref());
+            if row.cover_url.is_some()
+                && (entry.cover_url.is_none() || (!displayable(&entry.cover_url) && displayable(&row.cover_url)))
+            {
                 entry.cover_url = row.cover_url.clone();
             }
             if prefer_display_title(&row.title, &entry.display_title) {
@@ -2797,6 +2804,35 @@ mod tests {
         assert_eq!(scores.get("Horror"), Some(&-1.5));
         assert_eq!(scores.get("Shared"), Some(&3.0)); // 2.0 (followed) + 1.0 (want)
         assert_eq!(scores.get("Unseen"), None);
+    }
+
+    #[test]
+    fn canonical_followed_prefers_a_displayable_cover_over_a_scraped_thumbnail() {
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("A", "https://a", "animeytx").unwrap();
+        let b = db.upsert_source("B", "https://b", "tioanime").unwrap();
+        // Same unlinked show on two sites: first a blocked scraped URL, then a cached file.
+        let mut s1 = mk_airing("x", "Show X", None);
+        s1.cover_url = Some("https://wwv.animeytx.net/x.jpg".into());
+        s1.followed = true;
+        let id1 = db.upsert_series(a, &s1).unwrap();
+        db.set_followed(id1, true).unwrap();
+        let mut s2 = mk_airing("x2", "Show X", None);
+        s2.cover_url = Some("file:C:/covers/x.jpg".into());
+        let id2 = db.upsert_series(b, &s2).unwrap();
+        db.set_followed(id2, true).unwrap();
+        // A linked show: the catalog (AniList) cover beats the scraped one.
+        db.upsert_catalog_anime(&crate::db::test_support::catalog_anime(9, "Linked Y", &[]), 0).unwrap();
+        let mut s3 = mk_airing("y", "Linked Y", None);
+        s3.cover_url = Some("https://wwv.animeytx.net/y.jpg".into());
+        let id3 = db.upsert_series(a, &s3).unwrap();
+        db.set_anilist_id(id3, 9).unwrap();
+        db.set_followed(id3, true).unwrap();
+
+        let groups = db.group_followed_canonically().unwrap();
+        let cover = |t: &str| groups.iter().find(|g| g.display_title == t).unwrap().cover_url.clone();
+        assert_eq!(cover("Show X").as_deref(), Some("file:C:/covers/x.jpg"));
+        assert_eq!(cover("Linked Y").as_deref(), Some("https://cdn/9.jpg"));
     }
 
     #[test]

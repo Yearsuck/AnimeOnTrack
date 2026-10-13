@@ -53,7 +53,12 @@ export function Descubrir({
       </div>
 
       {subView === "swipe" && <SwipeView />}
-      {subView === "listas" && <ListasView onOpenSeries={onOpenSeries} />}
+      {subView === "listas" && (
+        <ListasView
+          onOpenSeries={onOpenSeries}
+          onSwitchToSwipe={() => handleSetSubView("swipe")}
+        />
+      )}
     </div>
   );
 }

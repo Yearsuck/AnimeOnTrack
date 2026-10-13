@@ -12,6 +12,13 @@ import { useT } from "../i18n";
 import { createFilterCache } from "../lib/createFilterCache";
 import { resolveCoverUrl } from "../lib/posterFallback";
 import type { CatalogAnime, CatalogFacets, CatalogFilter, CatalogSyncProgress } from "../types";
+import {
+  DateRangeControl,
+  ScoreRangeControl,
+  SortSelect,
+  StatusSelect,
+} from "../components/filters";
+import "../styles/filters.css";
 
 // decide_catalog_card args for a catalog row. CatalogAnime.id is AniList's
 // own numeric id (the catalog PK), which is exactly the anilistId the
@@ -36,23 +43,21 @@ const catalogFilterCache = createFilterCache<{
   search: string;
   selectedGenres: string[];
   format: string;
-  minScore: string;
+  minScore: number | null;
+  maxScore: number | null;
+  minStartDate: number | null;
+  maxStartDate: number | null;
+  status: string;
+  sort: string;
   episodes: string;
   studio: string;
+  hideWatched: boolean;
+  secondaryOpen: boolean;
   page: number;
 }>();
 
 export function Catalog() {
   const t = useT();
-  const SCORE_OPTIONS: { value: string; label: string }[] = useMemo(
-    () => [
-      { value: "", label: t("catalog.anyScore") },
-      { value: "60", label: "60%+" },
-      { value: "70", label: "70%+" },
-      { value: "80", label: "80%+" },
-    ],
-    [t]
-  );
 
   const EPISODE_OPTIONS: { value: string; label: string }[] = useMemo(
     () => [
@@ -81,14 +86,53 @@ export function Catalog() {
   const [search, setSearch] = useState(() => catalogFilterCache.current?.search ?? "");
   const [selectedGenres, setSelectedGenres] = useState<string[]>(() => catalogFilterCache.current?.selectedGenres ?? []);
   const [format, setFormat] = useState(() => catalogFilterCache.current?.format ?? "");
-  const [minScore, setMinScore] = useState(() => catalogFilterCache.current?.minScore ?? "");
+  const [minScore, setMinScore] = useState<number | null>(() => catalogFilterCache.current?.minScore ?? null);
+  const [maxScore, setMaxScore] = useState<number | null>(() => catalogFilterCache.current?.maxScore ?? null);
+  const [minStartDate, setMinStartDate] = useState<number | null>(() => catalogFilterCache.current?.minStartDate ?? null);
+  const [maxStartDate, setMaxStartDate] = useState<number | null>(() => catalogFilterCache.current?.maxStartDate ?? null);
+  const [status, setStatus] = useState(() => catalogFilterCache.current?.status ?? "");
+  const [sort, setSort] = useState(() => catalogFilterCache.current?.sort ?? "popularity");
   const [episodes, setEpisodes] = useState(() => catalogFilterCache.current?.episodes ?? "");
   const [studio, setStudio] = useState(() => catalogFilterCache.current?.studio ?? "");
+  const [hideWatched, setHideWatched] = useState(() => catalogFilterCache.current?.hideWatched ?? false);
+  const [secondaryOpen, setSecondaryOpen] = useState(() => catalogFilterCache.current?.secondaryOpen ?? false);
 
   // Persist filter state to the module-level cache on every change
   useEffect(() => {
-    catalogFilterCache.write({ searchInput, search, selectedGenres, format, minScore, episodes, studio, page });
-  }, [searchInput, search, selectedGenres, format, minScore, episodes, studio, page]);
+    catalogFilterCache.write({
+      searchInput,
+      search,
+      selectedGenres,
+      format,
+      minScore,
+      maxScore,
+      minStartDate,
+      maxStartDate,
+      status,
+      sort,
+      episodes,
+      studio,
+      hideWatched,
+      secondaryOpen,
+      page,
+    });
+  }, [
+    searchInput,
+    search,
+    selectedGenres,
+    format,
+    minScore,
+    maxScore,
+    minStartDate,
+    maxStartDate,
+    status,
+    sort,
+    episodes,
+    studio,
+    hideWatched,
+    secondaryOpen,
+    page,
+  ]);
 
   // Multi-select + batch actions. The selected map holds the full card object
   // (not just the id) so a selection survives pagination / scroll-out.
@@ -162,20 +206,46 @@ export function Catalog() {
       search: search || undefined,
       genres: selectedGenres.length ? selectedGenres : undefined,
       format: format || undefined,
-      min_score: minScore ? Number(minScore) : undefined,
+      min_score: minScore !== null ? minScore : undefined,
+      max_score: maxScore !== null ? maxScore : undefined,
+      min_start_date: minStartDate !== null ? minStartDate : undefined,
+      max_start_date: maxStartDate !== null ? maxStartDate : undefined,
+      status: status || undefined,
+      sort: sort || undefined,
       episodes: episodes || undefined,
       studio: studio || undefined,
+      hide_watched: hideWatched || undefined,
     }),
-    [search, selectedGenres, format, minScore, episodes, studio]
+    [
+      search,
+      selectedGenres,
+      format,
+      minScore,
+      maxScore,
+      minStartDate,
+      maxStartDate,
+      status,
+      sort,
+      episodes,
+      studio,
+      hideWatched,
+    ]
   );
+
+  const secondaryActiveCount =
+    (minScore !== null || maxScore !== null ? 1 : 0) +
+    (minStartDate !== null || maxStartDate !== null ? 1 : 0) +
+    (status !== "" ? 1 : 0) +
+    (sort !== "" && sort !== "popularity" ? 1 : 0) +
+    (studio !== "" ? 1 : 0) +
+    (episodes !== "" ? 1 : 0) +
+    (hideWatched ? 1 : 0);
 
   const anyFilterActive =
     search !== "" ||
     selectedGenres.length > 0 ||
     format !== "" ||
-    minScore !== "" ||
-    episodes !== "" ||
-    studio !== "";
+    secondaryActiveCount > 0;
 
   // Monotonic id for the newest in-flight load, same guard Stats.tsx uses.
   // Several triggers can overlap — a "Cargar más" click, the debounced
@@ -313,9 +383,15 @@ export function Catalog() {
     setSearch("");
     setSelectedGenres([]);
     setFormat("");
-    setMinScore("");
+    setMinScore(null);
+    setMaxScore(null);
+    setMinStartDate(null);
+    setMaxStartDate(null);
+    setStatus("");
+    setSort("popularity");
     setEpisodes("");
     setStudio("");
+    setHideWatched(false);
   }
 
   return (
@@ -383,40 +459,17 @@ export function Catalog() {
               </option>
             ))}
           </select>
-          <select
-            className="input filter-select"
-            value={studio}
-            onChange={(e) => setStudio(e.target.value)}
+          <button
+            type="button"
+            className={`btn btn-secondary filter-toggle-btn${secondaryOpen ? " active" : ""}`}
+            onClick={() => setSecondaryOpen((prev) => !prev)}
+            aria-expanded={secondaryOpen}
           >
-            <option value="">{t("catalog.anyStudio")}</option>
-            {facets.studios.map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </select>
-          <select
-            className="input filter-select"
-            value={minScore}
-            onChange={(e) => setMinScore(e.target.value)}
-          >
-            {SCORE_OPTIONS.map((o) => (
-              <option key={o.value} value={o.value}>
-                {o.label}
-              </option>
-            ))}
-          </select>
-          <select
-            className="input filter-select"
-            value={episodes}
-            onChange={(e) => setEpisodes(e.target.value)}
-          >
-            {EPISODE_OPTIONS.map((o) => (
-              <option key={o.value} value={o.value}>
-                {o.label}
-              </option>
-            ))}
-          </select>
+            {secondaryOpen ? t("catalog.lessFilters") : t("catalog.moreFilters")}
+            {secondaryActiveCount > 0 && (
+              <span className="filter-active-badge">{secondaryActiveCount}</span>
+            )}
+          </button>
           {anyFilterActive && (
             <button className="btn btn-ghost" onClick={clearFilters}>
               {t("catalog.clearFilters")}
@@ -427,6 +480,7 @@ export function Catalog() {
             <span className="muted">{t("catalog.resultsCount", { count: totalMatching })}</span>
           )}
         </div>
+
         {facets.genres.length > 0 && (
           <div className="chip-row">
             {facets.genres.map((g) => (
@@ -439,6 +493,68 @@ export function Catalog() {
                 {g}
               </button>
             ))}
+          </div>
+        )}
+
+        {secondaryOpen && (
+          <div className="filter-collapsible-panel">
+            <div className="filter-collapsible-row">
+              <SortSelect value={sort} onChange={setSort} />
+              <StatusSelect value={status} onChange={setStatus} />
+              <select
+                className="input filter-select"
+                value={studio}
+                onChange={(e) => setStudio(e.target.value)}
+              >
+                <option value="">{t("catalog.anyStudio")}</option>
+                {facets.studios.map((s) => (
+                  <option key={s} value={s}>
+                    {s}
+                  </option>
+                ))}
+              </select>
+              <select
+                className="input filter-select"
+                value={episodes}
+                onChange={(e) => setEpisodes(e.target.value)}
+              >
+                {EPISODE_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                className={`chip-toggle${hideWatched ? " active" : ""}`}
+                onClick={() => setHideWatched((v) => !v)}
+                aria-pressed={hideWatched}
+                title={t("catalog.hideWatchedTooltip")}
+              >
+                {hideWatched ? "✓ " : ""}{t("catalog.hideWatched")}
+              </button>
+            </div>
+
+            <div className="filter-collapsible-row">
+              <ScoreRangeControl
+                minScore={minScore}
+                maxScore={maxScore}
+                onChange={(min, max) => {
+                  setMinScore(min);
+                  setMaxScore(max);
+                }}
+                label={t("catalog.scoreRangeLabel")}
+              />
+              <DateRangeControl
+                minStartDate={minStartDate}
+                maxStartDate={maxStartDate}
+                onChange={(min, max) => {
+                  setMinStartDate(min);
+                  setMaxStartDate(max);
+                }}
+                label={t("catalog.dateRangeLabel")}
+              />
+            </div>
           </div>
         )}
       </div>

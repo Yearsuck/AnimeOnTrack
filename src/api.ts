@@ -32,6 +32,7 @@ import type {
   GenreCard,
   MonitorOption,
   PlayerSettings,
+  ListEntryMeta,
 } from "./types";
 
 export const scanAiring = (baseUrl: string) =>
@@ -161,7 +162,8 @@ export const setDeckBans = (
   hideUpcoming: boolean,
   minStartDate: number | null,
   maxStartDate: number | null,
-) => invoke<void>("set_deck_bans", { genres, formats, hideUpcoming, minStartDate, maxStartDate });
+  minScore: number | null = null,
+) => invoke<void>("set_deck_bans", { genres, formats, hideUpcoming, minStartDate, maxStartDate, minScore });
 
 export const startWatching = (seriesId: number) =>
   invoke<LinkOutcome>("start_watching", { seriesId });
@@ -192,6 +194,9 @@ export const getSeriesGenres = (seriesId: number) =>
 
 export const getSeriesGenresBatch = (seriesIds: number[]) =>
   invoke<Record<number, string[]>>("get_series_genres_batch", { seriesIds });
+
+export const getListEntryMeta = (seriesIds: number[]) =>
+  invoke<ListEntryMeta[]>("get_list_entry_meta", { seriesIds });
 
 
 export const getTopGenres = (limit: number) =>

@@ -4,17 +4,7 @@ import { useT } from "../../i18n";
 import { DECK_FORMATS } from "./constants";
 import { DiscoverModeToggle } from "./DiscoverModeToggle";
 import { getInitialDeckPanelOpen, persistDeckPanelOpen } from "./helpers";
-
-// "YYYY-MM-DD" <-> Unix seconds, both as UTC midnight of that calendar date
-// -- matches src-tauri/src/anilist.rs's FuzzyDate::to_timestamp(), which
-// stores AniList start_date as UTC midnight, not local time.
-function dateInputToEpoch(iso: string): number {
-  const [y, m, d] = iso.split("-").map(Number);
-  return Math.floor(Date.UTC(y, m - 1, d) / 1000);
-}
-function epochToDateInput(epoch: number): string {
-  return new Date(epoch * 1000).toISOString().slice(0, 10);
-}
+import { DateRangeControl, ScoreRangeControl } from "../../components/filters";
 
 // Deck settings panel — lives inside SwipeView (see the design spec at
 // docs/superpowers/specs/2026-07-13-discover-swipe-sidepanel-design.md).
@@ -37,6 +27,7 @@ export function DeckPanel({ onBansSaved }: { onBansSaved: () => void }) {
   const [statusDataSynced, setStatusDataSynced] = useState(true);
   const [minStartDate, setMinStartDate] = useState<number | null>(null);
   const [maxStartDate, setMaxStartDate] = useState<number | null>(null);
+  const [minScore, setMinScore] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [open, setOpen] = useState(getInitialDeckPanelOpen);
@@ -50,6 +41,7 @@ export function DeckPanel({ onBansSaved }: { onBansSaved: () => void }) {
         setStatusDataSynced(b.status_data_synced);
         setMinStartDate(b.min_start_date);
         setMaxStartDate(b.max_start_date);
+        setMinScore(b.min_score);
       })
       .catch((err) => console.error("getDeckBans failed", err));
     getCatalogFacets()
@@ -68,7 +60,14 @@ export function DeckPanel({ onBansSaved }: { onBansSaved: () => void }) {
   async function save() {
     setSaving(true);
     try {
-      await setDeckBans([...bannedGenres], [...bannedFormats], hideUpcoming, minStartDate, maxStartDate);
+      await setDeckBans(
+        [...bannedGenres],
+        [...bannedFormats],
+        hideUpcoming,
+        minStartDate,
+        maxStartDate,
+        minScore
+      );
       setSaved(true);
       onBansSaved();
     } finally {
@@ -84,7 +83,12 @@ export function DeckPanel({ onBansSaved }: { onBansSaved: () => void }) {
     });
   }
 
-  const activeBans = bannedGenres.size + bannedFormats.size;
+  const activeBans =
+    bannedGenres.size +
+    bannedFormats.size +
+    (minScore !== null ? 1 : 0) +
+    (minStartDate !== null || maxStartDate !== null ? 1 : 0) +
+    (hideUpcoming ? 1 : 0);
 
   return (
     <aside className="deck-panel">
@@ -173,33 +177,30 @@ export function DeckPanel({ onBansSaved }: { onBansSaved: () => void }) {
           <h3 className="section-title deck-panel-heading">
             {t("discover.filtersDateHeading")}
           </h3>
-          <div className="row deck-panel-daterange">
-            <label className="deck-panel-date-field">
-              <span className="muted text-sm">{t("discover.filtersDateFrom")}</span>
-              <input
-                type="date"
-                value={minStartDate === null ? "" : epochToDateInput(minStartDate)}
-                onChange={(e) => {
-                  setMinStartDate(e.target.value ? dateInputToEpoch(e.target.value) : null);
-                  setSaved(false);
-                }}
-              />
-            </label>
-            <label className="deck-panel-date-field">
-              <span className="muted text-sm">{t("discover.filtersDateTo")}</span>
-              <input
-                type="date"
-                value={maxStartDate === null ? "" : epochToDateInput(maxStartDate)}
-                onChange={(e) => {
-                  setMaxStartDate(e.target.value ? dateInputToEpoch(e.target.value) : null);
-                  setSaved(false);
-                }}
-              />
-            </label>
-          </div>
+          <DateRangeControl
+            minStartDate={minStartDate}
+            maxStartDate={maxStartDate}
+            onChange={(min, max) => {
+              setMinStartDate(min);
+              setMaxStartDate(max);
+              setSaved(false);
+            }}
+          />
           <p className="muted text-sm deck-panel-date-hint">
             {t("discover.filtersDateHint")}
           </p>
+
+          <h3 className="section-title deck-panel-heading">
+            {t("discover.filtersScoreHeading")}
+          </h3>
+          <ScoreRangeControl
+            minScore={minScore}
+            minOnly={true}
+            onChange={(min) => {
+              setMinScore(min);
+              setSaved(false);
+            }}
+          />
 
           <div className="row deck-panel-save">
             <button className="btn btn-primary" onClick={save} disabled={saving}>

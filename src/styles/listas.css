@@ -1,0 +1,790 @@
+/* Styles for Discover Listas view (v0.6.5) */
+
+.listas-container {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  width: 100%;
+}
+
+/* Header & View Mode Switcher */
+.listas-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+}
+
+.listas-view-modes {
+  display: inline-flex;
+  align-items: center;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 2px;
+  gap: 2px;
+}
+
+.listas-view-mode-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-height: 32px;
+  min-width: 32px;
+  padding: var(--sp-1) var(--sp-3);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  color: var(--muted);
+  background: transparent;
+  border: none;
+  border-radius: calc(var(--radius-sm) - 2px);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+
+.listas-view-mode-btn:hover {
+  color: var(--text);
+  background: var(--surface-3);
+}
+
+.listas-view-mode-btn.active {
+  color: var(--text);
+  background: var(--surface-3);
+  box-shadow: var(--shadow-sm);
+}
+
+.listas-view-mode-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Smart Groups */
+.listas-smart-groups {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.listas-smart-label {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  color: var(--muted);
+  margin-right: var(--sp-1);
+}
+
+.listas-smart-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: 32px;
+  padding: var(--sp-1) var(--sp-3);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-round);
+  color: var(--text);
+  cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+
+.listas-smart-chip:hover {
+  border-color: var(--surface-3);
+  background: var(--surface-3);
+}
+
+.listas-smart-chip.active {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.listas-smart-chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.listas-smart-count {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
+  padding: 1px 6px;
+  border-radius: var(--radius-round);
+  background: var(--surface-3);
+  color: var(--muted);
+}
+
+.listas-smart-chip.active .listas-smart-count {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+/* Toolbar */
+.listas-toolbar-box {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding: var(--sp-3);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.listas-toolbar-primary {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+
+.listas-search-wrap {
+  position: relative;
+  flex: 1 1 240px;
+  min-width: 200px;
+}
+
+.listas-search-input {
+  width: 100%;
+  padding-left: 32px;
+  padding-right: 48px;
+}
+
+.listas-search-icon {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--muted);
+  font-size: var(--fs-base);
+  pointer-events: none;
+}
+
+.listas-search-kbd {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: var(--fs-xs);
+  font-family: monospace;
+  padding: 2px 6px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--muted);
+  pointer-events: none;
+}
+
+.listas-filter-select {
+  min-height: 36px;
+  min-width: 130px;
+  font-size: var(--fs-sm);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--sp-2);
+}
+
+.listas-filter-select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.listas-year-inputs {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
+.listas-year-input {
+  width: 80px;
+  min-height: 36px;
+  font-size: var(--fs-sm);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--sp-2);
+  text-align: center;
+}
+
+.listas-year-input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.listas-toolbar-secondary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  border-top: 1px solid var(--border-soft);
+  padding-top: var(--sp-2);
+}
+
+.listas-chips-wrap {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  flex-wrap: wrap;
+}
+
+.listas-chip-label {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  color: var(--muted);
+  margin-right: var(--sp-1);
+}
+
+.listas-genre-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  flex-wrap: wrap;
+  max-height: 80px;
+  overflow-y: auto;
+  padding-top: var(--sp-1);
+}
+
+/* Grid View (Cuadrícula) */
+.listas-cards-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: var(--sp-3);
+  width: 100%;
+}
+
+.listas-card-item {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  transition: transform var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+}
+
+.listas-card-item:hover,
+.listas-card-item:focus-within {
+  border-color: var(--surface-3);
+  box-shadow: var(--shadow-sm);
+}
+
+.listas-card-item.selected {
+  border-color: var(--accent);
+  background: var(--surface-2);
+}
+
+.listas-card-poster-box {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 2 / 3;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+.listas-card-poster-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.listas-card-poster-fallback {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--fs-xl);
+  font-weight: var(--fw-bold);
+  color: var(--muted-2);
+  background: var(--surface-2);
+}
+
+/* Poster Badges & Select Box */
+.listas-poster-badge-top-left {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  z-index: 2;
+}
+
+.listas-poster-badge-top-right {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  z-index: 2;
+}
+
+.listas-select-checkbox-btn {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--overlay-strong);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  color: var(--text);
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+
+.listas-select-checkbox-btn:hover {
+  background: var(--surface-3);
+  border-color: var(--accent);
+}
+
+.listas-select-checkbox-btn.checked {
+  background: var(--accent);
+  color: var(--on-accent);
+  border-color: var(--accent-solid);
+}
+
+.listas-select-checkbox-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.listas-score-badge {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
+  padding: 3px 6px;
+  border-radius: 4px;
+  background: var(--overlay-strong);
+  color: var(--accent);
+  border: 1px solid var(--border-soft);
+  backdrop-filter: blur(4px);
+}
+
+.listas-format-badge {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
+  text-transform: uppercase;
+  padding: 3px 6px;
+  border-radius: 4px;
+  background: var(--overlay-strong);
+  color: var(--text);
+  border: 1px solid var(--border-soft);
+  backdrop-filter: blur(4px);
+}
+
+/* Hover Quick Actions Overlay */
+.listas-card-quick-actions {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: var(--sp-2);
+  background: linear-gradient(to top, var(--overlay-strong) 80%, transparent);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-1);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(4px);
+  transition: opacity var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+  z-index: 3;
+}
+
+.listas-card-item:hover .listas-card-quick-actions,
+.listas-card-item:focus-within .listas-card-quick-actions {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+.listas-quick-btn {
+  min-height: 32px;
+  padding: 2px 8px;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  border-radius: 4px;
+  border: none;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Card Information */
+.listas-card-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: var(--sp-2) var(--sp-3);
+  flex: 1;
+}
+
+.listas-card-title-link {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
+  text-decoration: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  border: none;
+  background: transparent;
+  text-align: left;
+  padding: 0;
+}
+
+.listas-card-title-link:hover {
+  color: var(--accent);
+}
+
+.listas-card-title-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.listas-card-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.listas-card-genres {
+  font-size: var(--fs-xs);
+  color: var(--muted-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.listas-unlinked-tag {
+  display: inline-block;
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  font-style: italic;
+}
+
+/* Dense List View (Lista) */
+.listas-dense-container {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  width: 100%;
+}
+
+.listas-dense-row-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+
+.listas-dense-row-item:hover,
+.listas-dense-row-item:focus-within {
+  background: var(--surface-2);
+  border-color: var(--surface-3);
+}
+
+.listas-dense-row-item.selected {
+  border-color: var(--accent);
+  background: var(--surface-2);
+}
+
+.listas-dense-thumb {
+  width: 36px;
+  height: 52px;
+  flex-shrink: 0;
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  cursor: pointer;
+}
+
+.listas-dense-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.listas-dense-thumb-fallback {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-bold);
+  color: var(--muted-2);
+}
+
+.listas-dense-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 200px;
+}
+
+.listas-dense-title-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.listas-dense-title {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  background: transparent;
+  border: none;
+  text-align: left;
+  padding: 0;
+}
+
+.listas-dense-title:hover {
+  color: var(--accent);
+}
+
+.listas-dense-details {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  flex-wrap: wrap;
+}
+
+.listas-dense-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-shrink: 0;
+}
+
+/* Sticky Bulk Action Bar */
+.listas-sticky-bulk-bar {
+  position: sticky;
+  bottom: var(--sp-4);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--surface-2);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  z-index: 100;
+  flex-wrap: wrap;
+}
+
+.listas-bulk-info {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.listas-bulk-count-badge {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-bold);
+  color: var(--text);
+}
+
+.listas-bulk-buttons {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+
+/* Empty & Error States */
+.listas-empty-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: var(--sp-8) var(--sp-4);
+  background: var(--surface);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  gap: var(--sp-3);
+  max-width: 540px;
+  margin: var(--sp-6) auto;
+}
+
+.listas-empty-icon {
+  font-size: 40px;
+  color: var(--muted);
+  line-height: 1;
+}
+
+.listas-empty-title {
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
+}
+
+.listas-empty-desc {
+  font-size: var(--fs-sm);
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.listas-error-box {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--danger-dim);
+  border: 1px solid var(--danger-border);
+  border-radius: var(--radius-sm);
+  color: var(--danger);
+  font-size: var(--fs-sm);
+}
+
+/* Skeletons */
+.listas-skeleton-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: var(--sp-3);
+  width: 100%;
+}
+
+.listas-skeleton-card {
+  height: 320px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  position: relative;
+}
+
+.listas-skeleton-poster {
+  width: 100%;
+  height: 70%;
+  background: var(--surface-2);
+  animation: listas-pulse 1.5s infinite ease-in-out;
+}
+
+.listas-skeleton-lines {
+  padding: var(--sp-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.listas-skeleton-line {
+  height: 14px;
+  background: var(--surface-2);
+  border-radius: 4px;
+  animation: listas-pulse 1.5s infinite ease-in-out;
+}
+
+.listas-skeleton-line-80 {
+  width: 80%;
+}
+
+.listas-skeleton-line-50 {
+  width: 50%;
+}
+
+.listas-skeleton-dense-thumb {
+  background: var(--surface-2);
+}
+
+.listas-skeleton-dense-main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  flex: 1;
+}
+
+.listas-skeleton-dense-title {
+  height: 16px;
+  width: 40%;
+  background: var(--surface-2);
+  border-radius: 4px;
+  animation: listas-pulse 1.5s infinite ease-in-out;
+}
+
+.listas-skeleton-dense-sub {
+  height: 12px;
+  width: 60%;
+  background: var(--surface-2);
+  border-radius: 4px;
+  animation: listas-pulse 1.5s infinite ease-in-out;
+}
+
+@keyframes listas-pulse {
+  0% {
+    opacity: 0.6;
+  }
+  50% {
+    opacity: 0.3;
+  }
+  100% {
+    opacity: 0.6;
+  }
+}
+
+/* Responsive */
+@media (max-width: 600px) {
+  .listas-cards-grid {
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: var(--sp-2);
+  }
+
+  .listas-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .listas-sticky-bulk-bar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .listas-bulk-buttons {
+    justify-content: stretch;
+  }
+
+  .listas-bulk-buttons .btn {
+    flex: 1 1 auto;
+  }
+}
+
+.listas-show-more {
+  display: flex;
+  justify-content: center;
+  padding: var(--sp-4) 0;
+}
