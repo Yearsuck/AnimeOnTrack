@@ -2890,6 +2890,7 @@ select.lib-filter-select {
   font-size: var(--fs-xs);
   margin-top: var(--sp-2);
   margin-bottom: 0;
+}
 
 /* ---------- Niche / Cult slider (Descubrir) ---------- */
 .deck-panel-niche {
