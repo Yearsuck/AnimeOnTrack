@@ -638,4 +638,10 @@ export const ca: Messages = {
   "continue.title": "Continuar veient",
   "continue.play": "Reprodueix",
   "continue.discover": "Descobrir anime",
+
+  // niche slider
+  "niche.label": "Gustos: populars <-> de culte",
+  "niche.mainstream": "Populars",
+  "niche.niche": "De culte",
+  "niche.hint": "Només afecta al mode Recomanat.",
 };

@@ -642,4 +642,10 @@ export const es = {
   "continue.title": "Continuar viendo",
   "continue.play": "Reproducir",
   "continue.discover": "Descubrir anime",
+
+  // niche slider
+  "niche.label": "Gustos: populares <-> de culto",
+  "niche.mainstream": "Populares",
+  "niche.niche": "De culto",
+  "niche.hint": "Solo afecta al modo Recomendado.",
 } as const;

@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { getCatalogFacets, getDeckBans, setDeckBans } from "../../api";
+import { useEffect, useRef, useState } from "react";
+import { getCatalogFacets, getDeckBans, getDiscoverNiche, setDeckBans, setDiscoverNiche } from "../../api";
 import { useT } from "../../i18n";
 import { DECK_FORMATS } from "./constants";
 import { DiscoverModeToggle } from "./DiscoverModeToggle";
@@ -28,6 +28,9 @@ export function DeckPanel({ onBansSaved }: { onBansSaved: () => void }) {
   const [minStartDate, setMinStartDate] = useState<number | null>(null);
   const [maxStartDate, setMaxStartDate] = useState<number | null>(null);
   const [minScore, setMinScore] = useState<number | null>(null);
+  const [nicheBias, setNicheBias] = useState(0);
+  const nicheBiasRef = useRef(nicheBias);
+  nicheBiasRef.current = nicheBias;
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [open, setOpen] = useState(getInitialDeckPanelOpen);
@@ -47,7 +50,25 @@ export function DeckPanel({ onBansSaved }: { onBansSaved: () => void }) {
     getCatalogFacets()
       .then((f) => setAllGenres(f.genres))
       .catch((err) => console.error("getCatalogFacets failed", err));
+    getDiscoverNiche()
+      .then((v) => {
+        setNicheBias(v);
+        nicheBiasRef.current = v;
+      })
+      .catch((err) => console.error("getDiscoverNiche failed", err));
   }, []);
+
+  function handleNicheChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const val = parseFloat(e.target.value);
+    setNicheBias(val);
+    nicheBiasRef.current = val;
+  }
+
+  function persistNiche() {
+    setDiscoverNiche(nicheBiasRef.current).catch((err) => {
+      console.error("setDiscoverNiche failed", err);
+    });
+  }
 
   function toggle(set: Set<string>, setter: (s: Set<string>) => void, value: string) {
     const next = new Set(set);
@@ -113,6 +134,32 @@ export function DeckPanel({ onBansSaved }: { onBansSaved: () => void }) {
         <div id="deck-panel-body" className="deck-panel-body">
           <div className="deck-panel-mode">
             <DiscoverModeToggle />
+          </div>
+
+          <div className="deck-panel-niche">
+            <label htmlFor="deck-niche-slider" className="deck-panel-niche-label">
+              {t("niche.label")}
+            </label>
+            <input
+              id="deck-niche-slider"
+              type="range"
+              min="-1"
+              max="1"
+              step="0.25"
+              value={nicheBias}
+              onChange={handleNicheChange}
+              onPointerUp={persistNiche}
+              onKeyUp={persistNiche}
+              onBlur={persistNiche}
+              className="niche-slider"
+            />
+            <div className="deck-panel-niche-captions">
+              <span className="muted text-sm">{t("niche.mainstream")}</span>
+              <span className="muted text-sm">{t("niche.niche")}</span>
+            </div>
+            <p className="muted text-sm deck-panel-niche-hint">
+              {t("niche.hint")}
+            </p>
           </div>
 
           <p className="muted deck-panel-intro">

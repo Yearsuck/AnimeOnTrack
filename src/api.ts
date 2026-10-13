@@ -170,6 +170,11 @@ export const setDeckBans = (
   minScore: number | null = null,
 ) => invoke<void>("set_deck_bans", { genres, formats, hideUpcoming, minStartDate, maxStartDate, minScore });
 
+export const getDiscoverNiche = () => invoke<number>("get_discover_niche");
+
+export const setDiscoverNiche = (value: number) =>
+  invoke<void>("set_discover_niche", { value });
+
 export const startWatching = (seriesId: number) =>
   invoke<LinkOutcome>("start_watching", { seriesId });
 

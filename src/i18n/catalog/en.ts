@@ -623,4 +623,10 @@ export const en: Messages = {
   "continue.title": "Continue watching",
   "continue.play": "Play",
   "continue.discover": "Discover anime",
+
+  // niche slider
+  "niche.label": "Taste: mainstream <-> cult",
+  "niche.mainstream": "Mainstream",
+  "niche.niche": "Cult",
+  "niche.hint": "Only affects Recommended mode.",
 };
