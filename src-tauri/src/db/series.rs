@@ -1483,19 +1483,21 @@ mod tests {
     fn upsert_series_writes_and_updates_scan_owned_airing_metadata() {
         let db = Db::open(":memory:").unwrap();
         let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
-        let mut s = mk_airing("x", "X", Some(1_783_350_140));
+        let t1 = chrono::Utc::now().timestamp() - 7 * 86400;
+        let t2 = t1 + 7 * 86400;
+        let mut s = mk_airing("x", "X", Some(t1));
         s.site_episode_count = Some(2);
         let sid = db.upsert_series(src, &s).unwrap();
         let got = db.list_airing(src).unwrap().into_iter().find(|r| r.id == sid).unwrap();
-        assert_eq!(got.next_episode_at, Some(1_783_350_140));
+        assert_eq!(got.next_episode_at, Some(t1));
         assert_eq!(got.site_episode_count, Some(2));
 
         // A re-scan with fresh values overwrites both (scan-owned fields).
-        let mut s2 = mk_airing("x", "X", Some(1_783_954_940));
+        let mut s2 = mk_airing("x", "X", Some(t2));
         s2.site_episode_count = Some(3);
         db.upsert_series(src, &s2).unwrap();
         let got = db.list_airing(src).unwrap().into_iter().find(|r| r.id == sid).unwrap();
-        assert_eq!(got.next_episode_at, Some(1_783_954_940));
+        assert_eq!(got.next_episode_at, Some(t2));
         assert_eq!(got.site_episode_count, Some(3));
     }
 

@@ -595,5 +595,24 @@ export const es = {
   "stats.graphEpisodesWatched": "Episodios vistos",
   "stats.graphSeriesCount": "{count} series",
   "stats.graphEpisodesCount": "{count} episodios",
+
+  // settings (v0.6.5)
+  "settings.tablistAria": "Secciones de ajustes",
+  "settings.tabGeneral": "General",
+  "settings.tabSources": "Fuentes de episodios",
+  "settings.tabData": "Datos y copia",
+  "settings.tabMaintenance": "Mantenimiento",
+  "settings.appearanceDesc": "Personaliza el tema visual y el idioma de la aplicación.",
+  "settings.playerDesc": "Elige en qué pantalla se reproducen los episodios y si deben abrirse a pantalla completa o en ventana.",
+  "settings.sourcesIntro": "AniList proporciona la información, portadas y catálogo; las webs solo suministran los enlaces de reproducción de cada episodio.",
+  "settings.sourcesActiveLabel": "Sitio activo (cada sitio mantiene su propia biblioteca y progreso)",
+  "settings.sourcesAdvanced": "Avanzado",
+  "settings.addNewSiteDesc": "Añade una dirección web para escanear animes en emisión de esa fuente.",
+  "settings.mirrorsDesc": "Direcciones alternativas de {site} (por si la web principal no responde; una por línea, en orden de preferencia):",
+  "settings.importDesc": "Copia tus series seguidas y episodios vistos al sitio activo para no empezar de cero si cambias de web.",
+  "settings.backupDesc": "Guarda una copia de tu biblioteca y progreso en tu Google Drive privado para no perder nada o restaurarlo en otro equipo.",
+  "settings.backupAdvancedGoogle": "Configuración de Google (avanzado)",
+  "settings.forceRefreshDesc": "Comprueba todas tus series seguidas una a una para detectar episodios que hayan podido pasarse por alto si la web falló.",
+  "settings.uninstallDesc": "Elimina la aplicación de tu equipo abriendo el desinstalador de Windows. Tus datos guardados se conservarán.",
 } as const;
 

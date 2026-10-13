@@ -576,5 +576,24 @@ export const en: Messages = {
   "stats.graphEpisodesWatched": "Episodes watched",
   "stats.graphSeriesCount": "{count} series",
   "stats.graphEpisodesCount": "{count} episodes",
+
+  // settings (v0.6.5)
+  "settings.tablistAria": "Settings sections",
+  "settings.tabGeneral": "General",
+  "settings.tabSources": "Episode sources",
+  "settings.tabData": "Data & backup",
+  "settings.tabMaintenance": "Maintenance",
+  "settings.appearanceDesc": "Customize the visual theme and language of the application.",
+  "settings.playerDesc": "Choose which display episodes play on and whether they should open in full screen or a window.",
+  "settings.sourcesIntro": "AniList provides metadata, covers, and catalog; streaming sites only supply playback links for each episode.",
+  "settings.sourcesActiveLabel": "Active site (each site keeps its own library and progress)",
+  "settings.sourcesAdvanced": "Advanced",
+  "settings.addNewSiteDesc": "Add a web address to scan airing anime from that source.",
+  "settings.mirrorsDesc": "Alternative addresses for {site} (fallback domains if the main site is down; one per line, in order of preference):",
+  "settings.importDesc": "Copy your followed anime and watched episodes to the active site so you don't start from scratch when switching sources.",
+  "settings.backupDesc": "Save a private copy of your library and progress to Google Drive to keep your data safe or restore it on another PC.",
+  "settings.backupAdvancedGoogle": "Google configuration (advanced)",
+  "settings.forceRefreshDesc": "Check all your followed series one by one to find any missed episodes if the site previously failed to update.",
+  "settings.uninstallDesc": "Remove the application from your PC using the Windows uninstaller. Your saved data will be kept.",
 };
 
