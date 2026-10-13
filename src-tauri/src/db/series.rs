@@ -193,12 +193,13 @@ impl Db {
             Some(id) => id,
             None => {
                 self.conn.execute(
-                    "INSERT INTO series(source_id, slug, title, url, cover_url, is_airing, next_episode_at, site_episode_count)
-                     VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                    "INSERT INTO series(source_id, slug, title, url, cover_url, is_airing, next_episode_at, site_episode_count, last_listed_at)
+                     VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, CASE WHEN ?6 != 0 THEN ?9 END)",
                     (
                         source_id, &s.slug, &s.title, &s.url,
                         &s.cover_url, s.is_airing as i64,
                         s.next_episode_at, s.site_episode_count,
+                        chrono::Utc::now().timestamp(),
                     ),
                 )?;
                 return Ok(self.conn.last_insert_rowid());
@@ -233,12 +234,14 @@ impl Db {
                     WHEN substr(COALESCE(cover_url, ''), 1, 5) IN ('data:', 'file:')
                      AND substr(COALESCE(?5, ''), 1, 5) NOT IN ('data:', 'file:')
                     THEN cover_url ELSE ?5 END,
-                is_airing=?6, next_episode_at=?7, site_episode_count=?8
+                is_airing=?6, next_episode_at=?7, site_episode_count=?8,
+                last_listed_at = CASE WHEN ?6 != 0 THEN ?9 ELSE last_listed_at END
              WHERE id=?1",
             (
                 target_id, &s.slug, &s.title, &s.url,
                 &s.cover_url, s.is_airing as i64,
                 s.next_episode_at, s.site_episode_count,
+                chrono::Utc::now().timestamp(),
             ),
         )?;
         Ok(target_id)

@@ -1,6 +1,10 @@
 use super::*;
 use std::collections::HashMap;
 
+/// How long after the last scan that listed a series it still counts as "on the
+/// site's airing listing" for `sync_status_from_catalog`.
+const LISTED_GRACE_SECS: i64 = 3 * 86400;
+
 /// One entry in the **site-agnostic library** (see
 /// docs/cross-site-library-investigation.md, option C). Identity is canonical —
 /// an AniList id when known, a normalized title otherwise — so the same show
@@ -253,6 +257,24 @@ impl Db {
         Ok(changed)
     }
 
+    /// A catalog entry still RELEASING/HIATUS whose title extends one of
+    /// `titles` ("X" -> "X Season 3"): a later season of the same franchise.
+    fn has_releasing_sequel(&self, titles: &[String], own_id: i64) -> Result<bool> {
+        let mut stmt = self.conn.prepare(
+            "SELECT 1 FROM anilist_catalog
+             WHERE status IN ('RELEASING', 'HIATUS') AND id != ?1
+               AND (title LIKE ?2 ESCAPE '!' OR title_romaji LIKE ?2 ESCAPE '!' OR title_english LIKE ?2 ESCAPE '!')
+             LIMIT 1",
+        )?;
+        for t in titles {
+            let escaped = t.replace('!', "!!").replace('%', "!%").replace('_', "!_");
+            if stmt.exists((own_id, format!("{escaped} %")))? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     /// Synchronize a linked series' `is_airing` flag with AniList's catalog status.
     ///
     /// Every site adapter's airing-listing parser hardcodes `is_airing: true` on
@@ -272,7 +294,7 @@ impl Db {
         let now = chrono::Utc::now().timestamp();
 
         let mut stmt = self.conn.prepare(
-            "SELECT s.id, s.title, s.anilist_id, c.status
+            "SELECT s.id, s.title, s.anilist_id, c.status, s.last_listed_at
              FROM series s
              JOIN anilist_catalog c ON c.id = s.anilist_id
              WHERE
@@ -281,7 +303,13 @@ impl Db {
         )?;
         let candidates = stmt
             .query_map([now], |r| {
-                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, String>(3)?))
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, Option<i64>>(4)?,
+                ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
 
@@ -295,7 +323,7 @@ impl Db {
         let mut to_update_0 = Vec::new();
         let mut to_update_1 = Vec::new();
 
-        for (id, title, anilist_id, status) in candidates {
+        for (id, title, anilist_id, status, last_listed_at) in candidates {
             if let std::collections::hash_map::Entry::Vacant(e) = titles_of.entry(anilist_id) {
                 let v = title_stmt.query_row([anilist_id], |r| {
                     let mut v = vec![r.get::<_, String>(0)?];
@@ -310,6 +338,14 @@ impl Db {
                 continue;
             }
             if status == "FINISHED" || status == "CANCELLED" {
+                // A site that keeps every season under one slug links to the
+                // first (FINISHED) season while a later one airs: the live
+                // listing plus a releasing sequel in the catalog beats the
+                // stale season status.
+                let listed_recently = last_listed_at.is_some_and(|t| t >= now - LISTED_GRACE_SECS);
+                if listed_recently && self.has_releasing_sequel(&titles_of[&anilist_id], anilist_id)? {
+                    continue;
+                }
                 to_update_0.push(id);
             } else if status == "RELEASING" || status == "HIATUS" {
                 to_update_1.push(id);
@@ -912,6 +948,28 @@ mod tests {
         assert!(!get_is_airing(&db, s_nyr), "NOT_YET_RELEASED untouched");
         assert!(get_is_airing(&db, s_mismatch), "season-mismatched FINISHED untouched (stays 1)");
         assert!(!get_is_airing(&db, s_mismatch2), "season-mismatched RELEASING untouched (stays 0)");
+    }
+
+    #[test]
+    fn sync_status_keeps_listed_series_airing_when_a_later_season_is_releasing() {
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("TioAnime", "a", "tioanime").unwrap();
+        let mut s1 = crate::db::test_support::catalog_anime(71, "Appraisal Skill", &[]);
+        s1.status = Some("FINISHED".into());
+        db.upsert_catalog_anime(&s1, 0).unwrap();
+        let mut s3 = crate::db::test_support::catalog_anime(73, "Appraisal Skill Season 3", &[]);
+        s3.status = Some("RELEASING".into());
+        db.upsert_catalog_anime(&s3, 1).unwrap();
+        let sid = db.upsert_series(a, &mk_airing("appraisal", "Appraisal Skill", None)).unwrap();
+        db.set_anilist_id(sid, 71).unwrap();
+
+        assert_eq!(db.sync_status_from_catalog().unwrap(), 0);
+        assert!(get_is_airing(&db, sid), "listed + releasing sequel -> stays airing");
+
+        // Once the site stops listing it, the finished status applies again.
+        db.conn.execute("UPDATE series SET last_listed_at=?1 WHERE id=?2", (0, sid)).unwrap();
+        assert_eq!(db.sync_status_from_catalog().unwrap(), 1);
+        assert!(!get_is_airing(&db, sid));
     }
 
     // ---- sync_seen_progress_across_sites (2026-08-13 site-switch bug) ----

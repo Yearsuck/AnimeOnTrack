@@ -124,6 +124,11 @@ impl Db {
         ensure_column(&self.conn, "series", "next_episode_at", "INTEGER")?;
         ensure_column(&self.conn, "series", "site_episode_count", "INTEGER")?;
         ensure_column(&self.conn, "series", "last_checked_at", "TEXT")?;
+        // last_listed_at: unix timestamp of the last scan whose airing listing
+        // contained this row. `sync_status_from_catalog` uses it so a row that
+        // spans several seasons on the site (TioAnime keeps one slug for all of
+        // them) is not un-aired because it links to a FINISHED early season.
+        ensure_column(&self.conn, "series", "last_listed_at", "INTEGER")?;
         // series.carried_seen_number: cross-site follow carry-over (see
         // docs/superpowers/specs/2026-07-12-cross-site-follow-carryover-design.md).
         // When switching sites, a followed series matched by title on the new
