@@ -139,7 +139,8 @@ pub async fn fetch_series_detail(
     details.into_iter().next().ok_or_else(|| "empty series detail page".to_string())
 }
 
-/// Backfill one series' genres/kind if it has no `series_genres` rows yet.
+/// Backfill one series' genres/kind if it has no `series_genres` rows yet
+/// and is not linked to AniList.
 /// Returns true if a fetch was attempted (regardless of success) — used by
 /// the caller to decide whether to apply the polite inter-series delay.
 /// Locks `db` only for the short sync checks/writes, never across the
@@ -876,11 +877,12 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
     // from either map (no episode rows yet / theoretically impossible for
     // `last_checked_ages`) falls back to the same defaults the old
     // per-series calls used (0, and `None`).
-    let (max_numbers, checked_ages) = {
+    let (max_numbers, checked_ages, linked_ids) = {
         let db = state.db.lock().unwrap();
         (
             db.max_episode_numbers_for_source(src).map_err(|e| e.to_string())?,
             db.last_checked_ages_for_source(src).map_err(|e| e.to_string())?,
+            db.followed_linked_series_ids(src).map_err(|e| e.to_string())?,
         )
     };
 
@@ -921,7 +923,9 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
         } else {
             idx += 1;
             emit_refresh_progress(&app, idx, total_series, &s.title);
-            if s.cover_url.as_deref().is_some_and(|u| !crate::db::is_csp_displayable_cover(Some(u))) {
+            if !linked_ids.contains(&s.id)
+                && s.cover_url.as_deref().is_some_and(|u| !crate::db::is_csp_displayable_cover(Some(u)))
+            {
                 cover_backlog.push(s);
             }
         }
@@ -1024,14 +1028,18 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
             // loop is sequential). Skip once it's already a fetched data:
             // URI or local file: path; a failure here just leaves the remote
             // (broken) url in place to retry next time, it never blocks episode updates.
+            // AniList-linked series are also skipped: the catalog cover always
+            // wins for them, so fetching site covers is wasted work.
             // fetch_cover_image itself is timeout-bounded end to end — see
             // its doc comment — so this can never stall the whole cycle.
-            if let Some(remote) = &s.cover_url {
-                if !crate::db::is_csp_displayable_cover(Some(remote)) {
-                    cover_attempted.insert(s.id);
-                    if let Some(cover) = fetch_single_cover_with_fallback(&app, remote, s.id, &s.title, "followed").await {
-                        let db = state.db.lock().unwrap();
-                        let _ = db.update_series_cover(s.id, &cover);
+            if !linked_ids.contains(&s.id) {
+                if let Some(remote) = &s.cover_url {
+                    if !crate::db::is_csp_displayable_cover(Some(remote)) {
+                        cover_attempted.insert(s.id);
+                        if let Some(cover) = fetch_single_cover_with_fallback(&app, remote, s.id, &s.title, "followed").await {
+                            let db = state.db.lock().unwrap();
+                            let _ = db.update_series_cover(s.id, &cover);
+                        }
                     }
                 }
             }

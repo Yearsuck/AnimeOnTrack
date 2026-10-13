@@ -595,5 +595,11 @@ export const en: Messages = {
   "settings.backupAdvancedGoogle": "Google configuration (advanced)",
   "settings.forceRefreshDesc": "Check all your followed series one by one to find any missed episodes if the site previously failed to update.",
   "settings.uninstallDesc": "Remove the application from your PC using the Windows uninstaller. Your saved data will be kept.",
+  "settings.sitePriorityHeading": "Site priority",
+  "settings.sitePriorityHint": "The app queries sites from top to bottom when an anime or episode is missing.",
+  "settings.sitePriorityUp": "Up",
+  "settings.sitePriorityDown": "Down",
+  "settings.sitePriorityMoveUp": "Increase priority of {site}",
+  "settings.sitePriorityMoveDown": "Decrease priority of {site}",
 };
 

@@ -96,7 +96,7 @@ mod tests {
         let db = Db::open(path_str).unwrap();
         let site_id: String = db
             .conn
-            .query_row("SELECT site_id FROM sources WHERE base_url='https://wwv.animeytx.net'", [], |r| r.get(0))
+            .query_row("SELECT site_id FROM sources LIMIT 1", [], |r| r.get(0))
             .unwrap();
         assert_eq!(site_id, "animeytx");
         let _ = std::fs::remove_file(&path);

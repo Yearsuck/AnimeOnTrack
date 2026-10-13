@@ -38,6 +38,9 @@ pub use follow::*;
 mod mirrors;
 pub use mirrors::*;
 
+mod priority;
+pub use priority::*;
+
 mod scan;
 pub use scan::*;
 

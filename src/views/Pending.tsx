@@ -2,8 +2,6 @@ import { useCallback, useEffect, useState } from "react";
 import { listPending, openEpisode, setSeenCascade } from "../api";
 import { useT } from "../i18n";
 import type { PendingItem, Series } from "../types";
-import { countdownLabel } from "./AiringGrid";
-import { parseReleasedAtToUnixSeconds } from "../lib/parseReleasedAt";
 import { initials, resolveCoverUrl, useCoverFailure } from "../lib/posterFallback";
 
 // A series' cover_url on the Pendientes list can be a remote URL still waiting
@@ -161,16 +159,8 @@ export function Pending({
                   <span className="ep-num">{it.episode.number}</span>
                   <div className="ep-main">
                     <div className="ep-title" onClick={() => watch(it)}>
-                      {it.episode.title ?? t("common.episodeNumber", { number: it.episode.number })}
+                      {t("common.episodeNumber", { number: it.episode.number })}
                     </div>
-                    {it.episode.released_at && (
-                      <div className="ep-date">
-                        {(() => {
-                          const ts = parseReleasedAtToUnixSeconds(it.episode.released_at);
-                          return ts != null ? countdownLabel(ts, t) : it.episode.released_at;
-                        })()}
-                      </div>
-                    )}
                   </div>
                   <div className="ep-actions">
                     <button className="btn" onClick={() => watch(it)}>

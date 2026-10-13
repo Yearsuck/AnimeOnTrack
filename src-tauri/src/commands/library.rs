@@ -22,7 +22,9 @@ pub fn list_pending(
     };
     let src = get_source_id(&state)?;
     let db = state.db.lock().unwrap();
-    let rows = db.list_pending(src, sort).map_err(|e| e.to_string())?;
+    let known: Vec<&str> = crate::adapter::all_sites().iter().map(|s| s.id).collect();
+    let priority = db.get_site_priority(&known).map_err(|e| e.to_string())?;
+    let rows = db.list_pending(src, sort, &priority).map_err(|e| e.to_string())?;
     Ok(rows
         .into_iter()
         .map(|(s, e)| PendingItem { series: s, episode: e })
@@ -39,7 +41,9 @@ pub struct PendingItem {
 pub fn pending_count(state: State<'_, AppState>) -> Result<i64, String> {
     let src = get_source_id(&state)?;
     let db = state.db.lock().unwrap();
-    db.pending_count(src).map_err(|e| e.to_string())
+    let known: Vec<&str> = crate::adapter::all_sites().iter().map(|s| s.id).collect();
+    let priority = db.get_site_priority(&known).map_err(|e| e.to_string())?;
+    db.pending_count(src, &priority).map_err(|e| e.to_string())
 }
 
 /// Series with the given backlog status ('want' or 'discarded'), for the

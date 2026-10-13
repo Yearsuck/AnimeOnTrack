@@ -28,7 +28,7 @@
     Tracks currently-airing anime, notifies you the second a new episode drops, downloads episodes for offline viewing, and unifies your progress across six streaming sites — without an account or cloud lock-in.
     <br />
     <br />
-    <a href="https://github.com/Yearsuck/AnimeOnTrack/releases/latest"><strong>⬇ Download Installer (v0.6.2) »</strong></a>
+    <a href="https://github.com/Yearsuck/AnimeOnTrack/releases/latest"><strong>⬇ Download Installer (v0.7.0) »</strong></a>
     <br />
     <br />
     <a href="#about-the-project">About The Project</a>
@@ -69,7 +69,7 @@
     </li>
     <li><a href="#architecture--engineering-highlights">Architecture & Engineering Highlights</a></li>
     <li><a href="#project-layout">Project Layout</a></li>
-    <li><a href="#whats-new-in-v062">What's New in v0.6.2</a></li>
+    <li><a href="#whats-new-in-v070">What's New in v0.7.0</a></li>
     <li><a href="#contributing">Contributing</a></li>
     <li><a href="#a-note-on-piracy">A Note on Piracy</a></li>
     <li><a href="#disclaimer">Disclaimer</a></li>
@@ -129,12 +129,14 @@ Crucially, the app maintains an **offline mirror of the AniList catalog (~22,000
 ### 🃏 Discover Swipe Deck with Multi-Level Undo
 * **Tinder-Style Swiping**: Rapidly sort recommendations into *Want*, *Seen*, or *Discard* with keyboard shortcuts or mouse gestures.
 * **Taste-Weighted Algorithm**: Surfaces recommendations based on your completed and high-rated franchises.
-* **Precision Filtering**: Filter by release date ranges (including future upcoming releases), formats (TV, Movie, OVA, ONA), and genres, backed by a ~5-step undo history.
+* **Precision Filtering**: Filter by release date ranges (including future upcoming releases), score floor, formats (TV, Movie, OVA, ONA), and genres, backed by a ~5-step undo history.
+* **Watchlist Manager**: The Want / Discarded / Seen lists open as a grid or dense list with score, year, format, status and genre filters, sorting, quick groups and bulk actions.
 
 ### 📊 Watch Insights & Interactive 3D Force Graph
 * **Comprehensive Stats**: View total hours watched, completion percentages, activity timelines, and genre distributions.
 * **Franchise Rollups**: Multi-season epics (e.g., *One Piece*, *Boruto*) consolidate into single franchises instead of fragmented arcs.
-* **3D Knowledge Graph**: Explore your entire anime universe with an interactive, GPU-accelerated 3D force-directed graph powered by Three.js.
+* **3D Knowledge Graph**: Explore your entire anime universe with an interactive, GPU-accelerated 3D force-directed graph powered by Three.js: node and link weights follow watched episodes, click to select, right-click for a context menu.
+* **Yearly Activity Heatmap**: A full-year contribution-style grid with quartile-based intensity levels.
 
 ### ☁️ Encrypted Google Drive Backup
 * **Zero Cloud Lock-In**: End-to-end database backups saved to a private, hidden folder in your own Google Drive.
@@ -154,7 +156,7 @@ Six adapters are bundled out of the box, all conforming to a pluggable `SiteAdap
 
 | Site | Default Domain | Adapter ID | Primary Language | Mirror Failover |
 |:---|:---|:---|:---:|:---:|
-| **AnimeYT** | `wwv.animeytx.net` | `animeytx` | Spanish (Castilian / LatAm) | Automatic |
+| **AnimeYT** | `animeyt.cc` | `animeytx` | Spanish (Castilian / LatAm) | Automatic |
 | **TioAnime** | `tioanime.com` | `tioanime` | Spanish (Castilian / LatAm) | Automatic |
 | **AnimeFLV** | `www4.animeflv.net` | `animeflv` | Spanish (Castilian / LatAm) | Automatic |
 | **JKanime** | `jkanime.net` | `jkanime` | Spanish (Castilian / LatAm) | Automatic |
@@ -301,12 +303,13 @@ AnimeOnTrack/
 
 ---
 
-## What's New in v0.6.2
+## What's New in v0.7.0
 
-* **Offline Episode Downloads**: Full background downloading with live transfer rate metrics, pause/resume/cancel controls, and an **auto-delete on seen** option.
-* **AniList Hero Banners**: Airing spotlight carousel now showcases high-resolution landscape banners fetched directly from AniList.
-* **Concurrency Improvements**: Polished 4-permit semaphore pipeline for faster episode list scraping without triggering site throttling.
-* **Catalog Synchronization**: Fuzzy matching enhancements to collapse multi-season and cross-language titles into unified library records.
+* **Catalog filters**: score range (including everything under 60), release-date range with presets (2020s, 2010s, ...), status and sort, plus a score floor and date presets for the discover deck. "Hide watched" no longer freezes the app (about 18 s per call before, about 0.1 s now).
+* **Discover lists redesigned**: grid or dense view, filters by score, year, format, status and genres, sorting, quick groups (airing now, top rated, short), bulk actions that keep failures selected for retry, and paged rendering for very long lists. The swipe deck no longer shows "no more anime" while its queue is still filling.
+* **Statistics**: calmer layout with a headline KPI strip, a yearly activity heatmap that fills the row at any width, and a 3D graph without the root hub, with stronger weights, left-click selection (info panel and camera fly) and a right-click menu. Genre cards and graph nodes now show real covers.
+* **Airing list cleanup**: finished OVAs, Specials and shows that stopped weeks ago are hidden unless you follow them or AniList confirms an upcoming episode.
+* **Settings in tabs**: General, Episode sources, Data & backup and Maintenance, each with a plain-language description; mirrors, add-a-site and Google credentials live under "Advanced".
 
 *(For detailed historical release notes, see the [Releases](https://github.com/Yearsuck/AnimeOnTrack/releases) tab).*
 

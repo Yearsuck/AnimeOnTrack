@@ -193,6 +193,22 @@ impl Db {
     }
 
     /// Record that a specific site failed to yield episodes for this show.
+    /// Cool-down between two attempts at the same show by the background episode fallback.
+    const EPISODE_FALLBACK_ATTEMPT_COOLDOWN_SECS: i64 = 30 * 60;
+
+    pub fn record_episode_fallback_attempt(&self, canon_key: &str, now: i64) -> Result<()> {
+        self.set_setting(&format!("episode_fallback_attempt:{}", canon_key), &now.to_string())
+    }
+
+    pub fn recently_attempted_episode_fallback(&self, canon_key: &str, now: i64) -> Result<bool> {
+        if let Some(v) = self.get_setting(&format!("episode_fallback_attempt:{}", canon_key))? {
+            if let Ok(t) = v.parse::<i64>() {
+                return Ok(now - t < Self::EPISODE_FALLBACK_ATTEMPT_COOLDOWN_SECS);
+            }
+        }
+        Ok(false)
+    }
+
     pub fn record_episode_fallback_site_miss(&self, canon_key: &str, site_id: &str, now: i64) -> Result<()> {
         self.set_setting(&format!("episode_fallback_site_miss:{}:{}", site_id, canon_key), &now.to_string())
     }
@@ -207,6 +223,32 @@ impl Db {
             }
         }
         Ok(false)
+    }
+
+    pub fn get_site_priority(&self, known: &[&str]) -> Result<Vec<String>> {
+        if let Some(raw) = self.get_setting("site_priority")? {
+            if let Ok(stored) = serde_json::from_str::<Vec<String>>(&raw) {
+                let mut result = Vec::new();
+                let mut seen = std::collections::HashSet::new();
+                for id in stored {
+                    if known.contains(&id.as_str()) && seen.insert(id.clone()) {
+                        result.push(id);
+                    }
+                }
+                for &id in known {
+                    if seen.insert(id.to_string()) {
+                        result.push(id.to_string());
+                    }
+                }
+                return Ok(result);
+            }
+        }
+        Ok(known.iter().map(|&s| s.to_string()).collect())
+    }
+
+    pub fn set_site_priority(&self, order: &[String]) -> Result<()> {
+        let json = serde_json::to_string(order)?;
+        self.set_setting("site_priority", &json)
     }
 }
 
@@ -333,6 +375,35 @@ mod tests {
         db.set_player_fullscreen(false).unwrap();
         assert_eq!(db.get_player_monitor().unwrap(), None);
         assert!(!db.get_player_fullscreen().unwrap());
+    }
+
+    #[test]
+    fn site_priority_defaults_to_known_when_nothing_stored() {
+        let db = Db::open(":memory:").unwrap();
+        assert_eq!(db.get_site_priority(&["a", "b", "c"]).unwrap(), vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn site_priority_preserves_stored_and_appends_missing_known() {
+        let db = Db::open(":memory:").unwrap();
+        db.set_site_priority(&["c".to_string(), "a".to_string()]).unwrap();
+        assert_eq!(db.get_site_priority(&["a", "b", "c"]).unwrap(), vec!["c", "a", "b"]);
+    }
+
+    #[test]
+    fn site_priority_drops_unknown_and_duplicate_stored_ids() {
+        let db = Db::open(":memory:").unwrap();
+        db.set_setting("site_priority", r#"["x","c","c","a"]"#).unwrap();
+        assert_eq!(db.get_site_priority(&["a", "b", "c"]).unwrap(), vec!["c", "a", "b"]);
+    }
+
+    #[test]
+    fn site_priority_round_trip() {
+        let db = Db::open(":memory:").unwrap();
+        let order = vec!["b".to_string(), "c".to_string(), "a".to_string()];
+        db.set_site_priority(&order).unwrap();
+        assert_eq!(db.get_site_priority(&["a", "b", "c"]).unwrap(), order);
+        assert_eq!(db.get_setting("site_priority").unwrap().as_deref(), Some(r#"["b","c","a"]"#));
     }
 }
 

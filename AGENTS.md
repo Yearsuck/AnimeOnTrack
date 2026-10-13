@@ -74,7 +74,7 @@ The target sites sit behind Cloudflare. Plain HTTP requests (curl, reqwest) get 
 
 ### Site adapters (pluggable, 6 implementations)
 
-**`src-tauri/src/adapter/`** defines `trait SiteAdapter` (`airing_url`, `parse_airing`, `parse_series`, search/genre helpers) and a registry in `adapter/mod.rs`: `SITES` (id/name/default_base_url) + `adapter_for(site_id)`. Six sites ship: **animeytx, tioanime, animeflv, jkanime, gogoanime, animeland**. Each site has its **own library** — switching the active site in Settings shows that site's followed series/progress without touching the others (`sources.site_id`). animeytx parses a DooPlay WordPress theme (confirmed selectors, not guessed: airing cards `.bsx`, episode rows `.eplister ul li` → `.epl-num`/`.epl-title`/`.epl-date`); the others have their own parsers. Adapter unit-test fixtures live in `src-tauri/tests/fixtures/`.
+**`src-tauri/src/adapter/`** defines `trait SiteAdapter` (`airing_url`, `parse_airing`, `parse_series`, search/genre helpers) and a registry in `adapter/mod.rs`: `SITES` (id/name/default_base_url) + `adapter_for(site_id)`. Six sites ship: **animeytx, tioanime, animeflv, jkanime, gogoanime, animeland**. Each site has its **own library** — switching the active site in Settings shows that site's followed series/progress without touching the others (`sources.site_id`). animeytx targets animeyt.cc (custom `aniyt` theme since Oct 2026: airing = weekly `/horario/` cards `a.aniyt-schedule-card`, episodes `article.aniyt-episode-card` on `/tv/<slug>/`; the old DooPlay selectors stay as a fallback); the others have their own parsers. Adapter unit-test fixtures live in `src-tauri/tests/fixtures/`.
 
 ### Mirror fallback
 

@@ -197,6 +197,8 @@ pub fn run() {
             commands::rescan_airing,
             commands::get_mirrors,
             commands::set_mirrors,
+            commands::get_site_priority,
+            commands::set_site_priority,
             commands::list_sites,
             commands::get_active_site,
             commands::set_active_site,

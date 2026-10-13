@@ -592,18 +592,14 @@ async fn link_series_core(
         }
     }
 
-    // No collision: fetch the matched series page once, reused for both the
-    // episode list and the detail (genres/kind) parse. For a site with an
-    // episode_fetch_script (jkanime.net), `scraped.extra` carries the episode
-    // JSON from that same page load; every other site leaves `extra: None`
-    // and `parse_series` reads `scraped.html` exactly as before.
+    // No collision: fetch the matched series page once for the episode list.
+    // Detail parse (genres/kind) is skipped: this series is linked to AniList,
+    // which is the source of truth for all facts about the anime.
     let scraped =
         fetch_html_with_script(app, &matched.url, a.episode_fetch_script()).await.map_err(|e| e.to_string())?;
     let episodes = a
         .parse_series(scraped.extra.as_deref().unwrap_or(&scraped.html))
         .map_err(|e| e.to_string())?;
-    let detail = a.parse_series_detail(&scraped.html).map_err(|e| e.to_string())?;
-    let kind = detail.kind.unwrap_or(matched.kind.clone());
 
     let episode_count = episodes.len() as i64;
     let written = {
@@ -614,8 +610,8 @@ async fn link_series_core(
             &new_slug,
             &matched.url,
             matched.poster_url.as_deref(),
-            &kind,
-            &detail.genres,
+            None,
+            None,
             &episodes,
             info.watched_externally,
         )?
@@ -660,16 +656,23 @@ fn apply_link_writes(
     slug: &str,
     url: &str,
     cover_url: Option<&str>,
-    kind: &str,
-    genres: &[String],
+    kind: Option<&str>,
+    genres: Option<&[String]>,
     episodes: &[Episode],
     watched_externally: bool,
 ) -> Result<bool, String> {
     if !db.series_exists(series_id).map_err(|e| e.to_string())? {
         return Ok(false);
     }
-    db.relink_series(series_id, slug, url, cover_url, kind).map_err(|e| e.to_string())?;
-    db.replace_series_genres(series_id, genres).map_err(|e| e.to_string())?;
+    let existing_kind: String = db
+        .conn
+        .query_row("SELECT COALESCE(kind, '') FROM series WHERE id=?1", [series_id], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+    let effective_kind = kind.unwrap_or(&existing_kind);
+    db.relink_series(series_id, slug, url, cover_url, effective_kind).map_err(|e| e.to_string())?;
+    if let Some(genres) = genres {
+        db.replace_series_genres(series_id, genres).map_err(|e| e.to_string())?;
+    }
     // De-duplicate by number (see the follow path above / db.rs migration): a
     // re-link after a domain change must refresh links, not duplicate
     // episodes. One transaction for the whole list — see
@@ -820,8 +823,8 @@ mod tests {
         let sid = insert_test_series(&db, src, "anilist-77");
 
         let written = apply_link_writes(
-            &db, sid, "real-slug", "https://site.example/real-slug", None, "TV",
-            &["Action".to_string()], &[ep("1"), ep("2")], false,
+            &db, sid, "real-slug", "https://site.example/real-slug", None, Some("TV"),
+            Some(&["Action".to_string()]), &[ep("1"), ep("2")], false,
         )
         .unwrap();
 
@@ -848,8 +851,8 @@ mod tests {
         assert!(!db.series_exists(sid).unwrap());
 
         let written = apply_link_writes(
-            &db, sid, "real-slug", "https://site.example/real-slug", None, "TV",
-            &["Action".to_string()], &[ep("1"), ep("2"), ep("3")], true,
+            &db, sid, "real-slug", "https://site.example/real-slug", None, Some("TV"),
+            Some(&["Action".to_string()]), &[ep("1"), ep("2"), ep("3")], true,
         )
         .unwrap();
 
@@ -875,6 +878,30 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM series_genres WHERE series_id=?1", [sid], |r| r.get(0))
             .unwrap();
         assert_eq!(genres, 0);
+    }
+
+    /// Linked series linking to a site preserves its existing AniList genres and kind
+    /// (skip genre/kind writes).
+    #[test]
+    fn apply_link_writes_for_linked_series_preserves_existing_genres_and_kind() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let sid = insert_test_series(&db, src, "anilist-77");
+        db.set_anilist_id(sid, 77).unwrap();
+        db.set_kind(sid, "TV").unwrap();
+        db.insert_series_genres(sid, &["Action".to_string(), "Adventure".to_string()]).unwrap();
+
+        let written = apply_link_writes(
+            &db, sid, "real-slug", "https://site.example/real-slug", None, None,
+            None, &[ep("1"), ep("2")], false,
+        )
+        .unwrap();
+
+        assert!(written);
+        let genres = db.list_series_genres(sid).unwrap();
+        assert_eq!(genres, vec!["Action".to_string(), "Adventure".to_string()]);
+        let kind: String = db.conn.query_row("SELECT kind FROM series WHERE id=?1", [sid], |r| r.get(0)).unwrap();
+        assert_eq!(kind, "TV");
     }
 
     fn scanned(title: &str) -> Series {

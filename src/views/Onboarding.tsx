@@ -4,7 +4,7 @@ import { useT } from "../i18n";
 
 export function Onboarding({ onDone }: { onDone: () => void }) {
   const t = useT();
-  const [url, setUrl] = useState("https://wwv.animeytx.net");
+  const [url, setUrl] = useState("https://animeyt.cc");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
