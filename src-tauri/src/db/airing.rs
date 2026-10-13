@@ -467,10 +467,10 @@ impl Db {
             PendingSort::RemainingDesc => "DESC",
         };
         let sql = format!(
-            "SELECT s.id, s.slug, s.title, s.url,
+            "SELECT s.id, s.slug, COALESCE(c.title, s.title) AS title, s.url,
                     COALESCE(
-                        CASE WHEN s.cover_url LIKE 'file:%' OR s.cover_url LIKE 'data:%' OR s.cover_url LIKE 'https://%anilist.co%' THEN s.cover_url ELSE NULL END,
                         c.cover_url,
+                        CASE WHEN s.cover_url LIKE 'file:%' OR s.cover_url LIKE 'data:%' OR s.cover_url LIKE 'https://%anilist.co%' THEN s.cover_url ELSE NULL END,
                         s.cover_url
                     ) AS cover_url,
                     s.is_airing, s.followed,
@@ -482,7 +482,7 @@ impl Db {
              JOIN series s ON s.id = e.series_id
              LEFT JOIN anilist_catalog c ON c.id = s.anilist_id
              WHERE e.seen=0 AND s.watched_externally=0 AND s.id IN ({ids_str})
-             ORDER BY remaining {dir}, s.title, CAST(e.number AS INTEGER) ASC, e.id ASC"
+             ORDER BY remaining {dir}, COALESCE(c.title, s.title), CAST(e.number AS INTEGER) ASC, e.id ASC"
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt
@@ -1338,5 +1338,124 @@ mod tests {
         assert!(elapsed.as_millis() < 1500, "pending_count took (debug build, limit 1500) {} ms", elapsed.as_millis());
         assert!(elapsed2.as_millis() < 1500, "list_pending took {} ms", elapsed2.as_millis());
         assert_eq!(count as usize, list.len());
+    }
+
+    #[test]
+    fn list_pending_prefers_catalog_title_and_cover_for_linked_series() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "https://a.example", "animeytx").unwrap();
+
+        db.upsert_catalog_anime(&catalog_anime(1001, "As a Reincarnated Aristocrat", &[]), 0).unwrap();
+
+        let s = crate::models::Series {
+            id: 0,
+            slug: "tensei-kizoku".into(),
+            title: "Tensei Kizoku".into(),
+            url: "https://site/tensei-kizoku".into(),
+            cover_url: Some("file:C:/covers/tensei.jpg".into()),
+            is_airing: true,
+            followed: true,
+            next_episode_at: None,
+            site_episode_count: None,
+        };
+        let sid = db.upsert_series(src, &s).unwrap();
+        db.set_followed(sid, true).unwrap();
+        db.set_anilist_id(sid, 1001).unwrap();
+        db.insert_episode(&crate::models::Episode {
+            id: 0,
+            series_id: sid,
+            number: "1".into(),
+            title: None,
+            url: "https://site/tensei-kizoku/1".into(),
+            released_at: None,
+            seen: false,
+            download_path: None,
+            download_status: None,
+        }).unwrap();
+
+        let pending = db.list_pending(src, PendingSort::RemainingAsc).unwrap();
+        assert_eq!(pending.len(), 1);
+        let (series, _) = &pending[0];
+        assert_eq!(series.title, "As a Reincarnated Aristocrat");
+        assert_eq!(series.cover_url.as_deref(), Some("https://cdn/1001.jpg"));
+    }
+
+    #[test]
+    fn list_pending_keeps_site_title_and_cover_for_unlinked_series() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "https://a.example", "animeytx").unwrap();
+
+        let s = crate::models::Series {
+            id: 0,
+            slug: "unlinked-show".into(),
+            title: "Unlinked Site Title".into(),
+            url: "https://site/unlinked".into(),
+            cover_url: Some("file:C:/covers/unlinked.jpg".into()),
+            is_airing: true,
+            followed: true,
+            next_episode_at: None,
+            site_episode_count: None,
+        };
+        let sid = db.upsert_series(src, &s).unwrap();
+        db.set_followed(sid, true).unwrap();
+        db.insert_episode(&crate::models::Episode {
+            id: 0,
+            series_id: sid,
+            number: "1".into(),
+            title: None,
+            url: "https://site/unlinked/1".into(),
+            released_at: None,
+            seen: false,
+            download_path: None,
+            download_status: None,
+        }).unwrap();
+
+        let pending = db.list_pending(src, PendingSort::RemainingAsc).unwrap();
+        assert_eq!(pending.len(), 1);
+        let (series, _) = &pending[0];
+        assert_eq!(series.title, "Unlinked Site Title");
+        assert_eq!(series.cover_url.as_deref(), Some("file:C:/covers/unlinked.jpg"));
+    }
+
+    #[test]
+    fn list_pending_linked_series_with_null_catalog_cover_falls_back_to_site_cover() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "https://a.example", "animeytx").unwrap();
+
+        let mut cat = catalog_anime(1002, "Catalog Title", &[]);
+        cat.cover_url = None;
+        db.upsert_catalog_anime(&cat, 0).unwrap();
+
+        let s = crate::models::Series {
+            id: 0,
+            slug: "null-cat-cover".into(),
+            title: "Site Title".into(),
+            url: "https://site/null-cat-cover".into(),
+            cover_url: Some("file:C:/covers/site.jpg".into()),
+            is_airing: true,
+            followed: true,
+            next_episode_at: None,
+            site_episode_count: None,
+        };
+        let sid = db.upsert_series(src, &s).unwrap();
+        db.set_followed(sid, true).unwrap();
+        db.set_anilist_id(sid, 1002).unwrap();
+        db.insert_episode(&crate::models::Episode {
+            id: 0,
+            series_id: sid,
+            number: "1".into(),
+            title: None,
+            url: "https://site/null-cat-cover/1".into(),
+            released_at: None,
+            seen: false,
+            download_path: None,
+            download_status: None,
+        }).unwrap();
+
+        let pending = db.list_pending(src, PendingSort::RemainingAsc).unwrap();
+        assert_eq!(pending.len(), 1);
+        let (series, _) = &pending[0];
+        assert_eq!(series.title, "Catalog Title");
+        assert_eq!(series.cover_url.as_deref(), Some("file:C:/covers/site.jpg"));
     }
 }

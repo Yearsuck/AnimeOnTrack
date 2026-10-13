@@ -938,6 +938,24 @@ impl Db {
         })
     }
 
+    /// Set of series ids for followed series on `source_id` that are already
+    /// linked to an AniList catalog row (`anilist_id IS NOT NULL`). Used by
+    /// `refresh()` to skip downloading site covers for shows whose display
+    /// cover comes from AniList anyway.
+    pub fn followed_linked_series_ids(&self, source_id: i64) -> Result<std::collections::HashSet<i64>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT s.id FROM series s JOIN anilist_catalog c ON c.id = s.anilist_id
+             WHERE s.source_id=?1 AND s.followed=1
+               AND c.cover_url IS NOT NULL AND c.cover_url != ''",
+        )?;
+        let mut set = std::collections::HashSet::new();
+        let rows = stmt.query_map([source_id], |r| r.get::<_, i64>(0))?;
+        for id in rows {
+            set.insert(id?);
+        }
+        Ok(set)
+    }
+
     /// The **site-agnostic** library: every followed or watched-externally show
     /// across *all* sites, collapsed to one entry per canonical identity
     /// (`anilist_id`, else normalized title — see
@@ -956,11 +974,13 @@ impl Db {
     pub fn list_library(&self, active_source_id: i64) -> Result<Vec<crate::models::LibraryItem>> {
         // Per-member row across every site (no source filter). anilist_id and
         // source_id are carried alongside the Series so we can group canonically
-        // and pick the active-site representative. cover falls back to the
-        // catalog poster when the site row has none.
+        // and pick the active-site representative. Title and cover prefer the
+        // catalog row when linked (AniList is the source of truth).
         let mut stmt = self.conn.prepare(
-            "SELECT s.id, s.source_id, s.anilist_id, s.slug, s.title, s.url,
-                    COALESCE(s.cover_url, c.cover_url) AS cover_url,
+            "SELECT s.id, s.source_id, s.anilist_id, s.slug,
+                    COALESCE(c.title, s.title) AS title,
+                    s.url,
+                    COALESCE(c.cover_url, s.cover_url) AS cover_url,
                     s.is_airing, s.followed, s.next_episode_at, s.site_episode_count,
                     s.watched_externally, s.kind,
                     COUNT(e.id) AS total,
@@ -3227,6 +3247,225 @@ mod tests {
         assert_eq!(bulk_meta[0].series_id, bulk_ids[0]);
         assert_eq!(bulk_meta[549].series_id, bulk_ids[549]);
     }
+
+    #[test]
+    fn list_library_prefers_catalog_title_and_cover_for_linked_series() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+
+        db.upsert_catalog_anime(&crate::db::test_support::catalog_anime(2001, "As a Reincarnated Aristocrat", &[]), 0).unwrap();
+
+        let s = crate::models::Series {
+            id: 0,
+            slug: "tensei-kizoku".into(),
+            title: "Tensei Kizoku".into(),
+            url: "https://site/tensei-kizoku".into(),
+            cover_url: Some("file:C:/covers/tensei.jpg".into()),
+            is_airing: false,
+            followed: false,
+            next_episode_at: None,
+            site_episode_count: None,
+        };
+        let sid = db.upsert_series(src, &s).unwrap();
+        db.set_followed(sid, true).unwrap();
+        db.set_anilist_id(sid, 2001).unwrap();
+
+        let items = db.list_library(src).unwrap();
+        assert_eq!(items.len(), 1);
+        let item = &items[0];
+        assert_eq!(item.series.title, "As a Reincarnated Aristocrat");
+        assert_eq!(item.series.cover_url.as_deref(), Some("https://cdn/2001.jpg"));
+    }
+
+    #[test]
+    fn list_library_keeps_site_title_and_cover_for_unlinked_series() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+
+        let s = crate::models::Series {
+            id: 0,
+            slug: "unlinked-show".into(),
+            title: "Unlinked Site Title".into(),
+            url: "https://site/unlinked".into(),
+            cover_url: Some("file:C:/covers/unlinked.jpg".into()),
+            is_airing: false,
+            followed: false,
+            next_episode_at: None,
+            site_episode_count: None,
+        };
+        let sid = db.upsert_series(src, &s).unwrap();
+        db.set_followed(sid, true).unwrap();
+
+        let items = db.list_library(src).unwrap();
+        assert_eq!(items.len(), 1);
+        let item = &items[0];
+        assert_eq!(item.series.title, "Unlinked Site Title");
+        assert_eq!(item.series.cover_url.as_deref(), Some("file:C:/covers/unlinked.jpg"));
+    }
+
+    #[test]
+    fn list_library_sorts_by_catalog_title_case_insensitively() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+
+        // Series 1: site title "Zzz", catalog title "alpha show"
+        db.upsert_catalog_anime(&crate::db::test_support::catalog_anime(3001, "alpha show", &[]), 0).unwrap();
+        let s1 = crate::models::Series {
+            id: 0,
+            slug: "zzz".into(),
+            title: "Zzz".into(),
+            url: "https://site/zzz".into(),
+            cover_url: None,
+            is_airing: false,
+            followed: false,
+            next_episode_at: None,
+            site_episode_count: None,
+        };
+        let sid1 = db.upsert_series(src, &s1).unwrap();
+        db.set_followed(sid1, true).unwrap();
+        db.set_anilist_id(sid1, 3001).unwrap();
+
+        // Series 2: site title "Aaa", catalog title "Beta Show"
+        db.upsert_catalog_anime(&crate::db::test_support::catalog_anime(3002, "Beta Show", &[]), 0).unwrap();
+        let s2 = crate::models::Series {
+            id: 0,
+            slug: "aaa".into(),
+            title: "Aaa".into(),
+            url: "https://site/aaa".into(),
+            cover_url: None,
+            is_airing: false,
+            followed: false,
+            next_episode_at: None,
+            site_episode_count: None,
+        };
+        let sid2 = db.upsert_series(src, &s2).unwrap();
+        db.set_followed(sid2, true).unwrap();
+        db.set_anilist_id(sid2, 3002).unwrap();
+
+        let items = db.list_library(src).unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].series.title, "alpha show");
+        assert_eq!(items[1].series.title, "Beta Show");
+    }
+
+    #[test]
+    fn followed_linked_series_ids_returns_only_followed_linked_series_of_source() {
+        let db = Db::open(":memory:").unwrap();
+        let src_a = db.upsert_source("AnimeYT", "https://a", "animeytx").unwrap();
+        let src_b = db.upsert_source("TioAnime", "https://b", "tioanime").unwrap();
+
+        let make = |slug: &str, title: &str| crate::models::Series {
+            id: 0,
+            slug: slug.into(),
+            title: title.into(),
+            url: format!("https://site/{slug}"),
+            cover_url: None,
+            is_airing: false,
+            followed: false,
+            next_episode_at: None,
+            site_episode_count: None,
+        };
+
+        // On Source A:
+        // s1: followed=true, linked=true -> in set
+        let s1 = db.upsert_series(src_a, &make("s1", "Show 1")).unwrap();
+        db.set_followed(s1, true).unwrap();
+        db.set_anilist_id(s1, 101).unwrap();
+
+        // s2: followed=false, linked=true -> NOT in set (unfollowed)
+        let s2 = db.upsert_series(src_a, &make("s2", "Show 2")).unwrap();
+        db.set_anilist_id(s2, 102).unwrap();
+
+        // s3: followed=true, linked=false -> NOT in set (unlinked)
+        let s3 = db.upsert_series(src_a, &make("s3", "Show 3")).unwrap();
+        db.set_followed(s3, true).unwrap();
+
+        // On Source B:
+        // s4: followed=true, linked=true -> in set for B, NOT for A
+        let s4 = db.upsert_series(src_b, &make("s4", "Show 4")).unwrap();
+        db.set_followed(s4, true).unwrap();
+        db.set_anilist_id(s4, 104).unwrap();
+
+        // s5: followed + linked, but its catalog row has no cover -> NOT in set (the site
+        // cover is the only one it could ever show)
+        let s5 = db.upsert_series(src_a, &make("s5", "Show 5")).unwrap();
+        db.set_followed(s5, true).unwrap();
+        db.set_anilist_id(s5, 105).unwrap();
+        let mut no_cover = crate::db::test_support::catalog_anime(105, "Show 5", &[]);
+        no_cover.cover_url = None;
+        db.upsert_catalog_anime(&no_cover, 4).unwrap();
+        for (i, id) in [101, 102, 104].into_iter().enumerate() {
+            db.upsert_catalog_anime(&crate::db::test_support::catalog_anime(id, &format!("Show {id}"), &[]), i as i64).unwrap();
+        }
+
+        let ids_a = db.followed_linked_series_ids(src_a).unwrap();
+        assert_eq!(ids_a, [s1].into_iter().collect::<std::collections::HashSet<_>>());
+
+        let ids_b = db.followed_linked_series_ids(src_b).unwrap();
+        assert_eq!(ids_b, [s4].into_iter().collect::<std::collections::HashSet<_>>());
+    }
+
+    #[test]
+    fn list_library_linked_series_with_null_catalog_cover_falls_back_to_site_cover() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+
+        let mut cat = crate::db::test_support::catalog_anime(4001, "Catalog Title", &[]);
+        cat.cover_url = None;
+        db.upsert_catalog_anime(&cat, 0).unwrap();
+
+        let s = crate::models::Series {
+            id: 0,
+            slug: "null-cat-cover".into(),
+            title: "Site Title".into(),
+            url: "https://site/null-cat-cover".into(),
+            cover_url: Some("file:C:/covers/site.jpg".into()),
+            is_airing: false,
+            followed: false,
+            next_episode_at: None,
+            site_episode_count: None,
+        };
+        let sid = db.upsert_series(src, &s).unwrap();
+        db.set_followed(sid, true).unwrap();
+        db.set_anilist_id(sid, 4001).unwrap();
+
+        let items = db.list_library(src).unwrap();
+        assert_eq!(items.len(), 1);
+        let item = &items[0];
+        assert_eq!(item.series.title, "Catalog Title");
+        assert_eq!(item.series.cover_url.as_deref(), Some("file:C:/covers/site.jpg"));
+    }
+
+    #[test]
+    fn list_library_collapses_two_members_with_same_anilist_id_into_one_item() {
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("AnimeYT", "https://a", "animeytx").unwrap();
+        let b = db.upsert_source("TioAnime", "https://b", "tioanime").unwrap();
+
+        db.upsert_catalog_anime(&crate::db::test_support::catalog_anime(5001, "Canonical Title", &[]), 0).unwrap();
+
+        let make = |slug: &str, title: &str| crate::models::Series {
+            id: 0,
+            slug: slug.into(),
+            title: title.into(),
+            url: format!("https://site/{slug}"),
+            cover_url: None,
+            is_airing: false,
+            followed: false,
+            next_episode_at: None,
+            site_episode_count: None,
+        };
+
+        let sid_a = db.upsert_series(a, &make("arc-1", "Arc One")).unwrap();
+        db.set_followed(sid_a, true).unwrap();
+        db.set_anilist_id(sid_a, 5001).unwrap();
+
+        let sid_b = db.upsert_series(b, &make("arc-2", "Arc Two")).unwrap();
+        db.set_followed(sid_b, true).unwrap();
+        db.set_anilist_id(sid_b, 5001).unwrap();
+
+        let items = db.list_library(a).unwrap();
+        assert_eq!(items.len(), 1, "two members sharing anilist_id must collapse into one library item");
+        assert_eq!(items[0].series.title, "Canonical Title");
+    }
 }
-
-
