@@ -2334,7 +2334,7 @@ mod tests {
 
         db.upsert_catalog_anime(
             &crate::anilist::CatalogAnime {
-                id: 21, title: "ONE PIECE".into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
+                id: 21, title: "ONE PIECE".into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(), relations: Vec::new(),
                 cover_url: None, banner_url: None, format: Some("TV".into()), genres: vec![],
                 episodes: Some(1140), average_score: None, popularity: None,
                 url: "https://anilist.co/anime/21".into(), status: None, duration: Some(24),
@@ -2360,7 +2360,7 @@ mod tests {
 
         db.upsert_catalog_anime(
             &crate::anilist::CatalogAnime {
-                id: 21, title: "ONE PIECE".into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
+                id: 21, title: "ONE PIECE".into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(), relations: Vec::new(),
                 cover_url: None, banner_url: None, format: Some("TV".into()), genres: vec![],
                 episodes: Some(100), average_score: None, popularity: None,
                 url: "https://anilist.co/anime/21".into(), status: None, duration: Some(24),
@@ -2574,7 +2574,7 @@ mod tests {
         // Watched-externally, linked to a catalog row with 12 TV episodes.
         db.upsert_catalog_anime(
             &crate::anilist::CatalogAnime {
-                id: 100, title: "External Show".into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
+                id: 100, title: "External Show".into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(), relations: Vec::new(),
                 cover_url: None, banner_url: None, format: Some("TV".into()), genres: vec![],
                 episodes: Some(12), average_score: None, popularity: None,
                 url: "https://anilist.co/anime/100".into(), status: None, duration: None,
@@ -2648,7 +2648,7 @@ mod tests {
 
         db.upsert_catalog_anime(
             &crate::anilist::CatalogAnime {
-                id: 200, title: "S2".into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
+                id: 200, title: "S2".into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(), relations: Vec::new(),
                 cover_url: None, banner_url: None, format: Some("TV".into()), genres: vec![],
                 episodes: Some(12), average_score: None, popularity: None,
                 url: "https://anilist.co/anime/200".into(), status: None, duration: None,
@@ -2676,7 +2676,7 @@ mod tests {
 
         db.upsert_catalog_anime(
             &crate::anilist::CatalogAnime {
-                id: 201, title: "S3".into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
+                id: 201, title: "S3".into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(), relations: Vec::new(),
                 cover_url: None, banner_url: None, format: Some("TV".into()), genres: vec![],
                 episodes: Some(12), average_score: None, popularity: None,
                 url: "https://anilist.co/anime/201".into(), status: None, duration: Some(23),
@@ -2701,7 +2701,7 @@ mod tests {
 
         db.upsert_catalog_anime(
             &crate::anilist::CatalogAnime {
-                id: 202, title: "S4".into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
+                id: 202, title: "S4".into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(), relations: Vec::new(),
                 cover_url: None, banner_url: None, format: Some("TV".into()), genres: vec![],
                 episodes: Some(12), average_score: None, popularity: None,
                 url: "https://anilist.co/anime/202".into(), status: None, duration: None,
@@ -3054,7 +3054,7 @@ mod tests {
         ] {
             db.upsert_catalog_anime(
                 &crate::anilist::CatalogAnime {
-                    id, title: title.into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
+                    id, title: title.into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(), relations: Vec::new(),
                     cover_url: None, banner_url: None, format: Some("TV".into()), genres: vec![],
                     episodes: Some(episodes), average_score: None, popularity: None,
                     url: format!("https://anilist.co/anime/{id}"), status: None, duration: Some(24),
@@ -3088,7 +3088,7 @@ mod tests {
 
         db.upsert_catalog_anime(
             &crate::anilist::CatalogAnime {
-                id: 910, title: "Linked Show".into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
+                id: 910, title: "Linked Show".into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(), relations: Vec::new(),
                 cover_url: None, banner_url: None, format: Some("TV".into()), genres: vec![],
                 episodes: Some(12), average_score: None, popularity: None,
                 url: "https://anilist.co/anime/910".into(), status: None, duration: Some(24),
@@ -3828,7 +3828,7 @@ mod tests {
 
         db.upsert_catalog_anime(
             &crate::anilist::CatalogAnime {
-                id: 920, title: "Long Runner".into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
+                id: 920, title: "Long Runner".into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(), relations: Vec::new(),
                 cover_url: None, banner_url: None, format: Some("TV".into()), genres: vec![],
                 episodes: Some(500), average_score: None, popularity: None,
                 url: "https://anilist.co/anime/920".into(), status: None, duration: Some(24),
@@ -3859,7 +3859,7 @@ mod tests {
         ] {
             db.upsert_catalog_anime(
                 &crate::anilist::CatalogAnime {
-                    id: pop, title: title.into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
+                    id: pop, title: title.into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(), relations: Vec::new(),
                     cover_url: None, banner_url: None, format: Some("TV".into()), genres: vec![],
                     episodes: Some(12), average_score: None, popularity: Some(pop),
                     url: format!("https://anilist.co/anime/{pop}"), status: None, duration: Some(24),
@@ -3906,7 +3906,7 @@ mod tests {
         // Same show on both sites, linked to same AniList ID
         db.upsert_catalog_anime(
             &crate::anilist::CatalogAnime {
-                id: 100, title: "Shared Show".into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
+                id: 100, title: "Shared Show".into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(), relations: Vec::new(),
                 cover_url: None, banner_url: None, format: Some("TV".into()), genres: vec![],
                 episodes: Some(12), average_score: None, popularity: Some(210000),
                 url: "https://anilist.co/anime/100".into(), status: None, duration: Some(24),
@@ -3930,7 +3930,7 @@ mod tests {
         ] {
             db.upsert_catalog_anime(
                 &crate::anilist::CatalogAnime {
-                    id: pop, title: title.into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
+                    id: pop, title: title.into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(), relations: Vec::new(),
                     cover_url: None, banner_url: None, format: Some("TV".into()), genres: vec![],
                     episodes: Some(12), average_score: None, popularity: Some(pop),
                     url: format!("https://anilist.co/anime/{pop}"), status: None, duration: Some(24),
@@ -3965,7 +3965,7 @@ mod tests {
         ] {
             db.upsert_catalog_anime(
                 &crate::anilist::CatalogAnime {
-                    id: pop, title: title.into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
+                    id: pop, title: title.into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(), relations: Vec::new(),
                     cover_url: None, banner_url: None, format: Some("TV".into()), genres: vec![],
                     episodes: Some(12), average_score: None, popularity: Some(pop),
                     url: format!("https://anilist.co/anime/{pop}"), status: None, duration: Some(24),
@@ -4000,7 +4000,7 @@ mod tests {
         ] {
             db.upsert_catalog_anime(
                 &crate::anilist::CatalogAnime {
-                    id: pop, title: title.into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
+                    id: pop, title: title.into(), title_romaji: None, title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(), relations: Vec::new(),
                     cover_url: None, banner_url: None, format: Some("TV".into()), genres: vec![],
                     episodes: Some(12), average_score: None, popularity: Some(pop),
                     url: format!("https://anilist.co/anime/{pop}"), status: None, duration: Some(24),
@@ -4223,7 +4223,7 @@ mod tests {
                 cover_url: None, banner_url: None, format: Some("TV".into()), genres: vec![],
                 episodes: Some(100), average_score: None, popularity: None,
                 url: "https://anilist.co/anime/777".into(), status: None, duration: Some(24),
-                studio: None, start_date: None,
+                studio: None, start_date: None, relations: Vec::new(),
             },
             0,
         ).unwrap();
@@ -4272,7 +4272,7 @@ mod tests {
                 format: Some("TV".into()), genres: vec![], episodes: Some(25),
                 average_score: None, popularity: None,
                 url: "https://anilist.co/anime/16498".into(), status: None, duration: Some(24),
-                studio: None, start_date: None,
+                studio: None, start_date: None, relations: Vec::new(),
             },
             0,
         ).unwrap();
@@ -4443,7 +4443,7 @@ mod tests {
         let mut anime = crate::anilist::CatalogAnime {
             id: 100, title: "Test".into(), title_romaji: None, title_english: None,
             cover_url: None, banner_url: None, format: None, episodes: None, average_score: None, popularity: None,
-            url: "x".into(), genres: vec!["Action".into(), "Drama".into()], synonyms: vec![], tags: vec![],
+            url: "x".into(), genres: vec!["Action".into(), "Drama".into()], synonyms: vec![], tags: vec![], relations: vec![],
             status: None, duration: None, studio: None, start_date: None,
             next_airing_at: None, next_episode: None,
         };
@@ -4488,7 +4488,7 @@ mod tests {
         let anime = crate::anilist::CatalogAnime {
             id: 100, title: "Test".into(), title_romaji: None, title_english: None,
             cover_url: None, banner_url: None, format: Some("TV_SHORT".into()), episodes: None, average_score: None, popularity: None,
-            url: "x".into(), genres: vec![], synonyms: vec![], tags: vec![],
+            url: "x".into(), genres: vec![], synonyms: vec![], tags: vec![], relations: vec![],
             status: None, duration: None, studio: None, start_date: None,
             next_airing_at: None, next_episode: None,
         };
@@ -4667,7 +4667,7 @@ mod tests {
                 cover_url: None, banner_url: None, format: Some("TV".into()), genres: vec![],
                 episodes: Some(24), average_score: None, popularity: None,
                 url: "https://anilist.co/anime/100".into(), status: None, duration: Some(24),
-                studio: None, start_date: None,
+                studio: None, start_date: None, relations: Vec::new(),
             },
             0,
         ).unwrap();
@@ -4693,7 +4693,7 @@ mod tests {
                 cover_url: None, banner_url: None, format: Some("TV".into()), genres: vec![],
                 episodes: None, average_score: None, popularity: None,
                 url: "https://anilist.co/anime/100".into(), status: None, duration: Some(24),
-                studio: None, start_date: None,
+                studio: None, start_date: None, relations: Vec::new(),
             },
             0,
         ).unwrap();
@@ -4806,7 +4806,7 @@ mod tests {
             cover_url: None, banner_url: None, format: Some("TV".into()), genres: vec![],
             episodes: Some(24), average_score: None, popularity: None,
             url: "x".into(), status: Some("RELEASING".into()), duration: Some(25),
-            studio: None, start_date: None,
+            studio: None, start_date: None, relations: Vec::new(),
         }, 0).unwrap();
         insert_eps_seen_up_to(&db, s, 3, 0); // available 3
 
@@ -4841,7 +4841,7 @@ mod tests {
             cover_url: None, banner_url: None, format: Some("TV".into()), genres: vec![],
             episodes: Some(12), average_score: None, popularity: None,
             url: "x".into(), status: None, duration: Some(24),
-            studio: Some("Bones".into()), start_date: Some(946684800),
+            studio: Some("Bones".into()), start_date: Some(946684800), relations: Vec::new(),
         }, 0).unwrap();
 
         let s2 = db.upsert_series(src, &mk_airing("s2", "Show 2", None)).unwrap();
@@ -4852,7 +4852,7 @@ mod tests {
             cover_url: None, banner_url: None, format: Some("TV".into()), genres: vec![],
             episodes: Some(12), average_score: None, popularity: None,
             url: "x".into(), status: None, duration: Some(24),
-            studio: Some("Bones".into()), start_date: Some(1262304000),
+            studio: Some("Bones".into()), start_date: Some(1262304000), relations: Vec::new(),
         }, 0).unwrap();
 
         let s3 = db.upsert_series(src, &mk_airing("s3", "Show 1: Arc 2", None)).unwrap();
@@ -4863,7 +4863,7 @@ mod tests {
             cover_url: None, banner_url: None, format: Some("TV".into()), genres: vec![],
             episodes: Some(12), average_score: None, popularity: None,
             url: "x".into(), status: None, duration: Some(24),
-            studio: Some("Bones".into()), start_date: Some(978307200),
+            studio: Some("Bones".into()), start_date: Some(978307200), relations: Vec::new(),
         }, 0).unwrap();
 
         let s4 = db.upsert_series(src, &mk_airing("s4", "Show 4", None)).unwrap();
@@ -4874,7 +4874,7 @@ mod tests {
             cover_url: None, banner_url: None, format: Some("TV".into()), genres: vec![],
             episodes: Some(12), average_score: None, popularity: None,
             url: "x".into(), status: None, duration: Some(24),
-            studio: Some("Mappa".into()), start_date: Some(1262304000),
+            studio: Some("Mappa".into()), start_date: Some(1262304000), relations: Vec::new(),
         }, 0).unwrap();
 
         let insights = db.get_watch_insights().unwrap();

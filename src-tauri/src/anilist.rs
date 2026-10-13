@@ -53,7 +53,8 @@ const MEDIA_FIELDS: &str = r#"id
       studios(isMain: true) { nodes { name } }
       startDate { year month day }
       nextAiringEpisode { airingAt episode }
-      tags { name rank isMediaSpoiler }"#;
+      tags { name rank isMediaSpoiler }
+      relations { edges { relationType node { id type } } }"#;
 
 fn catalog_query() -> String {
     format!(
@@ -169,6 +170,14 @@ pub struct CatalogAnime {
     pub next_episode: Option<i64>,
     #[serde(default)]
     pub tags: Vec<CatalogTag>,
+    #[serde(default)]
+    pub relations: Vec<CatalogRelation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CatalogRelation {
+    pub related_id: i64,
+    pub relation_type: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -240,6 +249,30 @@ struct MediaEntry {
     next_airing_episode: Option<NextAiringEpisode>,
     #[serde(default)]
     tags: Option<Vec<Option<MediaTag>>>,
+    #[serde(default)]
+    relations: Option<MediaRelations>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MediaRelations {
+    #[serde(default)]
+    edges: Option<Vec<Option<MediaRelationEdge>>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MediaRelationEdge {
+    #[serde(rename = "relationType", default)]
+    relation_type: Option<String>,
+    #[serde(default)]
+    node: Option<MediaRelationNode>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MediaRelationNode {
+    #[serde(default)]
+    id: Option<i64>,
+    #[serde(rename = "type", default)]
+    node_type: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -337,6 +370,36 @@ impl From<MediaEntry> for CatalogAnime {
                 }
             }
         }
+        let mut relations = Vec::new();
+        if let Some(media_rels) = m.relations {
+            if let Some(edges) = media_rels.edges {
+                for edge in edges.into_iter().flatten() {
+                    let Some(rel_type) = edge.relation_type else { continue };
+                    if rel_type != "PREQUEL" && rel_type != "SEQUEL" {
+                        continue;
+                    }
+                    let Some(node) = edge.node else { continue };
+                    let Some(related_id) = node.id else { continue };
+                    if related_id <= 0 {
+                        continue;
+                    }
+                    if let Some(ref t) = node.node_type {
+                        if t != "ANIME" {
+                            continue;
+                        }
+                    }
+                    if !relations
+                        .iter()
+                        .any(|r: &CatalogRelation| r.related_id == related_id && r.relation_type == rel_type)
+                    {
+                        relations.push(CatalogRelation {
+                            related_id,
+                            relation_type: rel_type,
+                        });
+                    }
+                }
+            }
+        }
         CatalogAnime {
             id: m.id,
             title,
@@ -358,6 +421,7 @@ impl From<MediaEntry> for CatalogAnime {
             next_airing_at,
             next_episode,
             tags,
+            relations,
         }
     }
 }
@@ -1022,6 +1086,91 @@ mod tests {
         assert_eq!(mapped_missing.next_airing_at, None);
         assert_eq!(mapped_missing.next_episode, None);
         assert!(mapped_missing.tags.is_empty());
+    }
+
+    #[test]
+    fn mapping_handles_relations_and_filters_unwanted_edges() {
+        // Must-pass example from spec:
+        // [SEQUEL 185756 ANIME, SPIN_OFF 9 ANIME, PREQUEL 7 MANGA, SEQUEL null node]
+        // yields exactly one relation (185756, "SEQUEL")
+        let json = serde_json::json!({
+            "id": 1,
+            "title": { "romaji": "Test", "english": null },
+            "coverImage": { "large": null },
+            "format": null,
+            "genres": [],
+            "episodes": null,
+            "duration": null,
+            "averageScore": null,
+            "popularity": null,
+            "siteUrl": "https://url",
+            "status": null,
+            "studios": null,
+            "startDate": null,
+            "relations": {
+                "edges": [
+                    { "relationType": "SEQUEL", "node": { "id": 185756, "type": "ANIME", "format": "TV" } },
+                    { "relationType": "SPIN_OFF", "node": { "id": 9, "type": "ANIME", "format": "TV" } },
+                    { "relationType": "PREQUEL", "node": { "id": 7, "type": "MANGA", "format": null } },
+                    { "relationType": "SEQUEL", "node": null },
+                    // Deduplication test: identical relation ignored
+                    { "relationType": "SEQUEL", "node": { "id": 185756, "type": "ANIME", "format": "TV" } },
+                    // Non-positive id ignored
+                    { "relationType": "SEQUEL", "node": { "id": 0, "type": "ANIME", "format": "TV" } },
+                    { "relationType": "PREQUEL", "node": { "id": -5, "type": "ANIME", "format": "TV" } },
+                    null
+                ]
+            }
+        });
+        let entry: MediaEntry = serde_json::from_value(json).unwrap();
+        let mapped = CatalogAnime::from(entry);
+        assert_eq!(
+            mapped.relations,
+            vec![CatalogRelation {
+                related_id: 185756,
+                relation_type: "SEQUEL".into(),
+            }]
+        );
+
+        // Null and missing relations
+        let json_null = serde_json::json!({
+            "id": 2,
+            "title": { "romaji": "Test", "english": null },
+            "coverImage": { "large": null },
+            "format": null,
+            "genres": [],
+            "episodes": null,
+            "duration": null,
+            "averageScore": null,
+            "popularity": null,
+            "siteUrl": "https://url",
+            "status": null,
+            "studios": null,
+            "startDate": null,
+            "relations": null
+        });
+        let entry_null: MediaEntry = serde_json::from_value(json_null).unwrap();
+        let mapped_null = CatalogAnime::from(entry_null);
+        assert!(mapped_null.relations.is_empty());
+
+        let json_missing = serde_json::json!({
+            "id": 3,
+            "title": { "romaji": "Test", "english": null },
+            "coverImage": { "large": null },
+            "format": null,
+            "genres": [],
+            "episodes": null,
+            "duration": null,
+            "averageScore": null,
+            "popularity": null,
+            "siteUrl": "https://url",
+            "status": null,
+            "studios": null,
+            "startDate": null
+        });
+        let entry_missing: MediaEntry = serde_json::from_value(json_missing).unwrap();
+        let mapped_missing = CatalogAnime::from(entry_missing);
+        assert!(mapped_missing.relations.is_empty());
     }
 
     #[test]

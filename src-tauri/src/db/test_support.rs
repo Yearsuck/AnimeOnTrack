@@ -60,6 +60,7 @@ pub(crate) fn catalog_anime_with_popularity(
         next_airing_at: None,
         next_episode: None,
         tags: Vec::new(),
+        relations: Vec::new(),
     }
 }
 
@@ -92,6 +93,7 @@ pub(crate) fn catalog_anime_full(
         next_airing_at: None,
         next_episode: None,
         tags: Vec::new(),
+        relations: Vec::new(),
     }
 }
 

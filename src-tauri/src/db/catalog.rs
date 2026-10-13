@@ -20,7 +20,8 @@ type SiblingIndex = std::collections::HashMap<(String, i64), Vec<(i64, String, i
 /// start_date, genres.
 /// Version 2 = synonyms.
 /// Version 3 = next airing episode and tags.
-pub const CATALOG_METADATA_VERSION: i64 = 3;
+/// Version 4 = relations.
+pub const CATALOG_METADATA_VERSION: i64 = 4;
 
 /// Filters for browsing the locally-synced AniList catalog (`Catalog.tsx`'s
 /// search/filter bar). All fields are optional/empty-by-default so
@@ -148,6 +149,13 @@ impl Db {
             self.conn.execute(
                 "INSERT OR IGNORE INTO anilist_catalog_tags(anilist_id, tag, rank) VALUES(?1, ?2, ?3)",
                 (anime.id, &tag.name, tag.rank),
+            )?;
+        }
+        self.conn.execute("DELETE FROM anilist_catalog_relations WHERE anilist_id=?1", [anime.id])?;
+        for relation in &anime.relations {
+            self.conn.execute(
+                "INSERT OR IGNORE INTO anilist_catalog_relations(anilist_id, related_id, relation_type) VALUES(?1, ?2, ?3)",
+                (anime.id, relation.related_id, &relation.relation_type),
             )?;
         }
         Ok(())
@@ -1106,6 +1114,7 @@ impl Db {
             next_episode: r.get("next_episode")?,
             genres: Vec::new(), // filled in by callers that need it — see list_catalog
             tags: Vec::new(), // filled in by callers that need it
+            relations: Vec::new(),
         })
     }
 
@@ -1144,6 +1153,19 @@ impl Db {
             .query_map([anilist_id], |r| Ok(crate::anilist::CatalogTag { name: r.get(0)?, rank: r.get(1)? }))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(tags)
+    }
+
+    /// Stored PREQUEL/SEQUEL edges of one entry as (related id, relation type). Only read by tests today:
+    /// `releasing_sequel_id` walks the table with its own prepared statements.
+    #[cfg(test)]
+    pub fn list_catalog_relations(&self, anilist_id: i64) -> Result<Vec<(i64, String)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT related_id, relation_type FROM anilist_catalog_relations WHERE anilist_id=?1 ORDER BY related_id, relation_type")?;
+        let relations = stmt
+            .query_map([anilist_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(relations)
     }
 
     /// Whether at least one synced catalog row has a non-NULL `status` —
@@ -2632,7 +2654,7 @@ mod tests {
             title: "Attack on Titan".into(),
             title_romaji: Some("Shingeki no Kyojin".into()),
             title_english: Some("Attack on Titan".into()),
-            synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
+            synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(), relations: Vec::new(),
             cover_url: None,
             banner_url: None,
             format: Some("TV".into()),
@@ -2663,7 +2685,7 @@ mod tests {
             id: 43,
             title: "Timed Show".into(),
             title_romaji: None,
-            title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
+            title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(), relations: Vec::new(),
             cover_url: None,
             banner_url: None,
             format: Some("TV".into()),
@@ -2685,7 +2707,7 @@ mod tests {
             id: 44,
             title: "Undated Show".into(),
             title_romaji: None,
-            title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
+            title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(), relations: Vec::new(),
             cover_url: None,
             banner_url: None,
             format: Some("TV".into()),
@@ -2730,7 +2752,7 @@ mod tests {
             duration: None,
             studio: Some("Studio Ghibli".into()),
             start_date: None,
-            next_airing_at: None, next_episode: None, tags: Vec::new(),
+            next_airing_at: None, next_episode: None, tags: Vec::new(), relations: Vec::new(),
         };
         db.upsert_catalog_anime(&with_studio, 0).unwrap();
 
@@ -2754,7 +2776,7 @@ mod tests {
             duration: None,
             studio: None,
             start_date: None,
-            next_airing_at: None, next_episode: None, tags: Vec::new(),
+            next_airing_at: None, next_episode: None, tags: Vec::new(), relations: Vec::new(),
         };
         db.upsert_catalog_anime(&without_studio, 1).unwrap();
 
@@ -2786,7 +2808,7 @@ mod tests {
             duration: None,
             studio: None,
             start_date: Some(1_776_211_200), // 2026-04-15T00:00:00Z
-            next_airing_at: None, next_episode: None, tags: Vec::new(),
+            next_airing_at: None, next_episode: None, tags: Vec::new(), relations: Vec::new(),
         };
         db.upsert_catalog_anime(&with_date, 0).unwrap();
 
@@ -2807,7 +2829,7 @@ mod tests {
             duration: None,
             studio: None,
             start_date: None,
-            next_airing_at: None, next_episode: None, tags: Vec::new(),
+            next_airing_at: None, next_episode: None, tags: Vec::new(), relations: Vec::new(),
         };
         db.upsert_catalog_anime(&without_date, 1).unwrap();
 
@@ -2831,7 +2853,7 @@ mod tests {
                 genres: vec![], episodes: Some(25), average_score: None, popularity: None,
                 url: "https://anilist.co/anime/50".into(), status: None, duration: None, studio: None,
                 start_date: Some(1_776_211_200),
-                next_airing_at: None, next_episode: None, tags: Vec::new(),
+                next_airing_at: None, next_episode: None, tags: Vec::new(), relations: Vec::new(),
             },
             0,
         ).unwrap();
@@ -2844,7 +2866,7 @@ mod tests {
                 cover_url: None, banner_url: None, format: Some("TV".into()), genres: vec![], episodes: None,
                 average_score: None, popularity: None, url: "https://anilist.co/anime/51".into(),
                 status: None, duration: None, studio: None, start_date: None,
-                next_airing_at: None, next_episode: None, tags: Vec::new(),
+                next_airing_at: None, next_episode: None, tags: Vec::new(), relations: Vec::new(),
             },
             1,
         ).unwrap();
@@ -2856,12 +2878,60 @@ mod tests {
         assert_eq!(map.len(), 2, "one entry per distinct title/romaji/english variant with a real start_date");
     }
 
+    #[test]
+    fn upsert_catalog_anime_stores_and_rewrites_relations() {
+        let db = Db::open(":memory:").unwrap();
+
+        let mut anime = crate::anilist::CatalogAnime {
+            id: 99,
+            title: "Relations Show".into(),
+            title_romaji: None,
+            title_english: None,
+            synonyms: Vec::new(),
+            next_airing_at: None,
+            next_episode: None,
+            tags: Vec::new(),
+            relations: vec![
+                crate::anilist::CatalogRelation { related_id: 100, relation_type: "SEQUEL".into() },
+                crate::anilist::CatalogRelation { related_id: 98, relation_type: "PREQUEL".into() },
+            ],
+            cover_url: None,
+            banner_url: None,
+            format: Some("TV".into()),
+            genres: vec![],
+            episodes: Some(12),
+            average_score: None,
+            popularity: None,
+            url: "https://anilist.co/anime/99".into(),
+            status: None,
+            duration: None,
+            studio: None,
+            start_date: None,
+        };
+        db.upsert_catalog_anime(&anime, 0).unwrap();
+
+        let stored = db.list_catalog_relations(99).unwrap();
+        assert_eq!(
+            stored,
+            vec![(98, "PREQUEL".to_string()), (100, "SEQUEL".to_string())]
+        );
+
+        // Second upsert with fewer relations leaves only the new set.
+        anime.relations = vec![
+            crate::anilist::CatalogRelation { related_id: 100, relation_type: "SEQUEL".into() },
+        ];
+        db.upsert_catalog_anime(&anime, 0).unwrap();
+
+        let updated = db.list_catalog_relations(99).unwrap();
+        assert_eq!(updated, vec![(100, "SEQUEL".to_string())]);
+    }
+
     fn mk_catalog_anime(id: i64, title: &str, url: &str) -> crate::anilist::CatalogAnime {
         crate::anilist::CatalogAnime {
             id, title: title.into(), title_romaji: None, title_english: None, synonyms: Vec::new(), cover_url: None,
             banner_url: None, format: Some("TV".into()), genres: vec![], episodes: Some(12), average_score: None,
             popularity: None, url: url.into(), status: None, duration: None, studio: None, start_date: None,
-            next_airing_at: None, next_episode: None, tags: Vec::new(),
+            next_airing_at: None, next_episode: None, tags: Vec::new(), relations: Vec::new(),
         }
     }
 
@@ -2914,7 +2984,7 @@ mod tests {
             average_score: Some(88), popularity: Some(5000), url: format!("https://anilist.co/anime/{id}"),
             status: Some("FINISHED".into()), duration: Some(24), studio: Some("Studio X".into()),
             start_date: None,
-            next_airing_at: None, next_episode: None, tags: Vec::new(),
+            next_airing_at: None, next_episode: None, tags: Vec::new(), relations: Vec::new(),
         }
     }
 

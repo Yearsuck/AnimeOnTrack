@@ -271,10 +271,13 @@ impl Db {
         Ok(changed)
     }
 
-    /// Find the AniList id of a RELEASING/HIATUS sequel in the catalog whose
-    /// title extends one of `titles` ("X" -> "X Season 3") and whose premiere
-    /// `start_date` is later than the own entry's. When multiple candidates
-    /// qualify, the one with the latest `start_date` wins.
+    /// Find the AniList id of a RELEASING/HIATUS sequel in the catalog.
+    ///
+    /// When relation rows are available for `own_id`, walks the breadth-first
+    /// SEQUEL relation chain (depth <= 4) and picks the candidate with the latest
+    /// `start_date` (ties: higher id) without requiring a season title marker.
+    /// When the own entry has no relation rows at all (old rows), falls back
+    /// to title prefix matching ("X" -> "X Season 3") with `start_date > own`.
     pub(crate) fn releasing_sequel_id(&self, titles: &[String], own_id: i64) -> Result<Option<i64>> {
         let own_start_date: Option<i64> = self
             .conn
@@ -285,6 +288,79 @@ impl Db {
             )
             .optional()?
             .flatten();
+
+        let has_own_relations: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM anilist_catalog_relations WHERE anilist_id = ?1)",
+            [own_id],
+            |r| r.get(0),
+        )?;
+
+        if has_own_relations {
+            let mut visited = std::collections::HashSet::new();
+            visited.insert(own_id);
+            let mut queue = std::collections::VecDeque::new();
+            queue.push_back((own_id, 0usize));
+
+            let mut rel_stmt = self.conn.prepare(
+                "SELECT related_id FROM anilist_catalog_relations WHERE anilist_id = ?1 AND relation_type = 'SEQUEL'",
+            )?;
+            let mut cand_stmt = self.conn.prepare(
+                "SELECT status, format, start_date FROM anilist_catalog WHERE id = ?1",
+            )?;
+
+            let mut best: Option<(i64, i64)> = None; // (start_date, id)
+
+            while let Some((curr_id, depth)) = queue.pop_front() {
+                if depth >= 4 {
+                    continue;
+                }
+                let sequels: Vec<i64> = rel_stmt
+                    .query_map([curr_id], |r| r.get(0))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+
+                for next_id in sequels {
+                    if !visited.insert(next_id) {
+                        continue;
+                    }
+                    queue.push_back((next_id, depth + 1));
+
+                    let cand_info = cand_stmt
+                        .query_row([next_id], |r| {
+                            Ok((
+                                r.get::<_, Option<String>>(0)?,
+                                r.get::<_, Option<String>>(1)?,
+                                r.get::<_, Option<i64>>(2)?,
+                            ))
+                        })
+                        .optional()?;
+
+                    if let Some((status, format, start_date)) = cand_info {
+                        let status_ok = matches!(status.as_deref(), Some("RELEASING" | "HIATUS"));
+                        let format_ok = format.as_deref().is_none_or(|f| f == "TV");
+                        let date_ok = match (start_date, own_start_date) {
+                            (Some(sd), Some(own)) => sd > own,
+                            (Some(_), None) => true,
+                            (None, _) => false,
+                        };
+                        if status_ok && format_ok && date_ok {
+                            let sd = start_date.unwrap();
+                            match best {
+                                Some((best_date, best_id)) => {
+                                    if sd > best_date || (sd == best_date && next_id > best_id) {
+                                        best = Some((sd, next_id));
+                                    }
+                                }
+                                None => {
+                                    best = Some((sd, next_id));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            return Ok(best.map(|(_, id)| id));
+        }
 
         let mut stmt = self.conn.prepare(
             "SELECT id, start_date, title, title_romaji, title_english FROM anilist_catalog
@@ -1269,6 +1345,130 @@ mod tests {
             Some(721),
             "special LIKE characters are escaped properly"
         );
+    }
+
+    #[test]
+    fn releasing_sequel_id_follows_sequel_chain_without_season_marker() {
+        let db = Db::open(":memory:").unwrap();
+        let mut a = crate::db::test_support::catalog_anime(1001, "Original Title", &[]);
+        a.status = Some("FINISHED".into());
+        a.start_date = Some(100);
+        a.relations = vec![crate::anilist::CatalogRelation { related_id: 1002, relation_type: "SEQUEL".into() }];
+        db.upsert_catalog_anime(&a, 0).unwrap();
+
+        let mut b = crate::db::test_support::catalog_anime(1002, "Second Season Middle", &[]);
+        b.status = Some("FINISHED".into());
+        b.start_date = Some(200);
+        b.relations = vec![crate::anilist::CatalogRelation { related_id: 1003, relation_type: "SEQUEL".into() }];
+        db.upsert_catalog_anime(&b, 1).unwrap();
+
+        let mut c = crate::db::test_support::catalog_anime(1003, "Totally Different Name", &[]);
+        c.status = Some("RELEASING".into());
+        c.start_date = Some(300);
+        db.upsert_catalog_anime(&c, 2).unwrap();
+
+        let res = db.releasing_sequel_id(&["Original Title".into()], 1001).unwrap();
+        assert_eq!(res, Some(1003), "chain finds releasing sequel even with totally different title");
+    }
+
+    #[test]
+    fn releasing_sequel_id_picks_latest_releasing_sequel_in_chain() {
+        let db = Db::open(":memory:").unwrap();
+        let mut a = crate::db::test_support::catalog_anime(2001, "Franchise A", &[]);
+        a.status = Some("FINISHED".into());
+        a.start_date = Some(100);
+        a.relations = vec![
+            crate::anilist::CatalogRelation { related_id: 2002, relation_type: "SEQUEL".into() },
+            crate::anilist::CatalogRelation { related_id: 2003, relation_type: "SEQUEL".into() },
+        ];
+        db.upsert_catalog_anime(&a, 0).unwrap();
+
+        let mut b = crate::db::test_support::catalog_anime(2002, "Sequel Early", &[]);
+        b.status = Some("RELEASING".into());
+        b.start_date = Some(300);
+        db.upsert_catalog_anime(&b, 1).unwrap();
+
+        let mut c = crate::db::test_support::catalog_anime(2003, "Sequel Later", &[]);
+        c.status = Some("RELEASING".into());
+        c.start_date = Some(500);
+        db.upsert_catalog_anime(&c, 2).unwrap();
+
+        let res = db.releasing_sequel_id(&["Franchise A".into()], 2001).unwrap();
+        assert_eq!(res, Some(2003), "latest start_date in chain wins");
+    }
+
+    #[test]
+    fn releasing_sequel_id_ignores_ova_and_earlier_or_null_start_date_in_chain() {
+        let db = Db::open(":memory:").unwrap();
+        let mut a = crate::db::test_support::catalog_anime(3001, "Main Show", &[]);
+        a.status = Some("FINISHED".into());
+        a.start_date = Some(500);
+        a.relations = vec![
+            crate::anilist::CatalogRelation { related_id: 3002, relation_type: "SEQUEL".into() },
+            crate::anilist::CatalogRelation { related_id: 3003, relation_type: "SEQUEL".into() },
+            crate::anilist::CatalogRelation { related_id: 3004, relation_type: "SEQUEL".into() },
+        ];
+        db.upsert_catalog_anime(&a, 0).unwrap();
+
+        // 3002 is OVA
+        let mut ova = crate::db::test_support::catalog_anime(3002, "OVA Sequel", &[]);
+        ova.status = Some("RELEASING".into());
+        ova.format = Some("OVA".into());
+        ova.start_date = Some(600);
+        db.upsert_catalog_anime(&ova, 1).unwrap();
+
+        // 3003 has earlier start_date than own
+        let mut earlier = crate::db::test_support::catalog_anime(3003, "Earlier Sequel", &[]);
+        earlier.status = Some("RELEASING".into());
+        earlier.start_date = Some(400);
+        db.upsert_catalog_anime(&earlier, 2).unwrap();
+
+        // 3004 has NULL start_date
+        let mut null_date = crate::db::test_support::catalog_anime(3004, "Null Date Sequel", &[]);
+        null_date.status = Some("RELEASING".into());
+        null_date.start_date = None;
+        db.upsert_catalog_anime(&null_date, 3).unwrap();
+
+        let res = db.releasing_sequel_id(&["Main Show".into()], 3001).unwrap();
+        assert_eq!(res, None, "OVA, earlier start_date, and null start_date sequels are all ignored");
+    }
+
+    #[test]
+    fn releasing_sequel_id_terminates_on_relation_cycle() {
+        let db = Db::open(":memory:").unwrap();
+        let mut a = crate::db::test_support::catalog_anime(4001, "Cycle A", &[]);
+        a.status = Some("FINISHED".into());
+        a.start_date = Some(100);
+        a.relations = vec![crate::anilist::CatalogRelation { related_id: 4002, relation_type: "SEQUEL".into() }];
+        db.upsert_catalog_anime(&a, 0).unwrap();
+
+        let mut b = crate::db::test_support::catalog_anime(4002, "Cycle B", &[]);
+        b.status = Some("FINISHED".into());
+        b.start_date = Some(200);
+        b.relations = vec![crate::anilist::CatalogRelation { related_id: 4001, relation_type: "SEQUEL".into() }];
+        db.upsert_catalog_anime(&b, 1).unwrap();
+
+        let res = db.releasing_sequel_id(&["Cycle A".into()], 4001).unwrap();
+        assert_eq!(res, None, "cycle terminates without infinite loop");
+    }
+
+    #[test]
+    fn releasing_sequel_id_ignores_prequel_and_non_sequel_edges() {
+        let db = Db::open(":memory:").unwrap();
+        let mut a = crate::db::test_support::catalog_anime(5001, "Current Season", &[]);
+        a.status = Some("FINISHED".into());
+        a.start_date = Some(300);
+        // Only PREQUEL edge, no SEQUEL edges
+        a.relations = vec![crate::anilist::CatalogRelation { related_id: 5002, relation_type: "PREQUEL".into() }];
+        db.upsert_catalog_anime(&a, 0).unwrap();
+
+        let mut pre = crate::db::test_support::catalog_anime(5002, "Prequel Show", &[]);
+        pre.status = Some("RELEASING".into());
+        pre.start_date = Some(400);
+        db.upsert_catalog_anime(&pre, 1).unwrap();
+
+        let res = db.releasing_sequel_id(&["Current Season".into()], 5001).unwrap();
+        assert_eq!(res, None, "PREQUEL edge is never followed forward to return a releasing entry");
     }
 
     #[test]
