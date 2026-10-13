@@ -212,6 +212,7 @@ pub fn run() {
             commands::reclassify_series,
             commands::get_series_genres,
             commands::get_series_genres_batch,
+            commands::get_list_entry_meta,
             commands::get_top_genres,
 
             commands::get_anime_catalog,

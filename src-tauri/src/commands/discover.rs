@@ -615,3 +615,13 @@ mod tests {
         assert_eq!(decision_for_history_row(&none), "none");
     }
 }
+
+#[tauri::command]
+pub fn get_list_entry_meta(
+    state: State<'_, AppState>,
+    series_ids: Vec<i64>,
+) -> Result<Vec<crate::models::ListEntryMeta>, String> {
+    let db = state.db.lock().unwrap();
+    db.list_entry_meta(&series_ids).map_err(|e| e.to_string())
+}
+
