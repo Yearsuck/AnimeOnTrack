@@ -19,10 +19,16 @@ debug sandbox `node tools/sandbox/start.mjs`, which uses a COPY of your data).
 
 ## Not done yet (needs a decision or a live check)
 ani.zip numbering, AniList progress sync (needs an AniList OAuth client), Tauri updater (needs a signing
-key), real download engine, Windows toast notifications, taskbar badge, rotating file log.
+key), real download engine, taskbar badge, rotating file log.
 
 ## Batch 3 - visible changes (done, validated)
 | Change | What it does | How to check it |
 |---|---|---|
 | Export diagnostics (`feat(diagnostics)`, `feat(settings)`) | Ajustes -> Mantenimiento -> "Exportar diagnóstico" writes one `.txt` in the app data dir (version, OS, counts, the NAMES of the settings keys with secret-looking ones removed, tails of `panic.log` and `hang.log`) and can open its folder. Never writes setting values. | Click it, open the file, confirm no token/secret appears. |
 | Continue watching (`feat(pending)`) | Pendientes shows up to 3 series you already started (most recently watched first) with a Play button on the next episode link; the empty Pendientes state has a "Descubrir anime" button. | Watch/mark an episode, open Pendientes; empty the queue to see the button. |
+
+## Batch 4 - visible changes (done, validated)
+| Change | What it does | How to check it |
+|---|---|---|
+| New-episode toast (`feat(notify)`) | After the startup refresh and the Actualizar button, a native Windows notification says "N episodios nuevos" when the window is NOT focused. On/off in Ajustes -> General (stored in localStorage, default on). The plugin is `tauri-plugin-notification` pinned to ~2.4 so `tauri`/`wry` stay as they were. | Minimise the app, trigger a refresh that finds new episodes (or force one with new data in the sandbox). The very first notification asks Windows for permission. |
+| Popular <-> cult slider (`feat(discover)`) | Descubrir options panel: a 5-step slider that biases Recomendado toward mainstream or cult titles (popularity, log scale). Centre = neutral = previous ranking. Saved when you release it. | Move it to the right and swipe a few Recomendado cards: lower-popularity titles should show up more. |
