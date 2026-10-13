@@ -305,6 +305,12 @@ impl Db {
                 rank INTEGER NOT NULL,
                 PRIMARY KEY(anilist_id, tag)
             );
+            CREATE TABLE IF NOT EXISTS anilist_catalog_relations (
+                anilist_id INTEGER NOT NULL REFERENCES anilist_catalog(id),
+                related_id INTEGER NOT NULL,
+                relation_type TEXT NOT NULL,
+                PRIMARY KEY(anilist_id, related_id, relation_type)
+            );
             "#,
         )?;
         ensure_column(&self.conn, "anilist_catalog", "popularity", "INTEGER")?;
@@ -374,7 +380,8 @@ impl Db {
         )?;
         self.conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_catalog_popularity ON anilist_catalog(popularity DESC);
-             CREATE INDEX IF NOT EXISTS idx_catalog_genre ON anilist_catalog_genres(genre);",
+             CREATE INDEX IF NOT EXISTS idx_catalog_genre ON anilist_catalog_genres(genre);
+             CREATE INDEX IF NOT EXISTS idx_catalog_relations_related ON anilist_catalog_relations(related_id);",
         )?;
         // series.completion_reconciled: apply-once guard for
         // `reconcile_completion_across_sites`'s airing-zero-progress branch.

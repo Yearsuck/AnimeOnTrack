@@ -954,6 +954,7 @@ mod tests {
             next_airing_at: None,
             next_episode: None,
             tags: vec![],
+            relations: vec![],
         }
     }
 
