@@ -52,6 +52,9 @@ mod fallback;
 mod download;
 pub use download::*;
 
+mod diagnostics;
+pub use diagnostics::*;
+
 #[derive(Serialize, Clone)]
 struct RefreshProgress {
     current: usize,

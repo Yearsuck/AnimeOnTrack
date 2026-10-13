@@ -248,6 +248,8 @@ pub fn run() {
             commands::delete_download,
             commands::get_downloads_size,
             commands::clear_all_downloads,
+            commands::export_diagnostics,
+            commands::reveal_in_folder,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

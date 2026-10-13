@@ -625,5 +625,13 @@ export const ca: Messages = {
   "shortcuts.search": "Cercar al catàleg",
   "shortcuts.help": "Mostrar o amagar aquesta ajuda",
   "shortcuts.escape": "Tancar detall o aquesta ajuda",
+
+  // diagnostics
+  "settings.diagnosticsHeading": "Diagnòstic del sistema",
+  "settings.diagnosticsDesc": "Genera un informe amb versions, recomptes i els darrers registres d'error. No inclou les teves dades personals ni valors de configuració.",
+  "settings.diagnosticsExport": "Exportar diagnòstic",
+  "settings.diagnosticsExporting": "Exportant…",
+  "settings.diagnosticsSaved": "Informe desat a: {path}",
+  "settings.diagnosticsReveal": "Mostra la carpeta",
 };
 
