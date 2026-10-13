@@ -381,7 +381,7 @@ fn filter_candidate_genres(all_genres: Vec<String>, banned_genres: &[String]) ->
 /// empty genre/format maps, still biasing toward high `average_score` — see
 /// docs/superpowers/specs/2026-07-13-discover-recommendation-toggle-design.md.
 #[tauri::command]
-pub fn discover_catalog_card(
+pub async fn discover_catalog_card(
     state: State<'_, AppState>,
     recommended: bool,
 ) -> Result<Option<FinishedCard>, String> {
