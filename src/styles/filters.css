@@ -1,0 +1,198 @@
+/* Filters styles - AnimeOnTrack */
+
+.filter-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.filter-label {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  color: var(--muted);
+}
+
+/* Score range control */
+.filter-score-control {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.filter-score-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+}
+
+.filter-preset-chip {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: var(--radius-round);
+  padding: 2px 10px;
+  font-size: var(--fs-xs);
+  cursor: pointer;
+  transition: all var(--dur-fast) var(--ease);
+  line-height: var(--lh-base);
+}
+
+.filter-preset-chip:hover {
+  background: var(--surface-3);
+  border-color: var(--muted-2);
+}
+
+.filter-preset-chip.active {
+  background: var(--accent);
+  color: var(--bg);
+  border-color: var(--accent);
+  font-weight: var(--fw-semibold);
+}
+
+.filter-preset-chip:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.filter-score-inputs {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.filter-score-field {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  font-size: var(--fs-sm);
+  color: var(--muted);
+}
+
+.filter-score-input {
+  width: 60px;
+  padding: var(--sp-1) var(--sp-2);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  text-align: center;
+}
+
+.filter-score-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+}
+
+/* Date range control */
+.filter-date-control {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.filter-date-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+}
+
+.filter-date-inputs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.filter-date-field {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  font-size: var(--fs-sm);
+  color: var(--muted);
+}
+
+.filter-date-input {
+  padding: var(--sp-1) var(--sp-2);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: var(--fs-sm);
+}
+
+.filter-date-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+}
+
+.filter-date-clear-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  border-radius: var(--radius-sm);
+  padding: var(--sp-1) var(--sp-2);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+  transition: all var(--dur-fast) var(--ease);
+}
+
+.filter-date-clear-btn:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.filter-date-clear-btn:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* Select controls */
+.filter-select-control {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+/* Secondary filters collapsible panel */
+.filter-collapsible-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding: var(--sp-3);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-top: var(--sp-2);
+  margin-bottom: var(--sp-2);
+}
+
+.filter-collapsible-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+.filter-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.filter-active-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent);
+  color: var(--bg);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border-radius: var(--radius-round);
+  line-height: 1;
+}

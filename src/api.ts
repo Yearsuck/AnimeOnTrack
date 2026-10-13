@@ -161,7 +161,8 @@ export const setDeckBans = (
   hideUpcoming: boolean,
   minStartDate: number | null,
   maxStartDate: number | null,
-) => invoke<void>("set_deck_bans", { genres, formats, hideUpcoming, minStartDate, maxStartDate });
+  minScore: number | null = null,
+) => invoke<void>("set_deck_bans", { genres, formats, hideUpcoming, minStartDate, maxStartDate, minScore });
 
 export const startWatching = (seriesId: number) =>
   invoke<LinkOutcome>("start_watching", { seriesId });
