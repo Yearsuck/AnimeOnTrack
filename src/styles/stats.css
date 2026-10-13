@@ -1,0 +1,490 @@
+/* ==========================================================================
+   Stats View Styling (AnimeOnTrack v0.6.5)
+   Design System: Grayscale-first, brand accent for emphasis, calm hierarchy.
+   No hard-coded colours, WCAG AA compliant contrast in both themes.
+   ========================================================================== */
+
+/* Tab Panels */
+.tab-panel.hidden {
+  display: none;
+}
+
+/* Page wrapper spacing */
+.stats-page {
+  padding-bottom: var(--sp-8);
+}
+
+/* --------------------------------------------------------------------------
+   1. KPI Strip (Top headline metrics)
+   -------------------------------------------------------------------------- */
+.kpi-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-6);
+}
+
+.kpi-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--sp-4) var(--sp-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+  transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+}
+
+.kpi-card:hover {
+  border-color: var(--surface-3);
+  box-shadow: var(--shadow-sm);
+}
+
+.kpi-label {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.kpi-value {
+  font-size: var(--fs-2xl);
+  font-weight: var(--fw-bold);
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  line-height: var(--lh-tight);
+}
+
+.kpi-help {
+  font-size: var(--fs-xs);
+  color: var(--muted-2);
+  line-height: var(--lh-base);
+}
+
+/* KPI Skeletons */
+.skeleton-kpi-label {
+  width: 50%;
+  height: 12px;
+}
+
+.skeleton-kpi-val {
+  width: 40%;
+  height: 28px;
+}
+
+.skeleton-kpi-sub {
+  width: 75%;
+  height: 12px;
+}
+
+/* --------------------------------------------------------------------------
+   2. Activity Section (Heatmap + 30-day Chart)
+   -------------------------------------------------------------------------- */
+.stats-section {
+  margin-bottom: var(--sp-6);
+}
+
+.stats-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  flex-wrap: wrap;
+  margin-bottom: var(--sp-3);
+}
+
+.stats-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--sp-5);
+  min-width: 0;
+  transition: border-color var(--dur-fast) var(--ease);
+}
+
+.stats-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-3);
+}
+
+.stats-card-title {
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
+  margin: 0 0 var(--sp-3);
+}
+
+.stats-30day-wrap {
+  padding-top: var(--sp-2);
+}
+
+/* --------------------------------------------------------------------------
+   3. Activity Heatmap (CSS Grid Rebuild)
+   -------------------------------------------------------------------------- */
+.stats-heatmap {
+  --cell-size: clamp(10px, 1.25vw, 13px);
+  --cell-gap: 3px;
+  --cell-radius: 2px;
+  padding: var(--sp-2) 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.heatmap-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+  margin-bottom: var(--sp-4);
+}
+
+.heatmap-summary-line {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  font-size: var(--fs-sm);
+  color: var(--muted);
+}
+
+.heatmap-summary-stat {
+  font-weight: var(--fw-medium);
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.heatmap-summary-sep {
+  color: var(--muted-2);
+}
+
+.heatmap-year-control {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
+.heatmap-nav-btn {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--fs-lg);
+  border-radius: var(--radius-sm);
+  line-height: 1;
+  color: var(--muted);
+}
+
+.heatmap-nav-btn:hover:not(:disabled) {
+  color: var(--text);
+}
+
+.heatmap-nav-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.heatmap-select {
+  height: 28px;
+  padding: 0 var(--sp-3);
+  font-size: var(--fs-sm);
+}
+
+.heatmap-scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  scroll-snap-type: x proximity;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: var(--sp-2);
+}
+
+.heatmap-layout-wrapper {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  width: max-content;
+  min-width: 100%;
+}
+
+.heatmap-weekdays {
+  position: sticky;
+  left: 0;
+  z-index: 3;
+  background: var(--surface);
+  display: grid;
+  grid-template-rows: repeat(7, var(--cell-size));
+  gap: var(--cell-gap);
+  margin-top: calc(var(--fs-xs) + var(--sp-2));
+  padding-right: var(--sp-1);
+}
+
+.heatmap-weekday {
+  height: var(--cell-size);
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  font-size: var(--fs-xs);
+  color: var(--muted-2);
+  font-weight: var(--fw-medium);
+  line-height: 1;
+}
+
+.heatmap-weekday-empty {
+  visibility: hidden;
+}
+
+.heatmap-content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.heatmap-months {
+  display: grid;
+  grid-auto-columns: var(--cell-size);
+  grid-auto-flow: column;
+  gap: var(--cell-gap);
+  height: var(--fs-xs);
+  line-height: 1;
+}
+
+.heatmap-month {
+  font-size: var(--fs-xs);
+  color: var(--muted-2);
+  font-weight: var(--fw-medium);
+  white-space: nowrap;
+}
+
+.heatmap-grid {
+  display: grid;
+  grid-template-rows: repeat(7, var(--cell-size));
+  grid-auto-flow: column;
+  grid-auto-columns: var(--cell-size);
+  gap: var(--cell-gap);
+}
+
+.heatmap-cell {
+  width: var(--cell-size);
+  height: var(--cell-size);
+  border-radius: var(--cell-radius);
+  transition: transform var(--dur-fast) var(--ease), outline var(--dur-fast) var(--ease);
+  cursor: default;
+}
+
+.heatmap-cell:hover,
+.heatmap-cell:focus-visible {
+  transform: scale(1.3);
+  z-index: 2;
+  outline: 2px solid var(--text);
+  outline-offset: 1px;
+}
+
+/* Intensity levels using color-mix for smooth ramp and accessible contrast */
+.heatmap-cell.level-0 {
+  background: var(--surface-3);
+}
+
+.heatmap-cell.level-1 {
+  background: color-mix(in srgb, var(--accent) 35%, var(--surface-2));
+}
+
+.heatmap-cell.level-2 {
+  background: color-mix(in srgb, var(--accent) 58%, var(--surface-2));
+}
+
+.heatmap-cell.level-3 {
+  background: color-mix(in srgb, var(--accent) 80%, var(--surface-2));
+}
+
+.heatmap-cell.level-4 {
+  background: var(--accent);
+}
+
+.heatmap-cell.empty {
+  background: transparent;
+  pointer-events: none;
+}
+
+.heatmap-legend {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-top: var(--sp-4);
+  font-size: var(--fs-xs);
+  color: var(--muted-2);
+}
+
+.heatmap-legend-levels {
+  display: flex;
+  gap: var(--cell-gap);
+}
+
+.heatmap-legend-levels .heatmap-cell {
+  width: 11px;
+  height: 11px;
+  cursor: default;
+}
+
+.heatmap-empty,
+.heatmap-error {
+  padding: var(--sp-6);
+  text-align: center;
+  color: var(--muted);
+  font-size: var(--fs-base);
+}
+
+.heatmap-error {
+  color: var(--danger);
+}
+
+/* --------------------------------------------------------------------------
+   4. Responsive 2-column Grid (Rankings and Insights)
+   -------------------------------------------------------------------------- */
+.stats-grid-2col {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-5);
+  align-items: start;
+}
+
+@media (max-width: 720px) {
+  .stats-grid-2col {
+    grid-template-columns: 1fr;
+  }
+}
+
+.stats-col {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-5);
+  min-width: 0;
+}
+
+/* Mini stat grid for grouped secondary metrics */
+.stats-mini-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-3);
+}
+
+@media (max-width: 480px) {
+  .stats-mini-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.stats-mini-stat {
+  background: var(--surface-2);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  padding: var(--sp-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+
+.stats-mini-label {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  font-weight: var(--fw-medium);
+}
+
+.stats-mini-val {
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-bold);
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  word-break: break-word;
+}
+
+.stats-mini-sub {
+  font-size: var(--fs-xs);
+  color: var(--muted-2);
+  font-variant-numeric: tabular-nums;
+  line-height: var(--lh-tight);
+}
+
+/* --------------------------------------------------------------------------
+   5. Analytical Popularity Index (Redesigned)
+   -------------------------------------------------------------------------- */
+.popbias {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.popbias-labels {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+
+.popbias-score {
+  font-size: var(--fs-md);
+  font-weight: var(--fw-bold);
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.popbias-meter {
+  position: relative;
+  margin: var(--sp-1) 0;
+}
+
+.popbias-track {
+  position: relative;
+  height: 8px;
+  background: var(--surface-3);
+  border-radius: var(--radius-round);
+  overflow: hidden;
+}
+
+.popbias-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: inherit;
+  transition: width var(--dur-slow) var(--ease-out);
+}
+
+.popbias-marker {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--text);
+  transform: translateX(-50%);
+  pointer-events: none;
+  opacity: 0.8;
+}
+
+.popbias-sub {
+  text-align: center;
+  font-size: var(--fs-xs);
+  color: var(--muted-2);
+  font-weight: var(--fw-medium);
+}
+
+/* --------------------------------------------------------------------------
+   6. Motion & Accessibility
+   -------------------------------------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+  .heatmap-cell,
+  .popbias-fill,
+  .kpi-card,
+  .dayact-fill,
+  .hourly-fill,
+  .bar-fill,
+  .ring-arc {
+    transition: none !important;
+  }
+}

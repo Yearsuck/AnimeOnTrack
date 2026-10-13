@@ -20,6 +20,7 @@ import {
   linkUnlinkedViaAnilist,
   backfillCatalogMetadata,
   refreshCatalogStatus,
+  listLibrary,
 } from "./api";
 import { useT } from "./i18n";
 import type { Series } from "./types";
@@ -321,7 +322,18 @@ export default function App() {
         )}
         {statsVisited && (
           <div className="view-panel" hidden={view !== "stats"}>
-            <Stats active={view === "stats"} />
+            <Stats
+              active={view === "stats"}
+              onOpenSeries={(id) => {
+                // The graph only knows ids; SeriesDetail needs the full row.
+                listLibrary()
+                  .then((items) => {
+                    const hit = items.find((i) => i.series.id === id);
+                    if (hit) setSelected(hit.series);
+                  })
+                  .catch((err) => console.error("open series from graph failed", err));
+              }}
+            />
           </div>
         )}
         {view === "settings" && (

@@ -5,33 +5,48 @@ import { useT } from "../i18n";
 import { useTheme } from "../theme";
 import { categoryColor, NO_GENRE_KEY } from "../lib/categoryColor";
 import { resolveCoverUrl } from "../lib/posterFallback";
+import { useOutsideClick } from "../lib/useOutsideClick";
+import { listLibrary } from "../api";
 import type { SeriesGraphNode } from "../types";
+import "../styles/statsgraph.css";
 
-// The root node's near-white dark-theme color (#e9ecef) is invisible on the
-// light theme's pale backdrop — pick per theme instead of a single constant.
-const ROOT_COLOR_DARK = "#e9ecef";
-const ROOT_COLOR_LIGHT = "#33414f";
-// Connection lines fall back to near-white in the library's default, invisible
-// on light theme's pale background — pick per theme for readability.
+// --- WEIGHT & VISUAL SCALING CONSTANTS ---
+// Connection line colors per theme
 const LINK_COLOR_DARK = "rgba(255, 255, 255, 0.25)";
 const LINK_COLOR_LIGHT = "rgba(23, 34, 46, 0.35)";
-const HUB_MIN_R = 6;
-const HUB_MAX_R = 22;
-const SERIES_SPRITE_SIZE = 18;
+// Dimmed link colors when a node is selected (neighbors highlighted)
+const LINK_DIM_DARK = "rgba(255, 255, 255, 0.04)";
+const LINK_DIM_LIGHT = "rgba(23, 34, 46, 0.05)";
+// Highlighted link colors for connections to selected node
+const LINK_HIGHLIGHT_DARK = "rgba(255, 255, 255, 0.75)";
+const LINK_HIGHLIGHT_LIGHT = "rgba(23, 34, 46, 0.85)";
+
+// Genre hub node sphere radius bounds (min/max ratio >= 4x: 36 / 8 = 4.5x)
+const HUB_MIN_R = 8;
+const HUB_MAX_R = 36;
+
+// Series node sprite scale bounds (min/max ratio >= 4x: 52 / 12 = 4.33x)
+const SERIES_MIN_SIZE = 12;
+const SERIES_MAX_SIZE = 52;
+
+// Exaggerated curve exponent: power law radius = base + k * Math.pow(norm, 0.6)
+const WEIGHT_CURVE_EXPONENT = 0.6;
+
+// Link distance: heavier series within a genre are closer to their genre hub
+const LINK_MIN_DIST = 75; // closest distance for highest-weight series
+const LINK_MAX_DIST = 260; // furthest distance for lowest-weight series
+const HUB_BACKBONE_LINK_DIST = 320; // loose distance between top genre hubs
+
+// Link width: heavier series within a genre have thicker connection lines
+const LINK_MIN_WIDTH = 0.8;
+const LINK_MAX_WIDTH = 4.2;
+const HUB_BACKBONE_LINK_WIDTH = 0.6;
+
+// Force layout constants
+const CHARGE_STRENGTH = -750;
+const COOLDOWN_TICKS = 200;
 const MIN_HEIGHT = 500;
 const BOTTOM_MARGIN = 24;
-// Spread nodes far enough apart that the edges between hubs and series read
-// clearly (the earlier -260 / 90 packed them into an unreadable ball). The
-// wider layout is re-framed once via zoomToFit on the first settle. Values
-// were bumped again from -520 / 150 to -700 / 180 to further improve edge
-// legibility between hubs and series.
-const CHARGE_STRENGTH = -700;
-const LINK_DISTANCE = 180;
-// Bound the initial layout run instead of letting it simulate indefinitely
-// (the library's own cooldownTime default is 15s of wall time). Once the
-// engine stops (or this many ticks pass), onEngineStop below snapshots
-// positions so a later rebuild can reuse them instead of re-scrambling.
-const COOLDOWN_TICKS = 200;
 
 interface Vec3 {
   x: number;
@@ -50,89 +65,187 @@ function disposeNodeObject(obj: THREE.Object3D): void {
   anyObj.geometry?.dispose?.();
 }
 
-type GNodeKind = "root" | "genreHub" | "kindHub" | "series";
+type GNodeKind = "genreHub" | "kindHub" | "series";
 
 interface GNode {
   id: string;
   kind: GNodeKind;
   label: string;
   count?: number;
+  episodes?: number;
+  genres?: string[];
   color?: string;
   coverUrl?: string | null;
+  seriesId?: number;
+  size?: number;
+  radius?: number;
 }
 
 interface GLink {
-  source: string;
-  target: string;
+  source: string | NodeObject<GNode>;
+  target: string | NodeObject<GNode>;
+  width?: number;
+  distance?: number;
+  isHubLink?: boolean;
 }
 
-// `noGenreLabel` is passed in rather than imported as a constant so the
-// "no genre" hub reads in the active language; its node id and colour key off
-// NO_GENRE_KEY instead, which never changes with language.
 function buildGraphData(
   seriesList: SeriesGraphNode[],
-  rootLabel: string,
-  noGenreLabel: string
+  noGenreLabel: string,
+  watchedMap?: Map<number, number> | null
 ): { nodes: GNode[]; links: GLink[] } {
-  const nodes: GNode[] = [{ id: "root", kind: "root", label: rootLabel, count: seriesList.length }];
+  const nodes: GNode[] = [];
   const links: GLink[] = [];
 
   const genreCounts = new Map<string, number>();
+  const genreEpisodes = new Map<string, number>();
+  const genreSeriesMaxEpisodes = new Map<string, number>();
   const kindCounts = new Map<string, number>();
   let sinGeneroCount = 0;
+  let sinGeneroEpisodes = 0;
+  let sinGeneroMaxEpisodes = 0;
+
+  const getEpisodes = (s: SeriesGraphNode): number => {
+    return watchedMap?.get(s.id) ?? 0;
+  };
+
+  const maxSeriesEpisodes = Math.max(1, ...seriesList.map((s) => getEpisodes(s)));
 
   for (const s of seriesList) {
+    const eps = getEpisodes(s);
     if (s.genres.length === 0) {
       sinGeneroCount++;
+      sinGeneroEpisodes += eps;
+      if (eps > sinGeneroMaxEpisodes) sinGeneroMaxEpisodes = eps;
     } else {
-      for (const g of s.genres) genreCounts.set(g, (genreCounts.get(g) ?? 0) + 1);
+      for (const g of s.genres) {
+        genreCounts.set(g, (genreCounts.get(g) ?? 0) + 1);
+        genreEpisodes.set(g, (genreEpisodes.get(g) ?? 0) + eps);
+        const prevMax = genreSeriesMaxEpisodes.get(g) ?? 0;
+        if (eps > prevMax) genreSeriesMaxEpisodes.set(g, eps);
+      }
     }
-    if (s.kind) kindCounts.set(s.kind, (kindCounts.get(s.kind) ?? 0) + 1);
+    if (s.kind) {
+      kindCounts.set(s.kind, (kindCounts.get(s.kind) ?? 0) + 1);
+    }
   }
 
+  const allGenreEpisodes = Array.from(genreEpisodes.values());
+  const maxGenreEpisodes = Math.max(1, ...allGenreEpisodes, sinGeneroEpisodes);
+  const maxGenreCount = Math.max(1, ...Array.from(genreCounts.values()), sinGeneroCount);
+  const hasAnyWatched = allGenreEpisodes.some((e) => e > 0) || sinGeneroEpisodes > 0;
+
+  // Build top-level genre hubs
   for (const [g, count] of genreCounts) {
-    nodes.push({ id: `genre:${g}`, kind: "genreHub", label: g, count, color: categoryColor(g) });
-    links.push({ source: "root", target: `genre:${g}` });
+    const eps = genreEpisodes.get(g) ?? 0;
+    const norm = hasAnyWatched ? eps / maxGenreEpisodes : count / maxGenreCount;
+    const radius =
+      HUB_MIN_R + (HUB_MAX_R - HUB_MIN_R) * Math.pow(Math.min(1, Math.max(0, norm)), WEIGHT_CURVE_EXPONENT);
+    nodes.push({
+      id: `genre:${g}`,
+      kind: "genreHub",
+      label: g,
+      count,
+      episodes: eps,
+      color: categoryColor(g),
+      radius,
+    });
   }
+
   if (sinGeneroCount > 0) {
+    const norm = hasAnyWatched ? sinGeneroEpisodes / maxGenreEpisodes : sinGeneroCount / maxGenreCount;
+    const radius =
+      HUB_MIN_R + (HUB_MAX_R - HUB_MIN_R) * Math.pow(Math.min(1, Math.max(0, norm)), WEIGHT_CURVE_EXPONENT);
     nodes.push({
       id: `genre:${NO_GENRE_KEY}`,
       kind: "genreHub",
       label: noGenreLabel,
       count: sinGeneroCount,
+      episodes: sinGeneroEpisodes,
       color: categoryColor(NO_GENRE_KEY),
+      radius,
     });
-    links.push({ source: "root", target: `genre:${NO_GENRE_KEY}` });
-  }
-  for (const [k, count] of kindCounts) {
-    nodes.push({ id: `kind:${k}`, kind: "kindHub", label: k, count, color: categoryColor(k) });
-    links.push({ source: "root", target: `kind:${k}` });
   }
 
+  for (const [k, count] of kindCounts) {
+    nodes.push({
+      id: `kind:${k}`,
+      kind: "kindHub",
+      label: k,
+      count,
+      color: categoryColor(k),
+      radius: HUB_MIN_R,
+    });
+  }
+
+  // Loosely connect the largest genre hubs to prevent the galaxy layout from flying apart
+  const genreHubNodes = nodes
+    .filter((n) => n.kind === "genreHub")
+    .sort((a, b) => (b.episodes ?? b.count ?? 0) - (a.episodes ?? a.count ?? 0));
+  const topHubCount = Math.min(genreHubNodes.length, 6);
+  if (topHubCount >= 2) {
+    for (let i = 0; i < topHubCount; i++) {
+      const nextIndex = (i + 1) % topHubCount;
+      links.push({
+        source: genreHubNodes[i].id,
+        target: genreHubNodes[nextIndex].id,
+        width: HUB_BACKBONE_LINK_WIDTH,
+        distance: HUB_BACKBONE_LINK_DIST,
+        isHubLink: true,
+      });
+    }
+  }
+
+  // Build series nodes with exaggerated sprite scaling and links to genre hubs
   for (const s of seriesList) {
     const id = `series:${s.id}`;
+    const eps = getEpisodes(s);
+    const norm = maxSeriesEpisodes > 0 ? eps / maxSeriesEpisodes : 0;
+    const size =
+      SERIES_MIN_SIZE +
+      (SERIES_MAX_SIZE - SERIES_MIN_SIZE) * Math.pow(Math.min(1, Math.max(0, norm)), WEIGHT_CURVE_EXPONENT);
     const fallbackColor = s.genres[0] ? categoryColor(s.genres[0]) : categoryColor(NO_GENRE_KEY);
-    nodes.push({ id, kind: "series", label: s.title, color: fallbackColor, coverUrl: s.cover_url });
-    if (s.genres.length === 0) {
-      links.push({ source: `genre:${NO_GENRE_KEY}`, target: id });
-    } else {
-      for (const g of s.genres) links.push({ source: `genre:${g}`, target: id });
+
+    nodes.push({
+      id,
+      kind: "series",
+      label: s.title,
+      color: fallbackColor,
+      coverUrl: s.cover_url,
+      episodes: eps,
+      genres: s.genres,
+      seriesId: s.id,
+      size,
+    });
+
+    const targetGenres = s.genres.length === 0 ? [NO_GENRE_KEY] : s.genres;
+    for (const g of targetGenres) {
+      const maxInGenre = g === NO_GENRE_KEY ? sinGeneroMaxEpisodes : genreSeriesMaxEpisodes.get(g) ?? 0;
+      const weightInGenre = maxInGenre > 0 ? eps / maxInGenre : 0.5;
+      const curvedWeight = Math.pow(Math.min(1, Math.max(0, weightInGenre)), WEIGHT_CURVE_EXPONENT);
+      const linkDist = LINK_MAX_DIST - (LINK_MAX_DIST - LINK_MIN_DIST) * curvedWeight;
+      const linkW = LINK_MIN_WIDTH + (LINK_MAX_WIDTH - LINK_MIN_WIDTH) * curvedWeight;
+      links.push({
+        source: `genre:${g}`,
+        target: id,
+        width: linkW,
+        distance: linkDist,
+      });
     }
-    if (s.kind) links.push({ source: `kind:${s.kind}`, target: id });
+
+    if (s.kind) {
+      links.push({
+        source: `kind:${s.kind}`,
+        target: id,
+        width: LINK_MIN_WIDTH,
+        distance: LINK_MAX_DIST,
+      });
+    }
   }
 
   return { nodes, links };
 }
 
-function hubRadius(count: number, maxCount: number): number {
-  if (maxCount <= 0) return HUB_MIN_R;
-  return HUB_MIN_R + (HUB_MAX_R - HUB_MIN_R) * (count / maxCount);
-}
-
-// `strokeColor` outlines the disc so a series with no cover art still reads
-// as a distinct node against the light theme's pale backdrop (dark fills
-// already had enough contrast on the dark backdrop; on light the same flat
-// fill can blend into the sky).
 function fallbackCircleCanvas(color: string, strokeColor: string): HTMLCanvasElement {
   const canvas = document.createElement("canvas");
   canvas.width = 64;
@@ -148,7 +261,6 @@ function fallbackCircleCanvas(color: string, strokeColor: string): HTMLCanvasEle
   return canvas;
 }
 
-// Lighten (amt > 0) / darken (amt < 0) a #rrggbb hex, clamped per channel.
 function shadeHex(hex: string, amt: number): string {
   const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
   if (!m) return hex;
@@ -160,10 +272,6 @@ function shadeHex(hex: string, amt: number): string {
   return `rgb(${r}, ${g}, ${b})`;
 }
 
-// Linearly blend two #rrggbb hex colors by t in [0, 1] (0 = a, 1 = b). Used by
-// the "ice" planet variant to push its palette toward a cool cyan/white tint.
-// Deterministic (t is always a fixed constant or seed-derived value here,
-// never Math.random).
 function mixHex(a: string, b: string, t: number): string {
   const ma = /^#?([0-9a-f]{6})$/i.exec(a.trim());
   const mb = /^#?([0-9a-f]{6})$/i.exec(b.trim());
@@ -177,10 +285,9 @@ function mixHex(a: string, b: string, t: number): string {
   return `rgb(${r}, ${g}, ${bch})`;
 }
 
-// Deterministic pseudo-random hash + bilinear-smoothed value noise, used to
-// bake latitude-band wobble and blotch/storm texture below. Deterministic
-// (not Math.random) so the same hub color always bakes the same surface —
-// a rebuild (theme flip, follow/unfollow elsewhere) doesn't re-roll the look.
+const ICE_LIGHT_TINT = "#eaf9ff";
+const ICE_DARK_TINT = "#4f7690";
+
 function hash2(x: number, y: number): number {
   const s = Math.sin(x * 127.1 + y * 311.7) * 43758.5453123;
   return s - Math.floor(s);
@@ -214,25 +321,6 @@ function fbm(x: number, y: number, octaves: number): number {
   return total / maxAmp;
 }
 
-// Cool cyan/white tint targets for the "ice" planet variant (mixed in via
-// mixHex, never used raw) — kept as constants so the blend ratios below read
-// clearly against a named target instead of a bare hex literal.
-const ICE_LIGHT_TINT = "#eaf9ff";
-const ICE_DARK_TINT = "#4f7690";
-
-// A baked planet disc: sphere-shaded gradient (light side / dark limb —
-// the terminator) plus latitude bands, low-frequency blotch noise, optional
-// craters, limb darkening, and a faint atmospheric glow. Painted within a
-// circular clip on a square canvas — mapped onto the unlit SphereGeometry's
-// default (front-facing) UV patch, the same "baked lit disc" trick as
-// before, just with a real surface instead of a flat gradient. Single
-// CanvasTexture on a MeshBasicMaterial — no scene light (react-force-graph-3d
-// ships none).
-//
-// Each node bakes one of three deterministic look variants, chosen from the
-// node's own color seed (never Math.random, so a rebuild never re-rolls the
-// look): 0 "rocky" (blotches + craters), 1 "gas giant" (wide smooth bands,
-// sparse blotches), 2 "ice" (cool-tinted, sparse bright blotches).
 function planetTexture(color: string): THREE.CanvasTexture {
   const size = 256;
   const canvas = document.createElement("canvas");
@@ -243,8 +331,6 @@ function planetTexture(color: string): THREE.CanvasTexture {
   const cy = size / 2;
   const r = size / 2 - 2;
 
-  // Per-color seed so different hubs don't all bake the exact same band/
-  // blotch layout, and so the same seed always picks the same variant.
   let seed = 0;
   for (let i = 0; i < color.length; i++) seed += color.charCodeAt(i);
   const nx = seed * 0.13;
@@ -256,8 +342,6 @@ function planetTexture(color: string): THREE.CanvasTexture {
   const lightC = isIce ? mixHex(shadeHex(color, 0.4), ICE_LIGHT_TINT, 0.55) : shadeHex(color, 0.4);
   const darkC = isIce ? mixHex(shadeHex(color, -0.35), ICE_DARK_TINT, 0.45) : shadeHex(color, -0.35);
   const limbC = isIce ? mixHex(shadeHex(color, -0.65), ICE_DARK_TINT, 0.35) : shadeHex(color, -0.65);
-  // The gradient's own middle stop (see step 1) also gets the ice tint so the
-  // "flat" band between light and dark limb isn't left in the original hue.
   const baseMid = isIce ? mixHex(color, ICE_LIGHT_TINT, 0.35) : color;
 
   ctx.save();
@@ -265,15 +349,6 @@ function planetTexture(color: string): THREE.CanvasTexture {
   ctx.arc(cx, cy, r, 0, Math.PI * 2);
   ctx.clip();
 
-  // 1) Base sphere-shaded gradient: the terminator (light side upper-left,
-  // dark limb lower-right). Midpoint narrowed from 0.45 -> 0.32 so the
-  // light/dark transition reads more like a lit sphere and less like a
-  // flat tinted disc with a soft smear in the middle.
-  //
-  // Band alpha (step 2, 0.35 for rocky/ice) is left as-is: the bands are
-  // painted as a flat-alpha tint layer on top of the gradient rather than
-  // scaled by it, so narrowing the gradient's midpoint doesn't wash them
-  // out — they read the same regardless of how sharp the terminator is.
   const base = ctx.createRadialGradient(cx - r * 0.35, cy - r * 0.38, r * 0.05, cx, cy, r * 1.05);
   base.addColorStop(0, lightC);
   base.addColorStop(0.32, baseMid);
@@ -281,10 +356,6 @@ function planetTexture(color: string): THREE.CanvasTexture {
   ctx.fillStyle = base;
   ctx.fillRect(0, 0, size, size);
 
-  // 2) Latitude bands (gas-giant-style stripes), wobbled by low-freq noise so
-  // they read as organic, not ruled lines. Gas giants get wider, smoother
-  // (less wobble), higher-contrast bands; rocky/ice keep the original
-  // narrower, noisier stripe look (ice additionally tints each band cooler).
   const bandCount = isGasGiant ? 5 : 7;
   const bandWobbleScale = isGasGiant ? 0.025 : 0.06;
   const bandToneBase = isGasGiant ? 0.12 : 0.05;
@@ -301,11 +372,6 @@ function planetTexture(color: string): THREE.CanvasTexture {
   }
   ctx.globalAlpha = 1;
 
-  // 3) Low-frequency blotch noise, painted at a coarse cell size so it stays
-  // cheap while reading as organic. Rocky: continents/storms (dark-toned,
-  // as before). Gas giant: much sparser (higher threshold, bigger cell,
-  // lower alpha) since the bands already carry the surface texture. Ice:
-  // sparser but brighter blotches (ice caps/cracks) instead of dark storms.
   const blotchCell = isGasGiant ? 8 : 4;
   const blotchThreshold = isGasGiant ? 0.78 : isIce ? 0.64 : 0.56;
   const blotchAlphaScale = isGasGiant ? 0.3 : 0.9;
@@ -323,12 +389,8 @@ function planetTexture(color: string): THREE.CanvasTexture {
   }
   ctx.globalAlpha = 1;
 
-  // 3.5) Rocky variant only: a handful of small crater marks (darker rim
-  // ring + slightly darker floor), positioned via hash2 (never Math.random)
-  // so each node's craters are stable across rebuilds. Count (4-8) is itself
-  // seed-derived.
   if (variant === 0) {
-    const craterCount = 4 + Math.floor(hash2(nx, ny) * 5); // 4-8
+    const craterCount = 4 + Math.floor(hash2(nx, ny) * 5);
     for (let i = 0; i < craterCount; i++) {
       const ang = hash2(nx + i * 2.31, ny - i * 1.17) * Math.PI * 2;
       const dist = Math.sqrt(hash2(nx - i * 3.73, ny + i * 4.19)) * r * 0.82;
@@ -347,9 +409,6 @@ function planetTexture(color: string): THREE.CanvasTexture {
     }
   }
 
-  // 4) Limb darkening: a radial vignette darkening toward the disc's rim
-  // regardless of the terminator gradient above — the "sphere, not flat
-  // circle" cue.
   const vignette = ctx.createRadialGradient(cx, cy, r * 0.55, cx, cy, r);
   vignette.addColorStop(0, "rgba(0, 0, 0, 0)");
   const limbRgb = /^rgb\(([^)]+)\)$/.exec(limbC)?.[1] ?? "0, 0, 0";
@@ -359,11 +418,6 @@ function planetTexture(color: string): THREE.CanvasTexture {
 
   ctx.restore();
 
-  // 5) Faint atmospheric glow just outside the disc edge (after the clip is
-  // released) — suggests a thin atmosphere without a scene light. Ice worlds
-  // get a cooler-tinted glow to match the tinted surface underneath (a plain
-  // shadeHex lighten here would glow in the original hub hue, clashing with
-  // the icy surface baked above).
   const glowBase = isIce ? mixHex(color, ICE_LIGHT_TINT, 0.4) : shadeHex(color, 0.15);
   const glowRgb = /^rgb\(([^)]+)\)$/.exec(glowBase)?.[1] ?? "255, 255, 255";
   const glow = ctx.createRadialGradient(cx, cy, r * 0.97, cx, cy, r * 1.18);
@@ -380,99 +434,167 @@ function planetTexture(color: string): THREE.CanvasTexture {
 export function StatsGraph({
   seriesList,
   active,
+  onOpenSeries,
+  watchedEpisodes,
 }: {
   seriesList: SeriesGraphNode[];
   active: boolean;
+  onOpenSeries?: (seriesId: number) => void;
+  watchedEpisodes?: Map<number, number>;
 }) {
   const t = useT();
   const { theme } = useTheme();
-  const rootColor = theme === "light" ? ROOT_COLOR_LIGHT : ROOT_COLOR_DARK;
   const linkColor = theme === "light" ? LINK_COLOR_LIGHT : LINK_COLOR_DARK;
   const graphRef = useRef<ForceGraphMethods<NodeObject<GNode>, GLink> | undefined>(undefined);
   const containerRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
   const [height, setHeight] = useState(MIN_HEIGHT);
   const [width, setWidth] = useState(0);
 
-  // Last settled layout, snapshotted on onEngineStop and keyed by node id —
-  // survives graphData rebuilds (a fresh seriesList prop produces brand new
-  // node/link objects every time) so re-following/backfilling doesn't
-  // re-scramble nodes that were already laid out.
+  // Selected node and context menu state
+  const [selectedNode, setSelectedNode] = useState<GNode | null>(null);
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    node: GNode;
+  } | null>(null);
+
+  // Fallback map of watched episodes if not passed from parent
+  const [internalWatchedMap, setInternalWatchedMap] = useState<Map<number, number> | null>(null);
+
+  useEffect(() => {
+    if (watchedEpisodes) return;
+    let mounted = true;
+    listLibrary()
+      .then((items) => {
+        if (!mounted) return;
+        const map = new Map<number, number>();
+        for (const item of items) {
+          const eps =
+            item.seen_episodes > 0
+              ? item.seen_episodes
+              : item.watched_externally
+              ? Math.max(item.total_episodes, 1)
+              : 0;
+          map.set(item.series.id, eps);
+        }
+        setInternalWatchedMap(map);
+      })
+      .catch(() => {});
+    return () => {
+      mounted = false;
+    };
+  }, [watchedEpisodes]);
+
+  const effectiveWatchedMap = watchedEpisodes ?? internalWatchedMap;
+
   const positionsRef = useRef<Map<string, Vec3>>(new Map());
-  // Structural key of the layout currently reflected in positionsRef —
-  // sorted node ids + link count, a cheap value comparison. useMemo returns
-  // a new nodes/links array on every rebuild even when the data is
-  // identical, so object identity can't be used to detect "did anything
-  // actually change".
   const layoutKeyRef = useRef<string | null>(null);
-  // Registry of the three.js object currently representing each node, so a
-  // replaced or removed node's material/texture/geometry can be disposed
-  // explicitly. The graph now stays mounted indefinitely, so nothing else
-  // ever garbage-collects these.
   const nodeObjectsRef = useRef<Map<string, THREE.Object3D>>(new Map());
-  // Frame the (now wider) layout exactly once, on the first settle — later
-  // rebuilds reuse the snapshot and must NOT re-fit (that would fight the
-  // frozen layout / user's own camera). A later re-fit still happens, but
-  // only when handleEngineStop below detects the node set grew.
+  const textureCacheRef = useRef<Map<string, THREE.CanvasTexture>>(new Map());
   const didFitRef = useRef(false);
-  // Node ids present as of the last settle, so handleEngineStop can tell
-  // "structure changed because a node was added" apart from "changed because
-  // one was removed" (only the former should trigger a re-frame). `null`
-  // means "no settle yet" — the very first settle uses didFitRef instead.
   const prevIdsRef = useRef<Set<string> | null>(null);
 
+  // Close context menu on outside click
+  useOutsideClick(!!contextMenu, menuRef, () => setContextMenu(null));
+
+  // Escape key closes context menu and clears selection
+  useEffect(() => {
+    if (!active) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setContextMenu(null);
+        setSelectedNode(null);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [active]);
+
+  // Cleanup Three.js resources on unmount
+  useEffect(() => {
+    return () => {
+      for (const [, obj] of nodeObjectsRef.current) {
+        disposeNodeObject(obj);
+      }
+      nodeObjectsRef.current.clear();
+      for (const [, tex] of textureCacheRef.current) {
+        tex.dispose();
+      }
+      textureCacheRef.current.clear();
+    };
+  }, []);
+
   const { nodes, links } = useMemo(() => {
-    const built = buildGraphData(seriesList, t("stats.graphRootLabel"), t("stats.noGenre"));
-    const rootSaved = positionsRef.current.get("root");
+    const built = buildGraphData(seriesList, t("stats.noGenre"), effectiveWatchedMap);
     for (const n of built.nodes) {
       const saved = positionsRef.current.get(n.id);
       if (saved) {
         Object.assign(n as NodeObject<GNode>, saved);
-      } else if (rootSaved) {
-        // Brand-new node (e.g. just followed a series while Stats is open):
-        // seed it near the root's last settled position instead of the
-        // world origin, so it doesn't pile up at the center behind existing
-        // nodes before/if the reheat separates it out.
+      } else {
+        // Seed new nodes near their genre hub's settled position instead of world origin
+        const hubId = n.genres?.[0] ? `genre:${n.genres[0]}` : null;
+        const hubSaved = hubId ? positionsRef.current.get(hubId) : null;
+        const anchor = hubSaved ?? { x: 0, y: 0, z: 0 };
         const jitter = () => (Math.random() - 0.5) * 40;
         Object.assign(n as NodeObject<GNode>, {
-          x: rootSaved.x + jitter(),
-          y: rootSaved.y + jitter(),
-          z: rootSaved.z + jitter(),
+          x: anchor.x + jitter(),
+          y: anchor.y + jitter(),
+          z: anchor.z + jitter(),
         });
       }
     }
     return built;
-  }, [seriesList, t]);
+  }, [seriesList, t, effectiveWatchedMap]);
+
   const structuralKey = useMemo(
     () => `${nodes.map((n) => n.id).sort().join(",")}|${links.length}`,
     [nodes, links]
   );
-  const maxHubCount = useMemo(
-    () =>
-      Math.max(
-        1,
-        ...nodes.filter((n) => n.kind === "genreHub" || n.kind === "kindHub").map((n) => n.count ?? 0)
-      ),
-    [nodes]
-  );
 
-  // Fill the container instead of a fixed px box — 3d-force-graph defaults
-  // its canvas to `window.innerWidth`/height captured once at module load,
-  // which is not the same as this container's actual size and doesn't
-  // update on its own. Measure the real container box and push it in as
-  // width/height props (and via the imperative accessors as a fallback,
-  // since a bare prop change doesn't always reach the renderer post-mount).
+  // Highlighting: active node and immediate neighbors
+  const highlightNodesRef = useRef<Set<string> | null>(null);
+  const { highlightNodes, highlightLinks } = useMemo(() => {
+    if (!selectedNode) {
+      return { highlightNodes: null, highlightLinks: null };
+    }
+    const hNodes = new Set<string>([selectedNode.id]);
+    const hLinks = new Set<GLink>();
+
+    for (const l of links) {
+      const sId = typeof l.source === "object" ? (l.source as NodeObject<GNode>).id : l.source;
+      const tId = typeof l.target === "object" ? (l.target as NodeObject<GNode>).id : l.target;
+      if (sId === selectedNode.id) {
+        if (tId) hNodes.add(tId as string);
+        hLinks.add(l);
+      } else if (tId === selectedNode.id) {
+        if (sId) hNodes.add(sId as string);
+        hLinks.add(l);
+      }
+    }
+
+    return { highlightNodes: hNodes, highlightLinks: hLinks };
+  }, [selectedNode, links]);
+
+  // Dynamically update opacity of existing Three.js node objects on selection change without re-creating them
+  useEffect(() => {
+    highlightNodesRef.current = highlightNodes;
+    for (const [id, obj] of nodeObjectsRef.current) {
+      const isDimmed = highlightNodes !== null && !highlightNodes.has(id);
+      const opacity = isDimmed ? 0.18 : 1.0;
+      if (obj instanceof THREE.Sprite) {
+        obj.material.opacity = opacity;
+      } else if (obj instanceof THREE.Mesh) {
+        (obj.material as THREE.MeshBasicMaterial).opacity = opacity;
+      }
+    }
+  }, [highlightNodes]);
+
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
     const recompute = () => {
-      // display:none (tab hidden via App.tsx's `hidden` attribute) collapses
-      // the box to clientWidth 0 — ResizeObserver and getBoundingClientRect
-      // still fire/report through that collapse, and acting on it would
-      // push a zero size into the graph, leaving the canvas blank on
-      // re-show. Ignore zero-width reads and keep the last known-good size;
-      // the `active` effect below forces one fresh recompute on becoming
-      // visible again (covers the case where the window was resized while
-      // hidden).
       if (el.clientWidth === 0) return;
       const top = el.getBoundingClientRect().top;
       setHeight(Math.max(MIN_HEIGHT, window.innerHeight - top - BOTTOM_MARGIN));
@@ -506,27 +628,18 @@ export function StatsGraph({
     fg.height?.(height);
   }, [width, height]);
 
-  // Spread nodes out further apart — default d3-force charge/link settings
-  // packed hubs and series so tightly the connecting edges were unreadable.
-  // Reheating restarts the physics (alpha back to 1), which is what makes
-  // the layout visibly move/re-settle — only do that when the node/link set
-  // actually changed structurally, not on every rebuild of the same data
-  // (the previous unconditional call here was why switching tabs — which
-  // used to force a remount and thus a fresh nodes/links object — always
-  // re-scrambled the graph).
   useEffect(() => {
     const fg = graphRef.current;
     if (!fg) return;
     (fg.d3Force("charge") as { strength?: (v: number) => void } | undefined)?.strength?.(CHARGE_STRENGTH);
-    (fg.d3Force("link") as { distance?: (v: number) => void } | undefined)?.distance?.(LINK_DISTANCE);
+    (fg.d3Force("link") as { distance?: (fn: (link: GLink) => number) => void } | undefined)?.distance?.(
+      (link: GLink) => link.distance ?? LINK_MAX_DIST
+    );
     if (layoutKeyRef.current !== null && layoutKeyRef.current !== structuralKey) {
       fg.d3ReheatSimulation();
     }
   }, [structuralKey]);
 
-  // Drop three.js objects for nodes that no longer exist (unfollowed
-  // series, a genre hub that emptied out) — nodeThreeObject only fires
-  // again for ids still present, so removals need an explicit sweep.
   useEffect(() => {
     const currentIds = new Set(nodes.map((n) => n.id));
     for (const [id, obj] of nodeObjectsRef.current) {
@@ -552,18 +665,10 @@ export function StatsGraph({
       Array.from(currentIds).some((id) => !prevIdsRef.current!.has(id));
     prevIdsRef.current = currentIds;
 
-    // One-shot framing after the initial layout settles, so the wider spread
-    // stays fully visible without touching the reheat/snapshot invariant.
     if (!didFitRef.current) {
       didFitRef.current = true;
       graphRef.current?.zoomToFit(400, 60);
     } else if (grew) {
-      // A brand-new node appeared since the last settle (following a series
-      // while Stats is open, or opening Stats right after following one) —
-      // re-frame once so it isn't left outside the current view. Do NOT
-      // re-fit on pure removals or identical structure — this callback only
-      // fires again at all when a reheat ran, i.e. structuralKey changed, so
-      // "not grew" here means "shrank" and the camera is left alone.
       graphRef.current?.zoomToFit(600, 60);
     }
   }, [nodes, structuralKey]);
@@ -574,11 +679,13 @@ export function StatsGraph({
       if (existing) disposeNodeObject(existing);
       let obj: THREE.Object3D;
       try {
+        // Read through a ref: depending on the selection here rebuilt (and
+        // re-loaded the cover of) every node on each click.
+        const current = highlightNodesRef.current;
+        const isDimmed = current !== null && !current.has(node.id as string);
+        const opacity = isDimmed ? 0.18 : 1.0;
+
         if (node.kind === "series") {
-          // Only locally-held images can be textured (a remote URL is blocked
-          // by the CSP): a `data:` URI, or a cached `file:` cover served
-          // through the asset protocol. If the latter lacks the CORS header
-          // WebGL needs, onError below swaps in the fallback disc.
           const coverSrc =
             node.coverUrl && /^(data|file):/.test(node.coverUrl) ? resolveCoverUrl(node.coverUrl) : null;
           const hasCover = !!coverSrc;
@@ -587,12 +694,7 @@ export function StatsGraph({
             new THREE.CanvasTexture(
               fallbackCircleCanvas(node.color ?? categoryColor(NO_GENRE_KEY), strokeColor)
             );
-          const material = new THREE.SpriteMaterial({ transparent: true });
-          // The try/catch below only guards the synchronous construction —
-          // TextureLoader decodes asynchronously, so a truncated or malformed
-          // `data:` cover (fetch_cover_image can produce one) failed silently
-          // and left an invisible sprite. Wiring onError swaps in the same
-          // fallback disc an absent cover would have used.
+          const material = new THREE.SpriteMaterial({ transparent: true, opacity });
           material.map = hasCover
             ? new THREE.TextureLoader().setCrossOrigin("anonymous").load(
                 coverSrc as string,
@@ -606,88 +708,214 @@ export function StatsGraph({
               )
             : fallbackTexture();
           const sprite = new THREE.Sprite(material);
-          sprite.scale.set(SERIES_SPRITE_SIZE, SERIES_SPRITE_SIZE, 1);
+          const size = node.size ?? SERIES_MIN_SIZE;
+          sprite.scale.set(size, size, 1);
           obj = sprite;
         } else {
-          const color = node.kind === "root" ? rootColor : node.color ?? "#4aa8ff";
-          const radius = node.kind === "root" ? HUB_MAX_R * 1.1 : hubRadius(node.count ?? 0, maxHubCount);
-          // MeshBasicMaterial (unlit) rather than a lit material: the scene
-          // has no light (react-force-graph-3d ships none), so a lit material
-          // would render black. The planet look comes from a baked radial
-          // gradient texture (light side / dark limb), not real shading.
-          obj = new THREE.Mesh(
-            new THREE.SphereGeometry(radius, 24, 24),
-            new THREE.MeshBasicMaterial({ map: planetTexture(color) })
-          );
+          const color = node.color ?? "#4aa8ff";
+          const radius = node.radius ?? HUB_MIN_R;
+          let tex = textureCacheRef.current.get(color);
+          if (!tex) {
+            tex = planetTexture(color);
+            textureCacheRef.current.set(color, tex);
+          }
+          const material = new THREE.MeshBasicMaterial({ map: tex, transparent: true, opacity });
+          obj = new THREE.Mesh(new THREE.SphereGeometry(radius, 24, 24), material);
         }
       } catch (e) {
-        // A malformed cover_url or texture-decode failure shouldn't take
-        // down the whole graph — fall back to a visible marker for just
-        // this node instead of an uncaught exception mid-render.
         console.error("nodeThreeObject failed for", node.id, e);
         obj = new THREE.Mesh(new THREE.SphereGeometry(5, 8, 8), new THREE.MeshBasicMaterial({ color: "red" }));
       }
       nodeObjectsRef.current.set(node.id as string, obj);
       return obj;
     },
-    // `theme`/`rootColor` deps make this callback's identity change on a
-    // theme flip, which the underlying three-forcegraph library detects as
-    // "nodeThreeObject accessor changed" and uses to rebuild every node's
-    // object (see three-forcegraph's nodeDataMapper.clear() on that prop
-    // changing) — that's what repaints existing nodes with the new theme's
-    // colors without a reload.
-    [maxHubCount, theme, rootColor]
+    [theme]
   );
 
-  // The ref-bearing div below must always mount, even while seriesList is
-  // still empty (the normal state on first render — data loads async, so
-  // this is briefly true on every real app launch, not just the true-empty
-  // case). The one-shot mount effect above measures containerRef.current
-  // exactly once; if the empty case returned a differently-shaped tree
-  // instead of this same div, the ref would be null on that first pass and
-  // never get a second chance to attach, permanently starving the graph.
+  const flyCameraToNode = useCallback((node: NodeObject<GNode>) => {
+    const fg = graphRef.current;
+    if (!fg || node.x === undefined || node.y === undefined || node.z === undefined) return;
+    // Far enough to keep the node's neighbours in frame (links run up to
+    // LINK_MAX_DIST); hubs are bigger and have far more neighbours.
+    const distance = node.kind === "series" ? 200 : 340;
+    const distRatio = 1 + distance / Math.hypot(node.x, node.y, node.z || 1);
+    fg.cameraPosition(
+      { x: node.x * distRatio, y: node.y * distRatio, z: node.z * distRatio },
+      node as unknown as { x: number; y: number; z: number },
+      1200
+    );
+  }, []);
+
+  const handleNodeClick = useCallback(
+    (node: NodeObject<GNode>) => {
+      setSelectedNode(node);
+      setContextMenu(null);
+      flyCameraToNode(node);
+    },
+    [flyCameraToNode]
+  );
+
+  const handleNodeRightClick = useCallback((node: NodeObject<GNode>, event: MouseEvent) => {
+    event.preventDefault();
+    const rect = containerRef.current?.getBoundingClientRect();
+    const x = rect ? event.clientX - rect.left : event.clientX;
+    const y = rect ? event.clientY - rect.top : event.clientY;
+    setContextMenu({ x, y, node });
+  }, []);
+
+  const handleBackgroundClick = useCallback(() => {
+    setSelectedNode(null);
+    setContextMenu(null);
+  }, []);
+
   return (
     <div
       ref={containerRef}
       className="stats-graph-galaxy graph-clip"
-      // The graph is a bare WebGL canvas, so without this a screen reader gets
-      // nothing at all from it — unlike the bar/ring views, which already
-      // carry role="img"/aria-label.
       role="img"
       aria-label={t("stats.graphAria", {
         series: seriesList.length,
         genres: new Set(seriesList.flatMap((s) => s.genres)).size,
       })}
+      onContextMenu={(e) => e.preventDefault()}
     >
       {seriesList.length === 0 ? (
         <div className="empty">{t("stats.graphEmpty")}</div>
       ) : (
-      <ForceGraph3D<GNode, GLink>
-        ref={graphRef}
-        width={width || undefined}
-        height={height}
-        graphData={{ nodes, links }}
-        backgroundColor="#00000000"
-        linkColor={() => linkColor}
-        cooldownTicks={COOLDOWN_TICKS}
-        onEngineStop={handleEngineStop}
-        nodeLabel={(node) =>
-          node.kind === "series" ? node.label : `${node.label} (${node.count ?? 0})`
-        }
-        nodeThreeObject={handleNodeThreeObject}
-        onNodeClick={(node) => {
-          const fg = graphRef.current;
-          if (!fg || node.x === undefined || node.y === undefined || node.z === undefined) return;
-          const distance = 80;
-          const distRatio = 1 + distance / Math.hypot(node.x, node.y, node.z || 1);
-          fg.cameraPosition(
-            { x: node.x * distRatio, y: node.y * distRatio, z: node.z * distRatio },
-            node as unknown as { x: number; y: number; z: number },
-            1200
-          );
-        }}
-      />
+        <ForceGraph3D<GNode, GLink>
+          ref={graphRef}
+          width={width || undefined}
+          height={height}
+          graphData={{ nodes, links }}
+          backgroundColor="#00000000"
+          controlType="orbit"
+          enableNavigationControls={true}
+          enablePointerInteraction={true}
+          enableNodeDrag={false}
+          linkColor={(link: GLink) => {
+            if (!highlightLinks) return linkColor;
+            return highlightLinks.has(link)
+              ? theme === "light"
+                ? LINK_HIGHLIGHT_LIGHT
+                : LINK_HIGHLIGHT_DARK
+              : theme === "light"
+              ? LINK_DIM_LIGHT
+              : LINK_DIM_DARK;
+          }}
+          linkWidth={(link: GLink) => {
+            const base = link.width ?? 1;
+            if (!highlightLinks) return base;
+            return highlightLinks.has(link) ? Math.max(base * 1.5, 2.5) : base * 0.4;
+          }}
+          cooldownTicks={COOLDOWN_TICKS}
+          onEngineStop={handleEngineStop}
+          nodeLabel={(node) =>
+            node.kind === "series" ? node.label : `${node.label} (${node.count ?? 0})`
+          }
+          nodeThreeObject={handleNodeThreeObject}
+          onNodeClick={handleNodeClick}
+          onNodeRightClick={handleNodeRightClick}
+          onBackgroundClick={handleBackgroundClick}
+          onBackgroundRightClick={handleBackgroundClick}
+        />
       )}
+
+      {/* Floating UI Overlays */}
+      <div className="graph-overlay-container">
+        {selectedNode && (
+          <div className="graph-info-panel" role="dialog" aria-label={selectedNode.label}>
+            <div className="graph-info-header">
+              <h3 className="graph-info-title">{selectedNode.label}</h3>
+              <button
+                type="button"
+                className="graph-info-close"
+                onClick={() => setSelectedNode(null)}
+                aria-label={t("stats.graphClose")}
+              >
+                ✕
+              </button>
+            </div>
+            <div className="graph-info-body">
+              {selectedNode.kind === "series" ? (
+                <>
+                  {selectedNode.genres && selectedNode.genres.length > 0 && (
+                    <div className="graph-info-row">
+                      <span className="graph-info-label">{t("stats.graphGenres")}</span>
+                      <div className="graph-info-genres">
+                        {selectedNode.genres.map((g) => (
+                          <span key={g} className="graph-info-genre-tag">
+                            {g}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  <div className="graph-info-row">
+                    <span className="graph-info-label">{t("stats.graphEpisodesWatched")}</span>
+                    <span className="graph-info-value">
+                      {t("stats.graphEpisodesCount", { count: selectedNode.episodes ?? 0 })}
+                    </span>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="graph-info-row">
+                    <span className="graph-info-label">{t("stats.byGenre")}</span>
+                    <span className="graph-info-value">
+                      {t("stats.graphSeriesCount", { count: selectedNode.count ?? 0 })}
+                    </span>
+                  </div>
+                  <div className="graph-info-row">
+                    <span className="graph-info-label">{t("stats.graphEpisodesWatched")}</span>
+                    <span className="graph-info-value">
+                      {t("stats.graphEpisodesCount", { count: selectedNode.episodes ?? 0 })}
+                    </span>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        )}
+
+        {contextMenu && (
+          <div
+            ref={menuRef}
+            className="graph-context-menu"
+            style={{
+              left: Math.min(contextMenu.x, (width || 400) - 170),
+              top: Math.min(contextMenu.y, (height || 400) - 90),
+            }}
+          >
+            {contextMenu.node.kind === "series" && (
+              <button
+                type="button"
+                className="graph-context-item"
+                onClick={() => {
+                  if (onOpenSeries && contextMenu.node.seriesId !== undefined) {
+                    onOpenSeries(contextMenu.node.seriesId);
+                  } else {
+                    // Fallback when no navigation callback exists on parent
+                    setSelectedNode(contextMenu.node);
+                  }
+                  setContextMenu(null);
+                }}
+              >
+                {t("stats.graphOpenSeries")}
+              </button>
+            )}
+            <button
+              type="button"
+              className="graph-context-item"
+              onClick={() => {
+                flyCameraToNode(contextMenu.node as NodeObject<GNode>);
+                setContextMenu(null);
+              }}
+            >
+              {t("stats.graphCenterCamera")}
+            </button>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
