@@ -417,6 +417,13 @@ pub async fn discover_catalog_card(
     } else {
         HashMap::new()
     };
+    // Taste signals (tags and studios) for the inner per-candidate score.
+    // Built once per call, empty in "Aleatorio" mode.
+    let taste_signals = if recommended {
+        db.get_taste_signals_across_sites().map_err(|e| e.to_string())?
+    } else {
+        crate::recommend::TasteSignals::default()
+    };
     // Candidate-genre filter: only the user's own banned-genre list (Section B).
     // Filtering is purely user-driven; there is no hardcoded baseline exclusion.
     let banned_genres = db.get_banned_genres().map_err(|e| e.to_string())?;
@@ -471,7 +478,7 @@ pub async fn discover_catalog_card(
         let genre = &candidates[genre_idx];
 
         if let Some(anime) = db
-            .random_catalog_anime_in_genre(
+            .random_catalog_anime_in_genre_with_signals(
                 genre,
                 &banned_formats,
                 // Not just the outer genre pick (`filter_candidate_genres`
@@ -482,6 +489,7 @@ pub async fn discover_catalog_card(
                 &excluded_norm_titles,
                 &affinity,
                 &format_affinity,
+                &taste_signals,
                 recommended,
                 hide_upcoming,
                 min_start_date,

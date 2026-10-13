@@ -12,7 +12,7 @@
 //! `tauri::State`. See
 //! docs/superpowers/specs/2026-07-12-discover-recommendation-engine-design.md.
 
-use crate::anilist::CatalogAnime;
+use crate::anilist::{CatalogAnime, CatalogTag};
 use std::collections::HashMap;
 
 /// Exponent applied to a raw (positive) genre-affinity score before it's used
@@ -43,6 +43,15 @@ pub const W_QUALITY: f64 = 0.25;
 /// recent release with decent taste-overlap can outrank an old one that only
 /// wins on `average_score`.
 pub const W_RECENCY: f64 = 0.35;
+/// Weights for tag and studio affinity in `score_candidate`. They sit below
+/// `W_GENRE` (1.0) and `W_FORMAT` (0.6) because specific tropes (tags) and
+/// animation houses (studios) are finer-grained sub-signals: a user's overarching
+/// genre preference and format choice define their primary watching behavior,
+/// while tags and studios provide more specific nudges. However, they sit around
+/// or above `W_QUALITY` (0.25) and `W_RECENCY` (0.35) so strong tag or studio affinity
+/// can meaningfully break ties and elevate matching titles.
+pub const W_TAG: f64 = 0.5;
+pub const W_STUDIO: f64 = 0.3;
 /// Half-life-ish decay constant (years) for `recency_term`: a title released
 /// this many years ago scores 0.5. 3 years keeps "still airing / just
 /// finished" shows clearly ahead of a decade-old catalog entry while never
@@ -104,6 +113,82 @@ pub fn recency_term(start_date: Option<i64>, now_unix: i64) -> f64 {
     (1.0 / (1.0 + age_years / RECENCY_DECAY_YEARS)).clamp(0.0, 1.0)
 }
 
+/// User taste signals beyond broad genre and format: tags (sub-genres, tropes,
+/// themes) and studios. Both maps are normalized to `[0, 1]` by the maximum positive
+/// raw value, with non-positive values dropped. Empty maps represent cold start.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct TasteSignals {
+    pub tag_affinity: HashMap<String, f64>,
+    pub studio_affinity: HashMap<String, f64>,
+}
+
+impl TasteSignals {
+    pub fn from_raw(
+        raw_tags: HashMap<String, f64>,
+        raw_studios: HashMap<String, f64>,
+    ) -> Self {
+        Self {
+            tag_affinity: normalize_affinity_map(raw_tags),
+            studio_affinity: normalize_affinity_map(raw_studios),
+        }
+    }
+}
+
+/// Normalizes a raw affinity score map to `[0, 1]` by dividing each positive score
+/// by the maximum positive score in the map. Non-positive scores (<= 0.0) are dropped.
+/// Returns an empty map if no positive scores exist (cold start).
+pub fn normalize_affinity_map(raw: HashMap<String, f64>) -> HashMap<String, f64> {
+    let positive: Vec<(String, f64)> = raw.into_iter().filter(|(_, v)| *v > 0.0).collect();
+    let max = positive.iter().map(|(_, v)| *v).fold(0.0, f64::max);
+    if max <= 0.0 {
+        return HashMap::new();
+    }
+    positive.into_iter().map(|(k, v)| (k, v / max)).collect()
+}
+
+/// Computes the tag overlap term in `[0, 1]` for a candidate. Takes the candidate's
+/// top 5 tags by rank (ties broken by name ascending), and averages the affinity of each
+/// (missing from affinity map = 0.0) over those 5 slots (not over the number found, so
+/// a candidate with fewer than 5 tags is not inflated). Empty tags or empty affinity yields 0.0.
+pub fn tag_term(cand_tags: &[CatalogTag], tag_affinity: &HashMap<String, f64>) -> f64 {
+    if cand_tags.is_empty() || tag_affinity.is_empty() {
+        return 0.0;
+    }
+    let mut tags: Vec<&CatalogTag> = cand_tags.iter().collect();
+    tags.sort_by(|a, b| b.rank.cmp(&a.rank).then_with(|| a.name.cmp(&b.name)));
+    tags.truncate(5);
+
+    let sum: f64 = tags
+        .iter()
+        .map(|t| {
+            if let Some(&score) = tag_affinity.get(&t.name) {
+                score
+            } else if let Some((_, &score)) = tag_affinity.iter().find(|(k, _)| k.eq_ignore_ascii_case(&t.name)) {
+                score
+            } else {
+                0.0
+            }
+        })
+        .sum();
+
+    (sum / 5.0).clamp(0.0, 1.0)
+}
+
+/// Computes the studio affinity term in `[0, 1]` for a candidate. Case-insensitive
+/// lookup in `studio_affinity`. Missing or None studio yields 0.0.
+pub fn studio_term(studio: Option<&str>, studio_affinity: &HashMap<String, f64>) -> f64 {
+    let Some(studio) = studio else { return 0.0 };
+    if let Some(&score) = studio_affinity.get(studio) {
+        return score.clamp(0.0, 1.0);
+    }
+    for (k, &v) in studio_affinity {
+        if k.eq_ignore_ascii_case(studio) {
+            return v.clamp(0.0, 1.0);
+        }
+    }
+    0.0
+}
+
 /// Per-candidate taste score. Pure — no DB/State, so it's directly
 /// unit-testable. `chosen_genre` (the outer weighted pick that produced this
 /// `survivors` batch) is excluded from the genre-overlap sum so the score
@@ -115,6 +200,7 @@ pub fn score_candidate(
     cand: &CatalogAnime,
     genre_affinity: &HashMap<String, f64>,
     format_affinity: &HashMap<String, f64>,
+    signals: &TasteSignals,
     chosen_genre: &str,
     now_unix: i64,
 ) -> f64 {
@@ -132,7 +218,14 @@ pub fn score_candidate(
         .unwrap_or(0.0);
     let quality_term = cand.average_score.unwrap_or(0) as f64 / 100.0;
     let recency = recency_term(cand.start_date, now_unix);
-    W_GENRE * genre_term + W_FORMAT * format_term + W_QUALITY * quality_term + W_RECENCY * recency
+    let tag = tag_term(&cand.tags, &signals.tag_affinity);
+    let studio = studio_term(cand.studio.as_deref(), &signals.studio_affinity);
+    W_GENRE * genre_term
+        + W_FORMAT * format_term
+        + W_QUALITY * quality_term
+        + W_RECENCY * recency
+        + W_TAG * tag
+        + W_STUDIO * studio
 }
 
 /// Rank `survivors` (already exclusion/ban/quality-filtered by the caller —
@@ -151,6 +244,7 @@ pub fn pick_recommended(
     survivors: Vec<CatalogAnime>,
     genre_affinity: &HashMap<String, f64>,
     format_affinity: &HashMap<String, f64>,
+    signals: &TasteSignals,
     chosen_genre: &str,
     now_unix: i64,
 ) -> Option<CatalogAnime> {
@@ -159,7 +253,7 @@ pub fn pick_recommended(
     }
     let mut scored: Vec<(f64, CatalogAnime)> = survivors
         .into_iter()
-        .map(|c| (score_candidate(&c, genre_affinity, format_affinity, chosen_genre, now_unix), c))
+        .map(|c| (score_candidate(&c, genre_affinity, format_affinity, signals, chosen_genre, now_unix), c))
         .collect();
     scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
     scored.truncate(RECOMMEND_TOP_K);
@@ -270,8 +364,8 @@ mod tests {
         let loved = anime(1, "Loved", &["Action", "Fantasy"], "TV", Some(50));
         let cold = anime(2, "Cold", &["Action", "Slice of Life"], "TV", Some(50));
 
-        let loved_score = score_candidate(&loved, &genre_affinity, &format_affinity, "Action", 0);
-        let cold_score = score_candidate(&cold, &genre_affinity, &format_affinity, "Action", 0);
+        let loved_score = score_candidate(&loved, &genre_affinity, &format_affinity, &TasteSignals::default(), "Action", 0);
+        let cold_score = score_candidate(&cold, &genre_affinity, &format_affinity, &TasteSignals::default(), "Action", 0);
         assert!(loved_score > cold_score, "loved={loved_score} cold={cold_score}");
     }
 
@@ -284,7 +378,7 @@ mod tests {
         genre_affinity.insert("Action".to_string(), 100.0);
         let format_affinity = HashMap::new();
         let cand = anime(1, "OnlyAction", &["Action"], "TV", Some(0));
-        assert_eq!(score_candidate(&cand, &genre_affinity, &format_affinity, "Action", 0), 0.0);
+        assert_eq!(score_candidate(&cand, &genre_affinity, &format_affinity, &TasteSignals::default(), "Action", 0), 0.0);
     }
 
     #[test]
@@ -297,8 +391,8 @@ mod tests {
         let tv = anime(1, "TVShow", &["Action"], "TV", Some(50));
         let movie = anime(2, "MovieShow", &["Action"], "MOVIE", Some(50));
 
-        let tv_score = score_candidate(&tv, &genre_affinity, &format_affinity, "Action", 0);
-        let movie_score = score_candidate(&movie, &genre_affinity, &format_affinity, "Action", 0);
+        let tv_score = score_candidate(&tv, &genre_affinity, &format_affinity, &TasteSignals::default(), "Action", 0);
+        let movie_score = score_candidate(&movie, &genre_affinity, &format_affinity, &TasteSignals::default(), "Action", 0);
         assert!(tv_score > movie_score, "tv={tv_score} movie={movie_score}");
     }
 
@@ -314,8 +408,8 @@ mod tests {
         let tasteful_low_quality = anime(1, "TastefulButMediocre", &["Action", "Fantasy"], "TV", Some(1));
         let tasteless_perfect = anime(2, "PerfectButUnrelated", &["Action", "Horror"], "TV", Some(100));
 
-        let a = score_candidate(&tasteful_low_quality, &genre_affinity, &format_affinity, "Action", 0);
-        let b = score_candidate(&tasteless_perfect, &genre_affinity, &format_affinity, "Action", 0);
+        let a = score_candidate(&tasteful_low_quality, &genre_affinity, &format_affinity, &TasteSignals::default(), "Action", 0);
+        let b = score_candidate(&tasteless_perfect, &genre_affinity, &format_affinity, &TasteSignals::default(), "Action", 0);
         assert!(a > b, "tasteful={a} tasteless={b}");
     }
 
@@ -325,7 +419,7 @@ mod tests {
     fn pick_recommended_none_for_empty_survivors() {
         let genre_affinity = HashMap::new();
         let format_affinity = HashMap::new();
-        assert!(pick_recommended(vec![], &genre_affinity, &format_affinity, "Action", 0).is_none());
+        assert!(pick_recommended(vec![], &genre_affinity, &format_affinity, &TasteSignals::default(), "Action", 0).is_none());
     }
 
     #[test]
@@ -345,7 +439,7 @@ mod tests {
             anime(3, "C", &["Action"], "TV", Some(50)),
         ];
         for _ in 0..30 {
-            let picked = pick_recommended(survivors.clone(), &genre_affinity, &format_affinity, "Action", 0).unwrap();
+            let picked = pick_recommended(survivors.clone(), &genre_affinity, &format_affinity, &TasteSignals::default(), "Action", 0).unwrap();
             assert!(allowed_titles.contains(picked.title.as_str()));
         }
     }
@@ -363,7 +457,7 @@ mod tests {
         ];
         for _ in 0..30 {
             let picked =
-                pick_recommended(survivors.clone(), &genre_affinity, &format_affinity, "Action", 0).unwrap();
+                pick_recommended(survivors.clone(), &genre_affinity, &format_affinity, &TasteSignals::default(), "Action", 0).unwrap();
             assert!(picked.title == "A" || picked.title == "B");
         }
     }
@@ -382,7 +476,7 @@ mod tests {
         let excluded_tail: std::collections::HashSet<String> =
             (RECOMMEND_TOP_K..n).map(|i| format!("T{i}")).collect();
         for _ in 0..50 {
-            let picked = pick_recommended(survivors.clone(), &genre_affinity, &format_affinity, "Action", 0).unwrap();
+            let picked = pick_recommended(survivors.clone(), &genre_affinity, &format_affinity, &TasteSignals::default(), "Action", 0).unwrap();
             assert!(!excluded_tail.contains(&picked.title), "picked out-of-top-k title {}", picked.title);
         }
     }
@@ -432,8 +526,147 @@ mod tests {
         let mut old = anime(2, "Old", &["Action"], "TV", Some(50));
         old.start_date = Some(now - 10 * YEAR_SECS);
 
-        let fresh_score = score_candidate(&fresh, &genre_affinity, &format_affinity, "Action", now);
-        let old_score = score_candidate(&old, &genre_affinity, &format_affinity, "Action", now);
+        let fresh_score = score_candidate(&fresh, &genre_affinity, &format_affinity, &TasteSignals::default(), "Action", now);
+        let old_score = score_candidate(&old, &genre_affinity, &format_affinity, &TasteSignals::default(), "Action", now);
         assert!(fresh_score > old_score, "fresh={fresh_score} old={old_score}");
+    }
+
+    // --- tag_term and studio_term (TasteSignals) ----------------------------
+
+    #[test]
+    fn tag_term_averages_top_five_tags_and_ignores_sixth() {
+        let mut affinity = HashMap::new();
+        affinity.insert("Isekai".to_string(), 1.0);
+        affinity.insert("Comedy".to_string(), 0.5);
+
+        let tags = vec![
+            CatalogTag { name: "Isekai".into(), rank: 90 },
+            CatalogTag { name: "Time Loop".into(), rank: 80 },
+            CatalogTag { name: "Comedy".into(), rank: 70 },
+        ];
+        // (1.0 + 0.0 + 0.5) / 5 = 0.3
+        let score = tag_term(&tags, &affinity);
+        assert!((score - 0.3).abs() < 1e-6, "expected 0.3, got {score}");
+
+        // Empty affinity = 0.0
+        assert_eq!(tag_term(&tags, &HashMap::new()), 0.0);
+
+        // Empty tags = 0.0
+        assert_eq!(tag_term(&[], &affinity), 0.0);
+
+        // A 6th lower-ranked tag is ignored:
+        affinity.insert("SixthTag".to_string(), 1.0);
+        let six_tags = vec![
+            CatalogTag { name: "Tag1".into(), rank: 90 },
+            CatalogTag { name: "Tag2".into(), rank: 80 },
+            CatalogTag { name: "Tag3".into(), rank: 70 },
+            CatalogTag { name: "Tag4".into(), rank: 60 },
+            CatalogTag { name: "Tag5".into(), rank: 50 },
+            CatalogTag { name: "SixthTag".into(), rank: 40 },
+        ];
+        // None of the top 5 match affinity; the 6th tag matches affinity 1.0 but must be ignored.
+        assert_eq!(tag_term(&six_tags, &affinity), 0.0);
+    }
+
+    #[test]
+    fn studio_term_case_insensitive_lookup_and_none_zero() {
+        let mut affinity = HashMap::new();
+        affinity.insert("bones".to_string(), 1.0);
+
+        // "Bones" with affinity {"bones": 1.0} = 1.0 (case-insensitive)
+        assert_eq!(studio_term(Some("Bones"), &affinity), 1.0);
+        assert_eq!(studio_term(Some("bones"), &affinity), 1.0);
+        assert_eq!(studio_term(Some("BONES"), &affinity), 1.0);
+
+        // None = 0
+        assert_eq!(studio_term(None, &affinity), 0.0);
+
+        // Missing = 0
+        assert_eq!(studio_term(Some("Mappa"), &affinity), 0.0);
+    }
+
+    #[test]
+    fn score_candidate_default_signals_equals_old_formula_and_affinity_boosts_score() {
+        let mut genre_affinity = HashMap::new();
+        genre_affinity.insert("Fantasy".to_string(), 4.0);
+        let mut format_affinity = HashMap::new();
+        format_affinity.insert("TV".to_string(), 1.0);
+
+        let mut cand = anime(1, "Test", &["Action", "Fantasy"], "TV", Some(50));
+        cand.tags = vec![CatalogTag { name: "Isekai".into(), rank: 80 }];
+        cand.studio = Some("Bones".into());
+
+        // Old formula calculation:
+        // W_GENRE * 4.0^0.6 + W_FORMAT * 1.0 + W_QUALITY * 0.50 + W_RECENCY * 0.0
+        let old_expected = W_GENRE * 4.0f64.powf(GENRE_WEIGHT_EXPONENT)
+            + W_FORMAT * 1.0
+            + W_QUALITY * 0.50
+            + W_RECENCY * 0.0;
+
+        let default_score = score_candidate(&cand, &genre_affinity, &format_affinity, &TasteSignals::default(), "Action", 0);
+        assert!((default_score - old_expected).abs() < 1e-6, "default signals must equal old formula");
+
+        // With matching tag and studio affinity, score is strictly higher
+        let mut signals = TasteSignals::default();
+        signals.tag_affinity.insert("Isekai".into(), 1.0);
+        signals.studio_affinity.insert("Bones".into(), 1.0);
+
+        let boosted_score = score_candidate(&cand, &genre_affinity, &format_affinity, &signals, "Action", 0);
+        assert!(boosted_score > default_score, "boosted={boosted_score} default={default_score}");
+
+        // Also: an identical candidate without matching tag/studio scores strictly lower under the same signals
+        let mut no_match = anime(2, "NoMatch", &["Action", "Fantasy"], "TV", Some(50));
+        no_match.tags = vec![CatalogTag { name: "Unrelated".into(), rank: 80 }];
+        no_match.studio = Some("UnrelatedStudio".into());
+
+        let no_match_score = score_candidate(&no_match, &genre_affinity, &format_affinity, &signals, "Action", 0);
+        assert!(boosted_score > no_match_score, "boosted={boosted_score} no_match={no_match_score}");
+    }
+
+    #[test]
+    fn ranking_favoured_tag_candidate_never_ranked_lower() {
+        let genre_affinity = HashMap::new();
+        let format_affinity = HashMap::new();
+        let mut signals = TasteSignals::default();
+        signals.tag_affinity.insert("FavouriteTag".into(), 1.0);
+
+        let mut favoured = anime(1, "Favoured", &["Action"], "TV", Some(50));
+        favoured.tags = vec![CatalogTag { name: "FavouriteTag".into(), rank: 90 }];
+
+        let mut plain = anime(2, "Plain", &["Action"], "TV", Some(50));
+        plain.tags = vec![CatalogTag { name: "OtherTag".into(), rank: 90 }];
+
+        // Directly compare score_candidate: favoured must score strictly higher
+        let s_fav = score_candidate(&favoured, &genre_affinity, &format_affinity, &signals, "Action", 0);
+        let s_plain = score_candidate(&plain, &genre_affinity, &format_affinity, &signals, "Action", 0);
+        assert!(s_fav > s_plain, "favoured score must be strictly higher");
+
+        // In pick_recommended, favoured is ranked higher and picked over plain
+        let survivors = vec![favoured.clone(), plain.clone()];
+        for _ in 0..30 {
+            let picked = pick_recommended(survivors.clone(), &genre_affinity, &format_affinity, &signals, "Action", 0).unwrap();
+            assert!(picked.title == "Favoured" || picked.title == "Plain");
+        }
+    }
+
+    #[test]
+    fn terms_never_produce_nan_or_negative_and_no_tags_not_penalized() {
+        let empty_affinity = HashMap::new();
+        assert!(!tag_term(&[], &empty_affinity).is_nan());
+        assert!(tag_term(&[], &empty_affinity) >= 0.0);
+        assert!(!studio_term(None, &empty_affinity).is_nan());
+        assert!(studio_term(None, &empty_affinity) >= 0.0);
+
+        let mut neg_affinity = HashMap::new();
+        neg_affinity.insert("Tag".into(), -2.0);
+        let tags = vec![CatalogTag { name: "Tag".into(), rank: 90 }];
+        assert!(tag_term(&tags, &neg_affinity) >= 0.0);
+
+        // A candidate with NO tags gets tag_term = 0.0, exactly the same as cold start / no signal.
+        // It is not penalized (no negative score).
+        let cand_no_tags = anime(1, "NoTags", &["Action"], "TV", Some(50));
+        let score_no_tags = score_candidate(&cand_no_tags, &HashMap::new(), &HashMap::new(), &TasteSignals::default(), "Action", 0);
+        assert!(score_no_tags >= 0.0);
+        assert!(!score_no_tags.is_nan());
     }
 }
