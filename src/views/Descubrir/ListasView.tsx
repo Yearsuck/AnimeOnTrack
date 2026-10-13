@@ -1,299 +1,242 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { getSeriesGenresBatch, listBacklog, listWatchedExternally } from "../../api";
 import { useT } from "../../i18n";
 import type { Series } from "../../types";
-import type { ListTab } from "./types";
-import { norm } from "./helpers";
-import { DiscardedRow, WantRow, WatchedRow } from "./rows";
+import "../../styles/listas.css";
 
-export function ListasView({ onOpenSeries }: { onOpenSeries: (s: Series) => void }) {
+import type { ListTab, ViewMode } from "./listas/types";
+import { VIEW_MODE_STORAGE_KEY } from "./listas/types";
+import { useListasData } from "./listas/useListasData";
+import { useListasFilter } from "./listas/useListasFilter";
+import { ListasHeader } from "./listas/ListasHeader";
+import { SmartGroups } from "./listas/SmartGroups";
+import { ListasToolbar } from "./listas/ListasToolbar";
+import { ListasCard } from "./listas/ListasCard";
+import { ListasDenseRow } from "./listas/ListasDenseRow";
+import { BulkActionBar } from "./listas/BulkActionBar";
+import { ListasEmpty } from "./listas/ListasEmpty";
+import { ListasSkeleton } from "./listas/ListasSkeleton";
+import { ListasError } from "./listas/ListasError";
+
+// Cards rendered per step: the discarded list alone can hold thousands of
+// entries, and mounting them all at once froze the screen for seconds.
+const PAGE_SIZE = 120;
+
+export function ListasView({
+  onOpenSeries,
+  onSwitchToSwipe,
+}: {
+  onOpenSeries: (s: Series) => void;
+  onSwitchToSwipe?: () => void;
+}) {
   const t = useT();
-  const [want, setWant] = useState<Series[]>([]);
-  const [discarded, setDiscarded] = useState<Series[]>([]);
-  const [watched, setWatched] = useState<Series[]>([]);
-  const [genresMap, setGenresMap] = useState<Record<number, string[]>>({});
-  const [tab, setTab] = useState<ListTab>("want");
-  const [query, setQuery] = useState("");
-  const [selectedGenre, setSelectedGenre] = useState<string>("");
-  const [airingFilter, setAiringFilter] = useState<"all" | "airing" | "finished">("all");
-  const [sortBy, setSortBy] = useState<"title" | "eps_desc" | "eps_asc">("title");
+  const [limit, setLimit] = useState(PAGE_SIZE);
+  const [activeTab, setActiveTab] = useState<ListTab>("want");
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
 
-  const load = useCallback(async () => {
-    const [w, d, wa] = await Promise.all([
-      listBacklog("want"),
-      listBacklog("discarded"),
-      listWatchedExternally(),
-    ]);
-    setWant(w);
-    setDiscarded(d);
-    setWatched(wa);
+  // View mode persistence in localStorage
+  const [viewMode, setViewMode] = useState<ViewMode>(() => {
+    try {
+      const saved = localStorage.getItem(VIEW_MODE_STORAGE_KEY);
+      return saved === "list" ? "list" : "grid";
+    } catch {
+      return "grid";
+    }
+  });
 
-    const allIds = Array.from(new Set([...w, ...d, ...wa].map((s) => s.id)));
-    if (allIds.length > 0) {
-      try {
-        const gMap = await getSeriesGenresBatch(allIds);
-        setGenresMap(gMap);
-      } catch (err) {
-        console.error("Failed to load series genres batch", err);
-      }
-    } else {
-      setGenresMap({});
+  const handleViewModeChange = useCallback((mode: ViewMode) => {
+    setViewMode(mode);
+    try {
+      localStorage.setItem(VIEW_MODE_STORAGE_KEY, mode);
+    } catch {
+      // localStorage unavailable
     }
   }, []);
 
-  useEffect(() => {
-    load();
-  }, [load]);
+  const {
+    want,
+    discarded,
+    watched,
+    loading,
+    error,
+    reload,
+    entriesFor,
+  } = useListasData();
 
   const currentRawList = useMemo(() => {
-    if (tab === "want") return want;
-    if (tab === "discarded") return discarded;
+    if (activeTab === "want") return want;
+    if (activeTab === "discarded") return discarded;
     return watched;
-  }, [tab, want, discarded, watched]);
+  }, [activeTab, want, discarded, watched]);
 
-  const availableGenres = useMemo(() => {
-    const counts: Record<string, number> = {};
-    for (const s of currentRawList) {
-      const list = genresMap[s.id] || [];
-      for (const g of list) {
-        counts[g] = (counts[g] || 0) + 1;
-      }
-    }
-    return Object.keys(counts).sort((a, b) => a.localeCompare(b));
-  }, [currentRawList, genresMap]);
+  const currentEntries = useMemo(() => {
+    return entriesFor(currentRawList);
+  }, [entriesFor, currentRawList]);
 
-  const topGenres = useMemo(() => {
-    const counts: Record<string, number> = {};
-    for (const s of currentRawList) {
-      const list = genresMap[s.id] || [];
-      for (const g of list) {
-        counts[g] = (counts[g] || 0) + 1;
-      }
-    }
-    return Object.entries(counts)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 8)
-      .map(([g]) => g);
-  }, [currentRawList, genresMap]);
+  const {
+    filterState,
+    setQuery,
+    setSortBy,
+    toggleFormat,
+    setStatus,
+    toggleGenre,
+    setMinScore,
+    setYearFrom,
+    setYearTo,
+    toggleQuickFilter,
+    resetFilters,
+    availableGenres,
+    topGenres,
+    smartCounts,
+    activeFilterCount,
+    filteredEntries,
+  } = useListasFilter(currentEntries);
 
-  const filterAndSort = useCallback(
-    (list: Series[]) => {
-      const q = norm(query.trim());
-      let filtered = list;
+  const handleTabChange = useCallback((tab: ListTab) => {
+    setActiveTab(tab);
+    setSelectedIds(new Set());
+    resetFilters();
+  }, [resetFilters]);
 
-      if (q) {
-        filtered = filtered.filter((s) => {
-          if (norm(s.title).includes(q)) return true;
-          const gList = genresMap[s.id];
-          if (gList && gList.some((g) => norm(g).includes(q))) return true;
-          return false;
-        });
-      }
+  const toggleSelect = useCallback((id: number) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
 
-      if (selectedGenre) {
-        filtered = filtered.filter((s) => {
-          const gList = genresMap[s.id];
-          return gList != null && gList.includes(selectedGenre);
-        });
-      }
+  const selectAllVisible = useCallback(() => {
+    setSelectedIds(new Set(filteredEntries.map((e) => e.series.id)));
+  }, [filteredEntries]);
 
-      if (airingFilter === "airing") {
-        filtered = filtered.filter((s) => Boolean(s.is_airing));
-      } else if (airingFilter === "finished") {
-        filtered = filtered.filter((s) => !s.is_airing);
-      }
+  const deselectAll = useCallback(() => {
+    setSelectedIds(new Set());
+  }, []);
 
-      const sorted = [...filtered];
-      if (sortBy === "title") {
-        sorted.sort((a, b) => a.title.localeCompare(b.title));
-      } else if (sortBy === "eps_desc") {
-        sorted.sort((a, b) => (b.site_episode_count ?? 0) - (a.site_episode_count ?? 0));
-      } else if (sortBy === "eps_asc") {
-        sorted.sort((a, b) => (a.site_episode_count ?? 0) - (b.site_episode_count ?? 0));
-      }
+  // New filters or another tab start from the first page again; a reload
+  // after acting on a card keeps the current page and scroll position.
+  useEffect(() => {
+    setLimit(PAGE_SIZE);
+  }, [filterState, activeTab]);
 
-      return sorted;
-    },
-    [query, selectedGenre, airingFilter, sortBy, genresMap]
-  );
-
-  const fWant = useMemo(() => filterAndSort(want), [filterAndSort, want]);
-  const fDiscarded = useMemo(() => filterAndSort(discarded), [filterAndSort, discarded]);
-  const fWatched = useMemo(() => filterAndSort(watched), [filterAndSort, watched]);
-
-  const hasActiveFilters = Boolean(
-    query.trim() || selectedGenre || airingFilter !== "all" || sortBy !== "title"
-  );
-
-  const handleResetFilters = () => {
-    setQuery("");
-    setSelectedGenre("");
-    setAiringFilter("all");
-    setSortBy("title");
-  };
-
-  const tabs: { key: ListTab; label: string; count: number }[] = [
-    { key: "want", label: t("discover.wantHeading"), count: fWant.length },
-    { key: "discarded", label: t("discover.discardedHeading"), count: fDiscarded.length },
-    { key: "watched", label: t("discover.watchedHeading"), count: fWatched.length },
-  ];
+  // Never act on entries that are no longer on screen (filtered out, or
+  // moved to another list by a single-card action).
+  useEffect(() => {
+    setSelectedIds((prev) => {
+      if (prev.size === 0) return prev;
+      const visible = new Set(filteredEntries.map((e) => e.series.id));
+      const next = new Set([...prev].filter((id) => visible.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [filteredEntries]);
+  const shownEntries = useMemo(() => filteredEntries.slice(0, limit), [filteredEntries, limit]);
+  const remaining = filteredEntries.length - shownEntries.length;
 
   return (
-    <>
-      <div className="listas-toolbar">
-        <div className="search" style={{ flex: "1 1 220px" }}>
-          <span className="icon" aria-hidden="true">
-            ⌕
-          </span>
-          <label htmlFor="listas-search" className="sr-only">
-            {t("discover.searchAriaLabel")}
-          </label>
-          <input
-            id="listas-search"
-            className="input"
-            placeholder={t("discover.searchPlaceholderListas")}
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-          />
-        </div>
+    <div className="listas-container">
+      {error && <ListasError error={error} onRetry={reload} />}
 
-        <select
-          className="select filter-select"
-          value={selectedGenre}
-          onChange={(e) => setSelectedGenre(e.target.value)}
-          aria-label={t("discover.allThemes")}
-        >
-          <option value="">{t("discover.allThemes")}</option>
-          {availableGenres.map((g) => (
-            <option key={g} value={g}>
-              {g}
-            </option>
+      <ListasHeader
+        activeTab={activeTab}
+        onTabChange={handleTabChange}
+        counts={{
+          want: want.length,
+          discarded: discarded.length,
+          watched: watched.length,
+        }}
+        viewMode={viewMode}
+        onViewModeChange={handleViewModeChange}
+      />
+
+      {activeTab === "want" && (
+        <SmartGroups
+          quickFilter={filterState.quickFilter}
+          onToggleQuickFilter={toggleQuickFilter}
+          counts={smartCounts}
+        />
+      )}
+
+      <ListasToolbar
+        filterState={filterState}
+        onQueryChange={setQuery}
+        onSortChange={setSortBy}
+        onToggleFormat={toggleFormat}
+        onStatusChange={setStatus}
+        onToggleGenre={toggleGenre}
+        onMinScoreChange={setMinScore}
+        onYearFromChange={setYearFrom}
+        onYearToChange={setYearTo}
+        onClearFilters={resetFilters}
+        activeFilterCount={activeFilterCount}
+        availableGenres={availableGenres}
+        topGenres={topGenres}
+      />
+
+      {loading ? (
+        <ListasSkeleton viewMode={viewMode} />
+      ) : currentRawList.length === 0 ? (
+        <ListasEmpty
+          isFilteredNoResults={false}
+          activeTab={activeTab}
+          onClearFilters={resetFilters}
+          onGoToSwipe={onSwitchToSwipe}
+        />
+      ) : filteredEntries.length === 0 ? (
+        <ListasEmpty
+          isFilteredNoResults={true}
+          activeTab={activeTab}
+          onClearFilters={resetFilters}
+        />
+      ) : viewMode === "grid" ? (
+        <div className="listas-cards-grid">
+          {shownEntries.map((entry) => (
+            <ListasCard
+              key={entry.series.id}
+              entry={entry}
+              activeTab={activeTab}
+              isSelected={selectedIds.has(entry.series.id)}
+              onToggleSelect={() => toggleSelect(entry.series.id)}
+              onOpenSeries={onOpenSeries}
+              onChanged={reload}
+            />
           ))}
-        </select>
-
-        <select
-          className="select filter-select"
-          value={airingFilter}
-          onChange={(e) => setAiringFilter(e.target.value as "all" | "airing" | "finished")}
-          aria-label={t("discover.filterAllAiring")}
-        >
-          <option value="all">{t("discover.filterAllAiring")}</option>
-          <option value="airing">{t("discover.filterAiring")}</option>
-          <option value="finished">{t("discover.filterFinished")}</option>
-        </select>
-
-        <select
-          className="select filter-select"
-          value={sortBy}
-          onChange={(e) => setSortBy(e.target.value as "title" | "eps_desc" | "eps_asc")}
-          aria-label={t("discover.sortTitle")}
-        >
-          <option value="title">{t("discover.sortTitle")}</option>
-          <option value="eps_desc">{t("discover.sortEpsDesc")}</option>
-          <option value="eps_asc">{t("discover.sortEpsAsc")}</option>
-        </select>
-
-        {hasActiveFilters && (
-          <button
-            type="button"
-            className="btn btn-sm"
-            onClick={handleResetFilters}
-          >
-            {t("discover.clearFilters")}
-          </button>
-        )}
-      </div>
-
-      {topGenres.length > 0 && (
-        <div className="chip-row" style={{ marginBottom: "var(--sp-3)" }}>
-          {topGenres.map((g) => {
-            const active = selectedGenre === g;
-            return (
-              <button
-                key={g}
-                type="button"
-                className={`chip-toggle${active ? " active" : ""}`}
-                onClick={() => setSelectedGenre(active ? "" : g)}
-              >
-                {g}
-              </button>
-            );
-          })}
+        </div>
+      ) : (
+        <div className="listas-dense-container">
+          {shownEntries.map((entry) => (
+            <ListasDenseRow
+              key={entry.series.id}
+              entry={entry}
+              activeTab={activeTab}
+              isSelected={selectedIds.has(entry.series.id)}
+              onToggleSelect={() => toggleSelect(entry.series.id)}
+              onOpenSeries={onOpenSeries}
+              onChanged={reload}
+            />
+          ))}
         </div>
       )}
 
-      <div className="seg listas-seg" role="tablist">
-        {tabs.map((tb) => (
-          <button
-            key={tb.key}
-            type="button"
-            role="tab"
-            aria-selected={tab === tb.key}
-            className={`seg-btn${tab === tb.key ? " active" : ""}`}
-            onClick={() => setTab(tb.key)}
-          >
-            {tb.label}
-            <span className="listas-seg-count">{tb.count}</span>
+      {remaining > 0 && !loading && (
+        <div className="listas-show-more">
+          <button type="button" className="btn" onClick={() => setLimit((l) => l + PAGE_SIZE)}>
+            {t("discover.listas.showMore", { count: String(remaining) })}
           </button>
-        ))}
-      </div>
+        </div>
+      )}
 
-      {tab === "want" &&
-        (want.length === 0 ? (
-          <div className="empty">{t("discover.wantEmpty")}</div>
-        ) : fWant.length === 0 ? (
-          <div className="empty">{t("discover.searchNoResults")}</div>
-        ) : (
-          <div className="listas-grid">
-            {fWant.map((s) => (
-              <WantRow
-                key={s.id}
-                series={s}
-                genres={genresMap[s.id]}
-                onChanged={load}
-                onOpenSeries={onOpenSeries}
-              />
-            ))}
-          </div>
-        ))}
-
-      {tab === "discarded" &&
-        (discarded.length === 0 ? (
-          <div className="empty">{t("discover.discardedEmpty")}</div>
-        ) : fDiscarded.length === 0 ? (
-          <div className="empty">{t("discover.searchNoResults")}</div>
-        ) : (
-          <div className="listas-grid">
-            {fDiscarded.map((s) => (
-              <DiscardedRow
-                key={s.id}
-                series={s}
-                genres={genresMap[s.id]}
-                onChanged={load}
-                onOpenSeries={onOpenSeries}
-              />
-            ))}
-          </div>
-        ))}
-
-      {tab === "watched" &&
-        (watched.length === 0 ? (
-          <div className="empty">{t("discover.watchedEmpty")}</div>
-        ) : fWatched.length === 0 ? (
-          <div className="empty">{t("discover.searchNoResults")}</div>
-        ) : (
-          <div className="listas-grid">
-            {fWatched.map((s) => (
-              <WatchedRow
-                key={s.id}
-                series={s}
-                genres={genresMap[s.id]}
-                onChanged={load}
-                onOpenSeries={onOpenSeries}
-              />
-            ))}
-          </div>
-        ))}
-    </>
+      <BulkActionBar
+        activeTab={activeTab}
+        selectedIds={selectedIds}
+        visibleEntries={filteredEntries}
+        onSelectAllVisible={selectAllVisible}
+        onDeselectAll={deselectAll}
+        onRetainSelection={(ids) => setSelectedIds(new Set(ids))}
+        onChanged={reload}
+      />
+    </div>
   );
 }
+
+export default ListasView;

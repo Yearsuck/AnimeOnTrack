@@ -314,3 +314,18 @@ export interface PlayerSettings {
   fullscreen: boolean;
 }
 
+export interface ListEntryMeta {
+  series_id: number;
+  anilist_id: number | null;
+  score: number | null;
+  format: string | null;
+  status: string | null;
+  episodes: number | null;
+  start_date: number | null;
+  studio: string | null;
+  popularity: number | null;
+  genres: string[];
+  cover_url: string | null;
+}
+
+

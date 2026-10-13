@@ -32,6 +32,7 @@ import type {
   GenreCard,
   MonitorOption,
   PlayerSettings,
+  ListEntryMeta,
 } from "./types";
 
 export const scanAiring = (baseUrl: string) =>
@@ -193,6 +194,9 @@ export const getSeriesGenres = (seriesId: number) =>
 
 export const getSeriesGenresBatch = (seriesIds: number[]) =>
   invoke<Record<number, string[]>>("get_series_genres_batch", { seriesIds });
+
+export const getListEntryMeta = (seriesIds: number[]) =>
+  invoke<ListEntryMeta[]>("get_list_entry_meta", { seriesIds });
 
 
 export const getTopGenres = (limit: number) =>
