@@ -381,7 +381,7 @@ fn filter_candidate_genres(all_genres: Vec<String>, banned_genres: &[String]) ->
 /// empty genre/format maps, still biasing toward high `average_score` — see
 /// docs/superpowers/specs/2026-07-13-discover-recommendation-toggle-design.md.
 #[tauri::command]
-pub fn discover_catalog_card(
+pub async fn discover_catalog_card(
     state: State<'_, AppState>,
     recommended: bool,
 ) -> Result<Option<FinishedCard>, String> {
@@ -615,3 +615,13 @@ mod tests {
         assert_eq!(decision_for_history_row(&none), "none");
     }
 }
+
+#[tauri::command]
+pub fn get_list_entry_meta(
+    state: State<'_, AppState>,
+    series_ids: Vec<i64>,
+) -> Result<Vec<crate::models::ListEntryMeta>, String> {
+    let db = state.db.lock().unwrap();
+    db.list_entry_meta(&series_ids).map_err(|e| e.to_string())
+}
+

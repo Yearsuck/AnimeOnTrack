@@ -462,6 +462,26 @@ mod tests {
         let back: SeriesDetail = serde_json::from_str(&j).unwrap();
         assert_eq!(d, back);
     }
+
+    #[test]
+    fn list_entry_meta_json_roundtrips() {
+        let m = ListEntryMeta {
+            series_id: 42,
+            anilist_id: Some(101),
+            score: Some(85),
+            format: Some("TV".into()),
+            status: Some("RELEASING".into()),
+            episodes: Some(12),
+            start_date: Some(1_700_000_000),
+            studio: Some("Mappa".into()),
+            popularity: Some(50000),
+            genres: vec!["Action".into(), "Fantasy".into()],
+            cover_url: Some("https://example.com/cover.jpg".into()),
+        };
+        let j = serde_json::to_string(&m).unwrap();
+        let back: ListEntryMeta = serde_json::from_str(&j).unwrap();
+        assert_eq!(m, back);
+    }
 }
 
 /// Result of importing the canonical library onto the active site: how many
@@ -500,4 +520,21 @@ pub struct PlayerSettings {
     pub monitor: Option<String>,
     pub fullscreen: bool,
 }
+
+/// Extended metadata for Discover list entries, joining series with catalog data.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ListEntryMeta {
+    pub series_id: i64,
+    pub anilist_id: Option<i64>,
+    pub score: Option<i64>,
+    pub format: Option<String>,
+    pub status: Option<String>,
+    pub episodes: Option<i64>,
+    pub start_date: Option<i64>,
+    pub studio: Option<String>,
+    pub popularity: Option<i64>,
+    pub genres: Vec<String>,
+    pub cover_url: Option<String>,
+}
+
 

@@ -1320,7 +1320,160 @@ impl Db {
             )
             .ok())
     }
+
+    /// Extended metadata for list entries (score, format, status, catalog cover, genres, etc.)
+    /// joined with `anilist_catalog` when linked.
+    pub fn list_entry_meta(&self, series_ids: &[i64]) -> Result<Vec<crate::models::ListEntryMeta>> {
+        if series_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut results = Vec::with_capacity(series_ids.len());
+
+        for chunk in series_ids.chunks(500) {
+            let placeholders = vec!["?"; chunk.len()].join(",");
+            let sql = format!(
+                "SELECT s.id, s.anilist_id, c.average_score, c.format, c.status,
+                        c.episodes, c.start_date, c.studio, c.popularity, c.cover_url
+                 FROM series s
+                 LEFT JOIN anilist_catalog c ON s.anilist_id = c.id
+                 WHERE s.id IN ({placeholders})"
+            );
+            let mut stmt = self.conn.prepare(&sql)?;
+            let params = rusqlite::params_from_iter(chunk.iter());
+
+            struct RowData {
+                series_id: i64,
+                anilist_id: Option<i64>,
+                score: Option<i64>,
+                format: Option<String>,
+                status: Option<String>,
+                episodes: Option<i64>,
+                start_date: Option<i64>,
+                studio: Option<String>,
+                popularity: Option<i64>,
+                cover_url: Option<String>,
+            }
+
+            let rows = stmt
+                .query_map(params, |r| {
+                    Ok(RowData {
+                        series_id: r.get(0)?,
+                        anilist_id: r.get(1)?,
+                        score: r.get(2)?,
+                        format: r.get(3)?,
+                        status: r.get(4)?,
+                        episodes: r.get(5)?,
+                        start_date: r.get(6)?,
+                        studio: r.get(7)?,
+                        popularity: r.get(8)?,
+                        cover_url: r.get(9)?,
+                    })
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+
+            let mut linked_anilist_ids: Vec<i64> = Vec::new();
+            let mut unlinked_series_ids: Vec<i64> = Vec::new();
+
+            for row in &rows {
+                if let Some(aid) = row.anilist_id {
+                    linked_anilist_ids.push(aid);
+                } else {
+                    unlinked_series_ids.push(row.series_id);
+                }
+            }
+
+            linked_anilist_ids.sort_unstable();
+            linked_anilist_ids.dedup();
+
+            let mut catalog_genres: std::collections::HashMap<i64, Vec<String>> =
+                std::collections::HashMap::new();
+            if !linked_anilist_ids.is_empty() {
+                let aid_placeholders = vec!["?"; linked_anilist_ids.len()].join(",");
+                let sql = format!(
+                    "SELECT anilist_id, genre FROM anilist_catalog_genres WHERE anilist_id IN ({aid_placeholders}) ORDER BY genre"
+                );
+                let mut gstmt = self.conn.prepare(&sql)?;
+                let gparams = rusqlite::params_from_iter(linked_anilist_ids.iter());
+                let grows = gstmt
+                    .query_map(gparams, |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                for (aid, genre) in grows {
+                    catalog_genres.entry(aid).or_default().push(genre);
+                }
+            }
+
+            let mut fallback_series_ids = unlinked_series_ids;
+            for row in &rows {
+                if let Some(aid) = row.anilist_id {
+                    if !catalog_genres.contains_key(&aid) {
+                        fallback_series_ids.push(row.series_id);
+                    }
+                }
+            }
+            fallback_series_ids.sort_unstable();
+            fallback_series_ids.dedup();
+
+            let mut site_genres: std::collections::HashMap<i64, Vec<String>> =
+                std::collections::HashMap::new();
+            if !fallback_series_ids.is_empty() {
+                let sid_placeholders = vec!["?"; fallback_series_ids.len()].join(",");
+                let sql = format!(
+                    "SELECT series_id, genre FROM series_genres WHERE series_id IN ({sid_placeholders}) ORDER BY genre"
+                );
+                let mut sstmt = self.conn.prepare(&sql)?;
+                let sparams = rusqlite::params_from_iter(fallback_series_ids.iter());
+                let srows = sstmt
+                    .query_map(sparams, |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                for (sid, genre) in srows {
+                    site_genres.entry(sid).or_default().push(genre);
+                }
+            }
+
+            let mut by_id: std::collections::HashMap<i64, crate::models::ListEntryMeta> =
+                std::collections::HashMap::with_capacity(rows.len());
+
+            for row in rows {
+                let genres = if let Some(aid) = row.anilist_id {
+                    if let Some(g) = catalog_genres.get(&aid) {
+                        g.clone()
+                    } else {
+                        site_genres.get(&row.series_id).cloned().unwrap_or_default()
+                    }
+                } else {
+                    site_genres.get(&row.series_id).cloned().unwrap_or_default()
+                };
+
+                by_id.insert(
+                    row.series_id,
+                    crate::models::ListEntryMeta {
+                        series_id: row.series_id,
+                        anilist_id: row.anilist_id,
+                        score: row.score,
+                        format: row.format,
+                        status: row.status,
+                        episodes: row.episodes,
+                        start_date: row.start_date,
+                        studio: row.studio,
+                        popularity: row.popularity,
+                        genres,
+                        cover_url: row.cover_url,
+                    },
+                );
+            }
+
+            for &id in chunk {
+                if let Some(meta) = by_id.remove(&id) {
+                    results.push(meta);
+                }
+            }
+        }
+
+        Ok(results)
+    }
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -2985,5 +3138,90 @@ mod tests {
         assert!(empty.is_empty());
     }
 
+    #[test]
+    fn list_entry_meta_must_pass_contract() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "https://a", "animeytx").unwrap();
+
+        // 1. Empty slice returns empty vec without querying
+        assert_eq!(db.list_entry_meta(&[]).unwrap(), Vec::new());
+
+        // 2. Unlinked row returns None fields and series_genres genres
+        let unlinked = series_in(&db, src, "unlinked", "Unlinked Show", None);
+        db.insert_series_genres(unlinked, &["Action".into(), "Sci-Fi".into()]).unwrap();
+
+        // 3. Linked want-row with catalog entry
+        db.upsert_catalog_anime(
+            &crate::anilist::CatalogAnime {
+                id: 555,
+                title: "Linked Show".into(),
+                title_romaji: Some("Rinkudo Sho".into()),
+                title_english: Some("Linked Show".into()),
+                synonyms: Vec::new(),
+                next_airing_at: None,
+                next_episode: None,
+                tags: Vec::new(),
+                cover_url: Some("https://catalog/cover.jpg".into()),
+                banner_url: None,
+                format: Some("TV".into()),
+                genres: vec!["Adventure".into(), "Comedy".into()],
+                episodes: Some(24),
+                average_score: Some(88),
+                popularity: Some(12345),
+                url: "https://anilist.co/anime/555".into(),
+                status: Some("RELEASING".into()),
+                duration: Some(24),
+                studio: Some("Bones".into()),
+                start_date: Some(1_700_000_000),
+            },
+            0,
+        ).unwrap();
+
+        let linked = series_in(&db, src, "linked", "Linked Show", None);
+        db.set_anilist_id(linked, 555).unwrap();
+        db.set_backlog_status(linked, Some("want")).unwrap();
+
+        // Query with an unknown id (999999) interspersed
+        let meta = db.list_entry_meta(&[unlinked, 999999, linked]).unwrap();
+        assert_eq!(meta.len(), 2, "unknown id 999999 must be skipped");
+
+        let m_unlinked = &meta[0];
+        assert_eq!(m_unlinked.series_id, unlinked);
+        assert_eq!(m_unlinked.anilist_id, None);
+        assert_eq!(m_unlinked.score, None);
+        assert_eq!(m_unlinked.format, None);
+        assert_eq!(m_unlinked.status, None);
+        assert_eq!(m_unlinked.episodes, None);
+        assert_eq!(m_unlinked.start_date, None);
+        assert_eq!(m_unlinked.studio, None);
+        assert_eq!(m_unlinked.popularity, None);
+        assert_eq!(m_unlinked.cover_url, None);
+        assert_eq!(m_unlinked.genres, vec!["Action".to_string(), "Sci-Fi".to_string()]);
+
+        let m_linked = &meta[1];
+        assert_eq!(m_linked.series_id, linked);
+        assert_eq!(m_linked.anilist_id, Some(555));
+        assert_eq!(m_linked.score, Some(88));
+        assert_eq!(m_linked.format, Some("TV".into()));
+        assert_eq!(m_linked.status, Some("RELEASING".into()));
+        assert_eq!(m_linked.episodes, Some(24));
+        assert_eq!(m_linked.start_date, Some(1_700_000_000));
+        assert_eq!(m_linked.studio, Some("Bones".into()));
+        assert_eq!(m_linked.popularity, Some(12345));
+        assert_eq!(m_linked.cover_url, Some("https://catalog/cover.jpg".into()));
+        assert_eq!(m_linked.genres, vec!["Adventure".to_string(), "Comedy".to_string()]);
+
+        // 4. More than 500 ids work (chunking)
+        let mut bulk_ids = Vec::with_capacity(550);
+        for i in 0..550 {
+            let id = series_in(&db, src, &format!("bulk-{i}"), &format!("Bulk {i}"), None);
+            bulk_ids.push(id);
+        }
+        let bulk_meta = db.list_entry_meta(&bulk_ids).unwrap();
+        assert_eq!(bulk_meta.len(), 550, "chunking over 500 must return all 550 entries");
+        assert_eq!(bulk_meta[0].series_id, bulk_ids[0]);
+        assert_eq!(bulk_meta[549].series_id, bulk_ids[549]);
+    }
 }
+
 
