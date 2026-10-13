@@ -716,6 +716,24 @@ pub fn is_live_action(title: &str) -> bool {
     false
 }
 
+/// Side content that a site lists next to the weekly shows but that is not an
+/// ongoing series: OVAs/OADs, "Specials", recaps, movies, PVs and "Episode 0".
+/// Used to keep them out of the airing list unless the user follows them.
+pub fn is_special_title(title: &str) -> bool {
+    let norm = normalize_title_strict(title);
+    let tokens: Vec<&str> = norm.split_whitespace().collect();
+    // Only a trailing marker counts ("... Season 3 Specials"); "Special" in the
+    // middle is part of a real title ("A Returner's Magic Should Be Special").
+    let last = tokens.iter().rev().find(|t| !t.chars().all(|c| c.is_ascii_digit()));
+    if last.is_some_and(|t| matches!(*t, "special" | "specials" | "ova" | "oad" | "recap" | "movie" | "pv")) {
+        return true;
+    }
+    if tokens.iter().any(|t| matches!(*t, "ova" | "oad")) {
+        return true;
+    }
+    tokens.windows(2).any(|w| w[0] == "episode" && w[1] == "0")
+}
+
 /// Split a site title like "Crowned in a Hundred Days (Bai Ri Cheng Wang) Temporada 2"
 /// into the text outside the parentheses and the text inside them, each keeping
 /// the trailing season suffix. Sites often glue the English and the romanized
@@ -896,6 +914,22 @@ pub fn pick_search_candidate(series_title: &str, candidates: &[crate::anilist::C
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn is_special_title_flags_side_content_only() {
+        for t in [
+            "Tensei shitara Slime Datta Ken 3rd Season Specials",
+            "Long Zu Episode 0",
+            "Mahou Shoujo Noble Rose THE ANIMATION OVA",
+            "Some Show Recap",
+            "Some Show: The Movie",
+        ] {
+            assert!(is_special_title(t), "{t}");
+        }
+        for t in ["Tensei shitara Dragon no Tamago datta", "One Piece", "Re:Zero 2nd Season", "Episode 05 Club", "Specialist Hunters", "A Returner Magic Should Be Special Season 2"] {
+            assert!(!is_special_title(t), "{t}");
+        }
+    }
     use super::*;
 
     fn search_cand(id: i64, title: &str, romaji: Option<&str>, format: &str, synonyms: &[&str]) -> crate::anilist::CatalogAnime {
