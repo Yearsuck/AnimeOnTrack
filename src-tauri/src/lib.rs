@@ -5,6 +5,7 @@ mod commands;
 mod dates;
 mod db;
 mod diff;
+mod domain_breaker;
 mod genres;
 mod html_cache;
 mod matching;
