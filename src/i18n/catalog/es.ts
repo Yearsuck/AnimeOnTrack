@@ -629,5 +629,9 @@ export const es = {
   "shortcuts.search": "Buscar en el catálogo",
   "shortcuts.help": "Mostrar u ocultar esta ayuda",
   "shortcuts.escape": "Cerrar detalle o esta ayuda",
-} as const;
 
+  // continue watching
+  "continue.title": "Continuar viendo",
+  "continue.play": "Reproducir",
+  "continue.discover": "Descubrir anime",
+} as const;

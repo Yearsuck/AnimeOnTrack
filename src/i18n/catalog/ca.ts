@@ -625,5 +625,9 @@ export const ca: Messages = {
   "shortcuts.search": "Cercar al catàleg",
   "shortcuts.help": "Mostrar o amagar aquesta ajuda",
   "shortcuts.escape": "Tancar detall o aquesta ajuda",
-};
 
+  // continue watching
+  "continue.title": "Continuar veient",
+  "continue.play": "Reprodueix",
+  "continue.discover": "Descobrir anime",
+};

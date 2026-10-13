@@ -354,6 +354,7 @@ export default function App() {
               onOpenSeries={setSelected}
               onChanged={onPendingDataChanged}
               refreshSignal={pendingRefreshSignal}
+              onGoDiscover={() => navigate("descubrir")}
             />
           </div>
         )}

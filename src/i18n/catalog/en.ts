@@ -610,5 +610,9 @@ export const en: Messages = {
   "shortcuts.search": "Search catalog",
   "shortcuts.help": "Show or hide this help",
   "shortcuts.escape": "Close detail or this help",
-};
 
+  // continue watching
+  "continue.title": "Continue watching",
+  "continue.play": "Play",
+  "continue.discover": "Discover anime",
+};

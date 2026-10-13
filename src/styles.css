@@ -2789,3 +2789,98 @@ select.lib-filter-select {
   border-radius: var(--radius-sm);
   box-shadow: var(--shadow-sm);
 }
+
+/* ---------- Continue watching strip & cards ---------- */
+.continue-strip {
+  margin-bottom: var(--sp-6);
+}
+
+.continue-title {
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  letter-spacing: -0.01em;
+  margin: 0 0 var(--sp-3) 0;
+  color: var(--text);
+}
+
+.continue-cards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-4);
+}
+
+.continue-card {
+  flex: 1 1 280px;
+  max-width: 480px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--sp-3);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+}
+
+.continue-card:hover {
+  border-color: var(--surface-3);
+  box-shadow: var(--shadow-sm);
+}
+
+.continue-card-poster {
+  width: 60px;
+  height: 84px;
+  flex-shrink: 0;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--surface-2);
+}
+
+.continue-card-poster img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.continue-card-poster .poster-fallback {
+  width: 100%;
+  height: 100%;
+  font-size: var(--fs-md);
+}
+
+.continue-card-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.continue-card-title {
+  font-size: var(--fs-base);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: color var(--dur-fast) var(--ease);
+}
+
+.continue-card-title:hover {
+  color: var(--accent);
+}
+
+.continue-card-ep {
+  font-size: var(--fs-sm);
+  color: var(--muted);
+  margin-bottom: var(--sp-1);
+}
+
+.continue-card-play {
+  align-self: flex-start;
+}
+
+.empty-actions {
+  margin-top: var(--sp-4);
+}
