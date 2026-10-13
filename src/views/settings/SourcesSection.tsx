@@ -17,7 +17,7 @@ interface SourcesSectionProps {
 
 export function SourcesSection({ onSiteChanged }: SourcesSectionProps) {
   const t = useT();
-  const [firstUrl, setFirstUrl] = useState("https://wwv.animeytx.net");
+  const [firstUrl, setFirstUrl] = useState("https://animeyt.cc");
   const [mirrorsText, setMirrorsText] = useState("");
   const [busy, setBusy] = useState(false);
   const [savingMirrors, setSavingMirrors] = useState(false);

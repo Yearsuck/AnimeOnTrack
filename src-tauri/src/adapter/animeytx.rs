@@ -1,4 +1,4 @@
-use super::{slug_from_url, text_of, SiteAdapter};
+use super::{digits_in, slug_from_url, text_of, SiteAdapter};
 use crate::models::{Episode, FinishedCard, Series, SeriesDetail};
 use anyhow::Result;
 use scraper::{Html, Selector};
@@ -42,28 +42,188 @@ fn card_basics(
     Some((title, url, poster_url))
 }
 
+// animeyt.cc (the site's October 2026 relaunch) is NOT DooPlay any more: it runs
+// a custom `aniyt` WordPress theme. Fixtures `animeyt_cc_*.html` are real
+// captures (scripts/styles stripped). Facts confirmed live:
+// - `/anime-en-emision/` is a 404. The weekly schedule `/horario/` lists every
+//   airing series as `a.aniyt-schedule-card[data-aniyt-ts]` (unix time of its
+//   slot this week, `data-aniyt-upcoming` 1 = not released yet, `<b>EP N</b>`
+//   the episode of that slot).
+// - A series page `/tv/<slug>/` carries ALL its episodes in the HTML as
+//   `article.aniyt-episode-card` (the "Ver más episodios" button only unhides
+//   them client-side). Long-runners are split per arc, like the app expects.
+// - Search is `/?s=` and renders `article.aniyt-anime-card` cards.
+// The old DooPlay selectors are kept as a fallback so a leftover DooPlay mirror
+// still parses.
+const NEW_SCHEDULE_CARD: &str = "a.aniyt-schedule-card";
+const NEW_EP_CARD: &str = "article.aniyt-episode-card";
+const NEW_ANIME_CARD: &str = "article.aniyt-anime-card";
+const WEEK_SECS: i64 = 7 * 86400;
+
+fn img_src(card: scraper::ElementRef, img_sel: &Selector) -> Option<String> {
+    card.select(img_sel).next().and_then(|i| {
+        i.value().attr("data-src").or_else(|| i.value().attr("src")).map(str::to_string)
+    })
+}
+
+fn new_airing(doc: &Html) -> Vec<Series> {
+    let card_sel = Selector::parse(NEW_SCHEDULE_CARD).unwrap();
+    let title_sel = Selector::parse("strong").unwrap();
+    let ep_sel = Selector::parse(".aniyt-schedule-card-meta b").unwrap();
+    let img_sel = Selector::parse("img").unwrap();
+
+    let mut out: Vec<Series> = Vec::new();
+    for card in doc.select(&card_sel) {
+        let Some(url) = card.value().attr("href") else { continue };
+        let slug = slug_from_url(url);
+        if slug.is_empty() {
+            continue;
+        }
+        let title = text_of(card, &title_sel).unwrap_or_else(|| slug.clone());
+        let ts = card.value().attr("data-aniyt-ts").and_then(|v| v.parse::<i64>().ok());
+        let upcoming = card.value().attr("data-aniyt-upcoming") == Some("1");
+        // The slot of an already-aired episode repeats a week later.
+        let next_episode_at = ts.map(|t| if upcoming { t } else { t + WEEK_SECS });
+        // `site_episode_count` is the NEXT episode number to air (what the
+        // DooPlay `.sb` badge held; `should_fetch_series` refetches once it is
+        // more than one past what we stored): the slot's own episode if it is
+        // yet to air, otherwise the one after it.
+        let site_episode_count = text_of(card, &ep_sel)
+            .and_then(|t| digits_in(&t).parse::<i64>().ok())
+            .map(|n| if upcoming { n } else { n + 1 })
+            .filter(|n| *n > 0);
+        if let Some(prev) = out.iter_mut().find(|s| s.slug == slug) {
+            // Same series twice in a week: keep the soonest next episode.
+            prev.next_episode_at = match (prev.next_episode_at, next_episode_at) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            };
+            continue;
+        }
+        out.push(Series {
+            id: 0,
+            slug,
+            title,
+            url: url.to_string(),
+            cover_url: img_src(card, &img_sel),
+            is_airing: true,
+            followed: false,
+            next_episode_at,
+            site_episode_count,
+        });
+    }
+    out
+}
+
+fn new_cards(doc: &Html) -> Vec<FinishedCard> {
+    let card_sel = Selector::parse(NEW_ANIME_CARD).unwrap();
+    let a_sel = Selector::parse("h3 a").unwrap();
+    let img_sel = Selector::parse("img").unwrap();
+    let type_sel = Selector::parse(".aniyt-anime-type").unwrap();
+    let mut out = Vec::new();
+    for card in doc.select(&card_sel) {
+        let Some(anchor) = card.select(&a_sel).next() else { continue };
+        let Some(url) = anchor.value().attr("href") else { continue };
+        let title = anchor.text().collect::<String>().trim().to_string();
+        if title.is_empty() {
+            continue;
+        }
+        let kind = text_of(card, &type_sel).unwrap_or_default();
+        out.push(FinishedCard {
+            title,
+            url: url.to_string(),
+            poster_url: img_src(card, &img_sel),
+            kind,
+            matched_genre: None,
+        });
+    }
+    out
+}
+
+fn is_new_theme(html: &str) -> bool {
+    html.contains("wp-theme-aniyt") || html.contains("aniyt-main")
+}
+
+/// The `<dd>` next to the `<dt>` whose text is one of `labels`.
+fn fact<'a>(doc: &'a Html, labels: &[&str]) -> Option<scraper::ElementRef<'a>> {
+    let row_sel = Selector::parse(".aniyt-detail-facts .aniyt-meta-list > div").unwrap();
+    let dt_sel = Selector::parse("dt").unwrap();
+    let dd_sel = Selector::parse("dd").unwrap();
+    doc.select(&row_sel).find_map(|row| {
+        let label = text_of(row, &dt_sel)?;
+        if labels.contains(&label.as_str()) {
+            row.select(&dd_sel).next()
+        } else {
+            None
+        }
+    })
+}
+
+fn new_episodes(doc: &Html) -> Option<Vec<Episode>> {
+    let card_sel = Selector::parse(NEW_EP_CARD).unwrap();
+    doc.select(&card_sel).next()?;
+    let link_sel = Selector::parse("a.aniyt-episode-media").unwrap();
+    let code_sel = Selector::parse(".aniyt-card-code").unwrap();
+    let mut seen_urls = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for card in doc.select(&card_sel) {
+        let Some(url) = card.select(&link_sel).next().and_then(|a| a.value().attr("href")) else {
+            continue;
+        };
+        if !seen_urls.insert(url.to_string()) {
+            continue;
+        }
+        out.push(Episode {
+            id: 0,
+            series_id: 0,
+            number: text_of(card, &code_sel)
+                .map(|c| digits_in(&c))
+                .unwrap_or_else(|| slug_from_url(url)),
+            // Only the number and the link: titles and dates are AniList's job.
+            title: None,
+            url: url.to_string(),
+            released_at: None,
+            seen: false,
+            download_path: None,
+            download_status: None,
+        });
+    }
+    Some(out)
+}
+
+fn new_detail(doc: &Html) -> SeriesDetail {
+    let a_sel = Selector::parse("a").unwrap();
+    let genres = fact(doc, &["Géneros", "Generos"])
+        .map(|dd| {
+            dd.select(&a_sel)
+                .map(|a| a.text().collect::<String>().trim().to_string())
+                .filter(|g| !g.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    let kind = fact(doc, &["Tipo", "Formato"])
+        .map(|dd| dd.text().collect::<String>().trim().to_string())
+        .filter(|k| !k.is_empty());
+    let syn_sel = Selector::parse(".aniyt-detail-synopsis").unwrap();
+    let synopsis = doc
+        .select(&syn_sel)
+        .next()
+        .map(|el| el.text().collect::<Vec<_>>().join(" ").split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|t| !t.is_empty());
+    SeriesDetail { genres, kind, synopsis }
+}
+
 impl SiteAdapter for AnimeytxAdapter {
     fn airing_url(&self, base_url: &str) -> String {
-        format!("{}/anime-en-emision/", base_url.trim_end_matches('/'))
-    }
-
-    /// DooPlay paginates its archive pages as `/anime-en-emision/page/N/`
-    /// (page 1 is the bare path). The scan walks pages until one comes back
-    /// empty, so an airing list longer than one page is captured in full
-    /// instead of truncated at the first ~page. Safe if the theme happens not
-    /// to paginate: page 2 then re-serves page 1 and the scan stops on the
-    /// "no new series" guard.
-    fn airing_page_url(&self, base_url: &str, page: u32) -> Option<String> {
-        let base = base_url.trim_end_matches('/');
-        Some(if page <= 1 {
-            format!("{base}/anime-en-emision/")
-        } else {
-            format!("{base}/anime-en-emision/page/{page}/")
-        })
+        format!("{}/horario/", base_url.trim_end_matches('/'))
     }
 
     fn parse_airing(&self, html: &str) -> Result<Vec<Series>> {
         let doc = Html::parse_document(html);
+        let new = new_airing(&doc);
+        if !new.is_empty() {
+            return Ok(new);
+        }
         let card_sel = Selector::parse(AIRING_CARD).unwrap();
         let a_sel = Selector::parse("a").unwrap();
         let tt_sel = Selector::parse(".tt").unwrap();
@@ -107,6 +267,9 @@ impl SiteAdapter for AnimeytxAdapter {
 
     fn parse_series(&self, html: &str) -> Result<Vec<Episode>> {
         let doc = Html::parse_document(html);
+        if let Some(eps) = new_episodes(&doc) {
+            return Ok(eps);
+        }
         let row_sel = Selector::parse(EP_ROW).unwrap();
         let a_sel = Selector::parse("a").unwrap();
         let num_sel = Selector::parse(".epl-num").unwrap();
@@ -214,6 +377,9 @@ impl SiteAdapter for AnimeytxAdapter {
 
     fn parse_series_detail(&self, html: &str) -> Result<SeriesDetail> {
         let doc = Html::parse_document(html);
+        if is_new_theme(html) {
+            return Ok(new_detail(&doc));
+        }
         let genxed_sel = Selector::parse(".genxed a").unwrap();
         let spe_sel = Selector::parse(".spe > span").unwrap();
         let b_sel = Selector::parse("b").unwrap();
@@ -255,6 +421,9 @@ impl SiteAdapter for AnimeytxAdapter {
 
     fn parse_search_results(&self, html: &str) -> Result<Vec<FinishedCard>> {
         let doc = Html::parse_document(html);
+        if is_new_theme(html) {
+            return Ok(new_cards(&doc));
+        }
         // `.listupd` wraps the results area on both search and genre-listing
         // pages (confirmed live): present-but-empty (just a "No se
         // encuentra" message, no `.bsx` cards) for a genuine zero-hit search,
@@ -294,8 +463,8 @@ mod tests {
     fn airing_url_is_built() {
         let a = AnimeytxAdapter;
         assert_eq!(
-            a.airing_url("https://wwv.animeytx.net/"),
-            "https://wwv.animeytx.net/anime-en-emision/"
+            a.airing_url("https://animeyt.cc/"),
+            "https://animeyt.cc/horario/"
         );
     }
 
@@ -469,5 +638,53 @@ mod tests {
     fn parse_search_results_errs_on_unrecognizable_page() {
         let err = AnimeytxAdapter.parse_search_results("<html><body>not this site</body></html>");
         assert!(err.is_err(), "a page with no .listupd at all must be treated as a broken/wrong mirror");
+    }
+
+    // ---- animeyt.cc (custom `aniyt` theme) ----
+
+    #[test]
+    fn parses_new_theme_schedule() {
+        let html = include_str!("../../tests/fixtures/animeyt_cc_horario.html");
+        let out = AnimeytxAdapter.parse_airing(html).unwrap();
+        assert!(out.len() > 40, "expected the whole weekly schedule, got {}", out.len());
+        let slugs: std::collections::HashSet<_> = out.iter().map(|s| s.slug.as_str()).collect();
+        assert_eq!(slugs.len(), out.len(), "series are deduped by slug");
+        let sato = out.iter().find(|s| s.slug == "shiotaiou-no-satou-san-ga-ore-ni-dake-amai").unwrap();
+        assert_eq!(sato.title, "Shiotaiou no Satou-san ga Ore ni dake Amai");
+        assert_eq!(sato.url, "https://animeyt.cc/tv/shiotaiou-no-satou-san-ga-ore-ni-dake-amai/");
+        assert!(sato.cover_url.as_deref().unwrap().contains("wp-content"));
+        // Slot already aired (EP 3, upcoming=0): next one is a week later.
+        assert_eq!(sato.next_episode_at, Some(1791892800 + 7 * 86400));
+        assert_eq!(sato.site_episode_count, Some(4), "next episode to air");
+        assert!(out.iter().all(|s| s.is_airing && !s.title.is_empty()));
+    }
+
+    #[test]
+    fn parses_new_theme_episode_list() {
+        let html = include_str!("../../tests/fixtures/animeyt_cc_series_long.html");
+        let eps = AnimeytxAdapter.parse_series(html).unwrap();
+        assert_eq!(eps.len(), 22, "every episode card in the page, not a first batch");
+        assert_eq!(eps[0].number, "1180");
+        assert_eq!(eps[21].number, "1159");
+        assert!(eps[0].url.starts_with("https://animeyt.cc/"));
+        assert!(eps[0].title.is_none() && eps[0].released_at.is_none(), "links and numbers only");
+    }
+
+    #[test]
+    fn parses_new_theme_series_detail() {
+        let html = include_str!("../../tests/fixtures/animeyt_cc_series.html");
+        let d = AnimeytxAdapter.parse_series_detail(html).unwrap();
+        assert_eq!(d.genres, vec!["Comedia".to_string(), "Romance".to_string()]);
+        assert!(d.synopsis.unwrap().starts_with("Koharu Satou"));
+    }
+
+    #[test]
+    fn parses_new_theme_search_results() {
+        let html = include_str!("../../tests/fixtures/animeyt_cc_search.html");
+        let cards = AnimeytxAdapter.parse_search_results(html).unwrap();
+        assert!(cards.len() >= 5);
+        let heroines = cards.iter().find(|c| c.title == "One Piece: Heroines").unwrap();
+        assert_eq!(heroines.url, "https://animeyt.cc/tv/one-piece-heroines/");
+        assert_eq!(heroines.kind, "Special");
     }
 }

@@ -23,7 +23,7 @@ pub struct SiteInfo {
 /// listed but inert.
 pub fn all_sites() -> &'static [SiteInfo] {
     &[
-        SiteInfo { id: "animeytx", name: "AnimeYT", default_base_url: "https://wwv.animeytx.net" },
+        SiteInfo { id: "animeytx", name: "AnimeYT", default_base_url: "https://animeyt.cc" },
         SiteInfo { id: "tioanime", name: "TioAnime", default_base_url: "https://tioanime.com" },
         SiteInfo { id: "animeflv", name: "AnimeFLV", default_base_url: "https://www4.animeflv.net" },
         SiteInfo { id: "jkanime", name: "JKanime", default_base_url: "https://jkanime.net" },

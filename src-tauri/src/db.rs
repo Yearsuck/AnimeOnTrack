@@ -38,7 +38,58 @@ impl Db {
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         let db = Db { conn };
         db.init_schema()?;
+        db.migrate_animeytx_domain()?;
         Ok(db)
+    }
+
+    /// AnimeYT moved from `*.animeytx.net` to https://animeyt.cc (Oct 2026), and the old
+    /// domain is dead. Point everything stored for the site at the new domain, once and
+    /// idempotently: the source's base URL (unique, so skipped when a row for the new URL
+    /// already exists), the stored page URLs of its series (paths keep the `/tv/<slug>/`
+    /// shape) and its saved mirror lists. Hosts only; no row, episode or seen state moves.
+    fn migrate_animeytx_domain(&self) -> Result<()> {
+        const OLD: &str = "animeytx.net";
+        const NEW_BASE: &str = "https://animeyt.cc";
+        let has_new: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sources WHERE base_url=?1)",
+            [NEW_BASE],
+            |r| r.get(0),
+        )?;
+        let old_sources: Vec<(i64, String)> = {
+            let mut stmt = self.conn.prepare(
+                "SELECT id, base_url FROM sources WHERE site_id='animeytx' AND base_url LIKE ?1",
+            )?;
+            let rows = stmt
+                .query_map([format!("%{OLD}%")], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            rows
+        };
+        for (id, old_base) in old_sources {
+            if !has_new {
+                self.conn.execute("UPDATE sources SET base_url=?1 WHERE id=?2", (NEW_BASE, id))?;
+            }
+            let old_base = old_base.trim_end_matches('/').to_string();
+            self.conn.execute(
+                "UPDATE series SET url = ?1 || substr(url, length(?2) + 1)
+                 WHERE source_id=?3 AND substr(url, 1, length(?2)) = ?2",
+                (NEW_BASE, &old_base, id),
+            )?;
+        }
+        for key in ["mirror_urls:animeytx", "mirror_urls"] {
+            if let Some(raw) = self.get_setting(key)? {
+                if raw.contains(OLD) {
+                    let mut seen = std::collections::HashSet::new();
+                    let fixed: Vec<String> = raw
+                        .lines()
+                        .map(|l| if l.contains(OLD) { NEW_BASE.to_string() } else { l.to_string() })
+                        .filter(|l| !l.trim().is_empty() && seen.insert(l.trim_end_matches('/').to_string()))
+                        .collect();
+                    self.set_setting(key, &fixed.join("
+"))?;
+                }
+            }
+        }
+        Ok(())
     }
 
     fn init_schema(&self) -> Result<()> {
@@ -518,6 +569,35 @@ mod tests {
     use super::*;
     use super::test_support::*;
     use super::stats::franchise_key;
+
+    #[test]
+    fn animeytx_old_domain_is_migrated_to_animeyt_cc_once() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "https://wwv.animeytx.net", "animeytx").unwrap();
+        let other = db.upsert_source("TioAnime", "https://tioanime.com", "tioanime").unwrap();
+        let mk = |slug: &str, url: &str| crate::models::Series {
+            id: 0, slug: slug.into(), title: slug.into(), url: url.into(),
+            cover_url: None, is_airing: true, followed: true, next_episode_at: None, site_episode_count: None,
+        };
+        let sid = db.upsert_series(src, &mk("baki", "https://wwv.animeytx.net/tv/baki/")).unwrap();
+        let tid = db.upsert_series(other, &mk("baki-t", "https://tioanime.com/anime/baki")).unwrap();
+        db.set_setting("mirror_urls:animeytx", "https://wwv.animeytx.net
+https://other.example").unwrap();
+
+        db.migrate_animeytx_domain().unwrap();
+
+        assert_eq!(db.get_source_base_url(src).unwrap().as_deref(), Some("https://animeyt.cc"));
+        assert_eq!(db.get_series_url(sid).unwrap().as_deref(), Some("https://animeyt.cc/tv/baki/"));
+        assert_eq!(db.get_series_url(tid).unwrap().as_deref(), Some("https://tioanime.com/anime/baki"), "other sites untouched");
+        assert_eq!(
+            db.get_setting("mirror_urls:animeytx").unwrap().as_deref(),
+            Some("https://animeyt.cc
+https://other.example")
+        );
+        // idempotent
+        db.migrate_animeytx_domain().unwrap();
+        assert_eq!(db.get_series_url(sid).unwrap().as_deref(), Some("https://animeyt.cc/tv/baki/"));
+    }
 
     #[test]
     fn open_creates_schema() {
