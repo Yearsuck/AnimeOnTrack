@@ -35,7 +35,7 @@ export function SwipeView() {
   const [loading, setLoading] = useState(true);
   const busyRef = useRef(false);
   const queueRef = useRef<SwipeCard[]>([]);
-  const fillingRef = useRef(false);
+  const fillPromiseRef = useRef<Promise<void> | null>(null);
   // Bumped by resetQueue so an in-flight fillQueue round started under the
   // OLD filters can tell its results are stale once it resolves (see
   // fillQueue/resetQueue below) — a save-then-refetch race that otherwise
@@ -43,11 +43,8 @@ export function SwipeView() {
   // old-filter cards, which then kept getting served until the buffer ran
   // out or the view remounted.
   const fillGenerationRef = useRef(0);
-  // Set when resetQueue fires while fillingRef is already true (the guard
-  // below would otherwise make its own fillQueue() call a no-op) — tells
-  // the in-flight run's `finally` to kick off one fresh run under the new
-  // generation as soon as it exits, instead of waiting for the next
-  // popNext() to notice the queue is empty.
+  // Set when resetQueue fires: tells the in-flight fillQueue run (if any) to go
+  // round again under the new generation before it resolves.
   const pendingResetRef = useRef(false);
   const cardUrlRef = useRef<string | null>(null);
   // Every url decided this session (Discard/Want/Seen), so a concurrent
@@ -63,6 +60,8 @@ export function SwipeView() {
   const lastDecidedUrlRef = useRef<string | null>(null);
   const { statuses: linkStatuses, enqueue: enqueueLink } = useLinkQueue();
   const [discoverMode] = useDiscoverMode();
+  const discoverModeRef = useRef(discoverMode);
+  discoverModeRef.current = discoverMode;
   const isFirstModeRenderRef = useRef(true);
   // Multi-level undo cache: the last ~5 classified cards, newest first.
   const [history, setHistory] = useState<SwipeHistoryItem[]>([]);
@@ -90,54 +89,55 @@ export function SwipeView() {
   // out the same not-yet-decided card twice — it only excludes cards
   // already persisted to the DB, and a prefetched card isn't persisted
   // until the user actually decides on it).
-  const fillQueue = useCallback(async () => {
-    if (fillingRef.current) return;
-    fillingRef.current = true;
-    const myGeneration = fillGenerationRef.current;
-    try {
-      for (let round = 0; round < MAX_FILL_ROUNDS && queueRef.current.length < PREFETCH_TARGET; round++) {
-        const need = PREFETCH_TARGET - queueRef.current.length;
-        const results = await Promise.all(
-          Array.from({ length: need }, () => discoverCatalogCard(discoverMode === "recommended"))
-        );
-        // resetQueue fired while this round was in flight (e.g. the deck
-        // panel just saved new filters) — these results were requested
-        // before that, discard them rather than refilling the just-cleared
-        // queue with stale-filtered cards.
-        if (fillGenerationRef.current !== myGeneration) break;
-        const seen = new Set(queueRef.current.map((c) => c.url));
-        if (cardUrlRef.current) seen.add(cardUrlRef.current);
-        decidedUrlsRef.current.forEach((url) => seen.add(url));
-        // Walk results in order, adding each accepted card's url to `seen`
-        // as it's accepted — this also dedups two concurrent pickers in the
-        // SAME round returning the same not-yet-persisted card (both would
-        // pass a `seen` set built only from before the round started).
-        const fresh: SwipeCard[] = [];
-        for (const c of results) {
-          if (c !== null && !seen.has(c.url)) {
-            seen.add(c.url);
-            fresh.push(c);
-          }
-        }
-        // No forward progress this round (either truly empty, or every hit
-        // was a duplicate of something already queued/decided) — stop rather
-        // than burning more rounds of concurrent fetches chasing the same
-        // handful of not-yet-decided cards.
-        if (fresh.length === 0) break;
-        queueRef.current = [...queueRef.current, ...fresh];
-      }
-    } finally {
-      fillingRef.current = false;
-      // A resetQueue came in while we were running and couldn't start its
-      // own fill (the guard above made it a no-op) — run one now, under the
-      // new generation, instead of waiting for the next popNext() to notice
-      // the queue is empty.
-      if (pendingResetRef.current) {
+  const fillQueue = useCallback((): Promise<void> => {
+    // One run at a time; callers during a run share its promise, so
+    // "await fillQueue()" always means "the queue is as full as it gets".
+    if (fillPromiseRef.current) return fillPromiseRef.current;
+    const run = async () => {
+      // A resetQueue that lands mid-run sets pendingResetRef; the loop then
+      // goes again under the new generation inside the SAME run, so waiters
+      // never see a half-finished (empty) queue and call the deck exhausted.
+      do {
         pendingResetRef.current = false;
-        fillQueue();
-      }
-    }
-  }, [discoverMode]);
+        const myGeneration = fillGenerationRef.current;
+        for (let round = 0; round < MAX_FILL_ROUNDS && queueRef.current.length < PREFETCH_TARGET; round++) {
+          const need = PREFETCH_TARGET - queueRef.current.length;
+          const recommended = discoverModeRef.current === "recommended";
+          const results = await Promise.all(
+            Array.from({ length: need }, () => discoverCatalogCard(recommended))
+          );
+          // resetQueue fired while this round was in flight (e.g. the deck
+          // panel just saved new filters) — these results were requested
+          // before that, discard them rather than refilling the just-cleared
+          // queue with stale-filtered cards.
+          if (fillGenerationRef.current !== myGeneration) break;
+          const seen = new Set(queueRef.current.map((c) => c.url));
+          if (cardUrlRef.current) seen.add(cardUrlRef.current);
+          decidedUrlsRef.current.forEach((url) => seen.add(url));
+          // Walk results in order, adding each accepted card's url to `seen`
+          // as it's accepted — this also dedups two concurrent pickers in the
+          // SAME round returning the same not-yet-persisted card.
+          const fresh: SwipeCard[] = [];
+          for (const c of results) {
+            if (c !== null && !seen.has(c.url)) {
+              seen.add(c.url);
+              fresh.push(c);
+            }
+          }
+          // No forward progress this round (truly empty, or every hit was a
+          // duplicate of something already queued/decided): stop rather than
+          // burning more rounds chasing the same not-yet-decided cards.
+          if (fresh.length === 0) break;
+          queueRef.current = [...queueRef.current, ...fresh];
+        }
+      } while (pendingResetRef.current);
+    };
+    const p = run().finally(() => {
+      fillPromiseRef.current = null;
+    });
+    fillPromiseRef.current = p;
+    return p;
+  }, []);
 
   // Pop the next card off the local queue (instant, no network wait in the
   // common case) and kick off a background refill once the buffer runs
@@ -161,6 +161,8 @@ export function SwipeView() {
     setLoading(true);
     fillQueue().then(() => {
       setLoading(false);
+      // A resetQueue callback may already have shown a card.
+      if (cardUrlRef.current !== null) return;
       if (queueRef.current.length > 0) {
         popNext();
       } else {
@@ -192,15 +194,14 @@ export function SwipeView() {
   const resetQueue = useCallback(() => {
     fillGenerationRef.current += 1;
     queueRef.current = [];
-    if (fillingRef.current) {
-      // A round is already in flight — it will discard its stale results
-      // and self-heal via `pendingResetRef` in fillQueue's `finally` once it
-      // exits, rather than this call silently no-op'ing against the guard.
-      pendingResetRef.current = true;
-    } else {
-      fillQueue();
-    }
-  }, [fillQueue]);
+    // A run already in flight picks up the bump and goes again; otherwise
+    // this starts one. Either way, once the queue is refilled, show a card if
+    // none is on screen (a deck that had gone "exhausted" revives).
+    pendingResetRef.current = true;
+    fillQueue().then(() => {
+      if (cardUrlRef.current === null && queueRef.current.length > 0) popNext();
+    });
+  }, [fillQueue, popNext]);
 
   // Switching Recomendado <-> Aleatorio must refresh the *upcoming* deck
   // immediately (see resetQueue above). Skip the very first run (mount
