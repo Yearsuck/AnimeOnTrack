@@ -610,5 +610,13 @@ export const en: Messages = {
   "shortcuts.search": "Search catalog",
   "shortcuts.help": "Show or hide this help",
   "shortcuts.escape": "Close detail or this help",
+
+  // diagnostics
+  "settings.diagnosticsHeading": "System diagnostics",
+  "settings.diagnosticsDesc": "Generate a report with versions, counts, and recent error logs. Never includes your personal data or settings values.",
+  "settings.diagnosticsExport": "Export diagnostics",
+  "settings.diagnosticsExporting": "Exporting…",
+  "settings.diagnosticsSaved": "Report saved to: {path}",
+  "settings.diagnosticsReveal": "Show in folder",
 };
 

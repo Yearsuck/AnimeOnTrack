@@ -629,5 +629,13 @@ export const es = {
   "shortcuts.search": "Buscar en el catálogo",
   "shortcuts.help": "Mostrar u ocultar esta ayuda",
   "shortcuts.escape": "Cerrar detalle o esta ayuda",
+
+  // diagnostics
+  "settings.diagnosticsHeading": "Diagnóstico del sistema",
+  "settings.diagnosticsDesc": "Genera un informe con versiones, recuentos y los últimos registros de error. No incluye tus datos personales ni valores de configuración.",
+  "settings.diagnosticsExport": "Exportar diagnóstico",
+  "settings.diagnosticsExporting": "Exportando…",
+  "settings.diagnosticsSaved": "Informe guardado en: {path}",
+  "settings.diagnosticsReveal": "Mostrar carpeta",
 } as const;
 
