@@ -38,3 +38,9 @@ key), real download engine, taskbar badge, rotating file log.
 |---|---|---|
 | ani.zip episode map (`feat(episodes)`) | 30 s after start, a background job stores the per-season/absolute episode map (https://api.ani.zip) of the shows you track (20 per run). No UI. | `anilist_episode_map` table fills in the app DB. |
 | Number alignment (`feat(episodes)`) | Sites that number cumulatively (TioAnime 1..27) and per season (animeyt 1..3) are converted to one canonical number before merging Pendientes, cascading "seen" and syncing progress across sites. Fixes a risk after the season relink: a watermark of 27 could mark all animeyt episodes seen. Covered by a Tensei Kizoku fixture test. | Follow the same show on two sites with different numbering; mark an episode seen on one; the other must advance to the same real episode, not further. |
+
+## Batch 6 - visible changes (done, validated by tests)
+| Change | What it does | How to check it |
+|---|---|---|
+| Next episode air date (`feat(episodes)`, `feat(detail)`) | The series detail screen shows "Próximo episodio: Ep N · en X días/h/min" under the info row, from the ani.zip air dates stored in the DB. Nothing is shown when the series has no map yet or nothing upcoming. | Open a followed airing series that has been linked to AniList (the map fills in ~30 s after start, 20 shows per run). |
+| Rotating app log (`feat(log)`) | `aot.log` in the app data dir (1 MB, 2 rotated copies) records startup and panics; its tail is part of Ajustes -> Mantenimiento -> Exportar diagnóstico. No setting values are logged. | Start the app, open the data dir, read `aot.log`; export diagnostics and look for the `aot.log` section. |
