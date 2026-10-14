@@ -294,8 +294,8 @@ pub async fn backfill_catalog_metadata(app: AppHandle, state: State<'_, AppState
     let mut done = 0i64;
     let _ = app.emit("catalog-backfill-progress", CatalogBackfillProgress { done, total });
 
-    for batch in stale_ids.chunks(crate::anilist::MAX_IDS_PER_REQUEST) {
-        let fetched = crate::anilist::fetch_by_ids(batch).await.map_err(|e| e.to_string())?;
+    for batch in stale_ids.chunks(crate::anilist::MAX_IDS_PER_REQUEST * crate::anilist::PAGES_PER_REQUEST as usize) {
+        let fetched = crate::anilist::fetch_by_ids_multi(batch).await.map_err(|e| e.to_string())?;
         {
             let db = state.db.lock().unwrap();
             let mut items = Vec::with_capacity(fetched.len());
@@ -351,8 +351,8 @@ pub async fn refresh_catalog_status(state: State<'_, AppState>) -> Result<Option
     };
 
     let mut done = 0i64;
-    for batch in stale_ids.chunks(crate::anilist::MAX_IDS_PER_REQUEST) {
-        let fetched = crate::anilist::fetch_by_ids(batch).await.map_err(|e| e.to_string())?;
+    for batch in stale_ids.chunks(crate::anilist::MAX_IDS_PER_REQUEST * crate::anilist::PAGES_PER_REQUEST as usize) {
+        let fetched = crate::anilist::fetch_by_ids_multi(batch).await.map_err(|e| e.to_string())?;
         {
             let db = state.db.lock().unwrap();
             let mut items = Vec::with_capacity(fetched.len());
@@ -591,7 +591,13 @@ async fn run_catalog_sync(
     for partition in &partitions_to_run {
         let mut page = 1i64;
         loop {
-            let result = crate::anilist::fetch_partition_page(partition, page, PAGE_SIZE)
+            // Up to ten consecutive pages per request (the rate limit counts
+            // requests, not rows); never past the partition's own page cap.
+            let batch_pages = match partition.max_pages {
+                Some(cap) => crate::anilist::PAGES_PER_REQUEST.min(cap - page + 1).max(1),
+                None => crate::anilist::PAGES_PER_REQUEST,
+            };
+            let result = crate::anilist::fetch_partition_pages(partition, page, batch_pages, PAGE_SIZE)
                 .await
                 .map_err(|e| e.to_string())?;
 
@@ -609,11 +615,11 @@ async fn run_catalog_sync(
             let total = FULL_SYNC_ESTIMATE.max(synced);
             let _ = app.emit("catalog-sync-progress", CatalogSyncProgress { synced, total });
 
-            let reached_page_cap = partition.max_pages.is_some_and(|cap| page >= cap);
+            let reached_page_cap = partition.max_pages.is_some_and(|cap| page + batch_pages > cap);
             if !result.has_next_page || reached_page_cap {
                 break;
             }
-            page += 1;
+            page += batch_pages;
             let should_pace = result.rate_remaining.map(|r| r < RATE_HEADROOM_FLOOR).unwrap_or(true);
             if should_pace {
                 tokio::time::sleep(PACED_SLEEP).await;

@@ -34,7 +34,7 @@ const ENDPOINT: &str = "https://graphql.anilist.co";
 /// Field selection shared by every catalog query — the single source of
 /// truth for what a `media` node returns. Used to live hand-duplicated in
 /// both `CATALOG_QUERY` and `BY_IDS_QUERY`; a field added/renamed in one copy
-/// and not the other would silently make `fetch_by_ids`'s backfill
+/// and not the other would silently make the by-ids backfill
 /// (`commands::backfill_catalog_metadata`) return partial data relative to
 /// the main crawl, with no compiler or test signal tying the two together.
 const MEDIA_FIELDS: &str = r#"id
@@ -56,50 +56,7 @@ const MEDIA_FIELDS: &str = r#"id
       tags { name rank isMediaSpoiler }
       relations { edges { relationType node { id type } } }"#;
 
-fn catalog_query() -> String {
-    format!(
-        r#"
-query ($page: Int, $perPage: Int, $startDateGreater: FuzzyDateInt, $startDateLesser: FuzzyDateInt, $status: MediaStatus) {{
-  Page(page: $page, perPage: $perPage) {{
-    pageInfo {{ hasNextPage }}
-    media(
-      type: ANIME
-      sort: ID
-      startDate_greater: $startDateGreater
-      startDate_lesser: $startDateLesser
-      status: $status
-    ) {{
-      {MEDIA_FIELDS}
-    }}
-  }}
-}}
-"#
-    )
-}
-
-/// Same media selection as `catalog_query`, addressed by explicit ids instead
-/// of a date partition. Used to re-fetch rows that were synced before some of
-/// the fields above existed: `title_romaji`, `duration`, `status`, `studio`
-/// and `start_date` were all added after the first full catalog crawl, so tens
-/// of thousands of stored rows carry `NULL` for them and the incremental sync
-/// (recent years only) will never revisit them. See
-/// `commands::backfill_catalog_metadata`.
-fn by_ids_query() -> String {
-    format!(
-        r#"
-query ($ids: [Int], $perPage: Int) {{
-  Page(page: 1, perPage: $perPage) {{
-    pageInfo {{ hasNextPage }}
-    media(type: ANIME, id_in: $ids, sort: ID) {{
-      {MEDIA_FIELDS}
-    }}
-  }}
-}}
-"#
-    )
-}
-
-/// AniList's own per-request page cap. `fetch_by_ids` must never be handed
+/// AniList's own per-request page cap. `fetch_by_ids_multi` chunks must never be handed
 /// more ids than this — anything past the cap is silently dropped by the API,
 /// which would look like "these ids don't exist" rather than an error.
 pub const MAX_IDS_PER_REQUEST: usize = 50;
@@ -184,17 +141,6 @@ pub struct CatalogRelation {
 pub struct CatalogTag {
     pub name: String,
     pub rank: i64,
-}
-
-#[derive(Debug, Deserialize)]
-struct GraphQlResponse {
-    data: Option<ResponseData>,
-    errors: Option<Vec<GraphQlError>>,
-}
-
-#[derive(Debug, Deserialize)]
-struct GraphQlError {
-    message: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -593,39 +539,6 @@ fn build_variables(partition: &Partition, page: i64, per_page: i64) -> serde_jso
     serde_json::Value::Object(vars)
 }
 
-/// Fetch one page of one partition. Retries on HTTP 429 honoring the
-/// `Retry-After` header (seconds), capped at 5 attempts — failing loudly
-/// after the cap beats retrying forever indistinguishably from a real hang.
-pub async fn fetch_partition_page(partition: &Partition, page: i64, per_page: i64) -> Result<PartitionPage> {
-    let variables = build_variables(partition, page, per_page);
-    let body = serde_json::json!({ "query": catalog_query(), "variables": variables });
-    execute_query(body, &format!("{} page {page}", partition.label)).await
-}
-
-/// Re-fetch specific catalog entries by AniList id, for backfilling rows
-/// stored before some fields existed. At most `MAX_IDS_PER_REQUEST` ids per
-/// call — more than that silently truncates server-side.
-///
-/// Ids AniList no longer serves (deleted/merged entries) simply don't come
-/// back in the response; the caller sees a shorter list, not an error, and
-/// must not assume `result.len() == ids.len()`.
-pub async fn fetch_by_ids(ids: &[i64]) -> Result<Vec<CatalogAnime>> {
-    if ids.is_empty() {
-        return Ok(Vec::new());
-    }
-    if ids.len() > MAX_IDS_PER_REQUEST {
-        return Err(anyhow!(
-            "fetch_by_ids got {} ids, over AniList's per-request cap of {MAX_IDS_PER_REQUEST}",
-            ids.len()
-        ));
-    }
-    let body = serde_json::json!({
-        "query": by_ids_query(),
-        "variables": { "ids": ids, "perPage": MAX_IDS_PER_REQUEST },
-    });
-    Ok(execute_query(body, "by-ids").await?.items)
-}
-
 fn search_query() -> String {
     format!(
         r#"
@@ -710,9 +623,103 @@ pub async fn fetch_banner_by_id_or_title(
     Ok(parsed.data.and_then(|d| d.media).and_then(|m| m.banner_image))
 }
 
-/// Shared POST + 429-retry + error-unwrapping path for every AniList query in
-/// this module, so the rate-limit handling can't drift between call sites.
-async fn execute_query(body: serde_json::Value, context: &str) -> Result<PartitionPage> {
+/// How many `Page` selections one request carries. AniList's query complexity cap
+/// is 500 and a 50-row page of our media fields costs 50, so ten fit (verified live
+/// 2026-10-14: 10 pages -> 500 titles in one ~1.7 s response, 12+ is refused with
+/// "Max query complexity should be 500"). The rate limit counts REQUESTS (30/min),
+/// not rows, so this is a ten-fold speed-up of every bulk crawl.
+pub const PAGES_PER_REQUEST: i64 = 10;
+
+/// One multi-page catalog query: `p0..p{n-1}` are consecutive pages of the same
+/// partition, starting at `first_page`. Filters stay GraphQL variables, exactly as
+/// in the single-page catalog query this replaced.
+fn catalog_multi_query(first_page: i64, n_pages: i64) -> String {
+    let pages: String = (0..n_pages)
+        .map(|i| {
+            format!(
+                "p{i}: Page(page: {page}, perPage: $perPage) {{ pageInfo {{ hasNextPage }} media(type: ANIME, sort: ID, startDate_greater: $startDateGreater, startDate_lesser: $startDateLesser, status: $status) {{ {MEDIA_FIELDS} }} }}\n",
+                page = first_page + i
+            )
+        })
+        .collect();
+    format!(
+        "query ($perPage: Int, $startDateGreater: FuzzyDateInt, $startDateLesser: FuzzyDateInt, $status: MediaStatus) {{\n{pages}}}\n"
+    )
+}
+
+/// Several `id_in` lookups in one request: `b0..b{n-1}` each take their own id list
+/// variable (`$ids0`..), at most `MAX_IDS_PER_REQUEST` ids each.
+fn by_ids_multi_query(n_chunks: usize) -> String {
+    let vars: String = (0..n_chunks).map(|i| format!("$ids{i}: [Int], ")).collect();
+    let pages: String = (0..n_chunks)
+        .map(|i| {
+            format!(
+                "b{i}: Page(page: 1, perPage: $perPage) {{ pageInfo {{ hasNextPage }} media(type: ANIME, id_in: $ids{i}, sort: ID) {{ {MEDIA_FIELDS} }} }}\n"
+            )
+        })
+        .collect();
+    format!("query ({vars}$perPage: Int) {{\n{pages}}}\n")
+}
+
+/// Read `prefix0..prefix{n-1}` out of a multi-alias `data` object, in order.
+/// Returns the concatenated items and the `hasNextPage` of the LAST alias (an
+/// earlier "no more" makes every later alias empty, so the last one is enough).
+fn collect_aliased_pages(data: serde_json::Value, prefix: &str, n: usize, context: &str) -> Result<(Vec<CatalogAnime>, bool)> {
+    let mut map: std::collections::HashMap<String, PageData> = serde_json::from_value(data)
+        .map_err(|e| anyhow!("AniList multi-page response had an unexpected shape ({context}): {e}"))?;
+    let mut items = Vec::new();
+    let mut has_next = false;
+    for i in 0..n {
+        let Some(page) = map.remove(&format!("{prefix}{i}")) else {
+            return Err(anyhow!("AniList multi-page response is missing {prefix}{i} ({context})"));
+        };
+        items.extend(page.media.into_iter().map(CatalogAnime::from));
+        has_next = page.page_info.has_next_page;
+    }
+    Ok((items, has_next))
+}
+
+/// Fetch `n_pages` consecutive pages of one partition in a SINGLE request.
+/// `n_pages` is clamped to `1..=PAGES_PER_REQUEST`. The result's `has_next_page`
+/// says whether the page after the last one fetched exists.
+pub async fn fetch_partition_pages(partition: &Partition, first_page: i64, n_pages: i64, per_page: i64) -> Result<PartitionPage> {
+    let n = n_pages.clamp(1, PAGES_PER_REQUEST);
+    let mut variables = build_variables(partition, first_page, per_page);
+    if let Some(obj) = variables.as_object_mut() {
+        obj.remove("page");
+    }
+    let body = serde_json::json!({ "query": catalog_multi_query(first_page, n), "variables": variables });
+    let context = format!("{} pages {first_page}..{}", partition.label, first_page + n - 1);
+    let (data, rate_remaining) = post_graphql(body, &context).await?;
+    let (items, has_next_page) = collect_aliased_pages(data, "p", n as usize, &context)?;
+    Ok(PartitionPage { items, has_next_page, rate_remaining })
+}
+
+/// Look up catalog entries by AniList id, for up to `MAX_IDS_PER_REQUEST * PAGES_PER_REQUEST`
+/// (500) ids in one request. Ids AniList no longer serves are simply absent.
+pub async fn fetch_by_ids_multi(ids: &[i64]) -> Result<Vec<CatalogAnime>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let cap = MAX_IDS_PER_REQUEST * PAGES_PER_REQUEST as usize;
+    if ids.len() > cap {
+        return Err(anyhow!("fetch_by_ids_multi got {} ids, over the per-request cap of {cap}", ids.len()));
+    }
+    let chunks: Vec<&[i64]> = ids.chunks(MAX_IDS_PER_REQUEST).collect();
+    let mut variables = serde_json::Map::new();
+    variables.insert("perPage".to_string(), serde_json::json!(MAX_IDS_PER_REQUEST));
+    for (i, chunk) in chunks.iter().enumerate() {
+        variables.insert(format!("ids{i}"), serde_json::json!(chunk));
+    }
+    let body = serde_json::json!({ "query": by_ids_multi_query(chunks.len()), "variables": variables });
+    let (data, _) = post_graphql(body, "by-ids-multi").await?;
+    Ok(collect_aliased_pages(data, "b", chunks.len(), "by-ids-multi")?.0)
+}
+
+/// POST one GraphQL body with the shared 429/`Retry-After` retry, and return the
+/// `data` object plus the rate-limit headroom AniList reported. Every query path in
+/// this module goes through here so the rate-limit handling cannot drift.
+async fn post_graphql(body: serde_json::Value, context: &str) -> Result<(serde_json::Value, Option<i64>)> {
     const MAX_RETRIES: u32 = 5;
 
     let client = reqwest::Client::new();
@@ -748,22 +755,39 @@ async fn execute_query(body: serde_json::Value, context: &str) -> Result<Partiti
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.parse::<i64>().ok());
 
-        let parsed: GraphQlResponse = resp
+        let parsed: serde_json::Value = resp
             .json()
             .await
             .map_err(|e| anyhow!("AniList response was not valid JSON ({context}): {e}"))?;
-        if let Some(errors) = parsed.errors {
-            let msg = errors.into_iter().map(|e| e.message).collect::<Vec<_>>().join("; ");
+        if let Some(errors) = parsed.get("errors").and_then(|e| e.as_array()).filter(|e| !e.is_empty()) {
+            let msg = errors
+                .iter()
+                .filter_map(|e| e.get("message").and_then(|m| m.as_str()))
+                .collect::<Vec<_>>()
+                .join("; ");
             return Err(anyhow!("AniList returned an error ({context}): {msg}"));
         }
-        let data = parsed.data.ok_or_else(|| anyhow!("AniList response had no data ({context})"))?;
-        let items: Vec<CatalogAnime> = data.page.media.into_iter().map(CatalogAnime::from).collect();
-        return Ok(PartitionPage {
-            items,
-            has_next_page: data.page.page_info.has_next_page,
-            rate_remaining,
-        });
+        let data = parsed
+            .get("data")
+            .filter(|d| !d.is_null())
+            .cloned()
+            .ok_or_else(|| anyhow!("AniList response had no data ({context})"))?;
+        return Ok((data, rate_remaining));
     }
+}
+
+/// Single-`Page` queries (partition page, by-ids, search): `post_graphql` plus the
+/// `data.Page` unwrap.
+async fn execute_query(body: serde_json::Value, context: &str) -> Result<PartitionPage> {
+    let (data, rate_remaining) = post_graphql(body, context).await?;
+    let data: ResponseData = serde_json::from_value(data)
+        .map_err(|e| anyhow!("AniList response had an unexpected shape ({context}): {e}"))?;
+    let items: Vec<CatalogAnime> = data.page.media.into_iter().map(CatalogAnime::from).collect();
+    Ok(PartitionPage {
+        items,
+        has_next_page: data.page.page_info.has_next_page,
+        rate_remaining,
+    })
 }
 
 #[cfg(test)]
@@ -1185,5 +1209,68 @@ mod tests {
             "variables": { "search": "Naruto" },
         });
         assert_eq!(body["variables"]["search"], "Naruto");
+    }
+    #[test]
+    fn the_multi_page_query_has_one_aliased_page_per_requested_page() {
+        let q = catalog_multi_query(7, 3);
+        assert!(q.contains("p0: Page(page: 7, perPage: $perPage)"));
+        assert!(q.contains("p1: Page(page: 8, perPage: $perPage)"));
+        assert!(q.contains("p2: Page(page: 9, perPage: $perPage)"));
+        assert!(!q.contains("p3:"));
+        assert!(q.contains("$startDateGreater: FuzzyDateInt") && q.contains("$status: MediaStatus"));
+        // The same media selection as the single-page query.
+        assert!(q.matches("relations { edges").count() == 3);
+    }
+
+    #[test]
+    fn the_ids_query_declares_one_variable_per_chunk() {
+        let q = by_ids_multi_query(3);
+        assert!(q.starts_with("query ($ids0: [Int], $ids1: [Int], $ids2: [Int], $perPage: Int)"));
+        assert!(q.contains("b2: Page(page: 1, perPage: $perPage)"));
+        assert!(q.contains("id_in: $ids1"));
+    }
+
+    fn page_json(ids: &[i64], has_next: bool) -> serde_json::Value {
+        let media: Vec<serde_json::Value> = ids
+            .iter()
+            .map(|id| {
+                serde_json::json!({
+                    "id": id, "title": { "romaji": format!("T{id}"), "english": null }, "synonyms": [],
+                    "coverImage": { "large": null }, "format": null, "genres": [], "episodes": null,
+                    "duration": null, "averageScore": null, "popularity": null, "siteUrl": format!("https://x/{id}"),
+                    "status": null, "studios": null, "startDate": null, "nextAiringEpisode": null,
+                    "tags": [], "relations": null
+                })
+            })
+            .collect();
+        serde_json::json!({ "pageInfo": { "hasNextPage": has_next }, "media": media })
+    }
+
+    #[test]
+    fn aliased_pages_are_joined_in_order_and_the_last_has_next_wins() {
+        let data = serde_json::json!({
+            "p1": page_json(&[3, 4], true),
+            "p0": page_json(&[1, 2], true),
+            "p2": page_json(&[5], false),
+        });
+        let (items, has_next) = collect_aliased_pages(data, "p", 3, "t").unwrap();
+        assert_eq!(items.iter().map(|a| a.id).collect::<Vec<_>>(), vec![1, 2, 3, 4, 5]);
+        assert!(!has_next, "the partition ended inside this batch");
+
+        let data = serde_json::json!({ "p0": page_json(&[1], true), "p1": page_json(&[2], true) });
+        assert!(collect_aliased_pages(data, "p", 2, "t").unwrap().1);
+    }
+
+    #[test]
+    fn a_missing_alias_is_an_error_not_a_silent_short_batch() {
+        let data = serde_json::json!({ "p0": page_json(&[1], true) });
+        assert!(collect_aliased_pages(data, "p", 2, "t").is_err());
+        assert!(collect_aliased_pages(serde_json::json!([1, 2]), "p", 1, "t").is_err());
+    }
+
+    #[test]
+    fn one_request_carries_at_most_ten_pages_of_fifty() {
+        assert_eq!(PAGES_PER_REQUEST, 10);
+        assert_eq!(MAX_IDS_PER_REQUEST * PAGES_PER_REQUEST as usize, 500);
     }
 }
