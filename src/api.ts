@@ -292,6 +292,9 @@ export const setGoogleCredentials = (clientId: string, clientSecret: string) =>
 export const downloadEpisode = (episodeId: number) =>
   invoke<void>("download_episode", { episodeId });
 
+export const playDownload = (episodeId: number) =>
+  invoke<void>("play_download", { episodeId });
+
 export const cancelDownload = (episodeId: number) =>
   invoke<void>("cancel_download", { episodeId });
 
