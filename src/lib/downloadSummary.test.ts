@@ -6,6 +6,7 @@ describe("isDownloadableUrl", () => {
     expect(isDownloadableUrl("https://jkanime.net/kanojo/2/")).toBe(true);
     expect(isDownloadableUrl("https://animeyt.cc/1/anime/x-capitulo-8/")).toBe(true);
     expect(isDownloadableUrl("https://gogoanime.by/x-episode-1-english-subbed/")).toBe(true);
+    expect(isDownloadableUrl("https://animeflv.or.at/2026/10/11/x-episodio-3/")).toBe(true);
     expect(isDownloadableUrl("https://tioanime.com/ver/x-1")).toBe(true);
     expect(isDownloadableUrl("https://www.tioanime.com/ver/x")).toBe(true);
     expect(isDownloadableUrl("https://TIOANIME.COM/x")).toBe(true);

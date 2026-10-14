@@ -1,6 +1,6 @@
 use super::*;
 use crate::download_sources::{
-    candidates, mytsumi_direct_media, parse_animeyt_container_url, parse_jkanime_servers, parse_mytsumi_tabs,
+    candidates, mytsumi_direct_media, parse_animeyt_container_url, parse_animeflv_servers, parse_jkanime_servers, parse_mytsumi_tabs,
     parse_tioanime_servers, resolve_from_page, supported_host, voe_redirect_target, Media, Server,
 };
 use crate::hls::{parse_gogoanime_player_url, parse_megaplay_playlist_url, parse_wrapper_iframe};
@@ -219,6 +219,7 @@ enum Site {
     JkAnime,
     AnimeYt,
     GogoAnime,
+    AnimeFlv,
 }
 
 fn site_of(url: &str) -> Option<Site> {
@@ -234,6 +235,8 @@ fn site_of(url: &str) -> Option<Site> {
         Some(Site::AnimeYt)
     } else if is("gogoanime.by") {
         Some(Site::GogoAnime)
+    } else if is("animeflv.or.at") {
+        Some(Site::AnimeFlv)
     } else {
         None
     }
@@ -315,6 +318,7 @@ async fn resolve_media(app: &AppHandle, episode_url: &str) -> Result<Media, DlEr
         Site::GogoAnime => unreachable!("handled above"),
         Site::TioAnime => parse_tioanime_servers(&page.html),
         Site::JkAnime => parse_jkanime_servers(&page.html),
+        Site::AnimeFlv => parse_animeflv_servers(&page.html),
         Site::AnimeYt => {
             // animeyt.cc embeds one "container" player; its runtime page is plain
             // HTML listing the servers and, often, a direct mp4 tab.
@@ -487,6 +491,8 @@ mod tests {
     fn site_detection_rejects_lookalikes_and_other_sites() {
         assert_eq!(site_of("https://tioanime.com.evil.example/x"), None);
         assert_eq!(site_of("https://notjkanime.net/x"), None);
+        assert_eq!(site_of("https://animeflv.or.at/2026/10/11/x-episodio-3/"), Some(Site::AnimeFlv));
+        assert_eq!(site_of("https://animeflv.or.at.evil.example/x"), None);
         assert_eq!(site_of("https://www4.animeflv.net/ver/x-1"), None);
         assert_eq!(site_of("https://gogoanime.by.evil.example/x"), None);
         assert_eq!(site_of("not a url"), None);
