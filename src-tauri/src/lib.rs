@@ -1,3 +1,4 @@
+mod ad_block;
 mod adapter;
 mod anilist;
 mod anizip;
