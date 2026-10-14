@@ -629,6 +629,16 @@ impl Db {
         Ok(result)
     }
 
+    /// Downloads that were "downloading" when the app last stopped are not running any
+    /// more (the tasks died with the process), so their status is cleared and the row
+    /// goes back to "not downloaded". Returns how many rows were reset.
+    pub fn clear_interrupted_downloads(&self) -> Result<usize> {
+        Ok(self.conn.execute(
+            "UPDATE episodes SET download_status = NULL WHERE download_status = 'downloading'",
+            [],
+        )?)
+    }
+
     /// Clear the download_path and download_status columns for the given
     /// episode IDs — called after the on-disk file has been deleted.
     pub fn clear_download_columns(&self, episode_ids: &[i64]) -> Result<()> {
@@ -1745,5 +1755,30 @@ mod tests {
         assert_eq!(eps_a.iter().filter(|e| e.seen).count(), 3, "animeyt untouched by earlier-season cascade");
         // TioAnime has 1..19 seen
         assert_eq!(eps_b.iter().filter(|e| e.seen).count(), 19);
+    }
+
+    #[test]
+    fn interrupted_downloads_are_reset_but_finished_ones_are_kept() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("T", "https://tioanime.com", "tioanime").unwrap();
+        let series = crate::models::Series {
+            id: 0, slug: "s".into(), title: "S".into(), url: "https://tioanime.com/anime/s".into(),
+            cover_url: None, is_airing: true, followed: true, next_episode_at: None, site_episode_count: None,
+        };
+        let sid = db.upsert_series(src, &series).unwrap();
+        let mk = |n: &str| crate::models::Episode {
+            id: 0, series_id: sid, number: n.into(), title: None, url: format!("https://tioanime.com/ver/s-{n}"),
+            released_at: None, seen: false, download_path: None, download_status: None,
+        };
+        let (a, _) = db.insert_episode(&mk("1")).unwrap();
+        let (b, _) = db.insert_episode(&mk("2")).unwrap();
+        let (c, _) = db.insert_episode(&mk("3")).unwrap();
+        db.set_download_status(a, "downloading", None).unwrap();
+        db.set_download_status(b, "downloaded", Some("/x/2.mp4")).unwrap();
+        db.set_download_status(c, "failed", None).unwrap();
+        assert_eq!(db.clear_interrupted_downloads().unwrap(), 1);
+        assert_eq!(db.get_episode(a).unwrap().download_status, None);
+        assert_eq!(db.get_episode(b).unwrap().download_status.as_deref(), Some("downloaded"));
+        assert_eq!(db.get_episode(c).unwrap().download_status.as_deref(), Some("failed"));
     }
 }
