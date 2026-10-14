@@ -172,13 +172,31 @@ export function SwipeView() {
   }, [fillQueue]);
 
   useEffect(() => {
+    let cancelled = false;
+    refreshHistory();
     (async () => {
       setLoading(true);
-      await fillQueue();
-      popNext();
-      setLoading(false);
-      refreshHistory();
+      // Fast path: fetch the first card directly to show it on screen immediately,
+      // then top up the rest of the prefetch buffer concurrently in the background.
+      const recommended = discoverModeRef.current === "recommended";
+      const firstCard = await discoverCatalogCard(recommended).catch(() => null);
+      if (cancelled) return;
+      if (firstCard && !decidedUrlsRef.current.has(firstCard.url)) {
+        cardUrlRef.current = firstCard.url;
+        setCard(firstCard);
+        setLoading(false);
+        setExhausted(false);
+        void fillQueue();
+      } else {
+        await fillQueue();
+        if (cancelled) return;
+        popNext();
+        setLoading(false);
+      }
     })();
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
