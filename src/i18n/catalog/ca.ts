@@ -343,6 +343,11 @@ export const ca: Messages = {
   "catalog.linking": "Enllaçant {current}/{total}…",
   "catalog.batchWantDone": "{count} afegits a Vull veure.",
   "catalog.batchSeenDone": "{count} marcats com a vistos.",
+  "catalog.batchStart": "Comença a veure",
+  "catalog.starting": "Començant {current}/{total}…",
+  "catalog.batchStartDone": "{started} en marxa, {problems} amb problemes.",
+  "catalog.startTitle": "Comença a veure (passa a Pendents)",
+  "catalog.startNotFound": "«{title}» no s'ha trobat al lloc actiu.",
 
   // ProgressBar.tsx
   "progress.stageOpening": "Obrint la pàgina…",

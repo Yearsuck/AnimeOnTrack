@@ -332,6 +332,11 @@ export const en: Messages = {
   "catalog.linking": "Linking {current}/{total}…",
   "catalog.batchWantDone": "{count} added to Want to watch.",
   "catalog.batchSeenDone": "{count} marked as seen.",
+  "catalog.batchStart": "Start watching",
+  "catalog.starting": "Starting {current}/{total}…",
+  "catalog.batchStartDone": "{started} started, {problems} with problems.",
+  "catalog.startTitle": "Start watching (moves to Pending)",
+  "catalog.startNotFound": "“{title}” was not found on the active site.",
 
   "progress.stageOpening": "Opening page…",
   "progress.stageVerifying": "Verifying (Cloudflare)…",
