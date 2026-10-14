@@ -121,3 +121,13 @@ AnimeFLV is now https://animeflv.or.at, a different (WordPress) site, so the old
 | New adapter (`feat(animeflv)`) | Airing list from the "animes en emisión" sidebar (on every page), episodes from the series page's JSON block, search from the main results grid (never the sidebar), genres/synopsis from the series page. Live check on the sandbox copy: 273 series (74 airing) scanned, new episode links stored. |
 | Domain migration (`feat(animeflv)`) | The base URL, the series page URLs and the saved mirror lists of existing installs follow the move (same mechanism as AnimeYT). Old episode rows keep their seen state: episodes are matched by number and their links refresh on the next scan. |
 | Downloads (`feat(download)`) | Episode pages list servers as base64 buttons; Mp4upload and VOE ones download (live: a 2026-10-11 episode as mp4 and as `.ts`). The first server, a fragmented-MP4 HLS from zilla-networks, is not supported yet, and Byse needs a captcha. Very old episodes may only have dead links. |
+
+## Batch 15 - faster AniList crawl (done; timed live in the sandbox)
+Full crawl of the 22,619-title catalog from an empty table, same result each time:
+| Step | Time |
+|---|---|
+| Before (one page of 50 per request) | ~15+ min |
+| `perf(anilist)`: 10 aliased pages per request (500 titles; AniList caps query complexity at 500, 12+ pages are refused) | 322 s |
+| + request latency counted inside the 2.1 s pacing slot (was added on top: ~3.8 s per request) | |
+| + 1940-1999 crawled by decade instead of 60 year partitions | 183 s |
+The rate limit counts requests (30/min), so fewer, bigger requests is the only real lever. The by-ids backfill and status refresh use the same 500-ids-per-request path. A sync interrupted before this change resumes fine: its saved `year-19xx` labels just no longer match, so those decades are fetched once more.
