@@ -3,6 +3,7 @@ mod adapter;
 mod anilist;
 mod anizip;
 mod backup;
+mod catalog_snapshot;
 mod commands;
 mod dates;
 mod db;
