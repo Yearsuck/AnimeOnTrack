@@ -3,6 +3,7 @@ import { getCatalogFacets, getDeckBans, getDiscoverNiche, setDeckBans, setDiscov
 import { useT } from "../../i18n";
 import { DECK_FORMATS } from "./constants";
 import { DiscoverModeToggle } from "./DiscoverModeToggle";
+import { useDiscoverMode } from "../../discoverMode";
 import { getInitialDeckPanelOpen, persistDeckPanelOpen } from "./helpers";
 import { countActiveFilters, DECK_DEFAULTS } from "./deckReset";
 import { DateRangeControl, ScoreRangeControl } from "../../components/filters";
@@ -21,6 +22,7 @@ import { DateRangeControl, ScoreRangeControl } from "../../components/filters";
 // up to PREFETCH_TARGET already-fetched cards that predate the new bans.
 export function DeckPanel({ onBansSaved }: { onBansSaved: () => void }) {
   const t = useT();
+  const [discoverMode] = useDiscoverMode();
   const [allGenres, setAllGenres] = useState<string[]>([]);
   const [bannedGenres, setBannedGenres] = useState<Set<string>>(new Set());
   const [bannedFormats, setBannedFormats] = useState<Set<string>>(new Set());
@@ -188,31 +190,33 @@ export function DeckPanel({ onBansSaved }: { onBansSaved: () => void }) {
             <DiscoverModeToggle />
           </div>
 
-          <div className="deck-panel-niche">
-            <label htmlFor="deck-niche-slider" className="deck-panel-niche-label">
-              {t("niche.label")}
-            </label>
-            <input
-              id="deck-niche-slider"
-              type="range"
-              min="-1"
-              max="1"
-              step="0.25"
-              value={nicheBias}
-              onChange={handleNicheChange}
-              onPointerUp={persistNiche}
-              onKeyUp={persistNiche}
-              onBlur={persistNiche}
-              className="niche-slider"
-            />
-            <div className="deck-panel-niche-captions">
-              <span className="muted text-sm">{t("niche.mainstream")}</span>
-              <span className="muted text-sm">{t("niche.niche")}</span>
+          {discoverMode === "recommended" && (
+            <div className="deck-panel-niche">
+              <label htmlFor="deck-niche-slider" className="deck-panel-niche-label">
+                {t("niche.label")}
+              </label>
+              <input
+                id="deck-niche-slider"
+                type="range"
+                min="-1"
+                max="1"
+                step="0.25"
+                value={nicheBias}
+                onChange={handleNicheChange}
+                onPointerUp={persistNiche}
+                onKeyUp={persistNiche}
+                onBlur={persistNiche}
+                className="niche-slider"
+              />
+              <div className="deck-panel-niche-captions">
+                <span className="muted text-sm">{t("niche.mainstream")}</span>
+                <span className="muted text-sm">{t("niche.niche")}</span>
+              </div>
+              <p className="muted text-sm deck-panel-niche-hint">
+                {t("niche.hint")}
+              </p>
             </div>
-            <p className="muted text-sm deck-panel-niche-hint">
-              {t("niche.hint")}
-            </p>
-          </div>
+          )}
 
           <p className="muted deck-panel-intro">
             {t("discover.filtersIntro")}
