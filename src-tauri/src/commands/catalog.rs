@@ -295,6 +295,7 @@ pub async fn backfill_catalog_metadata(app: AppHandle, state: State<'_, AppState
     let _ = app.emit("catalog-backfill-progress", CatalogBackfillProgress { done, total });
 
     for batch in stale_ids.chunks(crate::anilist::MAX_IDS_PER_REQUEST * crate::anilist::PAGES_PER_REQUEST as usize) {
+        let started = std::time::Instant::now();
         let fetched = crate::anilist::fetch_by_ids_multi(batch).await.map_err(|e| e.to_string())?;
         {
             let db = state.db.lock().unwrap();
@@ -311,7 +312,8 @@ pub async fn backfill_catalog_metadata(app: AppHandle, state: State<'_, AppState
         // total and re-request those same dead ids on every future run.
         done += batch.len() as i64;
         let _ = app.emit("catalog-backfill-progress", CatalogBackfillProgress { done, total });
-        tokio::time::sleep(PACED_SLEEP).await;
+        // The request itself already used part of the 2.1 s slot.
+        tokio::time::sleep(PACED_SLEEP.saturating_sub(started.elapsed())).await;
     }
     Ok(done)
 }
@@ -352,6 +354,7 @@ pub async fn refresh_catalog_status(state: State<'_, AppState>) -> Result<Option
 
     let mut done = 0i64;
     for batch in stale_ids.chunks(crate::anilist::MAX_IDS_PER_REQUEST * crate::anilist::PAGES_PER_REQUEST as usize) {
+        let started = std::time::Instant::now();
         let fetched = crate::anilist::fetch_by_ids_multi(batch).await.map_err(|e| e.to_string())?;
         {
             let db = state.db.lock().unwrap();
@@ -363,7 +366,7 @@ pub async fn refresh_catalog_status(state: State<'_, AppState>) -> Result<Option
             db.upsert_catalog_anime_batch(&items).map_err(|e| e.to_string())?;
         }
         done += batch.len() as i64;
-        tokio::time::sleep(PACED_SLEEP).await;
+        tokio::time::sleep(PACED_SLEEP.saturating_sub(started.elapsed())).await;
     }
 
     {
@@ -597,6 +600,7 @@ async fn run_catalog_sync(
                 Some(cap) => crate::anilist::PAGES_PER_REQUEST.min(cap - page + 1).max(1),
                 None => crate::anilist::PAGES_PER_REQUEST,
             };
+            let started = std::time::Instant::now();
             let result = crate::anilist::fetch_partition_pages(partition, page, batch_pages, PAGE_SIZE)
                 .await
                 .map_err(|e| e.to_string())?;
@@ -622,7 +626,7 @@ async fn run_catalog_sync(
             page += batch_pages;
             let should_pace = result.rate_remaining.map(|r| r < RATE_HEADROOM_FLOOR).unwrap_or(true);
             if should_pace {
-                tokio::time::sleep(PACED_SLEEP).await;
+                tokio::time::sleep(PACED_SLEEP.saturating_sub(started.elapsed())).await;
             }
         }
 
