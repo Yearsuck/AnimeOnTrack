@@ -28,7 +28,7 @@
     Tracks currently-airing anime, notifies you the second a new episode drops, downloads episodes for offline viewing (in development), and unifies your progress across six streaming sites — without an account or cloud lock-in.
     <br />
     <br />
-    <a href="https://github.com/Yearsuck/AnimeOnTrack/releases/latest"><strong>⬇ Download Installer (v0.8.0) »</strong></a>
+    <a href="https://github.com/Yearsuck/AnimeOnTrack/releases/latest"><strong>⬇ Download Installer (v0.9.0) »</strong></a>
     <br />
     <br />
     <a href="#about-the-project">About The Project</a>
@@ -69,8 +69,8 @@
     </li>
     <li><a href="#architecture--engineering-highlights">Architecture & Engineering Highlights</a></li>
     <li><a href="#project-layout">Project Layout</a></li>
-    <li><a href="#whats-new-in-v080">What's New in v0.8.0</a></li>
-    <li><a href="#in-development-unreleased">In Development (unreleased)</a></li>
+    <li><a href="#whats-new-in-v090">What's New in v0.9.0</a></li>
+    <li><a href="#previous-release-v080">Previous release: v0.8.0</a></li>
     <li><a href="#contributing">Contributing</a></li>
     <li><a href="#a-note-on-piracy">A Note on Piracy</a></li>
     <li><a href="#disclaimer">Disclaimer</a></li>
@@ -158,11 +158,11 @@ Six adapters are bundled out of the box, all conforming to a pluggable `SiteAdap
 
 | Site | Default Domain | Adapter ID | Primary Language | Offline downloads |
 |:---|:---|:---|:---:|:---:|
-| **AnimeYT** | `animeyt.cc` | `animeytx` | Spanish (Castilian / LatAm) | direct mp4 player *(unreleased)* |
-| **TioAnime** | `tioanime.com` | `tioanime` | Spanish (Castilian / LatAm) | YourUpload, Mp4upload, Ok.ru… *(unreleased)* |
-| **AnimeFLV** | `animeflv.or.at` | `animeflv` | Spanish (Castilian / LatAm) | Mp4upload, VOE *(unreleased)* |
-| **JKanime** | `jkanime.net` | `jkanime` | Spanish (Castilian / LatAm) | Mp4upload, Mediafire, Mixdrop, Vidhide, VOE… *(unreleased)* |
-| **GogoAnime** | `gogoanime.by` | `gogoanime` | English (Sub / Dub) | HLS *(unreleased)* |
+| **AnimeYT** | `animeyt.cc` | `animeytx` | Spanish (Castilian / LatAm) | direct mp4 player |
+| **TioAnime** | `tioanime.com` | `tioanime` | Spanish (Castilian / LatAm) | YourUpload, Mp4upload, Ok.ru… |
+| **AnimeFLV** | `animeflv.or.at` | `animeflv` | Spanish (Castilian / LatAm) | Mp4upload, VOE |
+| **JKanime** | `jkanime.net` | `jkanime` | Spanish (Castilian / LatAm) | Mp4upload, Mediafire, Mixdrop, Vidhide, VOE… |
+| **GogoAnime** | `gogoanime.by` | `gogoanime` | English (Sub / Dub) | HLS |
 | **AnimeLand** | `w7.animeland.tv` | `animeland` | English (Dubbed) | not possible (see research doc) |
 
 Every adapter keeps a per-site mirror list that fails over automatically when a domain dies. AnimeFLV moved to a new WordPress site (`animeflv.or.at`) in October 2026; existing installs are migrated to it on first launch.
@@ -317,24 +317,25 @@ AnimeOnTrack/
 
 ---
 
-## What's New in v0.8.0
+## What's New in v0.9.0
+
+Details of each change and how it was tested: [`docs/new-additions-review.md`](docs/new-additions-review.md).
+
+* **Offline downloads**, per series, with a quarantine for every file (see *Key Features*), five sites and a built-in HLS downloader.
+* **Fast first run**: a new install imports a 2.8 MB gzip snapshot of the catalog (22,600 titles in about 4 s) instead of crawling AniList for 15+ minutes; the crawl remains as the fallback. Until the snapshot is published as a release asset (`catalog-snapshot`) the crawl is used.
+* **Faster AniList crawl**: ten pages per request, pacing that counts the request time and the pre-2000 years crawled by decade — the full 22,600-title sync dropped from 15+ min to about 3 min.
+* **A smoother app**: every command runs off the UI thread, the 3D graph code loads only when Estadísticas opens, the catalog list no longer rebuilds dozens of pages on return, and the dev build optimises SQLite.
+* **Discover**: deck filters apply on their own and can be reset; a popular ↔ niche slider and tag/studio-aware recommendations; the slider is hidden in random mode.
+* **Catalog**: start watching a series (it moves to Pendientes) straight from the selection bar.
+* **Smaller things**: next-episode air date on the series screen (ani.zip), per-episode number alignment across sites, keyboard shortcuts (`?`), a Windows toast for new episodes, export diagnostics + a rotating `aot.log`, ad and pop-up blocking in the app's own windows, and the AniList page opening inside the app.
+
+## Previous release: v0.8.0
 
 * **AniList is the source of truth**: titles, covers and metadata come from AniList for every linked series; the streaming sites only supply episode links and the airing signal.
 * **animeyt.cc relaunch supported** with its new `aniyt` theme; old `*.animeytx.net` URLs are migrated on startup.
 * **Site priority**: order the six sites and the app opens the episode from the highest-priority site that has it.
 * **Pendientes merges sites per episode number**: the same episode on two sites shows once; a show's missing episodes are fetched from another site when its own listing lags.
 * **Season relink**: a listed multi-season row follows the season that is actually releasing.
-
-## In Development (unreleased)
-
-Work on the `feature/new-additions` branch, waiting for review (see [`docs/new-additions-review.md`](docs/new-additions-review.md) for what each change does and how to test it):
-
-* **Offline downloads**, per series, with a quarantine for every file (see *Key Features*), five sites and a built-in HLS downloader.
-* **Fast first run**: a new install imports a 2.8 MB gzip snapshot of the catalog (22,600 titles in about 4 s) instead of crawling AniList for 15+ minutes; the crawl remains as the fallback. The snapshot has to be published as a release asset (`catalog-snapshot`).
-* **A smoother app**: every command runs off the UI thread, the 3D graph code loads only when Estadísticas opens, the catalog list no longer rebuilds dozens of pages on return, and the dev build optimises SQLite.
-* **Discover**: deck filters apply on their own and can be reset; a popular ↔ niche slider and tag/studio-aware recommendations; the slider is hidden in random mode.
-* **Catalog**: start watching a series (it moves to Pendientes) straight from the selection bar.
-* **Smaller things**: next-episode air date on the series screen (ani.zip), per-episode number alignment across sites, keyboard shortcuts (`?`), a Windows toast for new episodes, export diagnostics + a rotating `aot.log`, ad and pop-up blocking in the app's own windows, and the AniList page opening inside the app.
 
 *(For detailed historical release notes, see the [Releases](https://github.com/Yearsuck/AnimeOnTrack/releases) tab).*
 

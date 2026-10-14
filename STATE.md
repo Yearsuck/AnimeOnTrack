@@ -1,22 +1,22 @@
 # Estado de AnimeOnTrack
 
-Instantánea del 2026-10-14. Actualízala al cerrar cada tarea o antes de compactar una conversación
+Instantánea del 2026-10-14 (release 0.9.0). Actualízala al cerrar cada tarea o antes de compactar una conversación
 (regla global `session-state`). Lo que no está aquí hay que mirarlo en git, no darlo por sabido.
 
 ## Publicado
-- Última versión: **v0.8.0** (tag en `main`, 2026-10-13; instaladores de Windows, macOS y Linux en la release).
+- Última versión: **v0.9.0** (tag en `main`, 2026-10-14; instaladores en la release). Trae todo lo de la antigua rama
+  `feature/new-additions` (descargas offline, snapshot de catálogo, rastreo AniList ~3 min, fluidez, UI).
+- Anterior: **v0.8.0** (2026-10-13).
 - Contenido de 0.8.0: AniList como fuente de verdad (títulos, portadas y metadatos), soporte del relanzamiento
   de animeyt.cc, prioridad entre sitios, Pendientes que fusiona sitios por número de episodio, episodios que
   faltan traídos de otro sitio y relink a la temporada en emisión. PR #44.
 - Anteriores seguidas: 0.7.0 (filtros de catálogo, listas de Descubrir, estadísticas rediseñadas), 0.6.x.
 
 ## En `develop` sin publicar
-- Nada: `develop` y `main` coinciden con 0.8.0.
+- Nada: `develop` y `main` coinciden con 0.9.0.
 
-## Rama `feature/new-additions` (sin mergear a `develop`, pendiente de revisión del usuario)
-Regla del usuario: todo el desarrollo nuevo va aquí y **nada se fusiona en `develop`/`main` ni se publica sin
-su aprobación**. La lista completa de cambios, cómo probarlos y qué se validó está en
-`docs/new-additions-review.md` (Batches 0 a 14); el plan en `docs/superpowers/plans/2026-10-14-*.md`.
+## Contenido de 0.9.0 (antes en `feature/new-additions`, fusionada el 2026-10-14 con aprobación del usuario) La lista completa de cambios, cómo probarlos y qué se validó está en
+`docs/new-additions-review.md` (Batches 0 a 15); el plan en `docs/superpowers/plans/2026-10-14-*.md`.
 Resumen:
 - **Descargas offline** por serie (panel con "descargar pendientes" y "borrar descargas" sin tocar lo visto),
   en TioAnime, JKAnime, animeyt.cc, GogoAnime y el AnimeFLV nuevo; hosts: Mp4upload, YourUpload, Mediafire,
@@ -24,6 +24,8 @@ Resumen:
   cuarentena (contenedor de vídeo real, Defender, Mark of the Web, carpeta sin permiso de ejecución).
 - **Primer arranque rápido**: la instalación nueva importa un snapshot gzip del catálogo (22.600 títulos en ~4 s
   en vez de 15+ min de rastreo). **Falta publicarlo** (ver Abierto).
+- **Rastreo AniList**: 10 páginas por petición + pausa que descuenta la latencia + 1940-1999 por décadas: 22.619
+  títulos en ~3 min (antes 15+).
 - **Fluidez**: comandos fuera del hilo de la UI, grafo 3D con carga diferida, Catálogo que no reconstruye decenas
   de páginas, SQLite optimizado también en dev.
 - **AnimeFLV** en su nueva dirección `animeflv.or.at` (otro sitio, adaptador reescrito) con migración de las URLs
@@ -36,8 +38,6 @@ Resumen:
 - Comprobaciones al último commit: 904 tests de Rust, 87 de frontend, clippy y `tsc` limpios, `npm run build` ok.
 
 ## Abierto
-- **Decisión del usuario**: revisar la rama y decidir qué pasa a `develop`/release (probablemente 0.9.0 por las
-  descargas). Un release siempre se pide y se aprueba antes de hacerlo.
 - **Publicar el snapshot del catálogo**: crear una release con tag `catalog-snapshot` y adjuntar el archivo que
   genera el comando `export_catalog_snapshot` (re-exportarlo desde la app real, no desde el sandbox). Hasta
   entonces las instalaciones nuevas usan el rastreo largo.
