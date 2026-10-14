@@ -124,16 +124,27 @@ pub fn set_seen_cascade(
     // know which downloads to clean up afterwards.
     let affected_ids = if seen {
         let mut ids = Vec::new();
-        for &sid in &sids {
-            if let Ok(ep_ids) = db.episode_ids_in_cascade(sid, &number, true) {
-                ids.extend(ep_ids);
+        let now = chrono::Utc::now().timestamp();
+        let clicked_align = db.row_align(series_id, now).ok();
+        let canonical = crate::db::parse_ep_number(&number)
+            .and_then(|n| clicked_align.as_ref()?.to_canonical(n));
+        if let Some(c) = canonical {
+            for &sid in &sids {
+                if let Ok(align) = db.row_align(sid, now) {
+                    let num_str = crate::db::episode_align::format_ep_number(align.to_row(c));
+                    if let Ok(ep_ids) = db.episode_ids_in_cascade(sid, &num_str, true) {
+                        ids.extend(ep_ids);
+                    }
+                }
             }
+        } else if let Ok(ep_ids) = db.episode_ids_in_cascade(series_id, &number, true) {
+            ids.extend(ep_ids);
         }
         ids
     } else {
         vec![]
     };
-    db.set_seen_cascade_in(&sids, &number, seen)
+    db.set_seen_cascade_in(series_id, &sids, &number, seen)
         .map_err(|e| e.to_string())?;
     if seen && !affected_ids.is_empty() {
         cleanup_downloads(&db, &affected_ids);

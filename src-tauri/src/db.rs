@@ -574,11 +574,13 @@ pub(crate) mod stats;
 mod airing;
 mod series;
 pub(crate) mod library;
+pub(crate) mod episode_align;
 
 pub use series::SwipeHistoryRow;
 pub use catalog::CatalogFilter;
 pub use airing::{EpisodeSourceCandidate, PendingSort};
 pub(crate) use airing::is_csp_displayable_cover;
+pub(crate) use episodes::parse_ep_number;
 pub use stats::SignatureCounts;
 
 #[cfg(test)]
