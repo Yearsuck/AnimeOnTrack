@@ -299,6 +299,8 @@ export const ca: Messages = {
   "discover.filtersSave": "Desa els filtres",
   "discover.filtersSaving": "Desant…",
   "discover.filtersSaved": "Filtres desats.",
+  "discover.filtersReset": "Restableix els filtres",
+  "discover.filtersAutoHint": "Els canvis s'apliquen sols.",
   "discover.deckPanelTitle": "Configuració de la baralla",
   "discover.deckPanelToggleAria": "Mostra o amaga la configuració de la baralla",
   "discover.deckPanelBansBadge": "{count} filtres actius",

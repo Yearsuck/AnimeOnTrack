@@ -303,6 +303,8 @@ export const es = {
   "discover.filtersSave": "Guardar filtros",
   "discover.filtersSaving": "Guardando…",
   "discover.filtersSaved": "Filtros guardados.",
+  "discover.filtersReset": "Restablecer filtros",
+  "discover.filtersAutoHint": "Los cambios se aplican solos.",
   "discover.deckPanelTitle": "Ajustes del mazo",
   "discover.deckPanelToggleAria": "Mostrar u ocultar los ajustes del mazo",
   "discover.deckPanelBansBadge": "{count} filtros activos",
