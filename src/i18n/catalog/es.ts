@@ -350,7 +350,6 @@ export const es = {
   "catalog.batchStart": "Empezar a ver",
   "catalog.starting": "Empezando {current}/{total}…",
   "catalog.batchStartDone": "{started} en marcha, {problems} con problemas.",
-  "catalog.startTitle": "Empezar a ver (pasa a Pendientes)",
   "catalog.startNotFound": "«{title}» no se encontró en el sitio activo.",
 
   // ProgressBar.tsx
@@ -650,8 +649,6 @@ export const es = {
   "settings.diagnosticsReveal": "Mostrar carpeta",
 
   // continue watching
-  "continue.title": "Continuar viendo",
-  "continue.play": "Reproducir",
   "continue.discover": "Descubrir anime",
 
   // notifications

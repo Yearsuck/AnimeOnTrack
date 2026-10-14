@@ -335,7 +335,6 @@ export const en: Messages = {
   "catalog.batchStart": "Start watching",
   "catalog.starting": "Starting {current}/{total}…",
   "catalog.batchStartDone": "{started} started, {problems} with problems.",
-  "catalog.startTitle": "Start watching (moves to Pending)",
   "catalog.startNotFound": "“{title}” was not found on the active site.",
 
   "progress.stageOpening": "Opening page…",
@@ -631,8 +630,6 @@ export const en: Messages = {
   "settings.diagnosticsReveal": "Show in folder",
 
   // continue watching
-  "continue.title": "Continue watching",
-  "continue.play": "Play",
   "continue.discover": "Discover anime",
 
   // notifications

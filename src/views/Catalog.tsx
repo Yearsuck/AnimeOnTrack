@@ -697,19 +697,6 @@ export function Catalog({ onChanged }: { onChanged?: () => void }) {
                   {a.format && <span className="chip">{a.format}</span>}
                   <button
                     type="button"
-                    className="card-start-btn"
-                    title={t("catalog.startTitle")}
-                    aria-label={t("catalog.startTitle")}
-                    disabled={batching}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      runStartWatching([a]);
-                    }}
-                  >
-                    ▶
-                  </button>
-                  <button
-                    type="button"
                     className="card-info-btn"
                     title={t("catalog.infoTitle")}
                     aria-label={t("catalog.infoTitle")}

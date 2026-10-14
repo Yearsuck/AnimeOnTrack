@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
-import { listLibrary, listPending, openEpisode, setSeenCascade } from "../api";
+import { listPending, openEpisode, setSeenCascade } from "../api";
 import { useT } from "../i18n";
-import type { LibraryItem, PendingItem, Series } from "../types";
+import type { PendingItem, Series } from "../types";
 import { initials, resolveCoverUrl, useCoverFailure } from "../lib/posterFallback";
-import { pickContinueWatching } from "../lib/continueWatching";
 
 // A series' cover_url on the Pendientes list can be a remote URL still waiting
 // for its first cover-cache download — the app's CSP blocks such URLs silently,
@@ -47,7 +46,6 @@ export function Pending({
 }) {
   const t = useT();
   const [items, setItems] = useState<PendingItem[]>([]);
-  const [continueItems, setContinueItems] = useState<LibraryItem[]>([]);
   const [removing, setRemoving] = useState<Set<number>>(new Set());
   const [sort, setSort] = useState<PendingSort>("remaining_asc");
 
@@ -55,22 +53,12 @@ export function Pending({
     setItems(await listPending(sort));
   }, [sort]);
 
-  const loadContinue = useCallback(async () => {
-    try {
-      const lib = await listLibrary();
-      setContinueItems(pickContinueWatching(lib));
-    } catch {
-      setContinueItems([]);
-    }
-  }, []);
-
   useEffect(() => {
     load();
-    loadContinue();
     // `refreshSignal` isn't read in the body — it's a bump counter whose only
     // job is to be a dependency, same as in AiringGrid.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [load, loadContinue, refreshSignal]);
+  }, [load, refreshSignal]);
 
   async function watch(it: PendingItem) {
     await openEpisode(it.episode.url);
@@ -82,7 +70,6 @@ export function Pending({
       try {
         await setSeenCascade(it.series.id, it.episode.number, true);
         await load();
-        await loadContinue();
         onChanged();
       } catch (e) {
         console.error("markSeen failed:", e);
@@ -145,45 +132,6 @@ export function Pending({
           </div>
         )}
       </div>
-
-      {continueItems.length > 0 && (
-        <section className="continue-strip">
-          <h3 className="continue-title">{t("continue.title")}</h3>
-          <div className="continue-cards">
-            {continueItems.map((item) => (
-              <div key={item.series.id} className="continue-card">
-                <div
-                  className="continue-card-poster clickable"
-                  onClick={() => onOpenSeries(item.series)}
-                >
-                  <PendingPoster title={item.series.title} coverUrl={item.series.cover_url} />
-                </div>
-                <div className="continue-card-main">
-                  <div
-                    className="continue-card-title clickable"
-                    onClick={() => onOpenSeries(item.series)}
-                  >
-                    {item.series.title}
-                  </div>
-                  <div className="continue-card-ep">
-                    {item.next_episode &&
-                      t("common.episodeNumber", { number: item.next_episode.number })}
-                  </div>
-                  {item.next_episode && (
-                    <button
-                      type="button"
-                      className="btn btn-primary btn-sm continue-card-play"
-                      onClick={() => openEpisode(item.next_episode!.url)}
-                    >
-                      {t("continue.play")}
-                    </button>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-        </section>
-      )}
 
       {items.length === 0 ? (
         <div className="empty">
