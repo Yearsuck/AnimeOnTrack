@@ -6,11 +6,13 @@ import {
   getCatalogFacets,
   linkCatalogSeries,
   openEpisode,
+  startWatching,
   syncAnimeCatalog,
 } from "../api";
 import { useT } from "../i18n";
 import { createFilterCache } from "../lib/createFilterCache";
 import { resolveCoverUrl } from "../lib/posterFallback";
+import { startSeriesSequentially, summarizeStart } from "../lib/startWatchingQueue";
 import type { CatalogAnime, CatalogFacets, CatalogFilter, CatalogSyncProgress } from "../types";
 import {
   DateRangeControl,
@@ -198,6 +200,54 @@ export function Catalog() {
     } finally {
       setBatching(false);
     }
+  }
+
+  // "Empezar a ver": turns each catalog card into a local "Want" series and
+  // requests startWatching to scrape/link on the active pirate site.
+  // Must run strictly serialized via startSeriesSequentially because scraping
+  // hits Cloudflare-fronted sites.
+  async function runStartWatching(cards: CatalogAnime[], clearSelection = false) {
+    if (cards.length === 0) return;
+    setBatching(true);
+    setBatchMsg(t("catalog.starting", { current: 1, total: cards.length }));
+    try {
+      const counts = await startSeriesSequentially(
+        cards,
+        async (a) => {
+          try {
+            const id = await decideCatalogCard(decideArgs(a, "Want"));
+            const outcome = await startWatching(id);
+            if (outcome.type === "Linked") return "started";
+            if (outcome.type === "AlreadyLinked") return "alreadyStarted";
+            return "notFound";
+          } catch {
+            return "failed";
+          }
+        },
+        (current, total) => {
+          setBatchMsg(t("catalog.starting", { current, total }));
+        }
+      );
+
+      if (clearSelection) {
+        setSelected(new Map());
+      }
+
+      if (cards.length === 1 && counts.notFound === 1) {
+        setBatchMsg(t("catalog.startNotFound", { title: cards[0].title }));
+      } else {
+        const { started, problems } = summarizeStart(counts);
+        setBatchMsg(t("catalog.batchStartDone", { started, problems }));
+      }
+    } catch (e) {
+      setBatchMsg(t("errors.generic", { detail: String(e) }));
+    } finally {
+      setBatching(false);
+    }
+  }
+
+  async function batchStart() {
+    await runStartWatching([...selected.values()], true);
   }
 
   // Debounce the raw search text into the committed value that actually
@@ -614,6 +664,9 @@ export function Catalog() {
             <div className="batch-bar">
               <span className="muted">{t("catalog.selectedCount", { count: selected.size })}</span>
               <div className="spacer" />
+              <button className="btn btn-primary" onClick={batchStart} disabled={batching}>
+                {t("catalog.batchStart")}
+              </button>
               <button className="btn" onClick={batchWant} disabled={batching}>
                 {t("catalog.batchWant")}
               </button>
@@ -639,6 +692,19 @@ export function Catalog() {
               >
                 <div className="poster">
                   {a.format && <span className="chip">{a.format}</span>}
+                  <button
+                    type="button"
+                    className="card-start-btn"
+                    title={t("catalog.startTitle")}
+                    aria-label={t("catalog.startTitle")}
+                    disabled={batching}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      runStartWatching([a]);
+                    }}
+                  >
+                    ▶
+                  </button>
                   <button
                     type="button"
                     className="card-info-btn"

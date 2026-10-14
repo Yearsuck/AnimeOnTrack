@@ -347,6 +347,11 @@ export const es = {
   "catalog.linking": "Enlazando {current}/{total}…",
   "catalog.batchWantDone": "{count} añadidos a Quiero ver.",
   "catalog.batchSeenDone": "{count} marcados como vistos.",
+  "catalog.batchStart": "Empezar a ver",
+  "catalog.starting": "Empezando {current}/{total}…",
+  "catalog.batchStartDone": "{started} en marcha, {problems} con problemas.",
+  "catalog.startTitle": "Empezar a ver (pasa a Pendientes)",
+  "catalog.startNotFound": "«{title}» no se encontró en el sitio activo.",
 
   // ProgressBar.tsx
   "progress.stageOpening": "Abriendo página…",

@@ -913,6 +913,28 @@ textarea.input {
   background: var(--accent-solid);
   color: var(--on-accent);
 }
+.card-start-btn {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-round);
+  border: none;
+  background: var(--overlay-strong);
+  color: var(--text);
+  font-size: var(--fs-md);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2;
+}
+.card-start-btn:hover {
+  background: var(--accent-solid);
+  color: var(--on-accent);
+}
 .card-select-check {
   position: absolute;
   bottom: 6px;
