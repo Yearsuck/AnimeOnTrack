@@ -2389,7 +2389,9 @@ mod tests {
         let format_affinity = std::collections::HashMap::new();
 
         let mut taste_match_wins = 0;
-        for _ in 0..30 {
+        // ~90% win rate per pick; 200 draws and a 150 floor sit ~7 sigma
+        // below the mean, so this cannot flake (25/30 did, ~1 run in 12).
+        for _ in 0..200 {
             let picked = db
                 .random_catalog_anime_in_genre(
                     "Drama",
@@ -2411,8 +2413,8 @@ mod tests {
             }
         }
         assert!(
-            taste_match_wins >= 25,
-            "expected the secondary-genre-matching candidate to dominate the weighted pick, won {taste_match_wins}/30"
+            taste_match_wins >= 150,
+            "expected the secondary-genre-matching candidate to dominate the weighted pick, won {taste_match_wins}/200"
         );
     }
 
