@@ -336,7 +336,12 @@ async fn resolve_media(app: &AppHandle, episode_url: &str) -> Result<Media, DlEr
         }
     };
 
-    let options = candidates(&servers);
+    let mut options = candidates(&servers);
+    // Development aid: `AOT_DOWNLOAD_PREFER=<host id>` (e.g. `voe`, `mixdrop`) tries
+    // that host's mirrors first, so one extractor can be exercised on a live page.
+    if let Some(prefer) = std::env::var("AOT_DOWNLOAD_PREFER").ok().filter(|p| !p.trim().is_empty()) {
+        options.sort_by_key(|s| supported_host(s) != Some(prefer.trim().to_ascii_lowercase().as_str()));
+    }
     if options.is_empty() {
         let names: Vec<&str> = servers.iter().map(|s| s.name.as_str()).collect();
         return Err(DlError::Net(format!(
