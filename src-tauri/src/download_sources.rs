@@ -746,13 +746,498 @@ pub fn resolve_streamtape(embed_html: &str) -> Option<Media> {
     })
 }
 
+/// Encodes an integer `n` into the Dean Edwards Packer base-N representation with radix `radix`.
+/// Supports radix 2..=62 using characters 0..=9, a..=z, A..=Z.
+fn packer_base(mut n: usize, radix: usize) -> String {
+    if !(2..=62).contains(&radix) {
+        return String::new();
+    }
+    let digit = |d: usize| -> char {
+        match d {
+            0..=9 => (b'0' + d as u8) as char,
+            10..=35 => (b'a' + (d - 10) as u8) as char,
+            36..=61 => (b'A' + (d - 36) as u8) as char,
+            _ => '0',
+        }
+    };
+    if n == 0 {
+        return "0".to_string();
+    }
+    let mut chars = Vec::new();
+    while n > 0 {
+        chars.push(digit(n % radix));
+        n /= radix;
+    }
+    chars.reverse();
+    chars.into_iter().collect()
+}
+
+/// Helper that checks if a character is an ASCII word character [A-Za-z0-9_].
+fn is_word_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_'
+}
+
+/// Replaces all occurrences of `token` in `text` that match regex `\b<token>\b` with `replacement`.
+fn replace_word_boundary(text: &str, token: &str, replacement: &str) -> String {
+    let mut result = String::with_capacity(text.len());
+    let token_len = token.len();
+    let mut i = 0;
+
+    while i < text.len() {
+        if let Some(sub) = text.get(i..) {
+            if sub.starts_with(token) {
+                let prev_is_word = text
+                    .get(..i)
+                    .and_then(|s| s.chars().next_back())
+                    .is_some_and(is_word_char);
+                let next_idx = i + token_len;
+                let next_is_word = text
+                    .get(next_idx..)
+                    .and_then(|s| s.chars().next())
+                    .is_some_and(is_word_char);
+
+                if !prev_is_word && !next_is_word {
+                    result.push_str(replacement);
+                    i = next_idx;
+                    continue;
+                }
+            }
+        }
+        let Some(ch) = text.get(i..).and_then(|s| s.chars().next()) else {
+            break;
+        };
+        result.push(ch);
+        i += ch.len_utf8();
+    }
+    result
+}
+
+/// Finds the index of the `(` opening the packer function argument list.
+/// The `(` must be immediately preceded by `}` (ignoring whitespace).
+fn find_packer_args(slice: &str) -> Option<usize> {
+    let mut search_from = 0;
+    while let Some(sub) = slice.get(search_from..) {
+        let pos = sub.find('(')?;
+        let abs_pos = search_from + pos;
+        search_from = abs_pos + 1;
+        let before = slice.get(..abs_pos)?;
+        if before.trim_end().ends_with('}') {
+            return Some(abs_pos);
+        }
+    }
+    None
+}
+
+/// Attempts to parse and unpack a single Dean Edwards P.A.C.K.E.R. invocation starting at `eval(...)`.
+fn try_unpack(slice: &str) -> Option<String> {
+    let open_paren = find_packer_args(slice)?;
+    let after_paren = slice.get(open_paren + 1..)?.trim_start();
+    let quote = after_paren.chars().next()?;
+    if quote != '\'' && quote != '"' {
+        return None;
+    }
+    let after_quote = after_paren.get(quote.len_utf8()..)?;
+
+    let mut escaped = false;
+    let mut p_end = None;
+    for (i, ch) in after_quote.char_indices() {
+        if escaped {
+            escaped = false;
+        } else if ch == '\\' {
+            escaped = true;
+        } else if ch == quote {
+            p_end = Some(i);
+            break;
+        }
+    }
+    let p_end = p_end?;
+    let raw_p = after_quote.get(..p_end)?;
+    let rest = after_quote.get(p_end + quote.len_utf8()..)?;
+
+    let trimmed_rest = rest.trim_start();
+    if !trimmed_rest.starts_with(',') {
+        return None;
+    }
+    let after_comma1 = trimmed_rest.get(1..)?.trim_start();
+    let comma2_pos = after_comma1.find(',')?;
+    let radix: usize = after_comma1.get(..comma2_pos)?.trim().parse().ok()?;
+    if !(2..=62).contains(&radix) {
+        return None;
+    }
+
+    let after_comma2 = after_comma1.get(comma2_pos + 1..)?.trim_start();
+    let comma3_pos = after_comma2.find(',')?;
+    let count: usize = after_comma2.get(..comma3_pos)?.trim().parse().ok()?;
+    if count > 100_000 {
+        return None;
+    }
+
+    let after_comma3 = after_comma2.get(comma3_pos + 1..)?.trim_start();
+    let words_quote = after_comma3.chars().next()?;
+    if words_quote != '\'' && words_quote != '"' {
+        return None;
+    }
+    let words_content = after_comma3.get(words_quote.len_utf8()..)?;
+
+    let split_pos = words_content.find(".split(")?;
+    let before_split = words_content.get(..split_pos)?.trim_end();
+    if !before_split.ends_with(words_quote) {
+        return None;
+    }
+    let words_len = before_split.len().checked_sub(words_quote.len_utf8())?;
+    let words_str = before_split.get(..words_len)?;
+
+    let after_split = words_content.get(split_pos + ".split(".len()..)?;
+    let after_split_trimmed = after_split.trim_start();
+    if !after_split_trimmed.starts_with("'|'")
+        && !after_split_trimmed.starts_with(r#""|""#)
+        && !after_split_trimmed.starts_with(r"\'|\'")
+    {
+        return None;
+    }
+
+    let mut p = if quote == '\'' {
+        raw_p.replace(r"\'", "'").replace(r"\\", "\\")
+    } else {
+        raw_p.replace(r#"\""#, "\"").replace(r"\\", "\\")
+    };
+
+    let k: Vec<&str> = words_str.split('|').collect();
+
+    for c in (0..count).rev() {
+        let word = match k.get(c) {
+            Some(&w) if !w.is_empty() => w,
+            _ => continue,
+        };
+        let token = packer_base(c, radix);
+        if !p.contains(&token) {
+            continue;
+        }
+        p = replace_word_boundary(&p, &token, word);
+        if p.len() > 10 * 1024 * 1024 {
+            return None;
+        }
+    }
+
+    Some(p)
+}
+
+/// Unpacks a script packed with Dean Edwards P.A.C.K.E.R.
+///
+/// Finds the first `eval(function(p,a,c,k,e,d)` occurrence that parses correctly and executes
+/// the unpacking algorithm sequentially from highest index down to 0, matching `\b<token>\b`.
+/// Returns `None` if absent, malformed, or invalid (e.g. radix > 62 or count > 100,000). Never panics.
+#[allow(dead_code)] // Consumed by download supervisor in later stages
+pub fn unpack_packer(js: &str) -> Option<String> {
+    if js.len() > 2 * 1024 * 1024 {
+        return None;
+    }
+    let mut search_from = 0;
+    while let Some(sub) = js.get(search_from..) {
+        let Some(pos) = sub.find("eval(function(p,a,c,k,e,d)") else {
+            break;
+        };
+        let eval_idx = search_from + pos;
+        search_from = eval_idx + "eval(function(p,a,c,k,e,d)".len();
+        if let Some(eval_slice) = js.get(eval_idx..) {
+            if let Some(unpacked) = try_unpack(eval_slice) {
+                return Some(unpacked);
+            }
+        }
+    }
+    None
+}
+
+/// Extracts the JSON string value of a specified key (e.g. `"hls4":"/stream/..."`) from a JS/JSON text.
+fn extract_json_property_string(text: &str, key: &str) -> Option<String> {
+    let key_pat1 = format!("\"{}\"", key);
+    let key_pat2 = format!("'{}'", key);
+
+    let mut search_from = 0;
+    while search_from < text.len() {
+        let sub = text.get(search_from..)?;
+        let found_pos = match (sub.find(&key_pat1), sub.find(&key_pat2)) {
+            (Some(p1), Some(p2)) => Some(search_from + p1.min(p2)),
+            (Some(p1), None) => Some(search_from + p1),
+            (None, Some(p2)) => Some(search_from + p2),
+            (None, None) => None,
+        };
+
+        let key_idx = found_pos?;
+        let key_len = key.len() + 2; // includes enclosing quotes
+        let after_key = text.get(key_idx + key_len..)?;
+        search_from = key_idx + key_len;
+
+        let trimmed_after = after_key.trim_start();
+        if !trimmed_after.starts_with(':') {
+            continue;
+        }
+        let after_colon = trimmed_after.get(1..)?.trim_start();
+        let quote_ch = after_colon.chars().next()?;
+        if quote_ch != '"' && quote_ch != '\'' {
+            continue;
+        }
+
+        let content = after_colon.get(quote_ch.len_utf8()..)?;
+        let mut escaped = false;
+        let mut val_end = None;
+        for (i, ch) in content.char_indices() {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == quote_ch {
+                val_end = Some(i);
+                break;
+            }
+        }
+        let val_idx = val_end?;
+        let raw_val = content.get(..val_idx)?;
+
+        if quote_ch == '"' {
+            let quoted_slice = after_colon.get(..val_idx + 2)?;
+            if let Ok(parsed) = serde_json::from_str::<String>(quoted_slice) {
+                return Some(parsed);
+            }
+        } else {
+            let json_str = format!("\"{}\"", raw_val.replace('\\', "\\\\").replace('"', "\\\""));
+            if let Ok(parsed) = serde_json::from_str::<String>(&json_str) {
+                return Some(parsed);
+            }
+        }
+    }
+    None
+}
+
+/// Resolves a Vidhide embed page into downloadable media metadata.
+///
+/// Unpacks the Dean Edwards P.A.C.K.E.R. script, extracts `hls4`, `hls2`, `hls3` string values,
+/// resolves them against `page_url`, filters for http(s) URLs whose path ends in `.m3u8`
+/// (case-insensitive, ignoring query parameters), and selects the first match in preference
+/// order `hls4` > `hls2` > `hls3`. Referer is `<scheme>://<host of page_url>/`.
+#[allow(dead_code)] // Consumed by download supervisor in later stages
+pub fn resolve_vidhide(embed_html: &str, page_url: &str) -> Option<Media> {
+    let unpacked = unpack_packer(embed_html)?;
+    let parsed_page = Url::parse(page_url).ok()?;
+    let scheme = parsed_page.scheme();
+    if scheme != "http" && scheme != "https" {
+        return None;
+    }
+    let host = parsed_page.host_str()?;
+    let referer = if let Some(port) = parsed_page.port() {
+        format!("{}://{}:{}/", scheme, host, port)
+    } else {
+        format!("{}://{}/", scheme, host)
+    };
+
+    for key in &["hls4", "hls2", "hls3"] {
+        let Some(val) = extract_json_property_string(&unpacked, key) else {
+            continue;
+        };
+        let Ok(resolved) = parsed_page.join(&val) else {
+            continue;
+        };
+        if resolved.scheme() != "http" && resolved.scheme() != "https" {
+            continue;
+        }
+        let path = resolved.path().to_ascii_lowercase();
+        if !path.ends_with(".m3u8") {
+            continue;
+        }
+        return Some(Media {
+            url: resolved.to_string(),
+            referer,
+            host: "vidhide",
+        });
+    }
+
+    None
+}
+
+/// Extracts the `MDCore.wurl="..."` URL assignment from unpacked Mixdrop script text.
+fn extract_mdcore_wurl(text: &str) -> Option<String> {
+    let mut search_from = 0;
+    while let Some(sub) = text.get(search_from..) {
+        let pos = sub.find("MDCore.wurl")?;
+        let idx = search_from + pos;
+        let after = text.get(idx + "MDCore.wurl".len()..)?;
+        search_from = idx + "MDCore.wurl".len();
+
+        let trimmed_after = after.trim_start();
+        if !trimmed_after.starts_with('=') {
+            continue;
+        }
+        let after_eq = trimmed_after.get(1..)?.trim_start();
+        let quote_ch = after_eq.chars().next()?;
+        if quote_ch != '"' && quote_ch != '\'' {
+            continue;
+        }
+        let content = after_eq.get(quote_ch.len_utf8()..)?;
+        let mut escaped = false;
+        let mut val_end = None;
+        for (i, ch) in content.char_indices() {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == quote_ch {
+                val_end = Some(i);
+                break;
+            }
+        }
+        let val_idx = val_end?;
+        let raw_val = content.get(..val_idx)?;
+        return Some(raw_val.to_string());
+    }
+    None
+}
+
+/// Resolves a Mixdrop embed page into downloadable media metadata.
+///
+/// Unpacks the Dean Edwards P.A.C.K.E.R. script, extracts `MDCore.wurl`, prepends `https:`
+/// if scheme-relative (`//`), resolves against `page_url`, and ensures the resolved URL
+/// is http(s) with path ending in `.mp4`. Referer is `<scheme>://<host of page_url>/`.
+#[allow(dead_code)] // Consumed by download supervisor in later stages
+pub fn resolve_mixdrop(embed_html: &str, page_url: &str) -> Option<Media> {
+    let unpacked = unpack_packer(embed_html)?;
+    let raw_wurl = extract_mdcore_wurl(&unpacked)?;
+    let parsed_page = Url::parse(page_url).ok()?;
+    let scheme = parsed_page.scheme();
+    if scheme != "http" && scheme != "https" {
+        return None;
+    }
+    let host = parsed_page.host_str()?;
+    let referer = if let Some(port) = parsed_page.port() {
+        format!("{}://{}:{}/", scheme, host, port)
+    } else {
+        format!("{}://{}/", scheme, host)
+    };
+
+    let full_wurl = if raw_wurl.starts_with("//") {
+        format!("https:{}", raw_wurl)
+    } else {
+        raw_wurl
+    };
+
+    let resolved = parsed_page.join(&full_wurl).ok()?;
+    if resolved.scheme() != "http" && resolved.scheme() != "https" {
+        return None;
+    }
+    let path = resolved.path().to_ascii_lowercase();
+    if !path.ends_with(".mp4") {
+        return None;
+    }
+
+    Some(Media {
+        url: resolved.to_string(),
+        referer,
+        host: "mixdrop",
+    })
+}
+
+/// Ranks an Ok.ru video quality name: full (6) > hd (5) > sd (4) > low (3) > lowest (2) > mobile (1) > other (0).
+fn okru_video_rank(name: &str) -> u8 {
+    match name.trim().to_ascii_lowercase().as_str() {
+        "full" => 6,
+        "hd" => 5,
+        "sd" => 4,
+        "low" => 3,
+        "lowest" => 2,
+        "mobile" => 1,
+        _ => 0,
+    }
+}
+
+/// Resolves an Ok.ru embed page into downloadable media metadata.
+///
+/// Parses `data-options` on `[data-module="OKVideo"]`, reads `flashvars.metadata` (handling either
+/// a nested JSON string or object), and selects the highest ranked direct video from `videos`.
+/// Falls back to `hlsManifestUrl` when `videos` is empty or missing. Referer is `https://ok.ru/`.
+#[allow(dead_code)] // Consumed by download supervisor in later stages
+pub fn resolve_okru(embed_html: &str) -> Option<Media> {
+    static OKVIDEO_SELECTOR: OnceLock<Option<Selector>> = OnceLock::new();
+    let selector = OKVIDEO_SELECTOR
+        .get_or_init(|| Selector::parse(r#"[data-module="OKVideo"]"#).ok())
+        .as_ref()?;
+
+    let doc = Html::parse_document(embed_html);
+    let el = doc.select(selector).next()?;
+    let raw_options = el.value().attr("data-options")?;
+
+    let val: serde_json::Value = serde_json::from_str(raw_options).ok()?;
+    let flashvars = val.get("flashvars")?;
+    let metadata_val = flashvars.get("metadata")?;
+    let metadata: serde_json::Value = if let Some(s) = metadata_val.as_str() {
+        serde_json::from_str(s).ok()?
+    } else if metadata_val.is_object() {
+        metadata_val.clone()
+    } else {
+        return None;
+    };
+
+    let mut best_url: Option<String> = None;
+    let mut best_rank: u8 = 0;
+
+    if let Some(videos) = metadata.get("videos").and_then(|v| v.as_array()) {
+        for video in videos {
+            let Some(url_str) = video.get("url").and_then(|u| u.as_str()) else {
+                continue;
+            };
+            let Ok(parsed_url) = Url::parse(url_str) else {
+                continue;
+            };
+            if parsed_url.scheme() != "http" && parsed_url.scheme() != "https" {
+                continue;
+            }
+            let name = video.get("name").and_then(|n| n.as_str()).unwrap_or("");
+            let rank = okru_video_rank(name);
+
+            match &best_url {
+                None => {
+                    best_url = Some(url_str.to_string());
+                    best_rank = rank;
+                }
+                Some(_) => {
+                    if rank > best_rank {
+                        best_url = Some(url_str.to_string());
+                        best_rank = rank;
+                    }
+                }
+            }
+        }
+    }
+
+    let final_url = match best_url {
+        Some(u) => u,
+        None => {
+            let manifest = metadata.get("hlsManifestUrl").and_then(|u| u.as_str())?;
+            let parsed = Url::parse(manifest).ok()?;
+            if parsed.scheme() != "http" && parsed.scheme() != "https" {
+                return None;
+            }
+            manifest.to_string()
+        }
+    };
+
+    Some(Media {
+        url: final_url,
+        referer: "https://ok.ru/".to_string(),
+        host: "okru",
+    })
+}
+
 /// Returns the host identifier if the given server is supported for downloads.
 ///
-/// Supports `"mp4upload"`, `"yourupload"`, `"mediafire"`, and `"streamtape"`
+/// Supports `"mp4upload"`, `"yourupload"`, `"mediafire"`, `"streamtape"`, and `"okru"`
 /// when the URL's host matches the domain or is a subdomain thereof.
+/// Also supports `"vidhide"` and `"mixdrop"` when the server name matches (case-insensitive, trimmed)
+/// and the URL is http(s). Domain-based matching takes priority over name-based matching.
 #[allow(dead_code)] // Consumed by download supervisor in later stages
 pub fn supported_host(server: &Server) -> Option<&'static str> {
     let parsed = Url::parse(&server.url).ok()?;
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        return None;
+    }
     let host = parsed.host_str()?;
     let host_lower = host.to_ascii_lowercase();
     if host_lower == "mp4upload.com" || host_lower.ends_with(".mp4upload.com") {
@@ -763,25 +1248,38 @@ pub fn supported_host(server: &Server) -> Option<&'static str> {
         Some("mediafire")
     } else if host_lower == "streamtape.com" || host_lower.ends_with(".streamtape.com") {
         Some("streamtape")
+    } else if host_lower == "ok.ru" || host_lower.ends_with(".ok.ru") {
+        Some("okru")
     } else {
-        None
+        let name_lower = server.name.trim().to_ascii_lowercase();
+        if name_lower == "vidhide" {
+            Some("vidhide")
+        } else if name_lower == "mixdrop" {
+            Some("mixdrop")
+        } else {
+            None
+        }
     }
 }
 
-/// Priority rank for supported hosts: mp4upload (0), yourupload (1), mediafire (2), streamtape (3).
+/// Priority rank for supported hosts: mp4upload (0), yourupload (1), mediafire (2),
+/// streamtape (3), okru (4), mixdrop (5), vidhide (6).
 fn host_preference(host: &str) -> u8 {
     match host {
         "mp4upload" => 0,
         "yourupload" => 1,
         "mediafire" => 2,
         "streamtape" => 3,
+        "okru" => 4,
+        "mixdrop" => 5,
+        "vidhide" => 6,
         _ => 255,
     }
 }
 
 /// Filters a list of servers down to those on supported hosts, ordering by host preference
-/// first (`mp4upload` > `yourupload` > `mediafire` > `streamtape`) and page order second,
-/// deduplicating by URL (keeping the first occurrence).
+/// first (`mp4upload` > `yourupload` > `mediafire` > `streamtape` > `okru` > `mixdrop` > `vidhide`)
+/// and page order second, deduplicating by URL (keeping the first occurrence).
 #[allow(dead_code)] // Consumed by download supervisor in later stages
 pub fn candidates(servers: &[Server]) -> Vec<Server> {
     let mut seen_urls = HashSet::new();
@@ -807,6 +1305,9 @@ pub fn resolve_from_page(host: &str, page_html: &str, page_url: &str) -> Option<
         "mp4upload" => resolve_mp4upload(page_html, page_url),
         "mediafire" => resolve_mediafire(page_html, page_url),
         "streamtape" => resolve_streamtape(page_html),
+        "okru" => resolve_okru(page_html),
+        "mixdrop" => resolve_mixdrop(page_html, page_url),
+        "vidhide" => resolve_vidhide(page_html, page_url),
         _ => None,
     }
 }
@@ -857,7 +1358,9 @@ mod tests {
         let servers = parse_tioanime_servers(fixture);
         let cand = candidates(&servers);
 
-        assert_eq!(cand.len(), 2, "expected exactly 2 distinct YourUpload servers");
+        // The TioAnime page also lists two distinct Okru mirrors, a supported host
+        // since the Ok.ru resolver exists, ranked after YourUpload.
+        assert_eq!(cand.len(), 4, "2 YourUpload + 2 Okru mirrors");
         assert_eq!(
             cand[0],
             Server {
@@ -1093,6 +1596,15 @@ mod tests {
                 Server {
                     name: "Streamtape".to_string(),
                     url: "https://streamtape.com/e/2OaxZZVQpBUZ410/kaaanoojoonootomodaachissss-02.mp4".to_string(),
+                },
+                // The hosts that rotate domains (identified by name) come last.
+                Server {
+                    name: "Mixdrop".to_string(),
+                    url: "https://mixdrop.top/e/366ovrg9tv9ekm".to_string(),
+                },
+                Server {
+                    name: "Vidhide".to_string(),
+                    url: "https://vidhidevip.com/embed/etxwwazwbqtr".to_string(),
                 },
             ]
         );
@@ -1423,6 +1935,255 @@ mod tests {
         assert_eq!(
             resolve_from_page("nope", fixture, "https://example.com"),
             None
+        );
+    }
+
+    #[test]
+    fn unpacks_packer_fixtures_and_edge_cases() {
+        // Mixdrop fixture
+        let mixdrop_fixture = include_str!("../tests/fixtures/mixdrop_embed.html");
+        let mixdrop_unpacked = unpack_packer(mixdrop_fixture).expect("should unpack mixdrop");
+        assert!(
+            mixdrop_unpacked.contains(
+                r#"MDCore.wurl="//30xplewoo.mxcontent.net/v2/366ovrg9tv9ekm.mp4?s=ThpcRIVQ7mtWr0omYtp1MQ&e=1792006222&_t=1791988082""#
+            ),
+            "expected MDCore.wurl with exact URL in unpacked mixdrop"
+        );
+
+        // Vidhide fixture
+        let vidhide_fixture = include_str!("../tests/fixtures/vidhide_embed.html");
+        let vidhide_unpacked = unpack_packer(vidhide_fixture).expect("should unpack vidhide");
+        assert!(
+            vidhide_unpacked.contains(
+                r#""hls4":"/stream/pYXzvRSs8jBowEh4Sed8vQ/hjkrhuihghfvu/1792027821/43559031/master.m3u8""#
+            ),
+            "expected hls4 key in unpacked vidhide"
+        );
+
+        // Tiny hand-made packed sample
+        let tiny = r#"eval(function(p,a,c,k,e,d){while(c--)if(k[c])p=p.replace(new RegExp('\\b'+c.toString(a)+'\\b','g'),k[c]);return p}('0 1',2,2,'hello|world'.split('|'),0,{}))"#;
+        assert_eq!(unpack_packer(tiny), Some("hello world".to_string()));
+
+        // Text without eval(function(p,a,c,k,e,d) -> None
+        assert_eq!(unpack_packer("var x = 1;"), None);
+
+        // Malformed radix 99 -> None
+        let bad_radix = r#"eval(function(p,a,c,k,e,d){}('abc',99,3,'x'.split('|'))"#;
+        assert_eq!(unpack_packer(bad_radix), None);
+
+        // 3 MB string -> None
+        let large = "a".repeat(3 * 1024 * 1024);
+        assert_eq!(unpack_packer(&large), None);
+
+        // Empty string -> None
+        assert_eq!(unpack_packer(""), None);
+    }
+
+    #[test]
+    fn resolves_vidhide_fixture_and_edge_cases() {
+        let fixture = include_str!("../tests/fixtures/vidhide_embed.html");
+        let media = resolve_vidhide(fixture, "https://callistanise.com/embed/etxwwazwbqtr")
+            .expect("should resolve vidhide fixture");
+
+        assert_eq!(
+            media,
+            Media {
+                url: "https://callistanise.com/stream/pYXzvRSs8jBowEh4Sed8vQ/hjkrhuihghfvu/1792027821/43559031/master.m3u8".to_string(),
+                referer: "https://callistanise.com/".to_string(),
+                host: "vidhide",
+            }
+        );
+
+        // Page where only hls3 (.txt) exists -> None
+        let txt_only = r#"eval(function(p,a,c,k,e,d){while(c--)if(k[c])p=p.replace(new RegExp('\\b'+c.toString(a)+'\\b','g'),k[c]);return p}('var p = {"hls3":"https://example.com/master.txt"};',2,2,'||'.split('|'),0,{}))"#;
+        assert_eq!(resolve_vidhide(txt_only, "https://callistanise.com/embed/etxwwazwbqtr"), None);
+
+        // Where hls4 is missing, hls2 (absolute) is chosen
+        let hls2_only = r#"eval(function(p,a,c,k,e,d){while(c--)if(k[c])p=p.replace(new RegExp('\\b'+c.toString(a)+'\\b','g'),k[c]);return p}('var p = {"hls2":"https://1hyahuweWHyVWmq.acek-cdn.com/hls2/master.m3u8?t=123"};',2,2,'||'.split('|'),0,{}))"#;
+        let media_hls2 = resolve_vidhide(hls2_only, "https://callistanise.com/embed/etxwwazwbqtr")
+            .expect("hls2 should resolve");
+        assert_eq!(
+            media_hls2,
+            Media {
+                // `url::Url` lower-cases the host, which is fine: hosts are case-insensitive.
+                url: "https://1hyahuwewhyvwmq.acek-cdn.com/hls2/master.m3u8?t=123".to_string(),
+                referer: "https://callistanise.com/".to_string(),
+                host: "vidhide",
+            }
+        );
+    }
+
+    #[test]
+    fn resolves_mixdrop_fixture_and_edge_cases() {
+        let fixture = include_str!("../tests/fixtures/mixdrop_embed.html");
+        let media = resolve_mixdrop(fixture, "https://mxdrop.click/e/366ovrg9tv9ekm")
+            .expect("should resolve mixdrop fixture");
+
+        assert_eq!(
+            media,
+            Media {
+                url: "https://30xplewoo.mxcontent.net/v2/366ovrg9tv9ekm.mp4?s=ThpcRIVQ7mtWr0omYtp1MQ&e=1792006222&_t=1791988082".to_string(),
+                referer: "https://mxdrop.click/".to_string(),
+                host: "mixdrop",
+            }
+        );
+
+        // Page without MDCore.wurl -> None
+        let no_wurl = r#"eval(function(p,a,c,k,e,d){while(c--)if(k[c])p=p.replace(new RegExp('\\b'+c.toString(a)+'\\b','g'),k[c]);return p}('var x = 1;',2,2,'||'.split('|'),0,{}))"#;
+        assert_eq!(resolve_mixdrop(no_wurl, "https://mxdrop.click/e/366ovrg9tv9ekm"), None);
+
+        // A wurl ending in .js -> None
+        let js_wurl = r#"eval(function(p,a,c,k,e,d){while(c--)if(k[c])p=p.replace(new RegExp('\\b'+c.toString(a)+'\\b','g'),k[c]);return p}('MDCore.wurl="//30xplewoo.mxcontent.net/v2/video.js";',2,2,'||'.split('|'),0,{}))"#;
+        assert_eq!(resolve_mixdrop(js_wurl, "https://mxdrop.click/e/366ovrg9tv9ekm"), None);
+    }
+
+    #[test]
+    fn resolves_okru_fixture_and_edge_cases() {
+        let fixture = include_str!("../tests/fixtures/okru_embed.html");
+        let media = resolve_okru(fixture).expect("should resolve okru fixture");
+
+        assert_eq!(
+            media,
+            Media {
+                url: "https://vd423.okcdn.ru/?expires=1792071069485&srcIp=84.79.202.66&pr=10&srcAg=CHROME&ms=178.237.23.39&type=2&sig=GBwHZBbjRbk&ct=0&urls=95.163.35.41&clientType=0&zs=65&id=555566762577".to_string(),
+                referer: "https://ok.ru/".to_string(),
+                host: "okru",
+            }
+        );
+
+        // Synthetic JSON with hd and sd -> hd wins
+        let synthetic = r#"
+            <div data-module="OKVideo" data-options="{&quot;flashvars&quot;:{&quot;metadata&quot;:{&quot;videos&quot;:[
+                {&quot;name&quot;:&quot;sd&quot;,&quot;url&quot;:&quot;https://cdn.ok.ru/sd.mp4&quot;},
+                {&quot;name&quot;:&quot;hd&quot;,&quot;url&quot;:&quot;https://cdn.ok.ru/hd.mp4&quot;}
+            ]}}}"></div>
+        "#;
+        let media_hd = resolve_okru(synthetic).expect("hd should win");
+        assert_eq!(media_hd.url, "https://cdn.ok.ru/hd.mp4");
+        assert_eq!(media_hd.referer, "https://ok.ru/");
+        assert_eq!(media_hd.host, "okru");
+
+        // Synthetic JSON with metadata as string -> hd wins
+        let synthetic_str = r#"
+            <div data-module="OKVideo" data-options="{&quot;flashvars&quot;:{&quot;metadata&quot;:&quot;{\&quot;videos\&quot;:[{\&quot;name\&quot;:\&quot;hd\&quot;,\&quot;url\&quot;:\&quot;https://cdn.ok.ru/hd_str.mp4\&quot;}]}&quot;}}"></div>
+        "#;
+        let media_str = resolve_okru(synthetic_str).expect("metadata as string");
+        assert_eq!(media_str.url, "https://cdn.ok.ru/hd_str.mp4");
+
+        // videos empty plus hlsManifestUrl -> that manifest
+        let manifest_only = r#"
+            <div data-module="OKVideo" data-options="{&quot;flashvars&quot;:{&quot;metadata&quot;:{
+                &quot;videos&quot;:[],
+                &quot;hlsManifestUrl&quot;:&quot;https://cdn.ok.ru/live/master.m3u8&quot;
+            }}}"></div>
+        "#;
+        let media_man = resolve_okru(manifest_only).expect("hlsManifestUrl fallback");
+        assert_eq!(media_man.url, "https://cdn.ok.ru/live/master.m3u8");
+        assert_eq!(media_man.referer, "https://ok.ru/");
+        assert_eq!(media_man.host, "okru");
+
+        // HTML without the OKVideo element -> None
+        assert_eq!(resolve_okru("<div>No OKVideo here</div>"), None);
+    }
+
+    #[test]
+    fn supported_host_and_candidates_ordering_extended() {
+        assert_eq!(
+            supported_host(&Server {
+                name: "Vidhide".to_string(),
+                url: "https://callistanise.com/embed/x".to_string(),
+            }),
+            Some("vidhide")
+        );
+        assert_eq!(
+            supported_host(&Server {
+                name: "Whatever".to_string(),
+                url: "https://callistanise.com/embed/x".to_string(),
+            }),
+            None
+        );
+        assert_eq!(
+            supported_host(&Server {
+                name: "Mixdrop".to_string(),
+                url: "https://mxdrop.click/e/x".to_string(),
+            }),
+            Some("mixdrop")
+        );
+        assert_eq!(
+            supported_host(&Server {
+                name: "Whatever".to_string(),
+                url: "https://ok.ru/videoembed/1".to_string(),
+            }),
+            Some("okru")
+        );
+        assert_eq!(
+            supported_host(&Server {
+                name: "Whatever".to_string(),
+                url: "https://notok.ru/x".to_string(),
+            }),
+            None
+        );
+        assert_eq!(
+            supported_host(&Server {
+                name: "Vidhide".to_string(),
+                url: "javascript:alert(1)".to_string(),
+            }),
+            None
+        );
+
+        // candidates over [Vidhide, Mixdrop, Okru, Streamtape, Mediafire, Mp4upload]
+        let servers = vec![
+            Server {
+                name: "Vidhide".to_string(),
+                url: "https://callistanise.com/embed/1".to_string(),
+            },
+            Server {
+                name: "Mixdrop".to_string(),
+                url: "https://mxdrop.click/e/1".to_string(),
+            },
+            Server {
+                name: "Okru".to_string(),
+                url: "https://ok.ru/videoembed/1".to_string(),
+            },
+            Server {
+                name: "Streamtape".to_string(),
+                url: "https://streamtape.com/e/1".to_string(),
+            },
+            Server {
+                name: "Mediafire".to_string(),
+                url: "https://mediafire.com/file/1/".to_string(),
+            },
+            Server {
+                name: "Mp4upload".to_string(),
+                url: "https://www.mp4upload.com/embed-1.html".to_string(),
+            },
+        ];
+        let cand = candidates(&servers);
+        let names: Vec<&str> = cand.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["Mp4upload", "Mediafire", "Streamtape", "Okru", "Mixdrop", "Vidhide"]
+        );
+    }
+
+    #[test]
+    fn resolve_from_page_extended_dispatcher() {
+        let vidhide_fix = include_str!("../tests/fixtures/vidhide_embed.html");
+        assert_eq!(
+            resolve_from_page("vidhide", vidhide_fix, "https://callistanise.com/embed/etxwwazwbqtr"),
+            resolve_vidhide(vidhide_fix, "https://callistanise.com/embed/etxwwazwbqtr")
+        );
+
+        let mixdrop_fix = include_str!("../tests/fixtures/mixdrop_embed.html");
+        assert_eq!(
+            resolve_from_page("mixdrop", mixdrop_fix, "https://mxdrop.click/e/366ovrg9tv9ekm"),
+            resolve_mixdrop(mixdrop_fix, "https://mxdrop.click/e/366ovrg9tv9ekm")
+        );
+
+        let okru_fix = include_str!("../tests/fixtures/okru_embed.html");
+        assert_eq!(
+            resolve_from_page("okru", okru_fix, "https://ok.ru/videoembed/1815852419665"),
+            resolve_okru(okru_fix)
         );
     }
 }
