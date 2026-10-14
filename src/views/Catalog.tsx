@@ -35,6 +35,8 @@ function decideArgs(a: CatalogAnime, decision: "Want" | "Seen") {
   } as const;
 }
 
+const RESTORE_PAGE_CAP = 4;
+
 const EMPTY_FACETS: CatalogFacets = { genres: [], formats: [], studios: [] };
 
 // Module-level cache for catalog facets so tab switching does not re-run the
@@ -75,7 +77,7 @@ export function Catalog() {
     [t]
   );
   const [items, setItems] = useState<CatalogAnime[]>([]);
-  const [page, setPage] = useState(() => catalogFilterCache.current?.page ?? 1);
+  const [page, setPage] = useState(() => Math.min(catalogFilterCache.current?.page ?? 1, RESTORE_PAGE_CAP));
   const [hasNextPage, setHasNextPage] = useState(true);
   const [totalSynced, setTotalSynced] = useState<number | null>(null);
   const [totalMatching, setTotalMatching] = useState<number | null>(null);
@@ -264,6 +266,16 @@ export function Catalog() {
   // response landing after the user retyped the search got appended to the
   // now-unrelated filtered list.
   const loadSeq = useRef(0);
+  // Leaving the tab must stop a load that is still walking pages: every page
+  // is a DB read behind the AppState mutex and the synchronous Stats commands
+  // opened next wait on that mutex on the main thread, so a quick
+  // Catálogo -> Estadísticas froze the window until the old loop finished.
+  useEffect(
+    () => () => {
+      loadSeq.current++;
+    },
+    []
+  );
 
   // Replace the list with pages 1..lastPage. `lastPage === 1` is the
   // ordinary reload; larger values only come from the remount restore below.
@@ -332,7 +344,9 @@ export function Catalog() {
 
   // How far the user had paged when this view was last unmounted. Read once
   // at mount, before the persist effect above rewrites the cache.
-  const restorePageRef = useRef(catalogFilterCache.current?.page ?? 1);
+  // Capped: rebuilding 40 pages one by one (and rendering 2000 cards) on every
+  // return to the tab took seconds. "Cargar más" gets the rest back.
+  const restorePageRef = useRef(Math.min(catalogFilterCache.current?.page ?? 1, RESTORE_PAGE_CAP));
   // Identity of the `filter` this effect last acted on. The mount run sees
   // the very filter it was initialized with, which is how a remount is told
   // apart from a real filter change — and it survives StrictMode's
