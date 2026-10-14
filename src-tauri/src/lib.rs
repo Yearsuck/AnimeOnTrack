@@ -14,6 +14,7 @@ mod download_sources;
 mod downloader;
 mod file_log;
 mod genres;
+mod hls;
 mod html_cache;
 mod matching;
 mod models;
