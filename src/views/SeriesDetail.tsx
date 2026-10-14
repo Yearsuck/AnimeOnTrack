@@ -1,5 +1,8 @@
+import { listen } from "@tauri-apps/api/event";
 import { useEffect, useRef, useState } from "react";
 import {
+  cancelDownload,
+  deleteDownload,
   downloadEpisode,
   getCatalogInfoForSeries,
   getNextAir,
@@ -7,6 +10,7 @@ import {
   linkCatalogSeries,
   listEpisodes,
   openEpisode,
+  playDownload,
   reclassifySeries,
   setPlayerSettings,
   setSeenCascade,
@@ -37,6 +41,10 @@ export function SeriesDetail({
   // episode links and the "is it airing" signal (see `listEpisodes` below).
   const [catalogInfo, setCatalogInfo] = useState<CatalogAnime | null>(null);
   const [nextAir, setNextAir] = useState<NextAir | null>(null);
+  // Live state of downloads started or running while this screen is open
+  // (`download-progress` events); the episode row's own `download_status`
+  // covers everything else, e.g. a finished download from an earlier visit.
+  const [dl, setDl] = useState<Record<number, { percent: number | null; error?: string }>>({});
   // AniList's CDN cover wins; otherwise the series' own (possibly a cached
   // local `file:` path, which the raw <img> would be blocked from loading).
   const detailCover = resolveCoverUrl(catalogInfo?.cover_url ?? series.cover_url);
@@ -100,6 +108,28 @@ export function SeriesDetail({
       cancelled = true;
     };
   }, [catalogInfo?.id]);
+
+  useEffect(() => {
+    const unlisten = listen<{
+      episode_id: number;
+      status: "downloading" | "downloaded" | "failed" | "cancelled";
+      percent: number | null;
+      error: string | null;
+    }>("download-progress", (e) => {
+      const p = e.payload;
+      setDl((prev) => ({
+        ...prev,
+        [p.episode_id]: { percent: p.percent, error: p.error ?? undefined },
+      }));
+      if (p.status !== "downloading") {
+        load().catch(() => {});
+      }
+    });
+    return () => {
+      unlisten.then((f) => f()).catch(() => {});
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [series.id]);
 
   useEffect(() => {
     linkTriedRef.current = null;
@@ -299,16 +329,51 @@ export function SeriesDetail({
               </div>
               <div className="ep-actions">
                 {ep.download_status === "downloaded" ? (
-                  <span className="dl-badge" title={t("download.downloaded")}>💾</span>
+                  <>
+                    <button
+                      className="btn btn-sm"
+                      title={t("download.downloaded")}
+                      onClick={() => playDownload(ep.id).catch(console.error)}
+                    >
+                      {t("download.playOffline")}
+                    </button>
+                    <button
+                      className="btn btn-sm"
+                      title={t("download.delete")}
+                      onClick={() => deleteDownload(ep.id).then(() => load()).catch(console.error)}
+                    >
+                      🗑
+                    </button>
+                  </>
                 ) : ep.download_status === "downloading" ? (
-                  <span className="dl-badge dl-active" title={t("download.downloading", { percent: "…" })}>⏳</span>
+                  <>
+                    <span className="dl-badge dl-active">
+                      {t("download.downloading", { percent: dl[ep.id]?.percent ?? "…" })}
+                    </span>
+                    <button
+                      className="btn btn-sm"
+                      title={t("download.cancel")}
+                      onClick={() => cancelDownload(ep.id).catch(console.error)}
+                    >
+                      ✕
+                    </button>
+                  </>
                 ) : (
                   <button
                     className="btn btn-sm"
-                    title={t("download.download")}
-                    onClick={() => downloadEpisode(ep.id).catch(console.error)}
+                    title={
+                      ep.download_status === "failed"
+                        ? `${t("download.failed")}${dl[ep.id]?.error ? `: ${dl[ep.id]?.error}` : ""}`
+                        : t("download.download")
+                    }
+                    onClick={() => {
+                      setDl((prev) => ({ ...prev, [ep.id]: { percent: 0 } }));
+                      downloadEpisode(ep.id)
+                        .then(() => load())
+                        .catch(console.error);
+                    }}
                   >
-                    ⬇
+                    {ep.download_status === "failed" ? "⚠" : "⬇"}
                   </button>
                 )}
                 <button className="btn" onClick={() => openEpisode(ep.url)}>

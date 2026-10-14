@@ -10,6 +10,7 @@ mod db;
 mod diff;
 mod domain_breaker;
 mod download_sources;
+mod downloader;
 mod file_log;
 mod genres;
 mod html_cache;
@@ -259,6 +260,7 @@ pub fn run() {
             commands::auto_backup_if_due,
             commands::uninstall_app,
             commands::download_episode,
+            commands::play_download,
             commands::cancel_download,
             commands::delete_download,
             commands::get_downloads_size,
