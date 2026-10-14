@@ -664,4 +664,21 @@ export const en: Messages = {
   "niche.mainstream": "Mainstream",
   "niche.niche": "Cult",
   "niche.hint": "Only affects Recommended mode.",
+
+  // updates
+  "update.available": "A new version is available: {version}",
+  "update.install": "Install and restart",
+  "update.later": "Later",
+  "update.downloading": "Downloading update… {percent}%",
+  "update.installing": "Downloading update…",
+  "update.failed": "The update could not be installed",
+  "update.retry": "Retry",
+  "settings.updateLabel": "Updates",
+  "settings.updateOn": "Automatic",
+  "settings.updateOff": "Manual",
+  "settings.updateHint": "On launch the app looks for a new version on GitHub and tells you; it only installs when you press the button. Every installer is signed.",
+  "settings.updateCheck": "Check now",
+  "settings.updateChecking": "Checking…",
+  "settings.updateUpToDate": "You are on the latest version",
+  "settings.updateFound": "Version {version} available",
 };

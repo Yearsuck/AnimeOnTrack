@@ -1,6 +1,6 @@
 [package]
 name = "aot-scaffold"
-version = "0.9.0"
+version = "0.10.0"
 description = "Tracks currently-airing anime across multiple streaming sites and tells you when new episodes drop."
 authors = ["Yearsuck"]
 license = "GPL-3.0-or-later"
@@ -47,6 +47,8 @@ urlencoding = "2"
 # backup/oauth.rs) — replaces a hand-rolled, clock-seeded PRNG that was not
 # cryptographically secure.
 getrandom = "0.3"
+tauri-plugin-updater = "~2.10.1"
+tauri-plugin-process = "~2.3.1"
 
 # Windows-only: drive WebView2 ExecuteScript host-side to extract rendered HTML
 # from external (Cloudflare-protected) pages without exposing app IPC to them.
