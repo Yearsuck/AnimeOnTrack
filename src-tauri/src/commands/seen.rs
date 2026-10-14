@@ -41,7 +41,7 @@ pub async fn open_episode(
 
 /// Lists all currently connected/available displays/monitors on the system.
 #[tauri::command]
-pub fn list_monitors(app: AppHandle) -> Result<Vec<crate::models::MonitorOption>, String> {
+pub async fn list_monitors(app: AppHandle) -> Result<Vec<crate::models::MonitorOption>, String> {
     let monitors = app.available_monitors().map_err(|e| e.to_string())?;
     let primary = app.primary_monitor().ok().flatten();
     let result = monitors
@@ -69,7 +69,7 @@ pub fn list_monitors(app: AppHandle) -> Result<Vec<crate::models::MonitorOption>
 
 /// Retrieves stored player playback preferences (target monitor and fullscreen).
 #[tauri::command]
-pub fn get_player_settings(state: State<'_, AppState>) -> Result<crate::models::PlayerSettings, String> {
+pub async fn get_player_settings(state: State<'_, AppState>) -> Result<crate::models::PlayerSettings, String> {
     let db = state.db.lock().unwrap();
     let monitor = db.get_player_monitor().map_err(|e| e.to_string())?;
     let fullscreen = db.get_player_fullscreen().map_err(|e| e.to_string())?;
@@ -78,7 +78,7 @@ pub fn get_player_settings(state: State<'_, AppState>) -> Result<crate::models::
 
 /// Persists player playback preferences (target monitor and fullscreen).
 #[tauri::command]
-pub fn set_player_settings(
+pub async fn set_player_settings(
     state: State<'_, AppState>,
     monitor: Option<String>,
     fullscreen: bool,
@@ -93,7 +93,7 @@ pub fn set_player_settings(
 /// Mark an episode seen or unseen (persisted). When marking seen, any
 /// downloaded video file for the episode is automatically deleted from disk.
 #[tauri::command]
-pub fn set_seen(state: State<'_, AppState>, episode_id: i64, seen: bool) -> Result<(), String> {
+pub async fn set_seen(state: State<'_, AppState>, episode_id: i64, seen: bool) -> Result<(), String> {
     let db = state.db.lock().unwrap();
     db.set_seen(episode_id, seen).map_err(|e| e.to_string())?;
     if seen {
@@ -107,7 +107,7 @@ pub fn set_seen(state: State<'_, AppState>, episode_id: i64, seen: bool) -> Resu
 /// also marks every later one unseen. When marking seen, downloaded video
 /// files for all affected episodes are automatically deleted from disk.
 #[tauri::command]
-pub fn set_seen_cascade(
+pub async fn set_seen_cascade(
     state: State<'_, AppState>,
     series_id: i64,
     number: String,
@@ -156,7 +156,7 @@ pub fn set_seen_cascade(
 /// discarded backlog rows, which never have episodes so this is always
 /// safe there.
 #[tauri::command]
-pub fn delete_series(state: State<'_, AppState>, series_id: i64) -> Result<(), String> {
+pub async fn delete_series(state: State<'_, AppState>, series_id: i64) -> Result<(), String> {
     let db = state.db.lock().unwrap();
     db.delete_series(series_id).map_err(|e| e.to_string())
 }

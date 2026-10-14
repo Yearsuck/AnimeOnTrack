@@ -63,7 +63,7 @@ pub fn plan_carryover(
 }
 
 #[tauri::command]
-pub fn set_followed(
+pub async fn set_followed(
     state: State<'_, AppState>,
     series_id: i64,
     followed: bool,
@@ -208,7 +208,7 @@ pub async fn start_watching(
 /// (unlike decide_swipe) is transitioning a series already in the DB, not
 /// inserting a fresh one from a swipe card.
 #[tauri::command]
-pub fn set_backlog_status(
+pub async fn set_backlog_status(
     state: State<'_, AppState>,
     series_id: i64,
     status: Option<String>,
@@ -277,7 +277,7 @@ fn reclassify_series_core(db: &Db, series_id: i64, to: Classification) -> Result
 /// sub-list). Held under a single `state.db` lock so nothing else can
 /// interleave a partial state. Never scrapes, never touches episodes/seen.
 #[tauri::command]
-pub fn reclassify_series(
+pub async fn reclassify_series(
     state: State<'_, AppState>,
     series_id: i64,
     to: Classification,

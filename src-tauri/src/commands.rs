@@ -333,7 +333,7 @@ async fn scrape_via_mirrors_with_script<T>(
 /// The currently-active site (`state.active_site_id`), for the Settings
 /// selector's initial value.
 #[tauri::command]
-pub fn get_active_site(state: State<'_, AppState>) -> Result<SiteSummary, String> {
+pub async fn get_active_site(state: State<'_, AppState>) -> Result<SiteSummary, String> {
     let site_id = get_active_site_id(&state);
     adapter::all_sites()
         .iter()

@@ -180,7 +180,7 @@ pub async fn decide_swipe(
 ///
 /// For reaching further back than just the most recent, see `undo_swipe_entry`.
 #[tauri::command]
-pub fn undo_last_swipe(state: State<'_, AppState>) -> Result<Option<String>, String> {
+pub async fn undo_last_swipe(state: State<'_, AppState>) -> Result<Option<String>, String> {
     let sid = state.swipe_history.lock().unwrap().pop_front();
     let Some(sid) = sid else { return Ok(None) };
     let db = state.db.lock().unwrap();
@@ -224,7 +224,7 @@ fn decision_for_history_row(row: &crate::db::SwipeHistoryRow) -> String {
 /// deck) is silently skipped rather than erroring, so the deque self-heals
 /// instead of requiring bookkeeping on every deletion path.
 #[tauri::command]
-pub fn list_swipe_history(state: State<'_, AppState>) -> Result<Vec<SwipeHistoryItem>, String> {
+pub async fn list_swipe_history(state: State<'_, AppState>) -> Result<Vec<SwipeHistoryItem>, String> {
     let ids: Vec<i64> = state.swipe_history.lock().unwrap().iter().copied().collect();
     let db = state.db.lock().unwrap();
     let mut out = Vec::with_capacity(ids.len());
@@ -254,7 +254,7 @@ pub fn list_swipe_history(state: State<'_, AppState>) -> Result<Vec<SwipeHistory
 /// show one — `list_swipe_history` skips ids whose row is gone — but the two
 /// undo paths must not diverge in how they undo).
 #[tauri::command]
-pub fn undo_swipe_entry(state: State<'_, AppState>, series_id: i64) -> Result<(), String> {
+pub async fn undo_swipe_entry(state: State<'_, AppState>, series_id: i64) -> Result<(), String> {
     state.swipe_history.lock().unwrap().retain(|&id| id != series_id);
     let db = state.db.lock().unwrap();
     db.undo_swipe_decision(series_id).map_err(|e| e.to_string())?;
@@ -290,7 +290,7 @@ pub struct DeckBans {
 
 /// Read the current deck bans for the Descubrir "Filtros" sub-view.
 #[tauri::command]
-pub fn get_deck_bans(state: State<'_, AppState>) -> Result<DeckBans, String> {
+pub async fn get_deck_bans(state: State<'_, AppState>) -> Result<DeckBans, String> {
     let db = state.db.lock().unwrap();
     let genres = db.get_banned_genres().map_err(|e| e.to_string())?;
     let formats = db.get_banned_formats().map_err(|e| e.to_string())?;
@@ -306,7 +306,7 @@ pub fn get_deck_bans(state: State<'_, AppState>) -> Result<DeckBans, String> {
 /// call — no cache to invalidate, `discover_catalog_card` reads the settings
 /// table fresh every time it's called.
 #[tauri::command]
-pub fn set_deck_bans(
+pub async fn set_deck_bans(
     state: State<'_, AppState>,
     genres: Vec<String>,
     formats: Vec<String>,
@@ -327,14 +327,14 @@ pub fn set_deck_bans(
 
 /// Read the current discover niche/cult bias setting.
 #[tauri::command]
-pub fn get_discover_niche(state: State<'_, AppState>) -> Result<f64, String> {
+pub async fn get_discover_niche(state: State<'_, AppState>) -> Result<f64, String> {
     let db = state.db.lock().unwrap();
     db.get_discover_niche().map_err(|e| e.to_string())
 }
 
 /// Persist the discover niche/cult bias setting in [-1.0, 1.0].
 #[tauri::command]
-pub fn set_discover_niche(state: State<'_, AppState>, value: f64) -> Result<(), String> {
+pub async fn set_discover_niche(state: State<'_, AppState>, value: f64) -> Result<(), String> {
     let db = state.db.lock().unwrap();
     db.set_discover_niche(value).map_err(|e| e.to_string())
 }
@@ -545,7 +545,7 @@ pub async fn discover_catalog_card(
 // from the same shape.
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
-pub fn decide_catalog_card(
+pub async fn decide_catalog_card(
     state: State<'_, AppState>,
     anilist_id: i64,
     title: String,
@@ -641,7 +641,7 @@ mod tests {
 }
 
 #[tauri::command]
-pub fn get_list_entry_meta(
+pub async fn get_list_entry_meta(
     state: State<'_, AppState>,
     series_ids: Vec<i64>,
 ) -> Result<Vec<crate::models::ListEntryMeta>, String> {

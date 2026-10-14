@@ -392,7 +392,7 @@ pub async fn rescan_airing(app: AppHandle, state: State<'_, AppState>) -> Result
 }
 
 #[tauri::command]
-pub fn list_airing(state: State<'_, AppState>) -> Result<Vec<Series>, String> {
+pub async fn list_airing(state: State<'_, AppState>) -> Result<Vec<Series>, String> {
     let src = get_source_id(&state)?;
     let db = state.db.lock().unwrap();
     db.list_airing(src).map_err(|e| e.to_string())
@@ -411,7 +411,7 @@ pub fn list_airing(state: State<'_, AppState>) -> Result<Vec<Series>, String> {
 /// source has a date (title not found in the synced catalog, or synced
 /// before this field existed).
 #[tauri::command]
-pub fn list_airing_season(state: State<'_, AppState>) -> Result<Vec<AiringItem>, String> {
+pub async fn list_airing_season(state: State<'_, AppState>) -> Result<Vec<AiringItem>, String> {
     let src = get_source_id(&state)?;
     let db = state.db.lock().unwrap();
     let series = db.list_airing(src).map_err(|e| e.to_string())?;
@@ -1214,7 +1214,7 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
 
 /// All episodes of a series (progress view), oldest first.
 #[tauri::command]
-pub fn list_episodes(state: State<'_, AppState>, series_id: i64) -> Result<Vec<Episode>, String> {
+pub async fn list_episodes(state: State<'_, AppState>, series_id: i64) -> Result<Vec<Episode>, String> {
     let db = state.db.lock().unwrap();
     db.list_series_episodes(series_id).map_err(|e| e.to_string())
 }
