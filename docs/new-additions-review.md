@@ -81,3 +81,15 @@ key), real download engine, taskbar badge, rotating file log.
 | Download all pending | "⬇ Descargar pendientes (N)" queues every unwatched, not yet downloaded episode, oldest first, one transfer at a time; reports how many were queued and how many cannot be downloaded from that site. Live test: queued 1 -> "Descargando… 29%" with a progress bar. | Click it; watch the rows. |
 | Delete downloads without touching watched state | "🗑 Borrar descargas (N)" with an inline two-step confirmation (no browser dialog) removes the series' files and cancels queued/running ones; each downloaded row also has a 🗑 whose tooltip says the watched state is kept. Live test: confirm -> files gone, panel back to "Nada descargado", episode watched flags unchanged. | Click it, confirm; episodes keep their ✓ state. |
 | Clearer rows | Progress bar and "En cola…" while waiting, ▶ Offline as the primary action once downloaded, a "⚠ Reintentar" button and the failure reason under the title when it fails. | Start a download and cancel/fail one. |
+
+## Batch 11 - downloads from more sites (done; tested live in the sandbox)
+Research and per-site findings: `docs/superpowers/plans/2026-10-14-download-sources-research.md`.
+| Site | Works? | How |
+|---|---|---|
+| TioAnime | yes | YourUpload / Mp4upload / Mediafire / Streamtape mirrors |
+| JKAnime | **yes (new)** | its base64 server list -> Mp4upload, Mediafire, Streamtape. Live test: 104.5 MB mp4 |
+| animeyt.cc | **yes (new)** | its mytsumi player container -> the direct mp4 tab (archive.org) or the same hosts. Live test: 153 MB mp4 |
+| GogoAnime (gogoanime.by) | not yet | single "HD" server = megaplay HLS stream (229 `.ts` segments, unencrypted): needs the HLS downloader |
+| AnimeLand | not yet | the embed answers an empty page to plain HTTP: needs the browser engine |
+| AnimeFLV | not checked | its origin was down (HTTP 522) the whole session, like the app's own scans |
+Hosts that need more work: Streamwish, Vidhide, Filemoon, VOE, Mixdrop, Doodstream (packed JS / HLS), Mega (encrypted), 1Fichier, Okru.
