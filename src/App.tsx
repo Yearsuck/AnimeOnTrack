@@ -406,7 +406,7 @@ export default function App() {
         )}
         {view === "catalog" && (
           <div className="view-panel" ref={panelRef}>
-            <Catalog />
+            <Catalog onChanged={onPendingDataChanged} />
           </div>
         )}
         {statsVisited && (

@@ -64,7 +64,7 @@ const catalogFilterCache = createFilterCache<{
   page: number;
 }>();
 
-export function Catalog() {
+export function Catalog({ onChanged }: { onChanged?: () => void }) {
   const t = useT();
 
   const EPISODE_OPTIONS: { value: string; label: string }[] = useMemo(
@@ -232,6 +232,9 @@ export function Catalog() {
       if (clearSelection) {
         setSelected(new Map());
       }
+
+      // Started series show up in Pendientes: refresh its badge now, not at the next refresh.
+      if (counts.started + counts.alreadyStarted > 0) onChanged?.();
 
       if (cards.length === 1 && counts.notFound === 1) {
         setBatchMsg(t("catalog.startNotFound", { title: cards[0].title }));
