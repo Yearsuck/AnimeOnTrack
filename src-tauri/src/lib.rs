@@ -1,5 +1,6 @@
 mod adapter;
 mod anilist;
+mod anizip;
 mod backup;
 mod commands;
 mod dates;
@@ -161,6 +162,8 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 let _ = commands::auto_backup_if_due(handle).await;
             });
+
+            anizip::spawn_sync(app.handle().clone());
 
             Ok(())
         })
