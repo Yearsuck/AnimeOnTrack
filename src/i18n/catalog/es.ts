@@ -683,4 +683,21 @@ export const es = {
   "niche.mainstream": "Populares",
   "niche.niche": "De culto",
   "niche.hint": "Solo afecta al modo Recomendado.",
+
+  // updates
+  "update.available": "Hay una versión nueva: {version}",
+  "update.install": "Instalar y reiniciar",
+  "update.later": "Después",
+  "update.downloading": "Descargando actualización… {percent}%",
+  "update.installing": "Descargando actualización…",
+  "update.failed": "No se pudo instalar la actualización",
+  "update.retry": "Reintentar",
+  "settings.updateLabel": "Actualizaciones",
+  "settings.updateOn": "Automáticas",
+  "settings.updateOff": "Manuales",
+  "settings.updateHint": "Al abrir la app busca una versión nueva en GitHub y te avisa; solo se instala si pulsas el botón. Cada instalador está firmado.",
+  "settings.updateCheck": "Buscar ahora",
+  "settings.updateChecking": "Buscando…",
+  "settings.updateUpToDate": "Estás en la última versión",
+  "settings.updateFound": "Versión {version} disponible",
 } as const;

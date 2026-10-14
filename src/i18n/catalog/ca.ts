@@ -679,4 +679,21 @@ export const ca: Messages = {
   "niche.mainstream": "Populars",
   "niche.niche": "De culte",
   "niche.hint": "Només afecta al mode Recomanat.",
+
+  // updates
+  "update.available": "Hi ha una versió nova: {version}",
+  "update.install": "Instal·la i reinicia",
+  "update.later": "Després",
+  "update.downloading": "Baixant l'actualització… {percent}%",
+  "update.installing": "Baixant l'actualització…",
+  "update.failed": "No s'ha pogut instal·lar l'actualització",
+  "update.retry": "Torna-ho a provar",
+  "settings.updateLabel": "Actualitzacions",
+  "settings.updateOn": "Automàtiques",
+  "settings.updateOff": "Manuals",
+  "settings.updateHint": "En obrir l'app busca una versió nova a GitHub i t'avisa; només s'instal·la si prems el botó. Cada instal·lador està signat.",
+  "settings.updateCheck": "Cerca ara",
+  "settings.updateChecking": "Cercant…",
+  "settings.updateUpToDate": "Tens l'última versió",
+  "settings.updateFound": "Versió {version} disponible",
 };
