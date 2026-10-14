@@ -7,6 +7,7 @@ mod dates;
 mod db;
 mod diff;
 mod domain_breaker;
+mod file_log;
 mod genres;
 mod html_cache;
 mod matching;
@@ -92,6 +93,7 @@ fn install_panic_log(dir: &std::path::Path) {
         if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&log_path) {
             let _ = writeln!(f, "[{when}] panic at {location}: {info}");
         }
+        crate::file_log::error(&format!("panic at {location}: {info}"));
         previous(info);
     }));
 }
@@ -106,6 +108,8 @@ pub fn run() {
             std::fs::create_dir_all(&dir).ok();
             // Before anything that can panic below.
             install_panic_log(&dir);
+            file_log::init(&dir);
+            file_log::info(&format!("start v{}", env!("CARGO_PKG_VERSION")));
             // Carry the database over from the pre-0.5.5 app-data directory,
             // which was keyed on the old `com.ernes.aot-scaffold` identifier.
             // Runs before everything below, so the rest of startup sees a

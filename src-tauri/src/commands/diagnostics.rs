@@ -17,6 +17,7 @@ pub struct DiagnosticsInfo {
     pub setting_keys: Vec<String>,
     pub panic_log_tail: Option<String>,
     pub hang_log_tail: Option<String>,
+    pub app_log_tail: Option<String>,
 }
 
 pub fn is_sensitive_setting_key(key: &str) -> bool {
@@ -124,6 +125,17 @@ pub fn build_report(info: &DiagnosticsInfo) -> String {
         _ => out.push_str("(none)\n"),
     }
 
+    out.push_str(&format!("\naot.log (last {MAX_LOG_LINES} lines):\n"));
+    match &info.app_log_tail {
+        Some(tail) if !tail.trim().is_empty() => {
+            out.push_str(tail);
+            if !tail.ends_with('\n') {
+                out.push('\n');
+            }
+        }
+        _ => out.push_str("(none)\n"),
+    }
+
     out
 }
 
@@ -194,6 +206,7 @@ pub fn export_diagnostics(app: AppHandle, state: State<'_, AppState>) -> Result<
         setting_keys: filter_setting_keys(raw_keys),
         panic_log_tail,
         hang_log_tail,
+        app_log_tail: crate::file_log::tail(&dir, MAX_LOG_LINES),
     };
 
     let report = build_report(&info);
@@ -254,6 +267,7 @@ mod tests {
             setting_keys: vec!["theme".into(), "active_site_id".into()],
             panic_log_tail: None,
             hang_log_tail: None,
+            app_log_tail: None,
         };
         let report = build_report(&info);
         assert!(report.contains("0.8.0"));
@@ -281,6 +295,7 @@ mod tests {
             setting_keys: vec!["site_priority".into()],
             panic_log_tail: Some("panic at line 42".into()),
             hang_log_tail: Some("hang detected".into()),
+            app_log_tail: None,
         };
         let report = build_report(&info);
         assert!(report.contains("panic at line 42"));
@@ -322,6 +337,7 @@ mod tests {
             setting_keys: filtered,
             panic_log_tail: None,
             hang_log_tail: None,
+            app_log_tail: None,
         };
         let report = build_report(&info);
         assert!(!report.contains("google_client_secret"));
@@ -355,5 +371,32 @@ mod tests {
         let _ = std::fs::remove_file(file_inside);
         let _ = std::fs::remove_dir(sub_dir);
         let _ = std::fs::remove_file(file_outside);
+    }
+
+    #[test]
+    fn test_build_report_with_app_log_tail() {
+        let info = DiagnosticsInfo {
+            app_version: "0.8.0".into(),
+            os: "windows".into(),
+            generated_at: "2026-10-14 01:25:30".into(),
+            series_count: 5,
+            followed_count: 2,
+            catalog_count: 100,
+            setting_keys: vec!["theme".into()],
+            panic_log_tail: None,
+            hang_log_tail: None,
+            app_log_tail: Some("2026-10-14 03:00:00 INFO app start\n2026-10-14 03:00:01 INFO scan done".into()),
+        };
+        let report = build_report(&info);
+        assert!(report.contains(&format!("aot.log (last {MAX_LOG_LINES} lines):")));
+        assert!(report.contains("2026-10-14 03:00:00 INFO app start"));
+        assert!(report.contains("2026-10-14 03:00:01 INFO scan done"));
+
+        let info_empty = DiagnosticsInfo {
+            app_log_tail: Some("   \n  ".into()),
+            ..info
+        };
+        let report_empty = build_report(&info_empty);
+        assert!(report_empty.contains("(none)"));
     }
 }
