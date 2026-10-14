@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>MegaPlay Player</title>
+    <style>
+        /* Full screen setup without scrollbars */
+        body, html { 
+            margin: 0; 
+            padding: 0; 
+            width: 100%; 
+            height: 100%; 
+            background: #000; 
+            overflow: hidden; 
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        /* Container ensuring controls stay inside viewport */
+        #player-container { 
+            width: 100%; 
+            height: 100%; 
+            max-width: 100vw;
+            max-height: 100vh;
+        }
+    </style>
+    <!-- JWPlayer Library[cite: 1, 2] -->
+    <script src="https://cdn.jwplayer.com/libraries/IDzF9Zmk.js"></script>
+</head>
+<body>
+
+<div id="player-container"></div>
+
+<script>
+    jwplayer("player-container").setup({
+        file: "https://megaplay.su/uploads/hls/Wm9xcEFlRjdEVWZEM2FxbGdhOHFPUT09/index.m3u8?v=1791919534",
+        image: "",
+        type:   "hls",
+        width: "100%",
+        height: "100%",
+        autostart: false, 
+        mute: false,      
+        stretching: "uniform",
+        controls: true,
+        tracks: [],
+        responsive: true
+    });
+
+    document.addEventListener('touchstart', function(event) {
+        if (event.touches.length > 1) {
+            event.preventDefault();
+        }
+    }, { passive: false });
+</script>
+
+</body>
+</html>
