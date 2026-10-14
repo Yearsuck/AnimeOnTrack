@@ -33,6 +33,7 @@ import type {
   MonitorOption,
   PlayerSettings,
   ListEntryMeta,
+  NextAir,
 } from "./types";
 
 export const scanAiring = (baseUrl: string) =>
@@ -254,6 +255,9 @@ export const refreshCatalogStatus = () =>
 export const getCatalogInfoForSeries = (seriesId: number) =>
   invoke<CatalogAnime | null>("get_catalog_info_for_series", { seriesId });
 
+export const getNextAir = (anilistId: number) =>
+  invoke<NextAir | null>("get_next_air", { anilistId });
+
 export const discoverCatalogCard = (recommended: boolean) =>
   invoke<SwipeCard | null>("discover_catalog_card", { recommended });
 
@@ -304,4 +308,3 @@ export const getSeriesBanner = (seriesId: number) =>
 export const exportDiagnostics = () => invoke<string>("export_diagnostics");
 export const revealInFolder = (path: string) =>
   invoke<void>("reveal_in_folder", { path });
-

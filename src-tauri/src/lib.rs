@@ -240,6 +240,7 @@ pub fn run() {
             commands::get_deck_bans,
             commands::set_deck_bans,
             commands::get_discover_niche,
+            commands::get_next_air,
             commands::set_discover_niche,
             commands::backup_status,
             commands::set_google_credentials,

@@ -1574,6 +1574,25 @@ impl Db {
             .optional()?;
         Ok(row)
     }
+
+    /// Smallest future `air_at` (strictly > `now`) and its episode for `anilist_id`.
+    /// Ties on `air_at` broken by lowest episode. Ignores entries with NULL `air_at`.
+    /// Returns None when no map exists or nothing upcoming.
+    pub fn next_airing_episode(&self, anilist_id: i64, now: i64) -> Result<Option<(i64, i64)>> {
+        let row: Option<(i64, i64)> = self
+            .conn
+            .query_row(
+                "SELECT episode, air_at
+                 FROM anilist_episode_map
+                 WHERE anilist_id = ?1 AND air_at > ?2
+                 ORDER BY air_at ASC, episode ASC
+                 LIMIT 1",
+                rusqlite::params![anilist_id, now],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        Ok(row)
+    }
 }
 
 #[cfg(test)]
@@ -4188,8 +4207,54 @@ mod tests {
         let limited = db.episode_map_stale_ids(now, 2).unwrap();
         assert_eq!(limited.len(), 2);
     }
+
+    #[test]
+    fn test_next_airing_episode_cases() {
+        let db = Db::open(":memory:").unwrap();
+        let now = 1_000_000;
+
+        // 1. Map with episodes 1..3 at air_at now-100, now+100, now+200 -> Some((2, now+100))
+        let entries = vec![
+            crate::anizip::MapEntry { episode: 1, season: 1, absolute: Some(1), air_at: Some(now - 100) },
+            crate::anizip::MapEntry { episode: 2, season: 1, absolute: Some(2), air_at: Some(now + 100) },
+            crate::anizip::MapEntry { episode: 3, season: 1, absolute: Some(3), air_at: Some(now + 200) },
+        ];
+        db.replace_episode_map(100, &entries, now).unwrap();
+        assert_eq!(db.next_airing_episode(100, now).unwrap(), Some((2, now + 100)));
+
+        // 2. All entries in the past -> None
+        let entries_past = vec![
+            crate::anizip::MapEntry { episode: 1, season: 1, absolute: Some(1), air_at: Some(now - 200) },
+            crate::anizip::MapEntry { episode: 2, season: 1, absolute: Some(2), air_at: Some(now - 100) },
+            crate::anizip::MapEntry { episode: 3, season: 1, absolute: Some(3), air_at: Some(now) },
+        ];
+        db.replace_episode_map(200, &entries_past, now).unwrap();
+        assert_eq!(db.next_airing_episode(200, now).unwrap(), None);
+
+        // 3. Unknown anilist_id -> None
+        assert_eq!(db.next_airing_episode(999999, now).unwrap(), None);
+
+        // 4. Entry with NULL air_at ignored (others still found)
+        let entries_with_null = vec![
+            crate::anizip::MapEntry { episode: 1, season: 1, absolute: Some(1), air_at: None },
+            crate::anizip::MapEntry { episode: 2, season: 1, absolute: Some(2), air_at: Some(now + 300) },
+        ];
+        db.replace_episode_map(300, &entries_with_null, now).unwrap();
+        assert_eq!(db.next_airing_episode(300, now).unwrap(), Some((2, now + 300)));
+
+        // 5. Two entries with the same future air_at -> lowest episode wins
+        let entries_tie = vec![
+            crate::anizip::MapEntry { episode: 5, season: 1, absolute: Some(5), air_at: Some(now + 500) },
+            crate::anizip::MapEntry { episode: 4, season: 1, absolute: Some(4), air_at: Some(now + 500) },
+        ];
+        db.replace_episode_map(400, &entries_tie, now).unwrap();
+        assert_eq!(db.next_airing_episode(400, now).unwrap(), Some((4, now + 500)));
+
+        // 6. Past air_at must never be returned as upcoming
+        let entries_strictly_past = vec![
+            crate::anizip::MapEntry { episode: 1, season: 1, absolute: Some(1), air_at: Some(now - 1) },
+        ];
+        db.replace_episode_map(500, &entries_strictly_past, now).unwrap();
+        assert_eq!(db.next_airing_episode(500, now).unwrap(), None);
+    }
 }
-
-
-
-

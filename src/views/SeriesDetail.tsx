@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   downloadEpisode,
   getCatalogInfoForSeries,
+  getNextAir,
   linkCatalogSeries,
   listEpisodes,
   openEpisode,
@@ -12,10 +13,11 @@ import {
 } from "../api";
 
 import { useT } from "../i18n";
+import { airCountdown } from "../lib/airCountdown";
 import { isUnlinkedCatalogRow } from "../lib/catalogLink";
 import { epNum } from "../lib/episodeNumber";
 import { resolveCoverUrl } from "../lib/posterFallback";
-import type { CatalogAnime, Episode, Series } from "../types";
+import type { CatalogAnime, Episode, NextAir, Series } from "../types";
 
 export function SeriesDetail({
   series,
@@ -34,6 +36,7 @@ export function SeriesDetail({
   // comes from AniList, not the scraped site — the site only still supplies
   // episode links and the "is it airing" signal (see `listEpisodes` below).
   const [catalogInfo, setCatalogInfo] = useState<CatalogAnime | null>(null);
+  const [nextAir, setNextAir] = useState<NextAir | null>(null);
   // AniList's CDN cover wins; otherwise the series' own (possibly a cached
   // local `file:` path, which the raw <img> would be blocked from loading).
   const detailCover = resolveCoverUrl(catalogInfo?.cover_url ?? series.cover_url);
@@ -79,6 +82,24 @@ export function SeriesDetail({
       .then(setCatalogInfo)
       .catch(() => setCatalogInfo(null));
   }, [series.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!catalogInfo?.id) {
+      setNextAir(null);
+      return;
+    }
+    getNextAir(catalogInfo.id)
+      .then((res) => {
+        if (!cancelled) setNextAir(res);
+      })
+      .catch(() => {
+        if (!cancelled) setNextAir(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [catalogInfo?.id]);
 
   useEffect(() => {
     linkTriedRef.current = null;
@@ -148,6 +169,18 @@ export function SeriesDetail({
 
   const seenCount = episodes.filter((e) => e.seen).length;
   const pct = episodes.length ? Math.round((seenCount / episodes.length) * 100) : 0;
+  const countdown =
+    nextAir != null ? airCountdown(nextAir.air_at, Date.now() / 1000) : null;
+  const when = countdown
+    ? t(
+        countdown.unit === "minutes"
+          ? "seriesDetail.nextAir.minutes"
+          : countdown.unit === "hours"
+          ? "seriesDetail.nextAir.hours"
+          : "seriesDetail.nextAir.days",
+        { n: countdown.value }
+      )
+    : "";
 
   return (
     <div className="page">
@@ -189,6 +222,11 @@ export function SeriesDetail({
             </div>
           ) : (
             <div className="muted detail-meta">{t("seriesDetail.info.notSynced")}</div>
+          )}
+          {nextAir && countdown && (
+            <p className="muted detail-next-air">
+              {t("seriesDetail.nextAir", { episode: nextAir.episode, when })}
+            </p>
           )}
           {catalogInfo != null && catalogInfo.genres.length > 0 && (
             <div className="detail-genres">

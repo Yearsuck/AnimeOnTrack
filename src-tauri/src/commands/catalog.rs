@@ -47,6 +47,22 @@ pub fn get_catalog_info_for_series(
     db.catalog_info_for_series(series_id).map_err(|e| e.to_string())
 }
 
+#[derive(serde::Serialize)]
+pub struct NextAir {
+    pub episode: i64,
+    pub air_at: i64,
+}
+
+/// Next upcoming episode and its air timestamp (in seconds) for `anilist_id`
+/// from the stored ani.zip episode map. Returns None when no upcoming episodes exist.
+#[tauri::command]
+pub fn get_next_air(state: State<'_, AppState>, anilist_id: i64) -> Result<Option<NextAir>, String> {
+    let now = chrono::Utc::now().timestamp();
+    let db = state.db.lock().unwrap();
+    let next = db.next_airing_episode(anilist_id, now).map_err(|e| e.to_string())?;
+    Ok(next.map(|(episode, air_at)| NextAir { episode, air_at }))
+}
+
 #[derive(Serialize)]
 pub struct CatalogPage {
     pub items: Vec<crate::anilist::CatalogAnime>,
