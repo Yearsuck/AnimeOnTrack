@@ -2,14 +2,14 @@ use super::*;
 
 /// Full genre list for one series, for the Listas view's "Quiero ver" rows.
 #[tauri::command]
-pub fn get_series_genres(state: State<'_, AppState>, series_id: i64) -> Result<Vec<String>, String> {
+pub async fn get_series_genres(state: State<'_, AppState>, series_id: i64) -> Result<Vec<String>, String> {
     let db = state.db.lock().unwrap();
     db.list_series_genres(series_id).map_err(|e| e.to_string())
 }
 
 /// Bulk-fetch genre lists for multiple series ids in one call.
 #[tauri::command]
-pub fn get_series_genres_batch(
+pub async fn get_series_genres_batch(
     state: State<'_, AppState>,
     series_ids: Vec<i64>,
 ) -> Result<std::collections::HashMap<i64, Vec<String>>, String> {
@@ -29,7 +29,7 @@ pub fn get_series_genres_batch(
 /// to browse — which silently dropped the taste evidence sitting on the other
 /// sites. See `Db::get_genre_affinity_across_sites`.
 #[tauri::command]
-pub fn get_top_genres(state: State<'_, AppState>, limit: usize) -> Result<Vec<GenreAffinity>, String> {
+pub async fn get_top_genres(state: State<'_, AppState>, limit: usize) -> Result<Vec<GenreAffinity>, String> {
     let db = state.db.lock().unwrap();
     db.get_favorite_genres(limit).map_err(|e| e.to_string())
 }
@@ -39,7 +39,7 @@ pub fn get_top_genres(state: State<'_, AppState>, limit: usize) -> Result<Vec<Ge
 /// anime metadata comes from AniList rather than the scraped site. `None`
 /// when nothing in the synced catalog matches.
 #[tauri::command]
-pub fn get_catalog_info_for_series(
+pub async fn get_catalog_info_for_series(
     state: State<'_, AppState>,
     series_id: i64,
 ) -> Result<Option<crate::anilist::CatalogAnime>, String> {
@@ -56,7 +56,7 @@ pub struct NextAir {
 /// Next upcoming episode and its air timestamp (in seconds) for `anilist_id`
 /// from the stored ani.zip episode map. Returns None when no upcoming episodes exist.
 #[tauri::command]
-pub fn get_next_air(state: State<'_, AppState>, anilist_id: i64) -> Result<Option<NextAir>, String> {
+pub async fn get_next_air(state: State<'_, AppState>, anilist_id: i64) -> Result<Option<NextAir>, String> {
     let now = chrono::Utc::now().timestamp();
     let db = state.db.lock().unwrap();
     let next = db.next_airing_episode(anilist_id, now).map_err(|e| e.to_string())?;
@@ -81,7 +81,7 @@ pub struct CatalogPage {
 /// `total_matching` reflects `filter` and drives `has_next_page` / the
 /// "N resultados" label.
 #[tauri::command]
-pub fn get_anime_catalog(
+pub async fn get_anime_catalog(
     state: State<'_, AppState>,
     page: i64,
     filter: Option<crate::db::CatalogFilter>,
@@ -109,7 +109,7 @@ pub struct CatalogFacets {
 /// frontend loads this once per mount, tolerating staleness until the next
 /// sync (facets only change after a re-sync).
 #[tauri::command]
-pub fn get_catalog_facets(state: State<'_, AppState>) -> Result<CatalogFacets, String> {
+pub async fn get_catalog_facets(state: State<'_, AppState>) -> Result<CatalogFacets, String> {
     let db = state.db.lock().unwrap();
     let genres = db.distinct_catalog_genres().map_err(|e| e.to_string())?;
     let formats = db.distinct_catalog_formats().map_err(|e| e.to_string())?;
@@ -236,7 +236,7 @@ pub fn should_stamp_auto_sync<T, E>(outcome: &Result<T, E>) -> bool {
 /// for the actual matching logic (factored out so `scan_airing_via_mirrors`
 /// can also call it, on every site switch, not just at app startup).
 #[tauri::command]
-pub fn link_series_to_catalog(state: State<'_, AppState>) -> Result<i64, String> {
+pub async fn link_series_to_catalog(state: State<'_, AppState>) -> Result<i64, String> {
     let db = state.db.lock().unwrap();
     db.link_series_to_catalog().map_err(|e| e.to_string())
 }

@@ -175,7 +175,7 @@ fn read_log_tail(path: &Path) -> Option<String> {
 }
 
 #[tauri::command]
-pub fn export_diagnostics(app: AppHandle, state: State<'_, AppState>) -> Result<String, String> {
+pub async fn export_diagnostics(app: AppHandle, state: State<'_, AppState>) -> Result<String, String> {
     let (series_count, followed_count, catalog_count, raw_keys) = {
         let db = state.db.lock().unwrap();
         let s_count = query_series_count(&db.conn).unwrap_or(0);
@@ -217,7 +217,7 @@ pub fn export_diagnostics(app: AppHandle, state: State<'_, AppState>) -> Result<
 }
 
 #[tauri::command]
-pub fn reveal_in_folder(app: AppHandle, path: String) -> Result<(), String> {
+pub async fn reveal_in_folder(app: AppHandle, path: String) -> Result<(), String> {
     let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let target = Path::new(&path);
 

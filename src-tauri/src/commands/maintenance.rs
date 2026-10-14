@@ -21,7 +21,7 @@ use super::*;
 /// nothing to uninstall.
 #[tauri::command]
 #[cfg(windows)]
-pub fn uninstall_app(app: AppHandle) -> Result<(), String> {
+pub async fn uninstall_app(app: AppHandle) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let dir = exe
         .parent()
@@ -47,6 +47,6 @@ pub fn uninstall_app(app: AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 #[cfg(not(windows))]
-pub fn uninstall_app(_app: AppHandle) -> Result<(), String> {
+pub async fn uninstall_app(_app: AppHandle) -> Result<(), String> {
     Err("La desinstalación desde la app solo está disponible en Windows.".to_string())
 }

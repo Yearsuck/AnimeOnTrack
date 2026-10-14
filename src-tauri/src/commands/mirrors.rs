@@ -100,7 +100,7 @@ pub fn switch_site_core(db: &Db, site_id: &str) -> Result<(SiteSwitchResult, Opt
 }
 
 #[tauri::command]
-pub fn get_mirrors(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+pub async fn get_mirrors(state: State<'_, AppState>) -> Result<Vec<String>, String> {
     let site_id = get_active_site_id(&state);
     let db = state.db.lock().unwrap();
     load_mirrors(&db, &site_id)
@@ -117,7 +117,7 @@ pub fn get_mirrors(state: State<'_, AppState>) -> Result<Vec<String>, String> {
 /// navigation time, so Settings gives immediate feedback instead of a scan
 /// silently refusing every fetch against it later.
 #[tauri::command]
-pub fn set_mirrors(state: State<'_, AppState>, urls: Vec<String>) -> Result<(), String> {
+pub async fn set_mirrors(state: State<'_, AppState>, urls: Vec<String>) -> Result<(), String> {
     let site_id = get_active_site_id(&state);
     let db = state.db.lock().unwrap();
     let mut cleaned: Vec<String> = urls
@@ -157,7 +157,7 @@ pub fn list_sites() -> Vec<SiteSummary> {
 /// touched or deleted by switching away from it — see the design spec's
 /// "library is per-site" scope note.
 #[tauri::command]
-pub fn set_active_site(state: State<'_, AppState>, site_id: String) -> Result<SiteSwitchResult, String> {
+pub async fn set_active_site(state: State<'_, AppState>, site_id: String) -> Result<SiteSwitchResult, String> {
     let db = state.db.lock().unwrap();
     let (result, existing_source) = switch_site_core(&db, &site_id)?;
     *state.source_id.lock().unwrap() = existing_source;

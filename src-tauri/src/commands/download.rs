@@ -47,7 +47,7 @@ pub async fn download_episode(
 
 /// Cancel an in-progress download.
 #[tauri::command]
-pub fn cancel_download(
+pub async fn cancel_download(
     state: State<'_, AppState>,
     episode_id: i64,
 ) -> Result<(), String> {
@@ -60,7 +60,7 @@ pub fn cancel_download(
 
 /// Delete a downloaded episode's file and clear its DB state.
 #[tauri::command]
-pub fn delete_download(
+pub async fn delete_download(
     state: State<'_, AppState>,
     episode_id: i64,
 ) -> Result<(), String> {
@@ -76,7 +76,7 @@ pub fn delete_download(
 
 /// Total disk space used by all downloaded episode files.
 #[tauri::command]
-pub fn get_downloads_size(
+pub async fn get_downloads_size(
     state: State<'_, AppState>,
 ) -> Result<u64, String> {
     let db = state.db.lock().unwrap();
@@ -85,7 +85,7 @@ pub fn get_downloads_size(
 
 /// Delete ALL downloaded files and clear their DB columns.
 #[tauri::command]
-pub fn clear_all_downloads(
+pub async fn clear_all_downloads(
     state: State<'_, AppState>,
 ) -> Result<usize, String> {
     let db = state.db.lock().unwrap();
