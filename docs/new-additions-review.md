@@ -113,3 +113,11 @@ What this does NOT do: it is hardening, not a virtual machine. A flaw in the med
 | Ok.ru (TioAnime) | resolver verified (valid MP4 stream arrives); a full episode is slow on this CDN |
 | Not possible | Filemoon/Byse (captcha), Streamwish (anti-bot loader), Doodstream (unreachable), Mega (encrypted), 1Fichier/Gofile/Fireload, AnimeLand (scam redirects), AnimeFLV (origin down). Reasons in `docs/superpowers/plans/2026-10-14-download-sources-research.md`. |
 Also fixed: deleting an episode's download while it is still running now stops it (before, it finished and brought the file back); rows left "downloading" by a crash are reset at startup and their half files removed. `AOT_DOWNLOAD_PREFER=<host>` (dev only) tries one host's mirrors first.
+
+## Batch 14 - AnimeFLV at its new address (done; scan and downloads tested live in the sandbox)
+AnimeFLV is now https://animeflv.or.at, a different (WordPress) site, so the old adapter could not read it.
+| Change | Detail |
+|---|---|
+| New adapter (`feat(animeflv)`) | Airing list from the "animes en emisión" sidebar (on every page), episodes from the series page's JSON block, search from the main results grid (never the sidebar), genres/synopsis from the series page. Live check on the sandbox copy: 273 series (74 airing) scanned, new episode links stored. |
+| Domain migration (`feat(animeflv)`) | The base URL, the series page URLs and the saved mirror lists of existing installs follow the move (same mechanism as AnimeYT). Old episode rows keep their seen state: episodes are matched by number and their links refresh on the next scan. |
+| Downloads (`feat(download)`) | Episode pages list servers as base64 buttons; Mp4upload and VOE ones download (live: a 2026-10-11 episode as mp4 and as `.ts`). The first server, a fragmented-MP4 HLS from zilla-networks, is not supported yet, and Byse needs a captcha. Very old episodes may only have dead links. |
