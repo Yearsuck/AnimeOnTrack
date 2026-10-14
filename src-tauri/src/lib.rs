@@ -9,6 +9,7 @@ mod dates;
 mod db;
 mod diff;
 mod domain_breaker;
+mod download_safety;
 mod download_sources;
 mod downloader;
 mod file_log;
