@@ -156,8 +156,8 @@ export const es = {
   "settings.playerMonitorPrimaryTag": " (Principal)",
   "settings.playerMode": "Modo de apertura",
   "settings.playerWindowed": "Ventana",
-  "settings.playerFullscreen": "Pantalla completa",
-  "settings.playerHelp": "Configura en qué monitor se abren los episodios y si deben iniciarse a pantalla completa o en ventana.",
+  "settings.playerFullscreen": "Ventana a pantalla completa",
+  "settings.playerHelp": "Configura en qué monitor se abren los episodios y si deben abrirse en una ventana normal o maximizada a pantalla completa. El pantalla completa real lo activas tú al empezar el episodio.",
 
 
   // Library.tsx
@@ -209,6 +209,10 @@ export const es = {
   "seriesDetail.openPage": "Ver en AniList ↗",
   "seriesDetail.seenCount": "{seen} / {total} vistos",
   "seriesDetail.jumpToCurrent": "⇒ Ir al episodio actual",
+  "seriesDetail.nextAir": "Próximo episodio: Ep {episode} · {when}",
+  "seriesDetail.nextAir.minutes": "en {n} min",
+  "seriesDetail.nextAir.hours": "en {n} h",
+  "seriesDetail.nextAir.days": "en {n} días",
   "seriesDetail.linking": "Buscando en la web…",
   "seriesDetail.loadingEpisodes": "Cargando episodios…",
   "seriesDetail.noEpisodes": "Sin episodios registrados todavía. Pulsa Actualizar.",
@@ -299,6 +303,8 @@ export const es = {
   "discover.filtersSave": "Guardar filtros",
   "discover.filtersSaving": "Guardando…",
   "discover.filtersSaved": "Filtros guardados.",
+  "discover.filtersReset": "Restablecer filtros",
+  "discover.filtersAutoHint": "Los cambios se aplican solos.",
   "discover.deckPanelTitle": "Ajustes del mazo",
   "discover.deckPanelToggleAria": "Mostrar u ocultar los ajustes del mazo",
   "discover.deckPanelBansBadge": "{count} filtros activos",
@@ -341,6 +347,10 @@ export const es = {
   "catalog.linking": "Enlazando {current}/{total}…",
   "catalog.batchWantDone": "{count} añadidos a Quiero ver.",
   "catalog.batchSeenDone": "{count} marcados como vistos.",
+  "catalog.batchStart": "Empezar a ver",
+  "catalog.starting": "Empezando {current}/{total}…",
+  "catalog.batchStartDone": "{started} en marcha, {problems} con problemas.",
+  "catalog.startNotFound": "«{title}» no se encontró en el sitio activo.",
 
   // ProgressBar.tsx
   "progress.stageOpening": "Abriendo página…",
@@ -472,6 +482,24 @@ export const es = {
   "download.clearAll": "Borrar todas las descargas",
   "download.clearAllConfirm": "¿Borrar todos los archivos descargados? No se puede deshacer.",
   "download.nothingDownloaded": "No hay nada descargado.",
+  "download.panelTitle": "Descargas offline",
+  "download.panelEmpty": "Nada descargado todavía.",
+  "download.statusDownloaded": "{count} descargados",
+  "download.statusActive": "{count} en cola o descargando",
+  "download.statusFailed": "{count} con error",
+  "download.downloadPending": "⬇ Descargar pendientes ({count})",
+  "download.nothingPending": "No hay episodios pendientes que se puedan descargar.",
+  "download.batchQueued": "{count} en cola.",
+  "download.batchUnsupported": "{count} no se pueden descargar desde este sitio.",
+  "download.batchError": "No se pudo encolar la descarga.",
+  "download.deleteAll": "🗑 Borrar descargas ({count})",
+  "download.deleteAllYes": "Sí, borrar",
+  "download.deleteAllNo": "Cancelar",
+  "download.deleteAllDone": "{count} descargas borradas.",
+  "download.keepWatchedHint": "Borrar descargas no marca los episodios como vistos.",
+  "download.deleteKeepsWatched": "Borra el archivo; el episodio sigue como estaba (visto o pendiente).",
+  "download.queued": "En cola…",
+  "download.retry": "Reintentar",
 
   // filters (v0.6.5)
   "filters.scorePresetsAria": "Preajustes de puntuación",
@@ -620,5 +648,39 @@ export const es = {
   "settings.sitePriorityDown": "Bajar",
   "settings.sitePriorityMoveUp": "Subir prioridad de {site}",
   "settings.sitePriorityMoveDown": "Bajar prioridad de {site}",
-} as const;
 
+  // keyboard shortcuts
+  "shortcuts.title": "Atajos de teclado",
+  "shortcuts.close": "Cerrar",
+  "shortcuts.nav": "Cambiar de pestaña (1-7)",
+  "shortcuts.refresh": "Actualizar catálogo y episodios",
+  "shortcuts.search": "Buscar en el catálogo",
+  "shortcuts.help": "Mostrar u ocultar esta ayuda",
+  "shortcuts.escape": "Cerrar detalle o esta ayuda",
+
+  // diagnostics
+  "settings.diagnosticsHeading": "Diagnóstico del sistema",
+  "settings.diagnosticsDesc": "Genera un informe con versiones, recuentos y los últimos registros de error. No incluye tus datos personales ni valores de configuración.",
+  "settings.diagnosticsExport": "Exportar diagnóstico",
+  "settings.diagnosticsExporting": "Exportando…",
+  "settings.diagnosticsSaved": "Informe guardado en: {path}",
+  "settings.diagnosticsReveal": "Mostrar carpeta",
+
+  // continue watching
+  "continue.discover": "Descubrir anime",
+
+  // notifications
+  "notify.title": "AnimeOnTrack",
+  "notify.body": "{count} episodios nuevos",
+  "settings.notifyLabel": "Notificaciones",
+  "settings.notifyOn": "Activadas",
+  "settings.notifyOff": "Desactivadas",
+  "settings.notifyHint":
+    "Aviso de Windows cuando una actualización encuentra episodios nuevos y la ventana está en segundo plano.",
+
+  // niche slider
+  "niche.label": "Gustos: populares <-> de culto",
+  "niche.mainstream": "Populares",
+  "niche.niche": "De culto",
+  "niche.hint": "Solo afecta al modo Recomendado.",
+} as const;

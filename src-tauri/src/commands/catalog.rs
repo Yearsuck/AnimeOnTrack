@@ -2,14 +2,14 @@ use super::*;
 
 /// Full genre list for one series, for the Listas view's "Quiero ver" rows.
 #[tauri::command]
-pub fn get_series_genres(state: State<'_, AppState>, series_id: i64) -> Result<Vec<String>, String> {
+pub async fn get_series_genres(state: State<'_, AppState>, series_id: i64) -> Result<Vec<String>, String> {
     let db = state.db.lock().unwrap();
     db.list_series_genres(series_id).map_err(|e| e.to_string())
 }
 
 /// Bulk-fetch genre lists for multiple series ids in one call.
 #[tauri::command]
-pub fn get_series_genres_batch(
+pub async fn get_series_genres_batch(
     state: State<'_, AppState>,
     series_ids: Vec<i64>,
 ) -> Result<std::collections::HashMap<i64, Vec<String>>, String> {
@@ -29,7 +29,7 @@ pub fn get_series_genres_batch(
 /// to browse — which silently dropped the taste evidence sitting on the other
 /// sites. See `Db::get_genre_affinity_across_sites`.
 #[tauri::command]
-pub fn get_top_genres(state: State<'_, AppState>, limit: usize) -> Result<Vec<GenreAffinity>, String> {
+pub async fn get_top_genres(state: State<'_, AppState>, limit: usize) -> Result<Vec<GenreAffinity>, String> {
     let db = state.db.lock().unwrap();
     db.get_favorite_genres(limit).map_err(|e| e.to_string())
 }
@@ -39,12 +39,28 @@ pub fn get_top_genres(state: State<'_, AppState>, limit: usize) -> Result<Vec<Ge
 /// anime metadata comes from AniList rather than the scraped site. `None`
 /// when nothing in the synced catalog matches.
 #[tauri::command]
-pub fn get_catalog_info_for_series(
+pub async fn get_catalog_info_for_series(
     state: State<'_, AppState>,
     series_id: i64,
 ) -> Result<Option<crate::anilist::CatalogAnime>, String> {
     let db = state.db.lock().unwrap();
     db.catalog_info_for_series(series_id).map_err(|e| e.to_string())
+}
+
+#[derive(serde::Serialize)]
+pub struct NextAir {
+    pub episode: i64,
+    pub air_at: i64,
+}
+
+/// Next upcoming episode and its air timestamp (in seconds) for `anilist_id`
+/// from the stored ani.zip episode map. Returns None when no upcoming episodes exist.
+#[tauri::command]
+pub async fn get_next_air(state: State<'_, AppState>, anilist_id: i64) -> Result<Option<NextAir>, String> {
+    let now = chrono::Utc::now().timestamp();
+    let db = state.db.lock().unwrap();
+    let next = db.next_airing_episode(anilist_id, now).map_err(|e| e.to_string())?;
+    Ok(next.map(|(episode, air_at)| NextAir { episode, air_at }))
 }
 
 #[derive(Serialize)]
@@ -65,7 +81,7 @@ pub struct CatalogPage {
 /// `total_matching` reflects `filter` and drives `has_next_page` / the
 /// "N resultados" label.
 #[tauri::command]
-pub fn get_anime_catalog(
+pub async fn get_anime_catalog(
     state: State<'_, AppState>,
     page: i64,
     filter: Option<crate::db::CatalogFilter>,
@@ -93,7 +109,7 @@ pub struct CatalogFacets {
 /// frontend loads this once per mount, tolerating staleness until the next
 /// sync (facets only change after a re-sync).
 #[tauri::command]
-pub fn get_catalog_facets(state: State<'_, AppState>) -> Result<CatalogFacets, String> {
+pub async fn get_catalog_facets(state: State<'_, AppState>) -> Result<CatalogFacets, String> {
     let db = state.db.lock().unwrap();
     let genres = db.distinct_catalog_genres().map_err(|e| e.to_string())?;
     let formats = db.distinct_catalog_formats().map_err(|e| e.to_string())?;
@@ -220,9 +236,21 @@ pub fn should_stamp_auto_sync<T, E>(outcome: &Result<T, E>) -> bool {
 /// for the actual matching logic (factored out so `scan_airing_via_mirrors`
 /// can also call it, on every site switch, not just at app startup).
 #[tauri::command]
-pub fn link_series_to_catalog(state: State<'_, AppState>) -> Result<i64, String> {
+pub async fn link_series_to_catalog(state: State<'_, AppState>) -> Result<i64, String> {
+    // Read the titles under the lock, build the (CPU-heavy) index without it,
+    // then take the lock again only to link — see `link_series_to_catalog_with`.
+    let rows = {
+        let db = state.db.lock().unwrap();
+        db.catalog_titles_for_index().map_err(|e| e.to_string())?
+    };
+    let (index, rows) = tauri::async_runtime::spawn_blocking(move || {
+        let index = crate::matching::CatalogIndex::build(&rows);
+        (index, rows)
+    })
+    .await
+    .map_err(|e| e.to_string())?;
     let db = state.db.lock().unwrap();
-    db.link_series_to_catalog().map_err(|e| e.to_string())
+    db.link_series_to_catalog_with(&index, rows).map_err(|e| e.to_string())
 }
 
 #[derive(Serialize, Clone)]
@@ -266,8 +294,9 @@ pub async fn backfill_catalog_metadata(app: AppHandle, state: State<'_, AppState
     let mut done = 0i64;
     let _ = app.emit("catalog-backfill-progress", CatalogBackfillProgress { done, total });
 
-    for batch in stale_ids.chunks(crate::anilist::MAX_IDS_PER_REQUEST) {
-        let fetched = crate::anilist::fetch_by_ids(batch).await.map_err(|e| e.to_string())?;
+    for batch in stale_ids.chunks(crate::anilist::MAX_IDS_PER_REQUEST * crate::anilist::PAGES_PER_REQUEST as usize) {
+        let started = std::time::Instant::now();
+        let fetched = crate::anilist::fetch_by_ids_multi(batch).await.map_err(|e| e.to_string())?;
         {
             let db = state.db.lock().unwrap();
             let mut items = Vec::with_capacity(fetched.len());
@@ -283,7 +312,8 @@ pub async fn backfill_catalog_metadata(app: AppHandle, state: State<'_, AppState
         // total and re-request those same dead ids on every future run.
         done += batch.len() as i64;
         let _ = app.emit("catalog-backfill-progress", CatalogBackfillProgress { done, total });
-        tokio::time::sleep(PACED_SLEEP).await;
+        // The request itself already used part of the 2.1 s slot.
+        tokio::time::sleep(PACED_SLEEP.saturating_sub(started.elapsed())).await;
     }
     Ok(done)
 }
@@ -323,8 +353,9 @@ pub async fn refresh_catalog_status(state: State<'_, AppState>) -> Result<Option
     };
 
     let mut done = 0i64;
-    for batch in stale_ids.chunks(crate::anilist::MAX_IDS_PER_REQUEST) {
-        let fetched = crate::anilist::fetch_by_ids(batch).await.map_err(|e| e.to_string())?;
+    for batch in stale_ids.chunks(crate::anilist::MAX_IDS_PER_REQUEST * crate::anilist::PAGES_PER_REQUEST as usize) {
+        let started = std::time::Instant::now();
+        let fetched = crate::anilist::fetch_by_ids_multi(batch).await.map_err(|e| e.to_string())?;
         {
             let db = state.db.lock().unwrap();
             let mut items = Vec::with_capacity(fetched.len());
@@ -335,7 +366,7 @@ pub async fn refresh_catalog_status(state: State<'_, AppState>) -> Result<Option
             db.upsert_catalog_anime_batch(&items).map_err(|e| e.to_string())?;
         }
         done += batch.len() as i64;
-        tokio::time::sleep(PACED_SLEEP).await;
+        tokio::time::sleep(PACED_SLEEP.saturating_sub(started.elapsed())).await;
     }
 
     {
@@ -346,6 +377,143 @@ pub async fn refresh_catalog_status(state: State<'_, AppState>) -> Result<Option
     }
 
     Ok(Some(done))
+}
+
+/// Where a new install fetches the pre-built catalog snapshot from (a GitHub
+/// Release asset kept up to date by the owner). `AOT_CATALOG_SNAPSHOT_URL`
+/// overrides it for development; an override skips the "public host" check so
+/// a local file server can be used.
+const SNAPSHOT_URL: &str =
+    "https://github.com/Yearsuck/AnimeOnTrack/releases/download/catalog-snapshot/catalog-snapshot.json.gz";
+/// A catalog this small is treated as "new install"; anything bigger already
+/// has data the snapshot must not second-guess.
+const BOOTSTRAP_MAX_EXISTING: i64 = 1_000;
+const MAX_SNAPSHOT_DOWNLOAD_BYTES: usize = 64 * 1024 * 1024;
+
+async fn download_snapshot(url: &str) -> Result<Vec<u8>, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(180))
+        .user_agent(format!("AnimeOnTrack/{}", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let resp = client.get(url).send().await.map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("snapshot download answered HTTP {}", resp.status()));
+    }
+    if resp.content_length().is_some_and(|n| n as usize > MAX_SNAPSHOT_DOWNLOAD_BYTES) {
+        return Err("snapshot is larger than the allowed size".into());
+    }
+    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
+    if bytes.len() > MAX_SNAPSHOT_DOWNLOAD_BYTES {
+        return Err("snapshot is larger than the allowed size".into());
+    }
+    Ok(bytes.to_vec())
+}
+
+/// First-run shortcut: instead of crawling ~21,000 titles from AniList at
+/// ~28 requests/minute (over 15 minutes), download the pre-built snapshot (one
+/// request), import it in chunks without holding the DB lock for long, and
+/// record the full sync as completed so the regular incremental sync only has
+/// to close the gap. Best effort: any failure returns `None` and the caller
+/// falls back to the normal crawl.
+async fn try_snapshot_bootstrap(app: &AppHandle, state: &State<'_, AppState>) -> Option<i64> {
+    use crate::anilist::CatalogSyncState;
+
+    let skip = {
+        let db = state.db.lock().unwrap();
+        let existing = db.catalog_count().unwrap_or(i64::MAX);
+        let done = db
+            .get_setting("catalog_sync_state")
+            .ok()
+            .flatten()
+            .map(|raw| CatalogSyncState::from_json(&raw).full_sync_completed_at.is_some())
+            .unwrap_or(false);
+        existing >= BOOTSTRAP_MAX_EXISTING || done
+    };
+    if skip {
+        return None;
+    }
+
+    let override_url = std::env::var("AOT_CATALOG_SNAPSHOT_URL").ok().filter(|u| !u.trim().is_empty());
+    let url = override_url.clone().unwrap_or_else(|| SNAPSHOT_URL.to_string());
+    if override_url.is_none() && !crate::scraper_engine::is_safe_external_url(&url) {
+        return None;
+    }
+
+    let started = std::time::Instant::now();
+    let bytes = match download_snapshot(&url).await {
+        Ok(b) => b,
+        Err(e) => {
+            crate::file_log::warn(&format!("catalog snapshot download failed: {e}"));
+            return None;
+        }
+    };
+    let decoded = tauri::async_runtime::spawn_blocking(move || crate::catalog_snapshot::decode(&bytes)).await;
+    let (header, items) = match decoded {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => {
+            crate::file_log::warn(&format!("catalog snapshot rejected: {e}"));
+            return None;
+        }
+        Err(e) => {
+            crate::file_log::warn(&format!("catalog snapshot decode task failed: {e}"));
+            return None;
+        }
+    };
+
+    let total = items.len() as i64;
+    let mut inserted = 0i64;
+    for (chunk_idx, chunk) in items.chunks(1000).enumerate() {
+        {
+            let db = state.db.lock().unwrap();
+            match db.import_catalog_snapshot(chunk, (chunk_idx * 1000) as i64) {
+                Ok(n) => inserted += n as i64,
+                Err(e) => {
+                    crate::file_log::warn(&format!("catalog snapshot import failed: {e}"));
+                    return None;
+                }
+            }
+        }
+        let done = ((chunk_idx + 1) * 1000).min(items.len()) as i64;
+        let _ = app.emit("catalog-sync-progress", CatalogSyncProgress { synced: done, total });
+        // Yield so other commands get the DB lock between chunks.
+        tokio::task::yield_now().await;
+    }
+
+    let at = chrono::DateTime::from_timestamp(header.generated_at, 0)
+        .unwrap_or_else(chrono::Utc::now)
+        .to_rfc3339();
+    {
+        let db = state.db.lock().unwrap();
+        let st = CatalogSyncState { completed: Vec::new(), full_sync_completed_at: Some(at) };
+        let _ = db.set_setting("catalog_sync_state", &st.to_json());
+    }
+    crate::file_log::info(&format!(
+        "catalog snapshot imported: {inserted} new of {total} rows in {} ms",
+        started.elapsed().as_millis()
+    ));
+    Some(inserted)
+}
+
+/// Write a snapshot of the whole local catalog next to the database
+/// (`catalog-snapshot.json.gz` in the app data dir) and return its path. This is
+/// how the owner produces the file that is published for new installs.
+#[tauri::command]
+pub async fn export_catalog_snapshot(app: AppHandle, state: State<'_, AppState>) -> Result<String, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let items = {
+        let db = state.db.lock().unwrap();
+        db.catalog_all_for_snapshot().map_err(|e| e.to_string())?
+    };
+    let path = dir.join("catalog-snapshot.json.gz");
+    let out = path.clone();
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        let bytes = crate::catalog_snapshot::encode(chrono::Utc::now().timestamp(), &items).map_err(|e| e.to_string())?;
+        std::fs::write(&out, bytes).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    Ok(path.to_string_lossy().into_owned())
 }
 
 async fn run_catalog_sync(
@@ -370,6 +538,12 @@ async fn run_catalog_sync(
         return db.catalog_count().map_err(|e| e.to_string());
     }
     let _clear = crate::commands::follow::RunningGuard(&state.catalog_sync_running);
+
+    // A new install imports the pre-built snapshot instead of crawling (see
+    // `try_snapshot_bootstrap`); on any failure the regular crawl below runs.
+    if !force_full {
+        let _ = try_snapshot_bootstrap(&app, &state).await;
+    }
 
     const PAGE_SIZE: i64 = 50;
     // Real total (~21,000) can't be known up front (AniList's own totals
@@ -420,7 +594,14 @@ async fn run_catalog_sync(
     for partition in &partitions_to_run {
         let mut page = 1i64;
         loop {
-            let result = crate::anilist::fetch_partition_page(partition, page, PAGE_SIZE)
+            // Up to ten consecutive pages per request (the rate limit counts
+            // requests, not rows); never past the partition's own page cap.
+            let batch_pages = match partition.max_pages {
+                Some(cap) => crate::anilist::PAGES_PER_REQUEST.min(cap - page + 1).max(1),
+                None => crate::anilist::PAGES_PER_REQUEST,
+            };
+            let started = std::time::Instant::now();
+            let result = crate::anilist::fetch_partition_pages(partition, page, batch_pages, PAGE_SIZE)
                 .await
                 .map_err(|e| e.to_string())?;
 
@@ -438,14 +619,14 @@ async fn run_catalog_sync(
             let total = FULL_SYNC_ESTIMATE.max(synced);
             let _ = app.emit("catalog-sync-progress", CatalogSyncProgress { synced, total });
 
-            let reached_page_cap = partition.max_pages.is_some_and(|cap| page >= cap);
+            let reached_page_cap = partition.max_pages.is_some_and(|cap| page + batch_pages > cap);
             if !result.has_next_page || reached_page_cap {
                 break;
             }
-            page += 1;
+            page += batch_pages;
             let should_pace = result.rate_remaining.map(|r| r < RATE_HEADROOM_FLOOR).unwrap_or(true);
             if should_pace {
-                tokio::time::sleep(PACED_SLEEP).await;
+                tokio::time::sleep(PACED_SLEEP.saturating_sub(started.elapsed())).await;
             }
         }
 

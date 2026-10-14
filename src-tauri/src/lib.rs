@@ -1,11 +1,20 @@
+mod ad_block;
 mod adapter;
 mod anilist;
+mod anizip;
 mod backup;
+mod catalog_snapshot;
 mod commands;
 mod dates;
 mod db;
 mod diff;
+mod domain_breaker;
+mod download_safety;
+mod download_sources;
+mod downloader;
+mod file_log;
 mod genres;
+mod hls;
 mod html_cache;
 mod matching;
 mod models;
@@ -90,6 +99,7 @@ fn install_panic_log(dir: &std::path::Path) {
         if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&log_path) {
             let _ = writeln!(f, "[{when}] panic at {location}: {info}");
         }
+        crate::file_log::error(&format!("panic at {location}: {info}"));
         previous(info);
     }));
 }
@@ -98,11 +108,14 @@ fn install_panic_log(dir: &std::path::Path) {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             let dir = app.path().app_data_dir().expect("app data dir");
             std::fs::create_dir_all(&dir).ok();
             // Before anything that can panic below.
             install_panic_log(&dir);
+            file_log::init(&dir);
+            file_log::info(&format!("start v{}", env!("CARGO_PKG_VERSION")));
             // Carry the database over from the pre-0.5.5 app-data directory,
             // which was keyed on the old `com.ernes.aot-scaffold` identifier.
             // Runs before everything below, so the rest of startup sees a
@@ -116,6 +129,10 @@ pub fn run() {
             backup::apply_pending_restore(&dir);
             let db_path = dir.join("animeontrack.sqlite");
             let db = db::Db::open(db_path.to_str().unwrap()).expect("open db");
+            // Nothing can be downloading at startup: reset rows left "downloading" by a
+            // crash or a close mid-transfer, and remove their half-written files.
+            let _ = db.clear_interrupted_downloads();
+            let _ = downloader::sweep_partial_downloads(&dir.join("downloads"));
             // Restore the active site from settings (installs that predate
             // multi-site support have no such key — default to the one site
             // that ever existed before this), then the most recent source
@@ -159,6 +176,8 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 let _ = commands::auto_backup_if_due(handle).await;
             });
+
+            anizip::spawn_sync(app.handle().clone());
 
             Ok(())
         })
@@ -234,6 +253,10 @@ pub fn run() {
             commands::undo_swipe_entry,
             commands::get_deck_bans,
             commands::set_deck_bans,
+            commands::get_discover_niche,
+            commands::get_next_air,
+            commands::export_catalog_snapshot,
+            commands::set_discover_niche,
             commands::backup_status,
             commands::set_google_credentials,
             commands::connect_drive,
@@ -243,10 +266,15 @@ pub fn run() {
             commands::auto_backup_if_due,
             commands::uninstall_app,
             commands::download_episode,
+            commands::play_download,
+            commands::download_pending,
+            commands::delete_series_downloads,
             commands::cancel_download,
             commands::delete_download,
             commands::get_downloads_size,
             commands::clear_all_downloads,
+            commands::export_diagnostics,
+            commands::reveal_in_folder,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -152,8 +152,8 @@ export const ca: Messages = {
   "settings.playerMonitorPrimaryTag": " (Principal)",
   "settings.playerMode": "Mode d'obertura",
   "settings.playerWindowed": "Finestra",
-  "settings.playerFullscreen": "Pantalla completa",
-  "settings.playerHelp": "Configura a quin monitor s'obren els episodis i si han d'iniciar-se a pantalla completa o en finestra.",
+  "settings.playerFullscreen": "Finestra a pantalla completa",
+  "settings.playerHelp": "Configura a quin monitor s'obren els episodis i si s'obren en una finestra normal o maximitzada a pantalla completa. La pantalla completa real l'actives tu en començar l'episodi.",
 
 
   // Library.tsx
@@ -205,6 +205,10 @@ export const ca: Messages = {
   "seriesDetail.openPage": "Veure a AniList ↗",
   "seriesDetail.seenCount": "{seen} / {total} vistos",
   "seriesDetail.jumpToCurrent": "⇒ Ves a l'episodi actual",
+  "seriesDetail.nextAir": "Pròxim episodi: Ep {episode} · {when}",
+  "seriesDetail.nextAir.minutes": "en {n} min",
+  "seriesDetail.nextAir.hours": "en {n} h",
+  "seriesDetail.nextAir.days": "en {n} dies",
   "seriesDetail.linking": "Cercant al web…",
   "seriesDetail.loadingEpisodes": "Carregant episodis…",
   "seriesDetail.noEpisodes": "Encara no hi ha episodis registrats. Prem Actualitza.",
@@ -295,6 +299,8 @@ export const ca: Messages = {
   "discover.filtersSave": "Desa els filtres",
   "discover.filtersSaving": "Desant…",
   "discover.filtersSaved": "Filtres desats.",
+  "discover.filtersReset": "Restableix els filtres",
+  "discover.filtersAutoHint": "Els canvis s'apliquen sols.",
   "discover.deckPanelTitle": "Configuració de la baralla",
   "discover.deckPanelToggleAria": "Mostra o amaga la configuració de la baralla",
   "discover.deckPanelBansBadge": "{count} filtres actius",
@@ -337,6 +343,10 @@ export const ca: Messages = {
   "catalog.linking": "Enllaçant {current}/{total}…",
   "catalog.batchWantDone": "{count} afegits a Vull veure.",
   "catalog.batchSeenDone": "{count} marcats com a vistos.",
+  "catalog.batchStart": "Comença a veure",
+  "catalog.starting": "Començant {current}/{total}…",
+  "catalog.batchStartDone": "{started} en marxa, {problems} amb problemes.",
+  "catalog.startNotFound": "«{title}» no s'ha trobat al lloc actiu.",
 
   // ProgressBar.tsx
   "progress.stageOpening": "Obrint la pàgina…",
@@ -468,6 +478,24 @@ export const ca: Messages = {
   "download.clearAll": "Esborra totes les descàrregues",
   "download.clearAllConfirm": "Esborrar tots els fitxers descarregats? No es pot desfer.",
   "download.nothingDownloaded": "No hi ha res descarregat.",
+  "download.panelTitle": "Descàrregues offline",
+  "download.panelEmpty": "Encara no s'ha descarregat res.",
+  "download.statusDownloaded": "{count} descarregats",
+  "download.statusActive": "{count} en cua o descarregant",
+  "download.statusFailed": "{count} amb error",
+  "download.downloadPending": "⬇ Descarrega pendents ({count})",
+  "download.nothingPending": "No hi ha episodis pendents que es puguin descarregar.",
+  "download.batchQueued": "{count} en cua.",
+  "download.batchUnsupported": "{count} no es poden descarregar des d'aquest lloc.",
+  "download.batchError": "No s'ha pogut posar en cua la descàrrega.",
+  "download.deleteAll": "🗑 Esborra les descàrregues ({count})",
+  "download.deleteAllYes": "Sí, esborra",
+  "download.deleteAllNo": "Cancel·la",
+  "download.deleteAllDone": "{count} descàrregues esborrades.",
+  "download.keepWatchedHint": "Esborrar descàrregues no marca els episodis com a vistos.",
+  "download.deleteKeepsWatched": "Esborra el fitxer; l'episodi manté l'estat (vist o pendent).",
+  "download.queued": "En cua…",
+  "download.retry": "Reintenta",
 
   // filters (v0.6.5)
   "filters.scorePresetsAria": "Preajusts de puntuació",
@@ -616,5 +644,39 @@ export const ca: Messages = {
   "settings.sitePriorityDown": "Baixar",
   "settings.sitePriorityMoveUp": "Pujar prioritat de {site}",
   "settings.sitePriorityMoveDown": "Baixar prioritat de {site}",
-};
 
+  // keyboard shortcuts
+  "shortcuts.title": "Dreceres de teclat",
+  "shortcuts.close": "Tancar",
+  "shortcuts.nav": "Canviar de pestanya (1-7)",
+  "shortcuts.refresh": "Actualitzar catàleg i episodis",
+  "shortcuts.search": "Cercar al catàleg",
+  "shortcuts.help": "Mostrar o amagar aquesta ajuda",
+  "shortcuts.escape": "Tancar detall o aquesta ajuda",
+
+  // diagnostics
+  "settings.diagnosticsHeading": "Diagnòstic del sistema",
+  "settings.diagnosticsDesc": "Genera un informe amb versions, recomptes i els darrers registres d'error. No inclou les teves dades personals ni valors de configuració.",
+  "settings.diagnosticsExport": "Exportar diagnòstic",
+  "settings.diagnosticsExporting": "Exportant…",
+  "settings.diagnosticsSaved": "Informe desat a: {path}",
+  "settings.diagnosticsReveal": "Mostra la carpeta",
+
+  // continue watching
+  "continue.discover": "Descobrir anime",
+
+  // notifications
+  "notify.title": "AnimeOnTrack",
+  "notify.body": "{count} episodis nous",
+  "settings.notifyLabel": "Notificacions",
+  "settings.notifyOn": "Activades",
+  "settings.notifyOff": "Desactivades",
+  "settings.notifyHint":
+    "Avís de Windows quan una actualització troba episodis nous i la finestra està en segon pla.",
+
+  // niche slider
+  "niche.label": "Gustos: populars <-> de culte",
+  "niche.mainstream": "Populars",
+  "niche.niche": "De culte",
+  "niche.hint": "Només afecta al mode Recomanat.",
+};

@@ -33,6 +33,8 @@ import type {
   MonitorOption,
   PlayerSettings,
   ListEntryMeta,
+  NextAir,
+  DownloadBatch,
 } from "./types";
 
 export const scanAiring = (baseUrl: string) =>
@@ -170,6 +172,11 @@ export const setDeckBans = (
   minScore: number | null = null,
 ) => invoke<void>("set_deck_bans", { genres, formats, hideUpcoming, minStartDate, maxStartDate, minScore });
 
+export const getDiscoverNiche = () => invoke<number>("get_discover_niche");
+
+export const setDiscoverNiche = (value: number) =>
+  invoke<void>("set_discover_niche", { value });
+
 export const startWatching = (seriesId: number) =>
   invoke<LinkOutcome>("start_watching", { seriesId });
 
@@ -249,6 +256,11 @@ export const refreshCatalogStatus = () =>
 export const getCatalogInfoForSeries = (seriesId: number) =>
   invoke<CatalogAnime | null>("get_catalog_info_for_series", { seriesId });
 
+export const exportCatalogSnapshot = () => invoke<string>("export_catalog_snapshot");
+
+export const getNextAir = (anilistId: number) =>
+  invoke<NextAir | null>("get_next_air", { anilistId });
+
 export const discoverCatalogCard = (recommended: boolean) =>
   invoke<SwipeCard | null>("discover_catalog_card", { recommended });
 
@@ -281,6 +293,15 @@ export const setGoogleCredentials = (clientId: string, clientSecret: string) =>
 export const downloadEpisode = (episodeId: number) =>
   invoke<void>("download_episode", { episodeId });
 
+export const downloadPending = (seriesId: number) =>
+  invoke<DownloadBatch>("download_pending", { seriesId });
+
+export const deleteSeriesDownloads = (seriesId: number) =>
+  invoke<number>("delete_series_downloads", { seriesId });
+
+export const playDownload = (episodeId: number) =>
+  invoke<void>("play_download", { episodeId });
+
 export const cancelDownload = (episodeId: number) =>
   invoke<void>("cancel_download", { episodeId });
 
@@ -296,3 +317,6 @@ export const clearAllDownloads = () =>
 export const getSeriesBanner = (seriesId: number) =>
   invoke<string | null>("get_series_banner", { seriesId });
 
+export const exportDiagnostics = () => invoke<string>("export_diagnostics");
+export const revealInFolder = (path: string) =>
+  invoke<void>("reveal_in_folder", { path });

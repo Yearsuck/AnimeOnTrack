@@ -30,6 +30,7 @@ export function Pending({
   onOpenSeries,
   onChanged,
   refreshSignal,
+  onGoDiscover,
 }: {
   onOpenSeries: (s: Series) => void;
   onChanged: () => void;
@@ -41,6 +42,7 @@ export function Pending({
   // contradicted its own tab badge, which App.tsx *did* keep up to date.
   // Same pattern as AiringGrid's identically-named prop.
   refreshSignal?: number;
+  onGoDiscover?: () => void;
 }) {
   const t = useT();
   const [items, setItems] = useState<PendingItem[]>([]);
@@ -50,6 +52,7 @@ export function Pending({
   const load = useCallback(async () => {
     setItems(await listPending(sort));
   }, [sort]);
+
   useEffect(() => {
     load();
     // `refreshSignal` isn't read in the body — it's a bump counter whose only
@@ -135,6 +138,17 @@ export function Pending({
           {t("pending.empty")}
           <br />
           {t("pending.emptyHint")}
+          {onGoDiscover && (
+            <div className="empty-actions">
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={onGoDiscover}
+              >
+                {t("continue.discover")}
+              </button>
+            </div>
+          )}
         </div>
       ) : (
         [...groups.entries()].map(([seriesId, eps]) => {

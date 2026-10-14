@@ -328,4 +328,13 @@ export interface ListEntryMeta {
   cover_url: string | null;
 }
 
+export interface NextAir {
+  episode: number;
+  air_at: number;
+}
 
+export interface DownloadBatch {
+  queued: number;
+  unsupported: number;
+  already: number;
+}

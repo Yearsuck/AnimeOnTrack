@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="robots" content="noindex,nofollow">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Player</title>
+<style>    html, body {
+        height: 100%;
+        margin: 0;
+        background: #060513;
+        overflow: hidden;
+        font-family: "Poppins", "Segoe UI", Tahoma, sans-serif;
+    }
+    .player-wrap {
+        position: fixed;
+        inset: 0;
+        background: #060513;
+        overflow: hidden;
+        height: 100vh;
+    }
+    @supports (height: 100dvh) {
+        .player-wrap { height: 100dvh; }
+    }
+    @supports (-webkit-touch-callout: none) {
+        html, body, .player-wrap { height: -webkit-fill-available; }
+    }
+    .player-iframe {
+        display: block;
+        width: 100%;
+        height: 100%;
+        border: 0;
+        position: relative;
+        z-index: 1;
+    }
+    .player-loading {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        background: radial-gradient(circle at 50% 40%, rgba(26,29,63,0.9), rgba(6,5,19,0.97) 70%, rgba(0,0,0,1) 100%);
+        color: #eef1ff;
+        z-index: 2;
+        transition: opacity 0.35s ease, visibility 0.35s ease;
+    }
+    .player-loading.is-hidden {
+        opacity: 0;
+        visibility: hidden;
+        pointer-events: none;
+    }
+    .runner-track {
+        position: relative;
+        width: 210px;
+        height: 150px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin-bottom: 28px;
+    }
+    .runner-track::after {
+        content: '';
+        position: absolute;
+        bottom: 14px;
+        left: 50%;
+        width: 190px;
+        height: 24px;
+        margin-left: -95px;
+        background: radial-gradient(ellipse at center, rgba(120,158,255,0.48), rgba(0,0,0,0));
+        filter: blur(14px);
+        animation: trailPulse 1.25s ease-in-out infinite;
+    }
+    .runner-cat {
+        position: relative;
+        width: 170px;
+        height: 118px;
+    }
+    .runner-cat .body {
+        position: absolute;
+        top: 46px;
+        left: 50%;
+        width: 140px;
+        height: 54px;
+        margin-left: -70px;
+        background: linear-gradient(180deg, #3548ff 0%, #1c2bd9 100%);
+        border-radius: 30px;
+        box-shadow: 0 14px 26px rgba(0,0,0,0.45);
+        animation: bodyBounce 0.6s ease-in-out infinite;
+    }
+    .runner-cat .tail {
+        position: absolute;
+        top: 44px;
+        right: -34px;
+        width: 80px;
+        height: 20px;
+        border-radius: 20px;
+        background: linear-gradient(180deg, #3548ff 0%, #6576ff 100%);
+        transform-origin: 16px 50%;
+        animation: tailSwing 0.6s ease-in-out infinite;
+    }
+    .runner-cat .tail::after {
+        content: '';
+        position: absolute;
+        right: -18px;
+        top: 0;
+        width: 36px;
+        height: 20px;
+        border-radius: 20px;
+        background: linear-gradient(180deg, #8090ff 0%, #a1abff 100%);
+    }
+    .runner-cat .head {
+        position: absolute;
+        top: -6px;
+        left: 18px;
+        width: 78px;
+        height: 72px;
+        background: linear-gradient(180deg, #ffe9f8 0%, #ffb6e6 100%);
+        border-radius: 53% 47% 46% 44%;
+        box-shadow: 0 12px 20px rgba(0,0,0,0.34);
+        animation: headBob 0.6s ease-in-out infinite;
+    }
+    .runner-cat .ear {
+        position: absolute;
+        top: -16px;
+        width: 28px;
+        height: 34px;
+        background: linear-gradient(180deg, #6d3dff 0%, #2f15be 100%);
+        border-radius: 16px 16px 6px 6px;
+    }
+    .runner-cat .ear.ear-left { left: 8px; transform: rotate(-10deg); }
+    .runner-cat .ear.ear-right { right: 8px; transform: rotate(10deg); }
+    .runner-cat .ear::after {
+        content: '';
+        position: absolute;
+        inset: 5px;
+        background: linear-gradient(180deg, #ffc6ef 0%, #ff8dd6 100%);
+        border-radius: 12px;
+    }
+    .runner-cat .eye {
+        position: absolute;
+        top: 30px;
+        width: 16px;
+        height: 20px;
+        background: #1d1e36;
+        border-radius: 50%;
+        animation: blink 4.8s ease-in-out infinite;
+    }
+    .runner-cat .eye::after {
+        content: '';
+        position: absolute;
+        top: 4px;
+        left: 3px;
+        width: 7px;
+        height: 9px;
+        border-radius: 50%;
+        background: rgba(255,255,255,0.76);
+    }
+    .runner-cat .eye.eye-left { left: 30px; }
+    .runner-cat .eye.eye-right { right: 30px; }
+    .runner-cat .smile {
+        position: absolute;
+        top: 54px;
+        left: 50%;
+        width: 40px;
+        height: 16px;
+        margin-left: -20px;
+        border-radius: 0 0 18px 18px;
+        background: #ff80be;
+        box-shadow: inset 0 -4px 0 rgba(0,0,0,0.2);
+    }
+    .runner-cat .whisker {
+        position: absolute;
+        top: 56px;
+        width: 42px;
+        height: 2px;
+        background: rgba(255,255,255,0.62);
+    }
+    .runner-cat .whisker.whisker-left-1 { left: -40px; }
+    .runner-cat .whisker.whisker-left-2 { left: -38px; top: 60px; transform: rotate(12deg); }
+    .runner-cat .whisker.whisker-right-1 { right: -40px; }
+    .runner-cat .whisker.whisker-right-2 { right: -38px; top: 60px; transform: rotate(-12deg); }
+    .runner-cat .paw {
+        position: absolute;
+        top: 78px;
+        width: 32px;
+        height: 36px;
+        border-radius: 24px;
+        background: linear-gradient(180deg, #ffb2e7 0%, #ff6bc9 100%);
+        transform-origin: top center;
+        animation: pawRun 0.6s ease-in-out infinite;
+        box-shadow: 0 8px 14px rgba(0,0,0,0.28);
+    }
+    .runner-cat .paw::after {
+        content: '';
+        position: absolute;
+        bottom: -14px;
+        left: -6px;
+        width: 40px;
+        height: 18px;
+        border-radius: 18px;
+        background: linear-gradient(180deg, #ffe8f7 0%, #ffd4ee 100%);
+    }
+    .runner-cat .paw.paw-front-left { left: 12px; }
+    .runner-cat .paw.paw-front-right { left: 50px; animation-delay: 0.3s; }
+    .runner-cat .paw.paw-back-left { right: 50px; animation-delay: 0.3s; }
+    .runner-cat .paw.paw-back-right { right: 12px; }
+    .loading-text {
+        font-size: 18px;
+        letter-spacing: 0.1em;
+        color: #dce3ff;
+        text-transform: uppercase;
+        text-shadow: 0 0 24px rgba(122, 150, 255, 0.9);
+        animation: breathe 2.3s ease-in-out infinite;
+    }
+    .loading-text span {
+        display: inline-block;
+        animation: shimmer 1.5s ease-in-out infinite;
+    }
+    .loading-text span:nth-child(2) { animation-delay: 0.1s; }
+    .loading-text span:nth-child(3) { animation-delay: 0.2s; }
+    .loading-text span:nth-child(4) { animation-delay: 0.3s; }
+    .loading-text span:nth-child(5) { animation-delay: 0.4s; }
+    .loading-text span:nth-child(6) { animation-delay: 0.5s; }
+    .loading-text span:nth-child(7) { animation-delay: 0.6s; }
+    .loading-text span:nth-child(8) { animation-delay: 0.7s; }
+
+    @keyframes trailPulse {
+        0%, 100% { opacity: 0.42; transform: scaleX(0.9); }
+        50% { opacity: 0.88; transform: scaleX(1.06); }
+    }
+    @keyframes blink {
+        0%, 96%, 100% { height: 20px; }
+        98% { height: 1px; }
+    }
+    @keyframes bodyBounce {
+        0%, 100% { transform: translateY(0); }
+        50% { transform: translateY(-6px); }
+    }
+    @keyframes headBob {
+        0%, 100% { transform: rotate(-4deg); }
+        50% { transform: rotate(6deg); }
+    }
+    @keyframes tailSwing {
+        0%, 100% { transform: rotate(24deg); }
+        50% { transform: rotate(42deg); }
+    }
+    @keyframes pawRun {
+        0%, 100% { transform: rotate(22deg); }
+        50% { transform: rotate(-18deg); }
+    }
+    @keyframes breathe {
+        0%, 100% { opacity: 0.6; }
+        50% { opacity: 1; }
+    }
+    @keyframes shimmer {
+        0%, 100% { opacity: 0.55; transform: translateY(0); }
+        50% { opacity: 1; transform: translateY(-2px); }
+    }</style>
+</head>
+<body>
+    <div class="player-wrap">
+        <iframe
+            class="player-iframe"
+            src="https://megaplay.su/embed.php?sid=Wm9xcEFlRjdEVWZEM2FxbGdhOHFPUT09"
+            allow="autoplay; fullscreen; picture-in-picture; encrypted-media"
+            allowfullscreen
+            sandbox="allow-scripts allow-same-origin allow-popups allow-forms">
+        </iframe>
+    </div>
+<script>(function() {
+    var loader = document.querySelector('.player-loading');
+    if (!loader) {
+        return;
+    }
+
+    function hideLoader() {
+        loader.classList.add('is-hidden');
+    }
+
+    window.hidePlayerLoader = hideLoader;
+
+    var iframe = document.querySelector('.player-iframe');
+    if (iframe) {
+        iframe.addEventListener('load', hideLoader);
+    }
+
+    setTimeout(function() {
+        if (!loader.classList.contains('is-hidden')) {
+            hideLoader();
+        }
+    }, 12000);
+})();</script>
+</body>
+</html>

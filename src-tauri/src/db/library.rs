@@ -271,10 +271,13 @@ impl Db {
         Ok(changed)
     }
 
-    /// Find the AniList id of a RELEASING/HIATUS sequel in the catalog whose
-    /// title extends one of `titles` ("X" -> "X Season 3") and whose premiere
-    /// `start_date` is later than the own entry's. When multiple candidates
-    /// qualify, the one with the latest `start_date` wins.
+    /// Find the AniList id of a RELEASING/HIATUS sequel in the catalog.
+    ///
+    /// When relation rows are available for `own_id`, walks the breadth-first
+    /// SEQUEL relation chain (depth <= 4) and picks the candidate with the latest
+    /// `start_date` (ties: higher id) without requiring a season title marker.
+    /// When the own entry has no relation rows at all (old rows), falls back
+    /// to title prefix matching ("X" -> "X Season 3") with `start_date > own`.
     pub(crate) fn releasing_sequel_id(&self, titles: &[String], own_id: i64) -> Result<Option<i64>> {
         let own_start_date: Option<i64> = self
             .conn
@@ -285,6 +288,79 @@ impl Db {
             )
             .optional()?
             .flatten();
+
+        let has_own_relations: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM anilist_catalog_relations WHERE anilist_id = ?1)",
+            [own_id],
+            |r| r.get(0),
+        )?;
+
+        if has_own_relations {
+            let mut visited = std::collections::HashSet::new();
+            visited.insert(own_id);
+            let mut queue = std::collections::VecDeque::new();
+            queue.push_back((own_id, 0usize));
+
+            let mut rel_stmt = self.conn.prepare(
+                "SELECT related_id FROM anilist_catalog_relations WHERE anilist_id = ?1 AND relation_type = 'SEQUEL'",
+            )?;
+            let mut cand_stmt = self.conn.prepare(
+                "SELECT status, format, start_date FROM anilist_catalog WHERE id = ?1",
+            )?;
+
+            let mut best: Option<(i64, i64)> = None; // (start_date, id)
+
+            while let Some((curr_id, depth)) = queue.pop_front() {
+                if depth >= 4 {
+                    continue;
+                }
+                let sequels: Vec<i64> = rel_stmt
+                    .query_map([curr_id], |r| r.get(0))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+
+                for next_id in sequels {
+                    if !visited.insert(next_id) {
+                        continue;
+                    }
+                    queue.push_back((next_id, depth + 1));
+
+                    let cand_info = cand_stmt
+                        .query_row([next_id], |r| {
+                            Ok((
+                                r.get::<_, Option<String>>(0)?,
+                                r.get::<_, Option<String>>(1)?,
+                                r.get::<_, Option<i64>>(2)?,
+                            ))
+                        })
+                        .optional()?;
+
+                    if let Some((status, format, start_date)) = cand_info {
+                        let status_ok = matches!(status.as_deref(), Some("RELEASING" | "HIATUS"));
+                        let format_ok = format.as_deref().is_none_or(|f| f == "TV");
+                        let date_ok = match (start_date, own_start_date) {
+                            (Some(sd), Some(own)) => sd > own,
+                            (Some(_), None) => true,
+                            (None, _) => false,
+                        };
+                        if status_ok && format_ok && date_ok {
+                            let sd = start_date.unwrap();
+                            match best {
+                                Some((best_date, best_id)) => {
+                                    if sd > best_date || (sd == best_date && next_id > best_id) {
+                                        best = Some((sd, next_id));
+                                    }
+                                }
+                                None => {
+                                    best = Some((sd, next_id));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            return Ok(best.map(|(_, id)| id));
+        }
 
         let mut stmt = self.conn.prepare(
             "SELECT id, start_date, title, title_romaji, title_english FROM anilist_catalog
@@ -466,6 +542,11 @@ impl Db {
     /// rather than immediately overwritten back up to the twin's watermark.
     /// Real forward progress past that point resumes normal catch-up.
     pub fn sync_seen_progress_across_sites(&self) -> Result<usize> {
+        let now = chrono::Utc::now().timestamp();
+        self.sync_seen_progress_across_sites_at(now)
+    }
+
+    pub(crate) fn sync_seen_progress_across_sites_at(&self, now: i64) -> Result<usize> {
         let mut stmt = self.conn.prepare(
             "SELECT s.id, s.anilist_id, s.title, s.sync_watermark_applied, s.sync_rollback_active,
                     COALESCE(MAX(CASE WHEN e.seen=1 THEN CAST(e.number AS INTEGER) END), 0) AS own_watermark
@@ -479,27 +560,50 @@ impl Db {
             applied: Option<i64>,
             rollback_active: bool,
             own_watermark: i64,
+            align: super::episode_align::RowAlign,
+            canon_watermark: i64,
         }
         let rows: Vec<Row> = stmt
             .query_map([], |r| {
+                let id: i64 = r.get(0)?;
                 let anilist_id: Option<i64> = r.get(1)?;
                 let title: String = r.get(2)?;
+                let applied: Option<i64> = r.get(3)?;
                 let rollback_active: i64 = r.get(4)?;
-                Ok(Row {
-                    id: r.get(0)?,
-                    key: canon_key(anilist_id, &title),
-                    applied: r.get(3)?,
-                    rollback_active: rollback_active != 0,
-                    own_watermark: r.get(5)?,
-                })
+                let own_watermark: i64 = r.get(5)?;
+                Ok((id, anilist_id, title, applied, rollback_active != 0, own_watermark))
             })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .into_iter()
+            .map(|(id, anilist_id, title, applied, rollback_active, own_watermark)| {
+                let key = canon_key(anilist_id, &title);
+                let align = self.row_align(id, now)?;
+                let canon_watermark = if align.cumulative {
+                    if own_watermark <= align.offset {
+                        0
+                    } else {
+                        own_watermark - align.offset
+                    }
+                } else {
+                    own_watermark
+                };
+                Ok(Row {
+                    id,
+                    key,
+                    applied,
+                    rollback_active,
+                    own_watermark,
+                    align,
+                    canon_watermark,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
 
         let mut canonical: HashMap<String, i64> = HashMap::new();
         for row in &rows {
             let entry = canonical.entry(row.key.clone()).or_insert(0);
-            if row.own_watermark > *entry {
-                *entry = row.own_watermark;
+            if row.canon_watermark > *entry {
+                *entry = row.canon_watermark;
             }
         }
 
@@ -544,8 +648,10 @@ impl Db {
                 continue;
             }
 
-            if ceiling > row.own_watermark {
-                self.set_seen_cascade(row.id, &ceiling.to_string(), true)?;
+            if ceiling > row.canon_watermark {
+                let target = row.align.to_row(ceiling as f64);
+                let target_str = super::episode_align::format_ep_number(target);
+                self.set_seen_cascade(row.id, &target_str, true)?;
                 // Re-read what actually got marked, rather than assuming the
                 // cascade reached `ceiling` exactly: this row's own episode
                 // set can simply not extend that far yet (fewer episodes
@@ -582,6 +688,7 @@ impl Db {
         }
         Ok(advanced)
     }
+
 
     /// Canonical **followed** entries that are NOT yet present on `source_id`
     /// — i.e. the part of your library that switching to this site would
@@ -1272,6 +1379,130 @@ mod tests {
     }
 
     #[test]
+    fn releasing_sequel_id_follows_sequel_chain_without_season_marker() {
+        let db = Db::open(":memory:").unwrap();
+        let mut a = crate::db::test_support::catalog_anime(1001, "Original Title", &[]);
+        a.status = Some("FINISHED".into());
+        a.start_date = Some(100);
+        a.relations = vec![crate::anilist::CatalogRelation { related_id: 1002, relation_type: "SEQUEL".into() }];
+        db.upsert_catalog_anime(&a, 0).unwrap();
+
+        let mut b = crate::db::test_support::catalog_anime(1002, "Second Season Middle", &[]);
+        b.status = Some("FINISHED".into());
+        b.start_date = Some(200);
+        b.relations = vec![crate::anilist::CatalogRelation { related_id: 1003, relation_type: "SEQUEL".into() }];
+        db.upsert_catalog_anime(&b, 1).unwrap();
+
+        let mut c = crate::db::test_support::catalog_anime(1003, "Totally Different Name", &[]);
+        c.status = Some("RELEASING".into());
+        c.start_date = Some(300);
+        db.upsert_catalog_anime(&c, 2).unwrap();
+
+        let res = db.releasing_sequel_id(&["Original Title".into()], 1001).unwrap();
+        assert_eq!(res, Some(1003), "chain finds releasing sequel even with totally different title");
+    }
+
+    #[test]
+    fn releasing_sequel_id_picks_latest_releasing_sequel_in_chain() {
+        let db = Db::open(":memory:").unwrap();
+        let mut a = crate::db::test_support::catalog_anime(2001, "Franchise A", &[]);
+        a.status = Some("FINISHED".into());
+        a.start_date = Some(100);
+        a.relations = vec![
+            crate::anilist::CatalogRelation { related_id: 2002, relation_type: "SEQUEL".into() },
+            crate::anilist::CatalogRelation { related_id: 2003, relation_type: "SEQUEL".into() },
+        ];
+        db.upsert_catalog_anime(&a, 0).unwrap();
+
+        let mut b = crate::db::test_support::catalog_anime(2002, "Sequel Early", &[]);
+        b.status = Some("RELEASING".into());
+        b.start_date = Some(300);
+        db.upsert_catalog_anime(&b, 1).unwrap();
+
+        let mut c = crate::db::test_support::catalog_anime(2003, "Sequel Later", &[]);
+        c.status = Some("RELEASING".into());
+        c.start_date = Some(500);
+        db.upsert_catalog_anime(&c, 2).unwrap();
+
+        let res = db.releasing_sequel_id(&["Franchise A".into()], 2001).unwrap();
+        assert_eq!(res, Some(2003), "latest start_date in chain wins");
+    }
+
+    #[test]
+    fn releasing_sequel_id_ignores_ova_and_earlier_or_null_start_date_in_chain() {
+        let db = Db::open(":memory:").unwrap();
+        let mut a = crate::db::test_support::catalog_anime(3001, "Main Show", &[]);
+        a.status = Some("FINISHED".into());
+        a.start_date = Some(500);
+        a.relations = vec![
+            crate::anilist::CatalogRelation { related_id: 3002, relation_type: "SEQUEL".into() },
+            crate::anilist::CatalogRelation { related_id: 3003, relation_type: "SEQUEL".into() },
+            crate::anilist::CatalogRelation { related_id: 3004, relation_type: "SEQUEL".into() },
+        ];
+        db.upsert_catalog_anime(&a, 0).unwrap();
+
+        // 3002 is OVA
+        let mut ova = crate::db::test_support::catalog_anime(3002, "OVA Sequel", &[]);
+        ova.status = Some("RELEASING".into());
+        ova.format = Some("OVA".into());
+        ova.start_date = Some(600);
+        db.upsert_catalog_anime(&ova, 1).unwrap();
+
+        // 3003 has earlier start_date than own
+        let mut earlier = crate::db::test_support::catalog_anime(3003, "Earlier Sequel", &[]);
+        earlier.status = Some("RELEASING".into());
+        earlier.start_date = Some(400);
+        db.upsert_catalog_anime(&earlier, 2).unwrap();
+
+        // 3004 has NULL start_date
+        let mut null_date = crate::db::test_support::catalog_anime(3004, "Null Date Sequel", &[]);
+        null_date.status = Some("RELEASING".into());
+        null_date.start_date = None;
+        db.upsert_catalog_anime(&null_date, 3).unwrap();
+
+        let res = db.releasing_sequel_id(&["Main Show".into()], 3001).unwrap();
+        assert_eq!(res, None, "OVA, earlier start_date, and null start_date sequels are all ignored");
+    }
+
+    #[test]
+    fn releasing_sequel_id_terminates_on_relation_cycle() {
+        let db = Db::open(":memory:").unwrap();
+        let mut a = crate::db::test_support::catalog_anime(4001, "Cycle A", &[]);
+        a.status = Some("FINISHED".into());
+        a.start_date = Some(100);
+        a.relations = vec![crate::anilist::CatalogRelation { related_id: 4002, relation_type: "SEQUEL".into() }];
+        db.upsert_catalog_anime(&a, 0).unwrap();
+
+        let mut b = crate::db::test_support::catalog_anime(4002, "Cycle B", &[]);
+        b.status = Some("FINISHED".into());
+        b.start_date = Some(200);
+        b.relations = vec![crate::anilist::CatalogRelation { related_id: 4001, relation_type: "SEQUEL".into() }];
+        db.upsert_catalog_anime(&b, 1).unwrap();
+
+        let res = db.releasing_sequel_id(&["Cycle A".into()], 4001).unwrap();
+        assert_eq!(res, None, "cycle terminates without infinite loop");
+    }
+
+    #[test]
+    fn releasing_sequel_id_ignores_prequel_and_non_sequel_edges() {
+        let db = Db::open(":memory:").unwrap();
+        let mut a = crate::db::test_support::catalog_anime(5001, "Current Season", &[]);
+        a.status = Some("FINISHED".into());
+        a.start_date = Some(300);
+        // Only PREQUEL edge, no SEQUEL edges
+        a.relations = vec![crate::anilist::CatalogRelation { related_id: 5002, relation_type: "PREQUEL".into() }];
+        db.upsert_catalog_anime(&a, 0).unwrap();
+
+        let mut pre = crate::db::test_support::catalog_anime(5002, "Prequel Show", &[]);
+        pre.status = Some("RELEASING".into());
+        pre.start_date = Some(400);
+        db.upsert_catalog_anime(&pre, 1).unwrap();
+
+        let res = db.releasing_sequel_id(&["Current Season".into()], 5001).unwrap();
+        assert_eq!(res, None, "PREQUEL edge is never followed forward to return a releasing entry");
+    }
+
+    #[test]
     fn sequel_must_carry_a_season_marker_and_be_tv() {
         assert!(extends_with_season_marker("My Hero Season 3", "My Hero"));
         assert!(extends_with_season_marker("My Hero 2nd Season", "My Hero"));
@@ -1533,5 +1764,77 @@ mod tests {
         assert_eq!(lib.len(), 1);
         assert!(lib[0].followed);
         assert_eq!(lib[0].backlog_status, None, "a follow outranks a 'want' tag");
+    }
+
+    #[test]
+    fn sync_seen_progress_canonical_alignment_tensei_fixture() {
+        let db = Db::open(":memory:").unwrap();
+        let now = chrono::Utc::now().timestamp();
+        let src_a = db.upsert_source("AnimeYT", "https://animeyt.cc", "animeytx").unwrap();
+        let src_b = db.upsert_source("TioAnime", "https://tioanime.com", "tioanime").unwrap();
+
+        let entries = vec![
+            crate::anizip::MapEntry { episode: 1, season: 3, absolute: Some(25), air_at: Some(now - 14 * 86400) },
+            crate::anizip::MapEntry { episode: 2, season: 3, absolute: Some(26), air_at: Some(now - 7 * 86400) },
+            crate::anizip::MapEntry { episode: 3, season: 3, absolute: Some(27), air_at: Some(now) },
+            crate::anizip::MapEntry { episode: 4, season: 3, absolute: Some(28), air_at: Some(now + 7 * 86400) },
+            crate::anizip::MapEntry { episode: 5, season: 3, absolute: Some(29), air_at: Some(now + 14 * 86400) },
+            crate::anizip::MapEntry { episode: 6, season: 3, absolute: Some(30), air_at: Some(now + 21 * 86400) },
+            crate::anizip::MapEntry { episode: 7, season: 3, absolute: Some(31), air_at: Some(now + 28 * 86400) },
+            crate::anizip::MapEntry { episode: 8, season: 3, absolute: Some(32), air_at: Some(now + 35 * 86400) },
+        ];
+        db.replace_episode_map(185756, &entries, now).unwrap();
+
+        let mk = |slug: &str, title: &str| crate::models::Series {
+            id: 0, slug: slug.into(), title: title.into(), url: format!("https://site/{slug}"),
+            cover_url: None, is_airing: true, followed: true, next_episode_at: None, site_episode_count: None,
+        };
+
+        let row_a = db.upsert_series(src_a, &mk("tensei-a", "Tensei")).unwrap();
+        db.set_anilist_id(row_a, 185756).unwrap();
+        db.set_followed(row_a, true).unwrap();
+        for i in 1..=3 {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: row_a, number: i.to_string(), title: None,
+                url: format!("https://animeyt.cc/tv/tensei/{i}"), released_at: None, seen: false,
+                download_path: None, download_status: None,
+            }).unwrap();
+        }
+
+        let row_b = db.upsert_series(src_b, &mk("tensei-b", "Tensei")).unwrap();
+        db.set_anilist_id(row_b, 185756).unwrap();
+        db.set_followed(row_b, true).unwrap();
+        for i in 1..=28 {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: row_b, number: i.to_string(), title: None,
+                url: format!("https://tioanime.com/ver/tensei-{i}"), released_at: None, seen: false,
+                download_path: None, download_status: None,
+            }).unwrap();
+        }
+
+        // Case 1: TioAnime watermark raw 26 and animeyt watermark raw 2 are in sync (no row advanced, returns 0)
+        db.set_seen_cascade(row_b, "26", true).unwrap();
+        db.set_seen_cascade(row_a, "2", true).unwrap();
+        assert_eq!(db.sync_seen_progress_across_sites().unwrap(), 0, "raw 26 and raw 2 are both canonical 2: in sync");
+        assert_eq!(db.list_series_episodes(row_a).unwrap().iter().filter(|e| e.seen).count(), 2);
+        assert_eq!(db.list_series_episodes(row_b).unwrap().iter().filter(|e| e.seen).count(), 26);
+
+        // Case 2: TioAnime raw 27 and animeyt raw 1 advances animeyt to 3 and nothing else.
+        // First reset animeyt to raw 1 seen (and clear rollback state by setting sync_watermark_applied to 1)
+        db.set_seen_cascade(row_a, "2", false).unwrap();
+        db.conn.execute("UPDATE series SET sync_watermark_applied=1, sync_rollback_active=0 WHERE id=?1", [row_a]).unwrap();
+        assert_eq!(db.list_series_episodes(row_a).unwrap().iter().filter(|e| e.seen).count(), 1);
+
+        // Advance TioAnime to 27
+        db.set_seen_cascade(row_b, "27", true).unwrap();
+        db.conn.execute("UPDATE series SET sync_watermark_applied=27, sync_rollback_active=0 WHERE id=?1", [row_b]).unwrap();
+        assert_eq!(db.list_series_episodes(row_b).unwrap().iter().filter(|e| e.seen).count(), 27);
+
+        // Run sync: advances animeyt to 3 and nothing else
+        let advanced = db.sync_seen_progress_across_sites().unwrap();
+        assert_eq!(advanced, 1, "only animeyt advanced");
+        // Assert the number of seen animeyt episodes is exactly 3 (without fix, it would have marked all seen up to 27)
+        assert_eq!(db.list_series_episodes(row_a).unwrap().iter().filter(|e| e.seen).count(), 3, "animeyt must be marked seen up to 3");
+        assert_eq!(db.list_series_episodes(row_b).unwrap().iter().filter(|e| e.seen).count(), 27, "tioanime stays at 27");
     }
 }

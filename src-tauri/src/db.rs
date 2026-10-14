@@ -39,49 +39,61 @@ impl Db {
         let db = Db { conn };
         db.init_schema()?;
         db.migrate_animeytx_domain()?;
+        db.migrate_animeflv_domain()?;
         Ok(db)
     }
 
     /// AnimeYT moved from `*.animeytx.net` to https://animeyt.cc (Oct 2026), and the old
-    /// domain is dead. Point everything stored for the site at the new domain, once and
-    /// idempotently: the source's base URL (unique, so skipped when a row for the new URL
-    /// already exists), the stored page URLs of its series (paths keep the `/tv/<slug>/`
-    /// shape) and its saved mirror lists. Hosts only; no row, episode or seen state moves.
+    /// domain is dead. See `migrate_site_domain`.
     fn migrate_animeytx_domain(&self) -> Result<()> {
-        const OLD: &str = "animeytx.net";
-        const NEW_BASE: &str = "https://animeyt.cc";
+        self.migrate_site_domain("animeytx", "animeytx.net", "https://animeyt.cc", "mirror_urls:animeytx")
+    }
+
+    /// AnimeFLV moved from `www4.animeflv.net` to a new WordPress site at
+    /// https://animeflv.or.at (Oct 2026). Page URLs are rewritten host-first; the
+    /// episode links change shape, which the scan's by-number refresh handles.
+    fn migrate_animeflv_domain(&self) -> Result<()> {
+        self.migrate_site_domain("animeflv", "animeflv.net", "https://animeflv.or.at", "mirror_urls:animeflv")
+    }
+
+    /// Point everything stored for a site that changed domain at its new one, once and
+    /// idempotently: the source's base URL (unique, so skipped when a row for the new URL
+    /// already exists), the stored page URLs of its series (the old host prefix is replaced,
+    /// the path is kept) and its saved mirror lists. Hosts only; no row, episode or seen
+    /// state moves.
+    fn migrate_site_domain(&self, site_id: &str, old_marker: &str, new_base: &str, mirror_key: &str) -> Result<()> {
         let has_new: bool = self.conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM sources WHERE base_url=?1)",
-            [NEW_BASE],
+            [new_base],
             |r| r.get(0),
         )?;
         let old_sources: Vec<(i64, String)> = {
             let mut stmt = self.conn.prepare(
-                "SELECT id, base_url FROM sources WHERE site_id='animeytx' AND base_url LIKE ?1",
+                "SELECT id, base_url FROM sources WHERE site_id=?1 AND base_url LIKE ?2",
             )?;
             let rows = stmt
-                .query_map([format!("%{OLD}%")], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .query_map((site_id, format!("%{old_marker}%")), |r| Ok((r.get(0)?, r.get(1)?)))?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             rows
         };
         for (id, old_base) in old_sources {
             if !has_new {
-                self.conn.execute("UPDATE sources SET base_url=?1 WHERE id=?2", (NEW_BASE, id))?;
+                self.conn.execute("UPDATE sources SET base_url=?1 WHERE id=?2", (new_base, id))?;
             }
             let old_base = old_base.trim_end_matches('/').to_string();
             self.conn.execute(
                 "UPDATE series SET url = ?1 || substr(url, length(?2) + 1)
                  WHERE source_id=?3 AND substr(url, 1, length(?2)) = ?2",
-                (NEW_BASE, &old_base, id),
+                (new_base, &old_base, id),
             )?;
         }
-        for key in ["mirror_urls:animeytx", "mirror_urls"] {
+        for key in [mirror_key, "mirror_urls"] {
             if let Some(raw) = self.get_setting(key)? {
-                if raw.contains(OLD) {
+                if raw.contains(old_marker) {
                     let mut seen = std::collections::HashSet::new();
                     let fixed: Vec<String> = raw
                         .lines()
-                        .map(|l| if l.contains(OLD) { NEW_BASE.to_string() } else { l.to_string() })
+                        .map(|l| if l.contains(old_marker) { new_base.to_string() } else { l.to_string() })
                         .filter(|l| !l.trim().is_empty() && seen.insert(l.trim_end_matches('/').to_string()))
                         .collect();
                     self.set_setting(key, &fixed.join("
@@ -305,6 +317,25 @@ impl Db {
                 rank INTEGER NOT NULL,
                 PRIMARY KEY(anilist_id, tag)
             );
+            CREATE TABLE IF NOT EXISTS anilist_catalog_relations (
+                anilist_id INTEGER NOT NULL REFERENCES anilist_catalog(id),
+                related_id INTEGER NOT NULL,
+                relation_type TEXT NOT NULL,
+                PRIMARY KEY(anilist_id, related_id, relation_type)
+            );
+            CREATE TABLE IF NOT EXISTS anilist_episode_map (
+                anilist_id INTEGER NOT NULL,
+                episode INTEGER NOT NULL,
+                season INTEGER NOT NULL,
+                absolute INTEGER,
+                air_at INTEGER,
+                PRIMARY KEY(anilist_id, episode)
+            );
+            CREATE TABLE IF NOT EXISTS anilist_episode_map_fetched (
+                anilist_id INTEGER PRIMARY KEY,
+                fetched_at INTEGER NOT NULL,
+                entries INTEGER NOT NULL
+            );
             "#,
         )?;
         ensure_column(&self.conn, "anilist_catalog", "popularity", "INTEGER")?;
@@ -374,7 +405,8 @@ impl Db {
         )?;
         self.conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_catalog_popularity ON anilist_catalog(popularity DESC);
-             CREATE INDEX IF NOT EXISTS idx_catalog_genre ON anilist_catalog_genres(genre);",
+             CREATE INDEX IF NOT EXISTS idx_catalog_genre ON anilist_catalog_genres(genre);
+             CREATE INDEX IF NOT EXISTS idx_catalog_relations_related ON anilist_catalog_relations(related_id);",
         )?;
         // series.completion_reconciled: apply-once guard for
         // `reconcile_completion_across_sites`'s airing-zero-progress branch.
@@ -554,11 +586,13 @@ pub(crate) mod stats;
 mod airing;
 mod series;
 pub(crate) mod library;
+pub(crate) mod episode_align;
 
 pub use series::SwipeHistoryRow;
 pub use catalog::CatalogFilter;
 pub use airing::{EpisodeSourceCandidate, PendingSort};
 pub(crate) use airing::is_csp_displayable_cover;
+pub(crate) use episodes::parse_ep_number;
 pub use stats::SignatureCounts;
 
 #[cfg(test)]
@@ -875,5 +909,33 @@ https://other.example")
         assert_eq!(has_sources, 1);
         drop(conn);
         std::fs::remove_file(&out).ok();
+    }
+
+    #[test]
+    fn animeflv_old_domain_is_migrated_to_the_new_site_once() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeFLV", "https://www4.animeflv.net", "animeflv").unwrap();
+        let other = db.upsert_source("TioAnime", "https://tioanime.com", "tioanime").unwrap();
+        let mk = |slug: &str, url: &str| crate::models::Series {
+            id: 0, slug: slug.into(), title: slug.into(), url: url.into(),
+            cover_url: None, is_airing: true, followed: true, next_episode_at: None, site_episode_count: None,
+        };
+        let sid = db.upsert_series(src, &mk("dungeon-meshi", "https://www4.animeflv.net/anime/dungeon-meshi")).unwrap();
+        let tid = db.upsert_series(other, &mk("dungeon-meshi-t", "https://tioanime.com/anime/dungeon-meshi")).unwrap();
+        db.set_setting("mirror_urls:animeflv", "https://www4.animeflv.net
+https://other.example").unwrap();
+
+        db.migrate_animeflv_domain().unwrap();
+
+        assert_eq!(db.get_source_base_url(src).unwrap().as_deref(), Some("https://animeflv.or.at"));
+        assert_eq!(db.get_series_url(sid).unwrap().as_deref(), Some("https://animeflv.or.at/anime/dungeon-meshi"));
+        assert_eq!(db.get_series_url(tid).unwrap().as_deref(), Some("https://tioanime.com/anime/dungeon-meshi"), "other sites untouched");
+        assert_eq!(
+            db.get_setting("mirror_urls:animeflv").unwrap().as_deref(),
+            Some("https://animeflv.or.at
+https://other.example")
+        );
+        db.migrate_animeflv_domain().unwrap();
+        assert_eq!(db.get_series_url(sid).unwrap().as_deref(), Some("https://animeflv.or.at/anime/dungeon-meshi"));
     }
 }

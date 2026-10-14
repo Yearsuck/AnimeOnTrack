@@ -1,6 +1,6 @@
 [package]
 name = "aot-scaffold"
-version = "0.8.0"
+version = "0.9.0"
 description = "Tracks currently-airing anime across multiple streaming sites and tells you when new episodes drop."
 authors = ["Yearsuck"]
 license = "GPL-3.0-or-later"
@@ -21,12 +21,15 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-opener = "2"
+tauri-plugin-notification = "~2.4.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }
 scraper = "0.20"
 anyhow = "1"
 url = "2"
+# gzip for the catalog snapshot a new install downloads instead of crawling AniList.
+flate2 = "1"
 tokio = { version = "1", features = ["time", "sync", "macros", "net", "io-util"] }
 # AniList's public GraphQL API is a normal, non-Cloudflare-protected service
 # (unlike the scraped site) — plain HTTP via reqwest is fine here, no need
@@ -51,3 +54,14 @@ getrandom = "0.3"
 webview2-com = "0.38"
 windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
 
+
+# Our own code at opt-level 1: the matching/stats loops ran 5-10x slower than the
+# release build at level 0, which made the dev app feel frozen at startup.
+[profile.dev]
+opt-level = 1
+
+# Dependencies (bundled SQLite above all) run unoptimised in dev builds and make every
+# query several times slower than in the release the owner installs; optimise them,
+# keep our own crate at opt-level 0 for fast incremental builds.
+[profile.dev.package."*"]
+opt-level = 2

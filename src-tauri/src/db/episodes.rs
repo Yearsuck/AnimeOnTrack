@@ -405,21 +405,41 @@ impl Db {
         seen: bool,
     ) -> Result<()> {
         let sids = self.canonical_series_ids(series_id)?;
-        self.set_seen_cascade_in(&sids, number, seen)
+        self.set_seen_cascade_in(series_id, &sids, number, seen)
     }
 
     /// Same as `set_seen_cascade_canonical` for a group the caller already resolved, so the
     /// full-table group scan in `canonical_series_ids` is not repeated per click.
-    pub fn set_seen_cascade_in(&self, sids: &[i64], number: &str, seen: bool) -> Result<()> {
-        for &sid in sids {
-            let has_ep: bool = self.conn.query_row(
-                "SELECT EXISTS(SELECT 1 FROM episodes WHERE series_id=?1)",
-                [sid],
-                |r| r.get(0),
-            )?;
-            if has_ep {
-                self.set_seen_cascade(sid, number, seen)?;
+    pub fn set_seen_cascade_in(
+        &self,
+        clicked_id: i64,
+        sids: &[i64],
+        number: &str,
+        seen: bool,
+    ) -> Result<()> {
+        let now = chrono::Utc::now().timestamp();
+        let clicked_align = self.row_align(clicked_id, now)?;
+        let canonical = parse_ep_number(number)
+            .and_then(|n| clicked_align.to_canonical(n));
+
+        if let Some(canon) = canonical {
+            for &sid in sids {
+                let has_ep: bool = self.conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM episodes WHERE series_id=?1)",
+                    [sid],
+                    |r| r.get(0),
+                )?;
+                if has_ep {
+                    let align = self.row_align(sid, now)?;
+                    let row_target = align.to_row(canon);
+                    let row_number_string = super::episode_align::format_ep_number(row_target);
+                    self.set_seen_cascade(sid, &row_number_string, seen)?;
+                }
             }
+        } else {
+            // If the clicked number has no canonical value (earlier-season numbers of a cumulative row,
+            // or non-numeric) fall back to cascading only that row with the raw number (today's behaviour).
+            self.set_seen_cascade(clicked_id, number, seen)?;
         }
         Ok(())
     }
@@ -607,6 +627,16 @@ impl Db {
             }
         }
         Ok(result)
+    }
+
+    /// Downloads that were "downloading" when the app last stopped are not running any
+    /// more (the tasks died with the process), so their status is cleared and the row
+    /// goes back to "not downloaded". Returns how many rows were reset.
+    pub fn clear_interrupted_downloads(&self) -> Result<usize> {
+        Ok(self.conn.execute(
+            "UPDATE episodes SET download_status = NULL WHERE download_status = 'downloading'",
+            [],
+        )?)
     }
 
     /// Clear the download_path and download_status columns for the given
@@ -1640,5 +1670,115 @@ mod tests {
         assert!(!eps_b.iter().find(|e| e.number == "2").unwrap().seen, "B's ep 2 unseen");
         assert!(!eps_b.iter().find(|e| e.number == "3").unwrap().seen, "B's ep 3 unseen");
         assert!(!eps_b.iter().find(|e| e.number == "4").unwrap().seen, "B's ep 4 unseen");
+    }
+
+    #[test]
+    fn set_seen_cascade_canonical_tensei_fixture() {
+        let db = Db::open(":memory:").unwrap();
+        let now = chrono::Utc::now().timestamp();
+        let src_a = db.upsert_source("AnimeYT", "https://animeyt.cc", "animeytx").unwrap();
+        let src_b = db.upsert_source("TioAnime", "https://tioanime.com", "tioanime").unwrap();
+
+        let entries = vec![
+            crate::anizip::MapEntry { episode: 1, season: 3, absolute: Some(25), air_at: Some(now - 14 * 86400) },
+            crate::anizip::MapEntry { episode: 2, season: 3, absolute: Some(26), air_at: Some(now - 7 * 86400) },
+            crate::anizip::MapEntry { episode: 3, season: 3, absolute: Some(27), air_at: Some(now) },
+            crate::anizip::MapEntry { episode: 4, season: 3, absolute: Some(28), air_at: Some(now + 7 * 86400) },
+            crate::anizip::MapEntry { episode: 5, season: 3, absolute: Some(29), air_at: Some(now + 14 * 86400) },
+            crate::anizip::MapEntry { episode: 6, season: 3, absolute: Some(30), air_at: Some(now + 21 * 86400) },
+            crate::anizip::MapEntry { episode: 7, season: 3, absolute: Some(31), air_at: Some(now + 28 * 86400) },
+            crate::anizip::MapEntry { episode: 8, season: 3, absolute: Some(32), air_at: Some(now + 35 * 86400) },
+        ];
+        db.replace_episode_map(185756, &entries, now).unwrap();
+
+        let mk = |slug: &str, title: &str| crate::models::Series {
+            id: 0, slug: slug.into(), title: title.into(), url: format!("https://site/{slug}"),
+            cover_url: None, is_airing: true, followed: true, next_episode_at: None, site_episode_count: None,
+        };
+
+        let row_a = db.upsert_series(src_a, &mk("tensei-a", "Tensei")).unwrap();
+        db.set_anilist_id(row_a, 185756).unwrap();
+        db.set_followed(row_a, true).unwrap();
+        for i in 1..=3 {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: row_a, number: i.to_string(), title: None,
+                url: format!("https://animeyt.cc/tv/tensei/{i}"), released_at: None, seen: false,
+                download_path: None, download_status: None,
+            }).unwrap();
+        }
+
+        let row_b = db.upsert_series(src_b, &mk("tensei-b", "Tensei")).unwrap();
+        db.set_anilist_id(row_b, 185756).unwrap();
+        db.set_followed(row_b, true).unwrap();
+        for i in 1..=28 {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: row_b, number: i.to_string(), title: None,
+                url: format!("https://tioanime.com/ver/tensei-{i}"), released_at: None, seen: false,
+                download_path: None, download_status: None,
+            }).unwrap();
+        }
+
+        // Marking animeyt "2" seen marks TioAnime 1..26 seen (and animeyt 1..2)
+        db.set_seen_cascade_canonical(row_a, "2", true).unwrap();
+        let eps_a = db.list_series_episodes(row_a).unwrap();
+        let eps_b = db.list_series_episodes(row_b).unwrap();
+        assert!(eps_a.iter().filter(|e| e.seen).all(|e| e.number == "1" || e.number == "2"));
+        assert_eq!(eps_a.iter().filter(|e| e.seen).count(), 2);
+        assert_eq!(eps_b.iter().filter(|e| e.seen).count(), 26, "TioAnime 1..26 seen");
+        assert!(!eps_b.iter().find(|e| e.number == "27").unwrap().seen);
+        assert!(!eps_b.iter().find(|e| e.number == "28").unwrap().seen);
+
+        // Un-marking animeyt "2" unseen marks TioAnime 26..28 unseen and leaves 1..25 seen
+        db.set_seen_cascade_canonical(row_a, "2", false).unwrap();
+        let eps_a = db.list_series_episodes(row_a).unwrap();
+        let eps_b = db.list_series_episodes(row_b).unwrap();
+        assert_eq!(eps_a.iter().filter(|e| e.seen).count(), 1, "animeyt has 1 seen");
+        assert!(eps_a.iter().find(|e| e.number == "1").unwrap().seen);
+        assert_eq!(eps_b.iter().filter(|e| e.seen).count(), 25, "TioAnime leaves 1..25 seen");
+        assert!(!eps_b.iter().find(|e| e.number == "26").unwrap().seen, "TioAnime 26 unseen");
+        assert!(!eps_b.iter().find(|e| e.number == "27").unwrap().seen, "TioAnime 27 unseen");
+        assert!(!eps_b.iter().find(|e| e.number == "28").unwrap().seen, "TioAnime 28 unseen");
+
+        // Marking TioAnime "27" seen marks animeyt 1..3 seen
+        db.set_seen_cascade_canonical(row_b, "27", true).unwrap();
+        let eps_a = db.list_series_episodes(row_a).unwrap();
+        let eps_b = db.list_series_episodes(row_b).unwrap();
+        assert_eq!(eps_a.iter().filter(|e| e.seen).count(), 3, "animeyt 1..3 seen");
+        assert_eq!(eps_b.iter().filter(|e| e.seen).count(), 27, "TioAnime 1..27 seen");
+        assert!(!eps_b.iter().find(|e| e.number == "28").unwrap().seen);
+
+        // Marking an earlier-season number on cumulative row (<= offset 24) cascades ONLY that row
+        db.set_seen_cascade_canonical(row_b, "20", false).unwrap();
+        let eps_a = db.list_series_episodes(row_a).unwrap();
+        let eps_b = db.list_series_episodes(row_b).unwrap();
+        // Animeyt is completely untouched (still 1..3 seen)
+        assert_eq!(eps_a.iter().filter(|e| e.seen).count(), 3, "animeyt untouched by earlier-season cascade");
+        // TioAnime has 1..19 seen
+        assert_eq!(eps_b.iter().filter(|e| e.seen).count(), 19);
+    }
+
+    #[test]
+    fn interrupted_downloads_are_reset_but_finished_ones_are_kept() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("T", "https://tioanime.com", "tioanime").unwrap();
+        let series = crate::models::Series {
+            id: 0, slug: "s".into(), title: "S".into(), url: "https://tioanime.com/anime/s".into(),
+            cover_url: None, is_airing: true, followed: true, next_episode_at: None, site_episode_count: None,
+        };
+        let sid = db.upsert_series(src, &series).unwrap();
+        let mk = |n: &str| crate::models::Episode {
+            id: 0, series_id: sid, number: n.into(), title: None, url: format!("https://tioanime.com/ver/s-{n}"),
+            released_at: None, seen: false, download_path: None, download_status: None,
+        };
+        let (a, _) = db.insert_episode(&mk("1")).unwrap();
+        let (b, _) = db.insert_episode(&mk("2")).unwrap();
+        let (c, _) = db.insert_episode(&mk("3")).unwrap();
+        db.set_download_status(a, "downloading", None).unwrap();
+        db.set_download_status(b, "downloaded", Some("/x/2.mp4")).unwrap();
+        db.set_download_status(c, "failed", None).unwrap();
+        assert_eq!(db.clear_interrupted_downloads().unwrap(), 1);
+        assert_eq!(db.get_episode(a).unwrap().download_status, None);
+        assert_eq!(db.get_episode(b).unwrap().download_status.as_deref(), Some("downloaded"));
+        assert_eq!(db.get_episode(c).unwrap().download_status.as_deref(), Some("failed"));
     }
 }
