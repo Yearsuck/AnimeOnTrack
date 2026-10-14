@@ -73,3 +73,11 @@ key), real download engine, taskbar badge, rotating file log.
 ### Needs the owner
 - **Publish the catalog snapshot**: a new install downloads `https://github.com/Yearsuck/AnimeOnTrack/releases/download/catalog-snapshot/catalog-snapshot.json.gz`. Create a release tagged `catalog-snapshot` and attach the file produced by `export_catalog_snapshot` (re-export now and then so it stays recent). Until then new installs simply use the old crawl.
 - Other sites' downloads need the same mirror research (animeyt.cc, AnimeFLV, JKAnime...) and more hosts (Okru, Mp4Upload...); HLS streams are not supported (no ffmpeg).
+
+## Batch 10 - downloads made easier (done; tested live in the sandbox)
+| Change | What it does | How to check it |
+|---|---|---|
+| Downloads panel in the series detail | Shows "Descargas offline" with a summary ("3 descargados · 1 en cola o descargando · 1 con error") for any series whose episodes can be downloaded (TioAnime pages). | Open a TioAnime series from Pendientes/Biblioteca. |
+| Download all pending | "⬇ Descargar pendientes (N)" queues every unwatched, not yet downloaded episode, oldest first, one transfer at a time; reports how many were queued and how many cannot be downloaded from that site. Live test: queued 1 -> "Descargando… 29%" with a progress bar. | Click it; watch the rows. |
+| Delete downloads without touching watched state | "🗑 Borrar descargas (N)" with an inline two-step confirmation (no browser dialog) removes the series' files and cancels queued/running ones; each downloaded row also has a 🗑 whose tooltip says the watched state is kept. Live test: confirm -> files gone, panel back to "Nada descargado", episode watched flags unchanged. | Click it, confirm; episodes keep their ✓ state. |
+| Clearer rows | Progress bar and "En cola…" while waiting, ▶ Offline as the primary action once downloaded, a "⚠ Reintentar" button and the failure reason under the title when it fails. | Start a download and cancel/fail one. |
