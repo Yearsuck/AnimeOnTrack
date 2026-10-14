@@ -1,11 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
 import { Onboarding } from "./views/Onboarding";
 import { AiringGrid } from "./views/AiringGrid";
 import { Pending } from "./views/Pending";
 import { SeriesDetail } from "./views/SeriesDetail";
 import { Settings } from "./views/Settings";
 import { Library } from "./views/Library";
-import { Stats } from "./views/Stats";
 import { Descubrir } from "./views/Descubrir";
 import { Catalog } from "./views/Catalog";
 import { ProgressBar } from "./views/ProgressBar";
@@ -27,6 +26,11 @@ import {
 import { notifyNewEpisodes, readNotifyPref, shouldNotify } from "./lib/notify";
 import { useT } from "./i18n";
 import type { Series } from "./types";
+
+// Lazy-loaded to defer heavy 3D graph dependencies (three, react-force-graph-3d)
+// until Estadísticas is first visited.
+const loadStats = () => import("./views/Stats");
+const Stats = lazy(() => loadStats().then((m) => ({ default: m.Stats })));
 
 type View =
   | "loading"
@@ -327,6 +331,8 @@ export default function App() {
     <button
       className={`tab ${view === id ? "active" : ""}`}
       onClick={() => navigate(id)}
+      onMouseEnter={id === "stats" ? () => void loadStats() : undefined}
+      onFocus={id === "stats" ? () => void loadStats() : undefined}
     >
       {label}
       {id === "pending" && pending > 0 && <span className="badge">{pending}</span>}
@@ -405,18 +411,20 @@ export default function App() {
         )}
         {statsVisited && (
           <div className="view-panel" hidden={view !== "stats"}>
-            <Stats
-              active={view === "stats"}
-              onOpenSeries={(id) => {
-                // The graph only knows ids; SeriesDetail needs the full row.
-                listLibrary()
-                  .then((items) => {
-                    const hit = items.find((i) => i.series.id === id);
-                    if (hit) setSelected(hit.series);
-                  })
-                  .catch((err) => console.error("open series from graph failed", err));
-              }}
-            />
+            <Suspense fallback={<div className="empty">{t("common.loading")}</div>}>
+              <Stats
+                active={view === "stats"}
+                onOpenSeries={(id) => {
+                  // The graph only knows ids; SeriesDetail needs the full row.
+                  listLibrary()
+                    .then((items) => {
+                      const hit = items.find((i) => i.series.id === id);
+                      if (hit) setSelected(hit.series);
+                    })
+                    .catch((err) => console.error("open series from graph failed", err));
+                }}
+              />
+            </Suspense>
           </div>
         )}
         {view === "settings" && (
