@@ -1469,6 +1469,113 @@ impl Db {
     }
 }
 
+impl Db {
+    /// Replace the stored ani.zip episode map for `anilist_id` with `entries`.
+    /// Runs in a single transaction: deletes existing mapped episodes, inserts
+    /// the new entries, and upserts the `anilist_episode_map_fetched` tracking row.
+    pub fn replace_episode_map(
+        &self,
+        anilist_id: i64,
+        entries: &[crate::anizip::MapEntry],
+        now: i64,
+    ) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        self.conn.execute(
+            "DELETE FROM anilist_episode_map WHERE anilist_id = ?1",
+            [anilist_id],
+        )?;
+        for entry in entries {
+            self.conn.execute(
+                "INSERT INTO anilist_episode_map (anilist_id, episode, season, absolute, air_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![anilist_id, entry.episode, entry.season, entry.absolute, entry.air_at],
+            )?;
+        }
+        self.conn.execute(
+            "INSERT INTO anilist_episode_map_fetched (anilist_id, fetched_at, entries)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(anilist_id) DO UPDATE SET
+                 fetched_at = excluded.fetched_at,
+                 entries = excluded.entries",
+            rusqlite::params![anilist_id, now, entries.len() as i64],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// AniList ids of series that are followed OR airing, have a linked AniList id,
+    /// and either have no fetched episode map or a stale one (older than 3 days for RELEASING/HIATUS,
+    /// older than 30 days otherwise). Distinct, ordered by airing/followed first, then oldest fetched,
+    /// capped at `limit`.
+    pub fn episode_map_stale_ids(&self, now: i64, limit: usize) -> Result<Vec<i64>> {
+        let three_days_ago = now - 3 * 86400;
+        let thirty_days_ago = now - 30 * 86400;
+        let mut stmt = self.conn.prepare(
+            "SELECT s.anilist_id
+             FROM series s
+             LEFT JOIN anilist_episode_map_fetched f ON f.anilist_id = s.anilist_id
+             LEFT JOIN anilist_catalog c ON c.id = s.anilist_id
+             WHERE (s.followed = 1 OR s.is_airing = 1)
+               AND s.anilist_id IS NOT NULL
+               AND (
+                   f.fetched_at IS NULL
+                   OR (
+                       CASE
+                           WHEN c.status IN ('RELEASING', 'HIATUS') THEN f.fetched_at < ?1
+                           ELSE f.fetched_at < ?2
+                       END
+                   )
+               )
+             GROUP BY s.anilist_id
+             ORDER BY
+                 MAX(CASE WHEN s.is_airing = 1 AND s.followed = 1 THEN 2 WHEN s.is_airing = 1 OR s.followed = 1 THEN 1 ELSE 0 END) DESC,
+                 COALESCE(MIN(f.fetched_at), 0) ASC,
+                 s.anilist_id ASC
+             LIMIT ?3",
+        )?;
+        let rows = stmt
+            .query_map(rusqlite::params![three_days_ago, thirty_days_ago, limit as i64], |r| r.get::<_, i64>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// `absolute - episode` of the lowest regular episode when its `absolute` is not NULL.
+    /// None when there is no map, no entries, or absolute is NULL.
+    #[allow(dead_code)] // A later phase uses this helper.
+    pub fn episode_offset(&self, anilist_id: i64) -> Result<Option<i64>> {
+        let row: Option<(i64, Option<i64>)> = self
+            .conn
+            .query_row(
+                "SELECT episode, absolute
+                 FROM anilist_episode_map
+                 WHERE anilist_id = ?1
+                 ORDER BY episode ASC
+                 LIMIT 1",
+                [anilist_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        Ok(row.and_then(|(ep, abs_opt)| abs_opt.map(|abs| abs - ep)))
+    }
+
+    /// The per-entry episode with that absolute number, if mapped.
+    #[allow(dead_code)] // A later phase uses this helper.
+    pub fn episode_number_for_absolute(&self, anilist_id: i64, absolute: i64) -> Result<Option<i64>> {
+        let row: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT episode
+                 FROM anilist_episode_map
+                 WHERE anilist_id = ?1 AND absolute = ?2
+                 LIMIT 1",
+                rusqlite::params![anilist_id, absolute],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(row)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3929,6 +4036,158 @@ mod tests {
         }
     }
 
+
+    #[test]
+    fn test_replace_episode_map_replaces_previous_entries() {
+        let db = Db::open(":memory:").unwrap();
+        let entries_v1 = vec![
+            crate::anizip::MapEntry { episode: 1, season: 1, absolute: Some(1), air_at: None },
+            crate::anizip::MapEntry { episode: 2, season: 1, absolute: Some(2), air_at: None },
+        ];
+        db.replace_episode_map(100, &entries_v1, 1000).unwrap();
+        assert_eq!(db.episode_offset(100).unwrap(), Some(0));
+
+        let entries_v2 = vec![
+            crate::anizip::MapEntry { episode: 1, season: 2, absolute: Some(25), air_at: None },
+        ];
+        db.replace_episode_map(100, &entries_v2, 2000).unwrap();
+        assert_eq!(db.episode_offset(100).unwrap(), Some(24));
+
+        let count: i64 = db.conn.query_row(
+            "SELECT COUNT(*) FROM anilist_episode_map WHERE anilist_id = 100",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(count, 1);
+
+        let fetched: (i64, i64) = db.conn.query_row(
+            "SELECT fetched_at, entries FROM anilist_episode_map_fetched WHERE anilist_id = 100",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        ).unwrap();
+        assert_eq!(fetched, (2000, 1));
+    }
+
+    #[test]
+    fn test_episode_offset_cases() {
+        let db = Db::open(":memory:").unwrap();
+
+        // 185756 starting at absolute 25 -> 25 - 1 = 24
+        let entries_185756 = vec![
+            crate::anizip::MapEntry { episode: 1, season: 3, absolute: Some(25), air_at: None },
+            crate::anizip::MapEntry { episode: 2, season: 3, absolute: Some(26), air_at: None },
+        ];
+        db.replace_episode_map(185756, &entries_185756, 1000).unwrap();
+        assert_eq!(db.episode_offset(185756).unwrap(), Some(24));
+
+        // season-1 map (absolute 1) -> 1 - 1 = 0
+        let entries_s1 = vec![
+            crate::anizip::MapEntry { episode: 1, season: 1, absolute: Some(1), air_at: None },
+        ];
+        db.replace_episode_map(164702, &entries_s1, 1000).unwrap();
+        assert_eq!(db.episode_offset(164702).unwrap(), Some(0));
+
+        // None with no map
+        assert_eq!(db.episode_offset(999999).unwrap(), None);
+
+        // None when absolute is NULL
+        let entries_no_abs = vec![
+            crate::anizip::MapEntry { episode: 1, season: 1, absolute: None, air_at: None },
+        ];
+        db.replace_episode_map(888888, &entries_no_abs, 1000).unwrap();
+        assert_eq!(db.episode_offset(888888).unwrap(), None);
+    }
+
+    #[test]
+    fn test_episode_number_for_absolute_lookup() {
+        let db = Db::open(":memory:").unwrap();
+        let entries = vec![
+            crate::anizip::MapEntry { episode: 1, season: 3, absolute: Some(25), air_at: None },
+            crate::anizip::MapEntry { episode: 2, season: 3, absolute: Some(26), air_at: None },
+            crate::anizip::MapEntry { episode: 3, season: 3, absolute: Some(27), air_at: None },
+        ];
+        db.replace_episode_map(185756, &entries, 1000).unwrap();
+        assert_eq!(db.episode_number_for_absolute(185756, 27).unwrap(), Some(3));
+        assert_eq!(db.episode_number_for_absolute(185756, 99).unwrap(), None);
+        assert_eq!(db.episode_number_for_absolute(999999, 27).unwrap(), None);
+    }
+
+    #[test]
+    fn test_episode_map_stale_ids_conditions() {
+        let db = Db::open(":memory:").unwrap();
+        let now = 1_000_000;
+        let one_day = 86400;
+
+        db.conn.execute("INSERT INTO sources (id, name, base_url, site_id) VALUES (1, 's', 'https://s.example', 'animeytx')", []).unwrap();
+
+        let insert_series = |id: i64, anilist_id: Option<i64>, followed: i64, is_airing: i64| {
+            db.conn.execute(
+                "INSERT INTO series (id, source_id, slug, title, url, followed, is_airing, anilist_id)
+                 VALUES (?1, 1, ?2, ?2, 'https://example.com', ?3, ?4, ?5)",
+                rusqlite::params![id, format!("slug-{id}"), followed, is_airing, anilist_id],
+            ).unwrap();
+        };
+
+        let insert_catalog = |id: i64, status: &str| {
+            db.conn.execute(
+                "INSERT INTO anilist_catalog (id, title, url, sort_order, status)
+                 VALUES (?1, 'Title', 'https://anilist.co', 0, ?2)",
+                rusqlite::params![id, status],
+            ).unwrap();
+        };
+
+        let insert_fetched = |id: i64, fetched_at: i64| {
+            db.conn.execute(
+                "INSERT INTO anilist_episode_map_fetched (anilist_id, fetched_at, entries)
+                 VALUES (?1, ?2, 1)",
+                rusqlite::params![id, fetched_at],
+            ).unwrap();
+        };
+
+        // 1. Followed linked series with no fetched row -> returned
+        insert_series(1, Some(101), 1, 0);
+        insert_catalog(101, "RELEASING");
+
+        // 2. Fetched 1 day ago (RELEASING) -> NOT returned
+        insert_series(2, Some(102), 1, 0);
+        insert_catalog(102, "RELEASING");
+        insert_fetched(102, now - one_day);
+
+        // 3. Fetched 4 days ago (RELEASING) -> returned
+        insert_series(3, Some(103), 1, 0);
+        insert_catalog(103, "RELEASING");
+        insert_fetched(103, now - 4 * one_day);
+
+        // 4. Fetched 4 days ago (FINISHED) -> NOT returned
+        insert_series(4, Some(104), 1, 0);
+        insert_catalog(104, "FINISHED");
+        insert_fetched(104, now - 4 * one_day);
+
+        // 5. Fetched 31 days ago (FINISHED) -> returned
+        insert_series(5, Some(105), 1, 0);
+        insert_catalog(105, "FINISHED");
+        insert_fetched(105, now - 31 * one_day);
+
+        // 6. Unfollowed non-airing series -> NEVER returned
+        insert_series(6, Some(106), 0, 0);
+        insert_catalog(106, "RELEASING");
+
+        // 7. Unlinked series (anilist_id NULL) -> NEVER returned
+        insert_series(7, None, 1, 1);
+
+        let stale = db.episode_map_stale_ids(now, 100).unwrap();
+        assert!(stale.contains(&101), "no fetched row must be stale");
+        assert!(!stale.contains(&102), "1 day ago RELEASING must not be stale");
+        assert!(stale.contains(&103), "4 days ago RELEASING must be stale");
+        assert!(!stale.contains(&104), "4 days ago FINISHED must not be stale");
+        assert!(stale.contains(&105), "31 days ago FINISHED must be stale");
+        assert!(!stale.contains(&106), "unfollowed non-airing must never be returned");
+        assert_eq!(stale.len(), 3);
+
+        // Limit honoured
+        let limited = db.episode_map_stale_ids(now, 2).unwrap();
+        assert_eq!(limited.len(), 2);
+    }
 }
 
 

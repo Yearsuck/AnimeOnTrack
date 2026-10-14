@@ -311,6 +311,19 @@ impl Db {
                 relation_type TEXT NOT NULL,
                 PRIMARY KEY(anilist_id, related_id, relation_type)
             );
+            CREATE TABLE IF NOT EXISTS anilist_episode_map (
+                anilist_id INTEGER NOT NULL,
+                episode INTEGER NOT NULL,
+                season INTEGER NOT NULL,
+                absolute INTEGER,
+                air_at INTEGER,
+                PRIMARY KEY(anilist_id, episode)
+            );
+            CREATE TABLE IF NOT EXISTS anilist_episode_map_fetched (
+                anilist_id INTEGER PRIMARY KEY,
+                fetched_at INTEGER NOT NULL,
+                entries INTEGER NOT NULL
+            );
             "#,
         )?;
         ensure_column(&self.conn, "anilist_catalog", "popularity", "INTEGER")?;
