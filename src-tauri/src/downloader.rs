@@ -202,6 +202,27 @@ async fn get_text(url: &str, referer: &str) -> Result<String, DlError> {
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
+/// Some hosts disguise HLS segments as images (a tiny PNG/JPEG/GIF, served from
+/// an ad CDN, with the real MPEG-TS packets appended) to slip past filters.
+/// When a segment starts with an image signature, drop everything before the
+/// first run of three MPEG-TS sync bytes 188 bytes apart; anything else is
+/// returned untouched (and, if it is not video, rejected by the later content check).
+fn unwrap_image_segment(data: &[u8]) -> &[u8] {
+    let is_image = data.starts_with(&[0x89, b'P', b'N', b'G'])
+        || data.starts_with(&[0xFF, 0xD8, 0xFF])
+        || data.starts_with(b"GIF8");
+    if !is_image {
+        return data;
+    }
+    let last_start = data.len().saturating_sub(188 * 2 + 1);
+    for i in 0..last_start {
+        if data[i] == 0x47 && data[i + 188] == 0x47 && data[i + 376] == 0x47 {
+            return &data[i..];
+        }
+    }
+    data
+}
+
 /// Append one HLS segment to `file`; on any failure the file is cut back to
 /// `start_len` so a retry never leaves half a segment in the middle.
 async fn append_segment(
@@ -239,6 +260,9 @@ async fn append_segment(
         if ct.starts_with("text/") {
             return Err(DlError::BadContentType(ct));
         }
+        // Buffer the whole segment (a few MB): an image-wrapped one has to be
+        // unwrapped before it is written.
+        let mut body: Vec<u8> = Vec::new();
         loop {
             if cancel.load(Ordering::SeqCst) {
                 return Err(DlError::Cancelled);
@@ -248,13 +272,16 @@ async fn append_segment(
                 Ok(Err(e)) => return Err(DlError::Net(e.to_string())),
                 Ok(Ok(c)) => c,
             };
-            let Some(chunk) = chunk else { return Ok(()) };
-            *total += chunk.len() as u64;
-            if *total > MAX_DOWNLOAD_BYTES {
+            let Some(chunk) = chunk else { break };
+            if *total + body.len() as u64 + chunk.len() as u64 > MAX_DOWNLOAD_BYTES {
                 return Err(DlError::TooLarge);
             }
-            file.write_all(&chunk).await.map_err(|e| DlError::Io(e.to_string()))?;
+            body.extend_from_slice(&chunk);
         }
+        let payload = unwrap_image_segment(&body);
+        *total += payload.len() as u64;
+        file.write_all(payload).await.map_err(|e| DlError::Io(e.to_string()))?;
+        Ok(())
     }
     .await;
     if result.is_err() {
@@ -717,6 +744,59 @@ mod tests {
             .unwrap_err();
         assert_eq!(err, DlError::Cancelled);
         assert!(no_leftovers(&base));
+        cleanup(&base);
+    }
+
+    #[test]
+    fn image_wrapped_segments_are_unwrapped_to_the_transport_stream() {
+        let mut wrapped = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+        wrapped.extend_from_slice(&[0u8; 50]);
+        let ts = ts_segment(5);
+        wrapped.extend_from_slice(&ts);
+        assert_eq!(unwrap_image_segment(&wrapped), &ts[..]);
+        // JPEG and GIF headers too.
+        let mut jpeg = vec![0xFF, 0xD8, 0xFF, 0xE0];
+        jpeg.extend_from_slice(&ts);
+        assert_eq!(unwrap_image_segment(&jpeg), &ts[..]);
+        let mut gif = b"GIF89a".to_vec();
+        gif.extend_from_slice(&ts);
+        assert_eq!(unwrap_image_segment(&gif), &ts[..]);
+    }
+
+    #[test]
+    fn plain_and_unrecognised_segments_are_left_alone() {
+        let ts = ts_segment(1);
+        assert_eq!(unwrap_image_segment(&ts), &ts[..]);
+        // An image with no transport stream inside stays as it is (and will be rejected later).
+        let png_only = vec![0x89, b'P', b'N', b'G', 1, 2, 3, 4];
+        assert_eq!(unwrap_image_segment(&png_only), &png_only[..]);
+        assert_eq!(unwrap_image_segment(&[]), &[] as &[u8]);
+    }
+
+    #[tokio::test]
+    async fn an_hls_stream_of_image_wrapped_segments_still_downloads() {
+        let wrap = |fill: u8| {
+            let mut v = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+            v.extend_from_slice(&[0u8; 30]);
+            v.extend_from_slice(&ts_segment(fill));
+            v
+        };
+        let base_url = serve_routes(vec![
+            ("/p.m3u8", "application/vnd.apple.mpegurl", media_playlist(2)),
+            ("/seg0.ts", "image/png", wrap(1)),
+            ("/seg1.ts", "image/png", wrap(2)),
+        ])
+        .await;
+        let base = temp_dest("hlsimg");
+        let path = fetch_hls_to_file(&format!("{base_url}/p.m3u8"), "https://x/", &base, &AtomicBool::new(false), |_, _| {})
+            .await
+            .unwrap();
+        assert_eq!(path, final_path(&base, "ts"));
+        let data = std::fs::read(&path).unwrap();
+        assert_eq!(data.len(), 188 * 3 * 2);
+        assert_eq!(data[0], 0x47);
+        assert_eq!(data[1], 1);
+        assert_eq!(data[188 * 3 + 1], 2);
         cleanup(&base);
     }
 }
