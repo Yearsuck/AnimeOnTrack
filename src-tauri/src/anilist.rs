@@ -404,8 +404,8 @@ pub struct Partition {
 ///
 /// 1. One pre-modern range (`startDate_lesser: 19400101` — a few hundred
 ///    titles total).
-/// 2. One partition per year, 1940 through `current_year + 2` — no single
-///    year approaches the 5000-row cap.
+/// 2. One partition per decade for 1940-1999, then one per year from 2000
+///    through `current_year + 2` — none approaches the 5000-row cap.
 /// 3. One `NOT_YET_RELEASED` partition (undated upcoming titles).
 /// 4. One final unfiltered `sort: ID` pass, capped at the first 100 pages
 ///    (the 5000-row cap) — catches undated *non*-upcoming leftovers among
@@ -424,7 +424,20 @@ pub fn build_partitions(current_year: i32) -> Vec<Partition> {
         },
         max_pages: None,
     });
-    for year in 1940..=(current_year + 2) {
+    // 1940-1999 holds only a few hundred titles per decade, so one partition
+    // per decade (one request of ten pages) instead of sixty near-empty year
+    // partitions that each cost a whole paced request.
+    for decade in (1940..2000).step_by(10) {
+        partitions.push(Partition {
+            label: format!("decade-{decade}"),
+            filter: PartitionFilter::DateRange {
+                start_date_greater: Some((decade as i64 - 1) * 10_000 + 1231),
+                start_date_lesser: Some((decade as i64 + 10) * 10_000 + 101),
+            },
+            max_pages: None,
+        });
+    }
+    for year in 2000..=(current_year + 2) {
         partitions.push(Partition {
             label: format!("year-{year}"),
             filter: PartitionFilter::DateRange {
@@ -834,14 +847,22 @@ mod tests {
     }
 
     #[test]
-    fn build_partitions_has_no_year_gap_from_1940_through_current_plus_2() {
+    fn build_partitions_has_no_gap_from_1940_through_current_plus_2() {
         let partitions = build_partitions(2026);
-        for year in 1940..=2028 {
+        for decade in (1940..2000).step_by(10) {
+            assert!(
+                partitions.iter().any(|p| p.label == format!("decade-{decade}")),
+                "missing decade-{decade}"
+            );
+        }
+        for year in 2000..=2028 {
             assert!(
                 partitions.iter().any(|p| p.label == format!("year-{year}")),
                 "missing year-{year}"
             );
         }
+        // Per-year partitions are no longer cut before 2000.
+        assert!(!partitions.iter().any(|p| p.label == "year-1999"));
         // Nothing beyond current_year + 2.
         assert!(!partitions.iter().any(|p| p.label == "year-2029"));
     }
@@ -855,6 +876,19 @@ mod tests {
             PartitionFilter::DateRange {
                 start_date_greater: Some(19_991_231),
                 start_date_lesser: Some(20_010_101),
+            }
+        );
+    }
+
+    #[test]
+    fn build_partitions_decade_bounds_cover_the_whole_decade() {
+        let partitions = build_partitions(2026);
+        let d1990 = partitions.iter().find(|p| p.label == "decade-1990").unwrap();
+        assert_eq!(
+            d1990.filter,
+            PartitionFilter::DateRange {
+                start_date_greater: Some(19_891_231),
+                start_date_lesser: Some(20_000_101),
             }
         );
     }
@@ -877,7 +911,7 @@ mod tests {
     fn incremental_partitions_excludes_static_back_catalog() {
         let inc = incremental_partitions(2026);
         assert!(!inc.iter().any(|p| p.label == "pre-1940"));
-        assert!(!inc.iter().any(|p| p.label == "year-1999"));
+        assert!(!inc.iter().any(|p| p.label == "decade-1990"));
         assert!(!inc.iter().any(|p| p.label == "catch-all"));
     }
 
@@ -917,7 +951,7 @@ mod tests {
     #[test]
     fn sync_state_json_round_trip() {
         let state = CatalogSyncState {
-            completed: vec!["pre-1940".to_string(), "year-1940".to_string()],
+            completed: vec!["pre-1940".to_string(), "decade-1940".to_string()],
             full_sync_completed_at: Some("2026-07-10T00:00:00Z".to_string()),
         };
         let json = state.to_json();
