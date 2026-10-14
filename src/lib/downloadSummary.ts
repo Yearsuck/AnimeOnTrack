@@ -2,7 +2,7 @@ import type { Episode } from "../types";
 
 // The sites whose episode pages the offline downloader understands (keep in
 // step with `site_of` in src-tauri/src/commands/download.rs).
-const DOWNLOAD_HOSTS = ["tioanime.com", "jkanime.net", "animeyt.cc", "gogoanime.by"];
+const DOWNLOAD_HOSTS = ["tioanime.com", "jkanime.net", "animeyt.cc", "gogoanime.by", "animeflv.or.at"];
 
 // Checks whether an episode URL belongs to one of those sites (or a subdomain).
 // Never throws on malformed or empty URLs.

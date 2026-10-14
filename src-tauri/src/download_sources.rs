@@ -1413,6 +1413,33 @@ fn origin_of(url: &str) -> Option<String> {
     Some(format!("{}://{}/", u.scheme(), u.host_str()?))
 }
 
+/// The server buttons of an animeflv.or.at episode page: every element with a
+/// `data-src` attribute holding the BASE64 of an http(s) embed URL (the visible
+/// label is a generic "OPCIÓN N", so the host decides what can be downloaded).
+/// Page order, duplicates by URL dropped. Never panics.
+#[allow(dead_code)] // Consumed by the download command layer
+pub fn parse_animeflv_servers(html: &str) -> Vec<Server> {
+    use base64::Engine;
+    static SELECTOR: OnceLock<Selector> = OnceLock::new();
+    let selector = SELECTOR.get_or_init(|| Selector::parse("[data-src]").expect("valid data-src selector"));
+    let doc = Html::parse_document(html);
+    let mut seen = HashSet::new();
+    let mut servers = Vec::new();
+    for el in doc.select(selector) {
+        let Some(raw) = el.value().attr("data-src") else { continue };
+        let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(raw.trim()) else { continue };
+        let Ok(url) = String::from_utf8(bytes) else { continue };
+        let url = url.trim().to_string();
+        let Ok(parsed) = Url::parse(&url) else { continue };
+        if (parsed.scheme() != "http" && parsed.scheme() != "https") || !seen.insert(url.clone()) {
+            continue;
+        }
+        let name = el.text().collect::<String>().trim().to_string();
+        servers.push(Server { name: if name.is_empty() { "server".to_string() } else { name }, url });
+    }
+    servers
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2349,5 +2376,37 @@ mod tests {
         ];
         let order: Vec<&str> = candidates(&list).iter().map(|s| supported_host(s).unwrap()).collect::<Vec<_>>().into_iter().collect();
         assert_eq!(order, vec!["mp4upload", "vidhide", "voe"]);
+    }
+
+    #[test]
+    fn animeflv_servers_are_decoded_from_their_base64_buttons() {
+        let page = include_str!("../tests/fixtures/animeflv_episode.html");
+        let servers = parse_animeflv_servers(page);
+        assert_eq!(servers.len(), 5);
+        assert_eq!(servers[0].url, "https://player.zilla-networks.com/m3u8/ae620efe7c15b28ffcfeec068e894b41");
+        assert_eq!(servers[2].url, "https://voe.sx/e/3seq5qdn9dak");
+        assert_eq!(servers[4].url, "https://www.mp4upload.com/embed-6gq1n6syhtar.html");
+        // Of those, the downloader can use VOE and Mp4upload (Mp4upload first).
+        let usable: Vec<&str> = candidates(&servers).iter().map(|s| supported_host(s).unwrap()).collect::<Vec<_>>().into_iter().collect();
+        assert_eq!(usable, vec!["mp4upload", "voe"]);
+    }
+
+    #[test]
+    fn animeflv_servers_ignore_bad_data_src_values() {
+        use base64::Engine;
+        let b64 = |s: &str| base64::engine::general_purpose::STANDARD.encode(s);
+        let html = format!(
+            r#"<button data-src="!!notbase64">a</button>
+               <button data-src="{}">js</button>
+               <button data-src="{}">ok</button>
+               <button data-src="{}">dup</button>
+               <div data-src="">empty</div>"#,
+            b64("javascript:alert(1)"),
+            b64("https://voe.sx/e/abc"),
+            b64("https://voe.sx/e/abc"),
+        );
+        let servers = parse_animeflv_servers(&html);
+        assert_eq!(servers, vec![Server { name: "ok".into(), url: "https://voe.sx/e/abc".into() }]);
+        assert!(parse_animeflv_servers("").is_empty());
     }
 }
