@@ -3,13 +3,13 @@ import {
   downloadEpisode,
   getCatalogInfoForSeries,
   getNextAir,
+  getPlayerSettings,
   linkCatalogSeries,
   listEpisodes,
   openEpisode,
   reclassifySeries,
-  setSeenCascade,
-  getPlayerSettings,
   setPlayerSettings,
+  setSeenCascade,
 } from "../api";
 
 import { useT } from "../i18n";
@@ -198,10 +198,16 @@ export function SeriesDetail({
             // The "open page" link points at AniList — the reliable source of
             // truth for anime info. The pirate site only supplies episodes (the
             // play buttons below), so it's the fallback only when this show
-            // isn't linked to the catalog.
+            // isn't linked to the catalog. Opens inside an app-owned WebView2
+            // window instead of spawning the system browser.
             href={catalogInfo?.url ?? series.url}
-            target="_blank"
-            rel="noreferrer"
+            onClick={(e) => {
+              e.preventDefault();
+              const url = catalogInfo?.url ?? series.url;
+              openEpisode(url).catch((err) =>
+                console.error("openEpisode failed for", url, err)
+              );
+            }}
           >
             {t("seriesDetail.openPage")}
           </a>

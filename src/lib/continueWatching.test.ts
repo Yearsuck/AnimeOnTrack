@@ -95,7 +95,7 @@ describe("pickContinueWatching", () => {
     expect(pickContinueWatching([item])).toEqual([]);
   });
 
-  it("respects default limit of 3", () => {
+  it("respects default limit of 2", () => {
     const items = [1, 2, 3, 4, 5].map((i) =>
       makeLibraryItem({
         series: {
@@ -113,8 +113,30 @@ describe("pickContinueWatching", () => {
       })
     );
     const result = pickContinueWatching(items);
-    expect(result).toHaveLength(3);
-    expect(result.map((it) => it.series.id)).toEqual([5, 4, 3]);
+    expect(result).toHaveLength(2);
+    expect(result.map((it) => it.series.id)).toEqual([5, 4]);
+  });
+
+  it("returns exactly 2 newest items with 4 eligible items and no explicit limit", () => {
+    const items = [1, 2, 3, 4].map((i) =>
+      makeLibraryItem({
+        series: {
+          id: i,
+          slug: `series-${i}`,
+          title: `Series ${i}`,
+          url: "",
+          cover_url: null,
+          is_airing: true,
+          followed: true,
+          next_episode_at: null,
+          site_episode_count: 12,
+        },
+        last_watched_at: `2026-10-0${i} 12:00:00`,
+      })
+    );
+    const result = pickContinueWatching(items);
+    expect(result).toHaveLength(2);
+    expect(result.map((it) => it.series.id)).toEqual([4, 3]);
   });
 
   it("respects explicit limit of 1", () => {

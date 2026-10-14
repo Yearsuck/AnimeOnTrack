@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { getCatalogFacets, getDeckBans, getDiscoverNiche, setDeckBans, setDiscoverNiche } from "../../api";
 import { useT } from "../../i18n";
 import { DECK_FORMATS } from "./constants";
 import { DiscoverModeToggle } from "./DiscoverModeToggle";
 import { getInitialDeckPanelOpen, persistDeckPanelOpen } from "./helpers";
+import { countActiveFilters, DECK_DEFAULTS } from "./deckReset";
 import { DateRangeControl, ScoreRangeControl } from "../../components/filters";
 
 // Deck settings panel — lives inside SwipeView (see the design spec at
@@ -31,9 +32,16 @@ export function DeckPanel({ onBansSaved }: { onBansSaved: () => void }) {
   const [nicheBias, setNicheBias] = useState(0);
   const nicheBiasRef = useRef(nicheBias);
   nicheBiasRef.current = nicheBias;
+  const onBansSavedRef = useRef(onBansSaved);
+  onBansSavedRef.current = onBansSaved;
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [open, setOpen] = useState(getInitialDeckPanelOpen);
+
+  // Guards against saving on mount: stays false until the initial getDeckBans()
+  // response has been applied, so loading the saved values never triggers a save or onBansSaved.
+  const loadedRef = useRef(false);
+  const initialResponseReceivedRef = useRef(false);
 
   useEffect(() => {
     getDeckBans()
@@ -45,8 +53,12 @@ export function DeckPanel({ onBansSaved }: { onBansSaved: () => void }) {
         setMinStartDate(b.min_start_date);
         setMaxStartDate(b.max_start_date);
         setMinScore(b.min_score);
+        initialResponseReceivedRef.current = true;
       })
-      .catch((err) => console.error("getDeckBans failed", err));
+      .catch((err) => {
+        console.error("getDeckBans failed", err);
+        loadedRef.current = true;
+      });
     getCatalogFacets()
       .then((f) => setAllGenres(f.genres))
       .catch((err) => console.error("getCatalogFacets failed", err));
@@ -78,7 +90,8 @@ export function DeckPanel({ onBansSaved }: { onBansSaved: () => void }) {
     setSaved(false);
   }
 
-  async function save() {
+  const save = useCallback(async () => {
+    setSaved(false);
     setSaving(true);
     try {
       await setDeckBans(
@@ -90,10 +103,47 @@ export function DeckPanel({ onBansSaved }: { onBansSaved: () => void }) {
         minScore
       );
       setSaved(true);
-      onBansSaved();
+      onBansSavedRef.current();
+    } catch (err) {
+      console.error("setDeckBans failed", err);
     } finally {
       setSaving(false);
     }
+  }, [bannedGenres, bannedFormats, hideUpcoming, minStartDate, maxStartDate, minScore]);
+
+  // Auto-apply: every change of genre chip, format chip, hide-upcoming checkbox,
+  // date range or score saves automatically after 600 ms of no further change (debounce).
+  useEffect(() => {
+    if (!loadedRef.current) {
+      if (initialResponseReceivedRef.current) {
+        loadedRef.current = true;
+      }
+      return;
+    }
+
+    setSaved(false);
+    const timer = setTimeout(() => {
+      save();
+    }, 600);
+
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [bannedGenres, bannedFormats, hideUpcoming, minStartDate, maxStartDate, minScore, save]);
+
+  function handleResetFilters() {
+    setSaved(false);
+    setBannedGenres(new Set(DECK_DEFAULTS.genres));
+    setBannedFormats(new Set(DECK_DEFAULTS.formats));
+    setHideUpcoming(DECK_DEFAULTS.hideUpcoming);
+    setMinStartDate(DECK_DEFAULTS.minStartDate);
+    setMaxStartDate(DECK_DEFAULTS.maxStartDate);
+    setMinScore(DECK_DEFAULTS.minScore);
+    setNicheBias(DECK_DEFAULTS.nicheBias);
+    nicheBiasRef.current = DECK_DEFAULTS.nicheBias;
+    setDiscoverNiche(0).catch((err) => {
+      console.error("setDiscoverNiche failed", err);
+    });
   }
 
   function toggleOpen() {
@@ -104,12 +154,14 @@ export function DeckPanel({ onBansSaved }: { onBansSaved: () => void }) {
     });
   }
 
-  const activeBans =
-    bannedGenres.size +
-    bannedFormats.size +
-    (minScore !== null ? 1 : 0) +
-    (minStartDate !== null || maxStartDate !== null ? 1 : 0) +
-    (hideUpcoming ? 1 : 0);
+  const activeBans = countActiveFilters({
+    genres: bannedGenres,
+    formats: bannedFormats,
+    hideUpcoming,
+    minStartDate,
+    maxStartDate,
+    minScore,
+  });
 
   return (
     <aside className="deck-panel">
@@ -253,7 +305,18 @@ export function DeckPanel({ onBansSaved }: { onBansSaved: () => void }) {
             <button className="btn btn-primary" onClick={save} disabled={saving}>
               {saving ? t("discover.filtersSaving") : t("discover.filtersSave")}
             </button>
+            <button
+              type="button"
+              className="btn"
+              onClick={handleResetFilters}
+              disabled={activeBans === 0 && nicheBias === 0}
+            >
+              {t("discover.filtersReset")}
+            </button>
             {saved && <span className="muted">{t("discover.filtersSaved")}</span>}
+            {!saving && !saved && (
+              <span className="muted">{t("discover.filtersAutoHint")}</span>
+            )}
           </div>
         </div>
       )}

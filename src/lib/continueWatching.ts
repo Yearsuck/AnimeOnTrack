@@ -10,8 +10,9 @@ import type { LibraryItem } from "../types";
  *
  * Sorted by `last_watched_at` descending (most recently watched first).
  * Ties are broken by series title ascending (case-insensitive).
+ * Defaults to returning at most the 2 most recently watched series.
  */
-export function pickContinueWatching(items: LibraryItem[], limit = 3): LibraryItem[] {
+export function pickContinueWatching(items: LibraryItem[], limit = 2): LibraryItem[] {
   if (!items || limit <= 0) return [];
 
   const candidates = items.filter(

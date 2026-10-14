@@ -289,6 +289,8 @@ export const en: Messages = {
   "discover.filtersSave": "Save filters",
   "discover.filtersSaving": "Saving…",
   "discover.filtersSaved": "Filters saved.",
+  "discover.filtersReset": "Reset filters",
+  "discover.filtersAutoHint": "Changes apply automatically.",
   "discover.deckPanelTitle": "Deck settings",
   "discover.deckPanelToggleAria": "Show or hide the deck settings",
   "discover.deckPanelBansBadge": "{count} active filters",
