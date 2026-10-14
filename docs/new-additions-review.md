@@ -44,3 +44,12 @@ key), real download engine, taskbar badge, rotating file log.
 |---|---|---|
 | Next episode air date (`feat(episodes)`, `feat(detail)`) | The series detail screen shows "Próximo episodio: Ep N · en X días/h/min" under the info row, from the ani.zip air dates stored in the DB. Nothing is shown when the series has no map yet or nothing upcoming. | Open a followed airing series that has been linked to AniList (the map fills in ~30 s after start, 20 shows per run). |
 | Rotating app log (`feat(log)`) | `aot.log` in the app data dir (1 MB, 2 rotated copies) records startup and panics; its tail is part of Ajustes -> Mantenimiento -> Exportar diagnóstico. No setting values are logged. | Start the app, open the data dir, read `aot.log`; export diagnostics and look for the `aot.log` section. |
+
+## Batch 7 - owner feedback round (done, validated by tests/build; UI not seen on screen)
+| Change | What it does | How to check it |
+|---|---|---|
+| Continuar viendo = last 2 | The strip in Pendientes shows exactly the two series you watched most recently (that still have a next episode). | Mark an episode seen in two series; both appear, newest first. |
+| AniList page in our window | "Ver en AniList" in the series detail opens an app window, not your browser. | Open any series -> click the link. |
+| Descubrir filters apply on their own + reset | Chips, formats, dates, score and "ocultar próximos" save 600 ms after the last change (the deck is refilled); new "Restablecer filtros" button clears all filters and puts the popular/cult slider back to the centre. | Toggle a genre: the deck changes without pressing Guardar; press Restablecer filtros. |
+| Maximised episode window | Ajustes -> Reproductor: the second mode is now "Ventana a pantalla completa" (maximised window, keeps the title bar and X) instead of true fullscreen. | Set it, open an episode: window fills the screen and can be closed. |
+| Faster navigation | The 3D graph code (three.js, 1.4 MB) loads only when Estadísticas is first opened (prefetched on hover); Catálogo caches its facets between visits; Descubrir shows its first card before filling the whole buffer; dependencies (SQLite) are optimised in dev builds. | Click Descubrir -> Catálogo -> Estadísticas -> repeat; compare with the previous build. |
