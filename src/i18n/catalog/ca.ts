@@ -152,8 +152,8 @@ export const ca: Messages = {
   "settings.playerMonitorPrimaryTag": " (Principal)",
   "settings.playerMode": "Mode d'obertura",
   "settings.playerWindowed": "Finestra",
-  "settings.playerFullscreen": "Pantalla completa",
-  "settings.playerHelp": "Configura a quin monitor s'obren els episodis i si han d'iniciar-se a pantalla completa o en finestra.",
+  "settings.playerFullscreen": "Finestra a pantalla completa",
+  "settings.playerHelp": "Configura a quin monitor s'obren els episodis i si s'obren en una finestra normal o maximitzada a pantalla completa. La pantalla completa real l'actives tu en començar l'episodi.",
 
 
   // Library.tsx

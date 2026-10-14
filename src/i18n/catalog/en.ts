@@ -145,8 +145,8 @@ export const en: Messages = {
   "settings.playerMonitorPrimaryTag": " (Primary)",
   "settings.playerMode": "Display mode",
   "settings.playerWindowed": "Windowed",
-  "settings.playerFullscreen": "Full screen",
-  "settings.playerHelp": "Configure which monitor episodes open on and whether they launch in full screen or in a window.",
+  "settings.playerFullscreen": "Maximised window",
+  "settings.playerHelp": "Configure which monitor episodes open on and whether they open in a normal window or a maximised one. Real full screen is up to you once the episode starts.",
 
 
   "library.searchAriaLabel": "Search by name",

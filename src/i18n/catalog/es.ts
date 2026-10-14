@@ -156,8 +156,8 @@ export const es = {
   "settings.playerMonitorPrimaryTag": " (Principal)",
   "settings.playerMode": "Modo de apertura",
   "settings.playerWindowed": "Ventana",
-  "settings.playerFullscreen": "Pantalla completa",
-  "settings.playerHelp": "Configura en qué monitor se abren los episodios y si deben iniciarse a pantalla completa o en ventana.",
+  "settings.playerFullscreen": "Ventana a pantalla completa",
+  "settings.playerHelp": "Configura en qué monitor se abren los episodios y si deben abrirse en una ventana normal o maximizada a pantalla completa. El pantalla completa real lo activas tú al empezar el episodio.",
 
 
   // Library.tsx
