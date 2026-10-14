@@ -10,6 +10,7 @@ import { Catalog } from "./views/Catalog";
 import { ProgressBar } from "./views/ProgressBar";
 import { WindowControls } from "./views/WindowControls";
 import { ShortcutsOverlay } from "./views/ShortcutsOverlay";
+import { UpdateBanner } from "./views/UpdateBanner";
 import { shortcutFor } from "./lib/shortcuts";
 import {
   listAiring,
@@ -449,6 +450,7 @@ export default function App() {
         )}
       </div>
       <ShortcutsOverlay open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
+      <UpdateBanner />
     </div>
   );
 }

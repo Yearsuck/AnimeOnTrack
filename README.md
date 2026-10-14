@@ -28,7 +28,7 @@
     Tracks currently-airing anime, notifies you the second a new episode drops, downloads episodes for offline viewing (in development), and unifies your progress across six streaming sites — without an account or cloud lock-in.
     <br />
     <br />
-    <a href="https://github.com/Yearsuck/AnimeOnTrack/releases/latest"><strong>⬇ Download Installer (v0.9.0) »</strong></a>
+    <a href="https://github.com/Yearsuck/AnimeOnTrack/releases/latest"><strong>⬇ Download Installer (v0.10.0) »</strong></a>
     <br />
     <br />
     <a href="#about-the-project">About The Project</a>
@@ -69,7 +69,8 @@
     </li>
     <li><a href="#architecture--engineering-highlights">Architecture & Engineering Highlights</a></li>
     <li><a href="#project-layout">Project Layout</a></li>
-    <li><a href="#whats-new-in-v090">What's New in v0.9.0</a></li>
+    <li><a href="#whats-new-in-v0100">What's New in v0.10.0</a></li>
+    <li><a href="#previous-release-v090">Previous release: v0.9.0</a></li>
     <li><a href="#previous-release-v080">Previous release: v0.8.0</a></li>
     <li><a href="#contributing">Contributing</a></li>
     <li><a href="#a-note-on-piracy">A Note on Piracy</a></li>
@@ -109,7 +110,7 @@ Crucially, the app maintains an **offline mirror of the AniList catalog (~22,000
 
 ## Key Features
 
-### 💾 Offline Episode Downloads & Auto-Cleanup *(in development, not released yet)*
+### 💾 Offline Episode Downloads & Auto-Cleanup
 * **Per-series downloads panel**: download one episode, **every pending episode of a series** (oldest first, one transfer at a time), cancel a running one, play it offline, or delete a series' downloads **without touching its watched state**.
 * **Five sites, many hosts**: TioAnime, JKAnime, animeyt.cc, GogoAnime and the new AnimeFLV, through Mp4upload, YourUpload, Mediafire, Streamtape, Mixdrop, Vidhide, VOE, Ok.ru and direct mp4 players, plus a built-in HLS downloader for stream-only hosts. See [`docs/superpowers/plans/2026-10-14-download-sources-research.md`](docs/superpowers/plans/2026-10-14-download-sources-research.md) for what each site serves and what cannot be done (captcha, encrypted or anti-bot hosts).
 * **Quarantine before a file is kept**: every download is a `.part` until it is a real video container (MP4, MPEG-TS or Matroska; the extension comes from the bytes, never the URL) and Windows Defender finds nothing. Kept files get the Mark of the Web and the downloads folder denies *execute* on its files. This is hardening, not a virtual machine.
@@ -317,7 +318,15 @@ AnimeOnTrack/
 
 ---
 
-## What's New in v0.9.0
+## What's New in v0.10.0
+
+* **In-app updates**: the app checks GitHub for a newer release shortly after start (switchable in Settings → Appearance, with a manual "Check now") and offers *Install and restart*. Nothing installs without a click, and every installer is signed; the app verifies the signature against the public key in `tauri.conf.json`. 0.10.0 is the first release that ships it, so it has to be installed by hand once; from then on new versions arrive by themselves.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+---
+
+## Previous release: v0.9.0
 
 Details of each change and how it was tested: [`docs/new-additions-review.md`](docs/new-additions-review.md).
 
