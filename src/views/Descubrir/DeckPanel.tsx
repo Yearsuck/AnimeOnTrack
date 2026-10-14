@@ -1,9 +1,11 @@
-import { useEffect, useState } from "react";
-import { getCatalogFacets, getDeckBans, setDeckBans } from "../../api";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { getCatalogFacets, getDeckBans, getDiscoverNiche, setDeckBans, setDiscoverNiche } from "../../api";
 import { useT } from "../../i18n";
 import { DECK_FORMATS } from "./constants";
 import { DiscoverModeToggle } from "./DiscoverModeToggle";
+import { useDiscoverMode } from "../../discoverMode";
 import { getInitialDeckPanelOpen, persistDeckPanelOpen } from "./helpers";
+import { countActiveFilters, DECK_DEFAULTS } from "./deckReset";
 import { DateRangeControl, ScoreRangeControl } from "../../components/filters";
 
 // Deck settings panel — lives inside SwipeView (see the design spec at
@@ -20,6 +22,7 @@ import { DateRangeControl, ScoreRangeControl } from "../../components/filters";
 // up to PREFETCH_TARGET already-fetched cards that predate the new bans.
 export function DeckPanel({ onBansSaved }: { onBansSaved: () => void }) {
   const t = useT();
+  const [discoverMode] = useDiscoverMode();
   const [allGenres, setAllGenres] = useState<string[]>([]);
   const [bannedGenres, setBannedGenres] = useState<Set<string>>(new Set());
   const [bannedFormats, setBannedFormats] = useState<Set<string>>(new Set());
@@ -28,9 +31,19 @@ export function DeckPanel({ onBansSaved }: { onBansSaved: () => void }) {
   const [minStartDate, setMinStartDate] = useState<number | null>(null);
   const [maxStartDate, setMaxStartDate] = useState<number | null>(null);
   const [minScore, setMinScore] = useState<number | null>(null);
+  const [nicheBias, setNicheBias] = useState(0);
+  const nicheBiasRef = useRef(nicheBias);
+  nicheBiasRef.current = nicheBias;
+  const onBansSavedRef = useRef(onBansSaved);
+  onBansSavedRef.current = onBansSaved;
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [open, setOpen] = useState(getInitialDeckPanelOpen);
+
+  // Guards against saving on mount: stays false until the initial getDeckBans()
+  // response has been applied, so loading the saved values never triggers a save or onBansSaved.
+  const loadedRef = useRef(false);
+  const initialResponseReceivedRef = useRef(false);
 
   useEffect(() => {
     getDeckBans()
@@ -42,12 +55,34 @@ export function DeckPanel({ onBansSaved }: { onBansSaved: () => void }) {
         setMinStartDate(b.min_start_date);
         setMaxStartDate(b.max_start_date);
         setMinScore(b.min_score);
+        initialResponseReceivedRef.current = true;
       })
-      .catch((err) => console.error("getDeckBans failed", err));
+      .catch((err) => {
+        console.error("getDeckBans failed", err);
+        loadedRef.current = true;
+      });
     getCatalogFacets()
       .then((f) => setAllGenres(f.genres))
       .catch((err) => console.error("getCatalogFacets failed", err));
+    getDiscoverNiche()
+      .then((v) => {
+        setNicheBias(v);
+        nicheBiasRef.current = v;
+      })
+      .catch((err) => console.error("getDiscoverNiche failed", err));
   }, []);
+
+  function handleNicheChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const val = parseFloat(e.target.value);
+    setNicheBias(val);
+    nicheBiasRef.current = val;
+  }
+
+  function persistNiche() {
+    setDiscoverNiche(nicheBiasRef.current).catch((err) => {
+      console.error("setDiscoverNiche failed", err);
+    });
+  }
 
   function toggle(set: Set<string>, setter: (s: Set<string>) => void, value: string) {
     const next = new Set(set);
@@ -57,7 +92,8 @@ export function DeckPanel({ onBansSaved }: { onBansSaved: () => void }) {
     setSaved(false);
   }
 
-  async function save() {
+  const save = useCallback(async () => {
+    setSaved(false);
     setSaving(true);
     try {
       await setDeckBans(
@@ -69,10 +105,47 @@ export function DeckPanel({ onBansSaved }: { onBansSaved: () => void }) {
         minScore
       );
       setSaved(true);
-      onBansSaved();
+      onBansSavedRef.current();
+    } catch (err) {
+      console.error("setDeckBans failed", err);
     } finally {
       setSaving(false);
     }
+  }, [bannedGenres, bannedFormats, hideUpcoming, minStartDate, maxStartDate, minScore]);
+
+  // Auto-apply: every change of genre chip, format chip, hide-upcoming checkbox,
+  // date range or score saves automatically after 600 ms of no further change (debounce).
+  useEffect(() => {
+    if (!loadedRef.current) {
+      if (initialResponseReceivedRef.current) {
+        loadedRef.current = true;
+      }
+      return;
+    }
+
+    setSaved(false);
+    const timer = setTimeout(() => {
+      save();
+    }, 600);
+
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [bannedGenres, bannedFormats, hideUpcoming, minStartDate, maxStartDate, minScore, save]);
+
+  function handleResetFilters() {
+    setSaved(false);
+    setBannedGenres(new Set(DECK_DEFAULTS.genres));
+    setBannedFormats(new Set(DECK_DEFAULTS.formats));
+    setHideUpcoming(DECK_DEFAULTS.hideUpcoming);
+    setMinStartDate(DECK_DEFAULTS.minStartDate);
+    setMaxStartDate(DECK_DEFAULTS.maxStartDate);
+    setMinScore(DECK_DEFAULTS.minScore);
+    setNicheBias(DECK_DEFAULTS.nicheBias);
+    nicheBiasRef.current = DECK_DEFAULTS.nicheBias;
+    setDiscoverNiche(0).catch((err) => {
+      console.error("setDiscoverNiche failed", err);
+    });
   }
 
   function toggleOpen() {
@@ -83,12 +156,14 @@ export function DeckPanel({ onBansSaved }: { onBansSaved: () => void }) {
     });
   }
 
-  const activeBans =
-    bannedGenres.size +
-    bannedFormats.size +
-    (minScore !== null ? 1 : 0) +
-    (minStartDate !== null || maxStartDate !== null ? 1 : 0) +
-    (hideUpcoming ? 1 : 0);
+  const activeBans = countActiveFilters({
+    genres: bannedGenres,
+    formats: bannedFormats,
+    hideUpcoming,
+    minStartDate,
+    maxStartDate,
+    minScore,
+  });
 
   return (
     <aside className="deck-panel">
@@ -114,6 +189,34 @@ export function DeckPanel({ onBansSaved }: { onBansSaved: () => void }) {
           <div className="deck-panel-mode">
             <DiscoverModeToggle />
           </div>
+
+          {discoverMode === "recommended" && (
+            <div className="deck-panel-niche">
+              <label htmlFor="deck-niche-slider" className="deck-panel-niche-label">
+                {t("niche.label")}
+              </label>
+              <input
+                id="deck-niche-slider"
+                type="range"
+                min="-1"
+                max="1"
+                step="0.25"
+                value={nicheBias}
+                onChange={handleNicheChange}
+                onPointerUp={persistNiche}
+                onKeyUp={persistNiche}
+                onBlur={persistNiche}
+                className="niche-slider"
+              />
+              <div className="deck-panel-niche-captions">
+                <span className="muted text-sm">{t("niche.mainstream")}</span>
+                <span className="muted text-sm">{t("niche.niche")}</span>
+              </div>
+              <p className="muted text-sm deck-panel-niche-hint">
+                {t("niche.hint")}
+              </p>
+            </div>
+          )}
 
           <p className="muted deck-panel-intro">
             {t("discover.filtersIntro")}
@@ -206,7 +309,18 @@ export function DeckPanel({ onBansSaved }: { onBansSaved: () => void }) {
             <button className="btn btn-primary" onClick={save} disabled={saving}>
               {saving ? t("discover.filtersSaving") : t("discover.filtersSave")}
             </button>
+            <button
+              type="button"
+              className="btn"
+              onClick={handleResetFilters}
+              disabled={activeBans === 0 && nicheBias === 0}
+            >
+              {t("discover.filtersReset")}
+            </button>
             {saved && <span className="muted">{t("discover.filtersSaved")}</span>}
+            {!saving && !saved && (
+              <span className="muted">{t("discover.filtersAutoHint")}</span>
+            )}
           </div>
         </div>
       )}

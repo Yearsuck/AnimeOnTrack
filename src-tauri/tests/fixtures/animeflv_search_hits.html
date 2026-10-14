@@ -1,505 +1,770 @@
-<html lang="es" class=" flexbox no-flexboxtweener"><head><style type="text/css" id="alertifyCSS">.alertify-logs>*{padding:12px 24px;color:#fff;box-shadow:0 2px 5px 0 rgba(0,0,0,.2);border-radius:1px}.alertify-logs>*,.alertify-logs>.default{background:rgba(0,0,0,.8)}.alertify-logs>.error{background:rgba(244,67,54,.8)}.alertify-logs>.success{background:rgba(76,175,80,.9)}.alertify{position:fixed;background-color:rgba(0,0,0,.3);left:0;right:0;top:0;bottom:0;width:100%;height:100%;z-index:1}.alertify.hide{opacity:0;pointer-events:none}.alertify,.alertify.show{box-sizing:border-box;transition:all .33s cubic-bezier(.25,.8,.25,1)}.alertify,.alertify *{box-sizing:border-box}.alertify .dialog{padding:12px}.alertify .alert,.alertify .dialog{width:100%;margin:0 auto;position:relative;top:50%;transform:translateY(-50%)}.alertify .alert>*,.alertify .dialog>*{width:400px;max-width:95%;margin:0 auto;text-align:center;padding:12px;background:#fff;box-shadow:0 2px 4px -1px rgba(0,0,0,.14),0 4px 5px 0 rgba(0,0,0,.098),0 1px 10px 0 rgba(0,0,0,.084)}.alertify .alert .msg,.alertify .dialog .msg{padding:12px;margin-bottom:12px;margin:0;text-align:left}.alertify .alert input:not(.form-control),.alertify .dialog input:not(.form-control){margin-bottom:15px;width:100%;font-size:100%;padding:12px}.alertify .alert input:not(.form-control):focus,.alertify .dialog input:not(.form-control):focus{outline-offset:-2px}.alertify .alert nav,.alertify .dialog nav{text-align:right}.alertify .alert nav button:not(.btn):not(.pure-button):not(.md-button):not(.mdl-button),.alertify .dialog nav button:not(.btn):not(.pure-button):not(.md-button):not(.mdl-button){background:transparent;box-sizing:border-box;color:rgba(0,0,0,.87);position:relative;outline:0;border:0;display:inline-block;-ms-flex-align:center;-ms-grid-row-align:center;align-items:center;padding:0 6px;margin:6px 8px;line-height:36px;min-height:36px;white-space:nowrap;min-width:88px;text-align:center;text-transform:uppercase;font-size:14px;text-decoration:none;cursor:pointer;border:1px solid transparent;border-radius:2px}.alertify .alert nav button:not(.btn):not(.pure-button):not(.md-button):not(.mdl-button):active,.alertify .alert nav button:not(.btn):not(.pure-button):not(.md-button):not(.mdl-button):hover,.alertify .dialog nav button:not(.btn):not(.pure-button):not(.md-button):not(.mdl-button):active,.alertify .dialog nav button:not(.btn):not(.pure-button):not(.md-button):not(.mdl-button):hover{background-color:rgba(0,0,0,.05)}.alertify .alert nav button:not(.btn):not(.pure-button):not(.md-button):not(.mdl-button):focus,.alertify .dialog nav button:not(.btn):not(.pure-button):not(.md-button):not(.mdl-button):focus{border:1px solid rgba(0,0,0,.1)}.alertify .alert nav button.btn,.alertify .dialog nav button.btn{margin:6px 4px}.alertify-logs{position:fixed;z-index:1}.alertify-logs.bottom,.alertify-logs:not(.top){bottom:16px}.alertify-logs.left,.alertify-logs:not(.right){left:16px}.alertify-logs.left>*,.alertify-logs:not(.right)>*{float:left;transform:translateZ(0);height:auto}.alertify-logs.left>.show,.alertify-logs:not(.right)>.show{left:0}.alertify-logs.left>*,.alertify-logs.left>.hide,.alertify-logs:not(.right)>*,.alertify-logs:not(.right)>.hide{left:-110%}.alertify-logs.right{right:16px}.alertify-logs.right>*{float:right;transform:translateZ(0)}.alertify-logs.right>.show{right:0;opacity:1}.alertify-logs.right>*,.alertify-logs.right>.hide{right:-110%;opacity:0}.alertify-logs.top{top:0}.alertify-logs>*{box-sizing:border-box;transition:all .4s cubic-bezier(.25,.8,.25,1);position:relative;clear:both;backface-visibility:hidden;perspective:1000;max-height:0;margin:0;padding:0;overflow:hidden;opacity:0;pointer-events:none}.alertify-logs>.show{margin-top:12px;opacity:1;max-height:1000px;padding:12px;pointer-events:auto}</style>
-    <meta charset="utf-8">
-	<meta name="referrer" content="no-referrer">
-    <title>Directorio de Animes  - AnimeFLV</title>
-    
-<meta name="description" content="El catálogo completo de animes que existen en nuestra base de datos, los puedes filtrar por tipo, categoría, año y mucho más, solo en tu página favorita: AnimeFLV">
-<meta name="robots" content="index, follow">
+<!DOCTYPE html>
+<html lang="en-US">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="HandheldFriendly" content="true">
+<link rel="profile" href="https://gmpg.org/xfn/11">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<meta name='robots' content='noindex, follow' />
+<link rel="preload" href="https://animeflv.or.at/wp-content/themes/animeflv/assets/webfonts/fa-solid-900.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="https://animeflv.or.at/wp-content/themes/animeflv/assets/webfonts/fa-brands-400.woff2" as="font" type="font/woff2" crossorigin>
 
-    
-    <link href="https://fonts.googleapis.com/css?family=Open+Sans:400,300,700,400italic" rel="stylesheet" type="text/css">
-    <link rel="stylesheet" type="text/css" href="/assets/animeflv/css/font-awesome.css">
-    <link rel="stylesheet" type="text/css" href="/assets/animeflv/css/css.css?v=1.3.4">
-    <link rel="stylesheet" type="text/css" href="/assets/animeflv/css/bootstrap.css">
-    <script src="https://connect.facebook.net/es_LA/bundle/sdk.js/" async="" crossorigin="anonymous"></script><script type="text/javascript" src="/assets/animeflv/js/modernizr.js"></script>
-
-    <script src="https://apis.google.com/js/platform.js" gapi_processed="true"></script>
-    <meta name="verify-admitad" content="34e2b77cc8">
-    <meta content="es" http-equiv="content-language">
-    <meta content="es" name="language">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta property="fb:app_id" content="1730508916998105">
-    <link rel="manifest" href="/manifest.json">
-    <meta name="monetag" content="ead37e1f95ad5b49c1acf5dfea76754c">
-
-</head>
-
-
-<body style="">
-    <div id="fb-root"></div>
-    <script async="" defer="" crossorigin="anonymous" src="https://connect.facebook.net/es_LA/sdk.js#xfbml=1&amp;version=v6.0&amp;appId=1730508916998105&amp;autoLogAppEvents=1"></script>
-<script src="/js/ads.js"></script>
-
-<!--
-    <div class="FollowUs">
-        <div class="Container">
-        <div class="close-dv">
-            <button class="close-social"><i class="fa-times"></i></button>
-        </div>
-        <aside>
-            <div class="ttl">¿Ya sigues nuestras Redes Sociales?</div>
-            <p>Si quieres mantenerte informado de nuestros proximos proyectos, no olvides visitar nuestras redes sociales</p>
-        </aside>
-        <ul>
-
-            <li class="twt">
-                <a href="https://twitter.com/ArmyAnime_" target="_blank">
-                    <i class="fa-twitter"></i>
-                    <span>@Anime Army</span>
-                </a>
-            </li>
-            <li class="nst">
-                <a href="https://www.instagram.com/animearmy.jp/" target="_blank">
-                    <i class="fa-instagram"></i>
-                    <span>@Anime Army</span>
-                </a>
-            </li>
-        </ul>
-        </div>
-    </div>
--->
+	<!-- This site is optimized with the Yoast SEO plugin v28.4 - https://yoast.com/product/yoast-seo-wordpress/ -->
+	<title>You searched for tensei - AnimeFLV</title>
+	<meta property="og:locale" content="en_US" />
+	<meta property="og:type" content="article" />
+	<meta property="og:title" content="You searched for tensei - AnimeFLV" />
+	<meta property="og:url" content="https://animeflv.or.at/search/tensei/" />
+	<meta property="og:site_name" content="AnimeFLV" />
+	<meta property="og:image" content="https://animeflv.or.at/wp-content/uploads/2026/06/cropped-animeflv-logo-new.jpg" />
+	<meta property="og:image:width" content="512" />
+	<meta property="og:image:height" content="512" />
+	<meta property="og:image:type" content="image/jpeg" />
+	<meta name="twitter:card" content="summary_large_image" />
+	<meta name="twitter:title" content="You searched for tensei - AnimeFLV" />
+	<meta name="twitter:site" content="@animeflv519" />
+	<script type="application/ld+json" class="yoast-schema-graph">{"@context":"https:\/\/schema.org","@graph":[{"@type":["CollectionPage","SearchResultsPage"],"@id":"https:\/\/animeflv.or.at\/?s=tensei","url":"https:\/\/animeflv.or.at\/?s=tensei","name":"You searched for tensei - AnimeFLV","isPartOf":{"@id":"https:\/\/animeflv.or.at\/#website"},"breadcrumb":{"@id":"#breadcrumb"},"inLanguage":"en-US"},{"@type":"BreadcrumbList","@id":"#breadcrumb","itemListElement":[{"@type":"ListItem","position":1,"name":"Home","item":"https:\/\/animeflv.or.at\/"},{"@type":"ListItem","position":2,"name":"You searched for tensei"}]},{"@type":"WebSite","@id":"https:\/\/animeflv.or.at\/#website","url":"https:\/\/animeflv.or.at\/","name":"AnimeFLV","description":"","publisher":{"@id":"https:\/\/animeflv.or.at\/#organization"},"potentialAction":[{"@type":"SearchAction","target":{"@type":"EntryPoint","urlTemplate":"https:\/\/animeflv.or.at\/?s={search_term_string}"},"query-input":{"@type":"PropertyValueSpecification","valueRequired":true,"valueName":"search_term_string"}}],"inLanguage":"en-US"},{"@type":"Organization","@id":"https:\/\/animeflv.or.at\/#organization","name":"AnimeFLV","url":"https:\/\/animeflv.or.at\/","logo":{"@type":"ImageObject","inLanguage":"en-US","@id":"https:\/\/animeflv.or.at\/#\/schema\/logo\/image\/","url":"https:\/\/animeflv.or.at\/wp-content\/uploads\/2026\/06\/cropped-animeflv-logo-new.jpg","contentUrl":"https:\/\/animeflv.or.at\/wp-content\/uploads\/2026\/06\/cropped-animeflv-logo-new.jpg","width":512,"height":512,"caption":"AnimeFLV"},"image":{"@id":"https:\/\/animeflv.or.at\/#\/schema\/logo\/image\/"},"sameAs":["https:\/\/x.com\/animeflv519","https:\/\/github.com\/animeflv519","https:\/\/www.pinterest.com\/Officialanimeflv\/"]}]}</script>
+	<!-- / Yoast SEO plugin. -->
 
 
+<link rel='dns-prefetch' href='//fonts.googleapis.com' />
+<link rel="alternate" type="application/rss+xml" title="AnimeFLV &raquo; Feed" href="https://animeflv.or.at/feed/" />
+<link rel="alternate" type="application/rss+xml" title="AnimeFLV &raquo; Comments Feed" href="https://animeflv.or.at/comments/feed/" />
+<link rel="alternate" type="application/rss+xml" title="AnimeFLV &raquo; Search Results for &#8220;tensei&#8221; Feed" href="https://animeflv.or.at/search/tensei/feed/rss2/" />
 
+<style id="wp-block-library-inline-css">
+:root{--wp-block-synced-color:#7a00df;--wp-block-synced-color--rgb:122,0,223;--wp-bound-block-color:var(--wp-block-synced-color);--wp-editor-canvas-background:#ddd;--wp-admin-theme-color:#007cba;--wp-admin-theme-color--rgb:0,124,186;--wp-admin-theme-color-darker-10:#006ba1;--wp-admin-theme-color-darker-10--rgb:0,107,160.5;--wp-admin-theme-color-darker-20:#005a87;--wp-admin-theme-color-darker-20--rgb:0,90,135;--wp-admin-border-width-focus:2px}@media (min-resolution:192dpi){:root{--wp-admin-border-width-focus:1.5px}}.wp-element-button{cursor:pointer}:root .has-very-light-gray-background-color{background-color:#eee}:root .has-very-dark-gray-background-color{background-color:#313131}:root .has-very-light-gray-color{color:#eee}:root .has-very-dark-gray-color{color:#313131}:root .has-vivid-green-cyan-to-vivid-cyan-blue-gradient-background{background:linear-gradient(135deg,#00d084,#0693e3)}:root .has-purple-crush-gradient-background{background:linear-gradient(135deg,#34e2e4,#4721fb 50%,#ab1dfe)}:root .has-hazy-dawn-gradient-background{background:linear-gradient(135deg,#faaca8,#dad0ec)}:root .has-subdued-olive-gradient-background{background:linear-gradient(135deg,#fafae1,#67a671)}:root .has-atomic-cream-gradient-background{background:linear-gradient(135deg,#fdd79a,#004a59)}:root .has-nightshade-gradient-background{background:linear-gradient(135deg,#330968,#31cdcf)}:root .has-midnight-gradient-background{background:linear-gradient(135deg,#020381,#2874fc)}:root{--wp--preset--font-size--normal:16px;--wp--preset--font-size--huge:42px}.has-regular-font-size{font-size:1em}.has-larger-font-size{font-size:2.625em}.has-normal-font-size{font-size:var(--wp--preset--font-size--normal)}.has-huge-font-size{font-size:var(--wp--preset--font-size--huge)}:root .has-text-align-center{text-align:center}:root .has-text-align-left{text-align:left}:root .has-text-align-right{text-align:right}.has-fit-text{white-space:nowrap!important}#end-resizable-editor-section{display:none}.aligncenter{clear:both}.items-justified-left{justify-content:flex-start}.items-justified-center{justify-content:center}.items-justified-right{justify-content:flex-end}.items-justified-space-between{justify-content:space-between}.screen-reader-text{word-wrap:normal!important;border:0;clip-path:inset(50%);height:1px;margin:-1px;overflow:hidden;padding:0;position:absolute;width:1px;word-break:normal!important}.screen-reader-text:focus{background-color:#ddd;clip-path:none;color:#444;display:block;font-size:1em;height:auto;left:5px;line-height:normal;padding:15px 23px 14px;text-decoration:none;top:5px;width:auto;z-index:100000}html :where(.has-border-color){border-style:solid}html :where([style^=border-color],[style*=";border-color"],[style*="; border-color"]){border-style:solid}html :where([style^=border-top-color],[style*=";border-top-color"],[style*="; border-top-color"]){border-top-style:solid}html :where([style^=border-right-color],[style*=";border-right-color"],[style*="; border-right-color"]){border-right-style:solid}html :where([style^=border-bottom-color],[style*=";border-bottom-color"],[style*="; border-bottom-color"]){border-bottom-style:solid}html :where([style^=border-left-color],[style*=";border-left-color"],[style*="; border-left-color"]){border-left-style:solid}html :where([style^=border-width],[style*=";border-width"],[style*="; border-width"]){border-style:solid}html :where([style^=border-top-width],[style*=";border-top-width"],[style*="; border-top-width"]){border-top-style:solid}html :where([style^=border-right-width],[style*=";border-right-width"],[style*="; border-right-width"]){border-right-style:solid}html :where([style^=border-bottom-width],[style*=";border-bottom-width"],[style*="; border-bottom-width"]){border-bottom-style:solid}html :where([style^=border-left-width],[style*=";border-left-width"],[style*="; border-left-width"]){border-left-style:solid}html :where(img[class*=wp-image-]){height:auto;max-width:100%}:where(figure){margin:0 0 1em}html :where(.is-position-sticky){--wp-admin--admin-bar--position-offset:var(--wp-admin--admin-bar--height,0px)}@media screen and (max-width:600px){html :where(.is-position-sticky){--wp-admin--admin-bar--position-offset:0px}}
 
-<!--<all>-->
-<div class="Wrapper">
-    <!--<Header>-->
-    <header class="Header">    
-        
+/*# sourceURL=/wp-includes/css/dist/block-library/common.min.css */
+</style>
+<style id="classic-theme-styles-inline-css">
+/*! This file is auto-generated */
+.wp-block-button__link{color:#fff;background-color:#32373c;border-radius:9999px;box-shadow:none;text-decoration:none;padding:calc(.667em + 2px) calc(1.333em + 2px);font-size:1.125em}.wp-block-file__button{background:#32373c;color:#fff;text-decoration:none}
+/*# sourceURL=/wp-includes/css/classic-themes.min.css */
+</style>
 
+<style id="global-styles-inline-css">
+:root{--wp--preset--aspect-ratio--square: 1;--wp--preset--aspect-ratio--4-3: 4/3;--wp--preset--aspect-ratio--3-4: 3/4;--wp--preset--aspect-ratio--3-2: 3/2;--wp--preset--aspect-ratio--2-3: 2/3;--wp--preset--aspect-ratio--16-9: 16/9;--wp--preset--aspect-ratio--9-16: 9/16;--wp--preset--color--black: #000000;--wp--preset--color--cyan-bluish-gray: #abb8c3;--wp--preset--color--white: #ffffff;--wp--preset--color--pale-pink: #f78da7;--wp--preset--color--vivid-red: #cf2e2e;--wp--preset--color--luminous-vivid-orange: #ff6900;--wp--preset--color--luminous-vivid-amber: #fcb900;--wp--preset--color--light-green-cyan: #7bdcb5;--wp--preset--color--vivid-green-cyan: #00d084;--wp--preset--color--pale-cyan-blue: #8ed1fc;--wp--preset--color--vivid-cyan-blue: #0693e3;--wp--preset--color--vivid-purple: #9b51e0;--wp--preset--gradient--vivid-cyan-blue-to-vivid-purple: linear-gradient(135deg,rgb(6,147,227) 0%,rgb(155,81,224) 100%);--wp--preset--gradient--light-green-cyan-to-vivid-green-cyan: linear-gradient(135deg,rgb(122,220,180) 0%,rgb(0,208,130) 100%);--wp--preset--gradient--luminous-vivid-amber-to-luminous-vivid-orange: linear-gradient(135deg,rgb(252,185,0) 0%,rgb(255,105,0) 100%);--wp--preset--gradient--luminous-vivid-orange-to-vivid-red: linear-gradient(135deg,rgb(255,105,0) 0%,rgb(207,46,46) 100%);--wp--preset--gradient--very-light-gray-to-cyan-bluish-gray: linear-gradient(135deg,rgb(238,238,238) 0%,rgb(169,184,195) 100%);--wp--preset--gradient--cool-to-warm-spectrum: linear-gradient(135deg,rgb(74,234,220) 0%,rgb(151,120,209) 20%,rgb(207,42,186) 40%,rgb(238,44,130) 60%,rgb(251,105,98) 80%,rgb(254,248,76) 100%);--wp--preset--gradient--blush-light-purple: linear-gradient(135deg,rgb(255,206,236) 0%,rgb(152,150,240) 100%);--wp--preset--gradient--blush-bordeaux: linear-gradient(135deg,rgb(254,205,165) 0%,rgb(254,45,45) 50%,rgb(107,0,62) 100%);--wp--preset--gradient--luminous-dusk: linear-gradient(135deg,rgb(255,203,112) 0%,rgb(199,81,192) 50%,rgb(65,88,208) 100%);--wp--preset--gradient--pale-ocean: linear-gradient(135deg,rgb(255,245,203) 0%,rgb(182,227,212) 50%,rgb(51,167,181) 100%);--wp--preset--gradient--electric-grass: linear-gradient(135deg,rgb(202,248,128) 0%,rgb(113,206,126) 100%);--wp--preset--gradient--midnight: linear-gradient(135deg,rgb(2,3,129) 0%,rgb(40,116,252) 100%);--wp--preset--font-size--small: 13px;--wp--preset--font-size--medium: 20px;--wp--preset--font-size--large: 36px;--wp--preset--font-size--x-large: 42px;--wp--preset--spacing--20: 0.44rem;--wp--preset--spacing--30: 0.67rem;--wp--preset--spacing--40: 1rem;--wp--preset--spacing--50: 1.5rem;--wp--preset--spacing--60: 2.25rem;--wp--preset--spacing--70: 3.38rem;--wp--preset--spacing--80: 5.06rem;--wp--preset--shadow--natural: 6px 6px 9px rgba(0, 0, 0, 0.2);--wp--preset--shadow--deep: 12px 12px 50px rgba(0, 0, 0, 0.4);--wp--preset--shadow--sharp: 6px 6px 0px rgba(0, 0, 0, 0.2);--wp--preset--shadow--outlined: 6px 6px 0px -3px rgb(255, 255, 255), 6px 6px rgb(0, 0, 0);--wp--preset--shadow--crisp: 6px 6px 0px rgb(0, 0, 0);}.wp-block-button{--wp--preset--dimension--25: 25%;--wp--preset--dimension--50: 50%;--wp--preset--dimension--75: 75%;--wp--preset--dimension--100: 100%;}:where(body) { margin: 0; }:where(.is-layout-flex){gap: 0.5em;}:where(.is-layout-grid){gap: 0.5em;}body .is-layout-flex{display: flex;}.is-layout-flex{flex-wrap: wrap;align-items: center;}.is-layout-flex > :is(*, div){margin: 0;}body .is-layout-grid{display: grid;}.is-layout-grid > :is(*, div){margin: 0;}body{padding-top: 0px;padding-right: 0px;padding-bottom: 0px;padding-left: 0px;}:root :where(.wp-element-button, .wp-block-button__link){background-color: #32373c;border-width: 0;color: #fff;font-family: inherit;font-size: inherit;font-style: inherit;font-weight: inherit;letter-spacing: inherit;line-height: inherit;padding-top: calc(0.667em + 2px);padding-right: calc(1.333em + 2px);padding-bottom: calc(0.667em + 2px);padding-left: calc(1.333em + 2px);text-decoration: none;text-transform: inherit;}.has-black-color{color: var(--wp--preset--color--black) !important;}.has-cyan-bluish-gray-color{color: var(--wp--preset--color--cyan-bluish-gray) !important;}.has-white-color{color: var(--wp--preset--color--white) !important;}.has-pale-pink-color{color: var(--wp--preset--color--pale-pink) !important;}.has-vivid-red-color{color: var(--wp--preset--color--vivid-red) !important;}.has-luminous-vivid-orange-color{color: var(--wp--preset--color--luminous-vivid-orange) !important;}.has-luminous-vivid-amber-color{color: var(--wp--preset--color--luminous-vivid-amber) !important;}.has-light-green-cyan-color{color: var(--wp--preset--color--light-green-cyan) !important;}.has-vivid-green-cyan-color{color: var(--wp--preset--color--vivid-green-cyan) !important;}.has-pale-cyan-blue-color{color: var(--wp--preset--color--pale-cyan-blue) !important;}.has-vivid-cyan-blue-color{color: var(--wp--preset--color--vivid-cyan-blue) !important;}.has-vivid-purple-color{color: var(--wp--preset--color--vivid-purple) !important;}.has-black-background-color{background-color: var(--wp--preset--color--black) !important;}.has-cyan-bluish-gray-background-color{background-color: var(--wp--preset--color--cyan-bluish-gray) !important;}.has-white-background-color{background-color: var(--wp--preset--color--white) !important;}.has-pale-pink-background-color{background-color: var(--wp--preset--color--pale-pink) !important;}.has-vivid-red-background-color{background-color: var(--wp--preset--color--vivid-red) !important;}.has-luminous-vivid-orange-background-color{background-color: var(--wp--preset--color--luminous-vivid-orange) !important;}.has-luminous-vivid-amber-background-color{background-color: var(--wp--preset--color--luminous-vivid-amber) !important;}.has-light-green-cyan-background-color{background-color: var(--wp--preset--color--light-green-cyan) !important;}.has-vivid-green-cyan-background-color{background-color: var(--wp--preset--color--vivid-green-cyan) !important;}.has-pale-cyan-blue-background-color{background-color: var(--wp--preset--color--pale-cyan-blue) !important;}.has-vivid-cyan-blue-background-color{background-color: var(--wp--preset--color--vivid-cyan-blue) !important;}.has-vivid-purple-background-color{background-color: var(--wp--preset--color--vivid-purple) !important;}.has-black-border-color{border-color: var(--wp--preset--color--black) !important;}.has-cyan-bluish-gray-border-color{border-color: var(--wp--preset--color--cyan-bluish-gray) !important;}.has-white-border-color{border-color: var(--wp--preset--color--white) !important;}.has-pale-pink-border-color{border-color: var(--wp--preset--color--pale-pink) !important;}.has-vivid-red-border-color{border-color: var(--wp--preset--color--vivid-red) !important;}.has-luminous-vivid-orange-border-color{border-color: var(--wp--preset--color--luminous-vivid-orange) !important;}.has-luminous-vivid-amber-border-color{border-color: var(--wp--preset--color--luminous-vivid-amber) !important;}.has-light-green-cyan-border-color{border-color: var(--wp--preset--color--light-green-cyan) !important;}.has-vivid-green-cyan-border-color{border-color: var(--wp--preset--color--vivid-green-cyan) !important;}.has-pale-cyan-blue-border-color{border-color: var(--wp--preset--color--pale-cyan-blue) !important;}.has-vivid-cyan-blue-border-color{border-color: var(--wp--preset--color--vivid-cyan-blue) !important;}.has-vivid-purple-border-color{border-color: var(--wp--preset--color--vivid-purple) !important;}.has-vivid-cyan-blue-to-vivid-purple-gradient-background{background: var(--wp--preset--gradient--vivid-cyan-blue-to-vivid-purple) !important;}.has-light-green-cyan-to-vivid-green-cyan-gradient-background{background: var(--wp--preset--gradient--light-green-cyan-to-vivid-green-cyan) !important;}.has-luminous-vivid-amber-to-luminous-vivid-orange-gradient-background{background: var(--wp--preset--gradient--luminous-vivid-amber-to-luminous-vivid-orange) !important;}.has-luminous-vivid-orange-to-vivid-red-gradient-background{background: var(--wp--preset--gradient--luminous-vivid-orange-to-vivid-red) !important;}.has-very-light-gray-to-cyan-bluish-gray-gradient-background{background: var(--wp--preset--gradient--very-light-gray-to-cyan-bluish-gray) !important;}.has-cool-to-warm-spectrum-gradient-background{background: var(--wp--preset--gradient--cool-to-warm-spectrum) !important;}.has-blush-light-purple-gradient-background{background: var(--wp--preset--gradient--blush-light-purple) !important;}.has-blush-bordeaux-gradient-background{background: var(--wp--preset--gradient--blush-bordeaux) !important;}.has-luminous-dusk-gradient-background{background: var(--wp--preset--gradient--luminous-dusk) !important;}.has-pale-ocean-gradient-background{background: var(--wp--preset--gradient--pale-ocean) !important;}.has-electric-grass-gradient-background{background: var(--wp--preset--gradient--electric-grass) !important;}.has-midnight-gradient-background{background: var(--wp--preset--gradient--midnight) !important;}.has-small-font-size{font-size: var(--wp--preset--font-size--small) !important;}.has-medium-font-size{font-size: var(--wp--preset--font-size--medium) !important;}.has-large-font-size{font-size: var(--wp--preset--font-size--large) !important;}.has-x-large-font-size{font-size: var(--wp--preset--font-size--x-large) !important;}
+/*# sourceURL=global-styles-inline-css */
+</style>
 
-        <div class="Mid">
-            <div class="Container">
-
-
-                
-
-                <div class="AX Row AFluid">
-                    <div class="Logo">
-                        <a href="/"><img src="/assets/animeflv/img/logo.png?v=2.3" alt="AnimeFLV"></a>
-                    </div>
-                    <div class="AFixed">
-                        <input type="checkbox" hidden="hidden" id="BtnMenu">
-                        <label for="BtnMenu" class="BtnMenu fa-bars"><span>MENU</span></label>
-                        <nav class="CX Row">
-                            <input type="checkbox" hidden="hidden" id="Hd-Search">
-                            <div class="Search"> <!-- Agrega la class "On" para mostrar los resultados -->
-                                <form action="/browse" method="get">
-                                    <input name="q" type="text" id="search-anime" autocomplete="off" placeholder="Buscar...">
-                                    <button><i class="fa-search"></i></button>
-                                </form>
-                                <div class="DpdwCnt TtCn">
-                                    <ul class="ListResult"></ul>
-                                </div>
-                            </div>
-
-                                                            <div class="Login">
-                                    <input type="checkbox" hidden="hidden" id="DpdwLnk-Login">
-                                    <label for="DpdwLnk-Login" class="Button"><span class="fa-user">Login</span></label>
-                                    <div class="DpdwCnt TtCn">
-                                        <div class="Title">INICIAR SESION</div>
-
-
-                                        <form action="/auth/sign_in" class="form-horizontal" method="POST">                                            <label class="Form-Icon Right">
-                                                <input name="email" type="text" placeholder="E-Mail">
-                                                <i class="fa-user"></i>
-                                            </label>
-                                            <label class="Form-Icon Right">
-                                                <input name="password" type="password" placeholder="Contraseña">
-                                                <input type="hidden" name="remember_me" value="1">
-                                                <i class="fa-lock"></i>
-                                            </label>
-                                            <button type="submit">INICIAR SESIÓN</button>
-                                            <a href="/auth/facebook/sign_in" rel="nofollow" class="Button fb_login"><span class="fa-facebook">INICIAR SESION CON FB</span></a>
-                                            <div class="Links">
-                                                <a href="/auth/sign_up" rel="nofollow">Registrate</a>
-                                                <a href="/auth/password/new" rel="nofollow">¿Olvidaste tu contraseña?</a>
-                                            </div>
-                                        </form>                                    </div>
-                                </div>
-                                                        <ul class="Menu">
-                                <li><a href="/">Inicio</a></li>
-                             
-                                <li class="Current"><a href="/browse">Directorio Anime</a></li>
-								
-								
-                                
-                            </ul>
-                            <!--<ul class="ListSocial BFixed">
-                                <li><a href="https://www.facebook.com/armyanime.jp"  rel="nofollow" target="_blank" class="fa-facebook"></a></li>
-                            </ul>-->
-                        </nav>
-                    </div>
-                </div>
-            </div>
-        </div>
-        
-    </header>
-
-	
-	<!--<a class="lvbx" href="https://www.tiktok.com/@kotorihikari/live" target="_blank" rel="noreferrer noopener"><span>Kotori Hikari en TIKTOK</span> está en vivo <i class="lvic"></i></a>-->
-    <!--<Body>-->
-
-    <div class="Body">
-        
-<div class="Container">
-    <div class="Title Page fa-star B12">
-        <h1>Lista completa de Animes</h1>
-    </div>
-
-    <main class="Main">
-        <!-- FILTERS -->
-        <form action="/browse" method="get">
-        <div class="filters" style="margin-bottom: 10px;">
-            <span class="multiselect-native-select"><select name="genre[]" id="genre_select" multiple="multiple">
-                <option value="accion">Acción</option><option value="artes-marciales">Artes Marciales</option><option value="aventura">Aventuras</option><option value="carreras">Carreras</option><option value="ciencia-ficcion">Ciencia Ficción</option><option value="comedia">Comedia</option><option value="demencia">Demencia</option><option value="demonios">Demonios</option><option value="deportes">Deportes</option><option value="drama">Drama</option><option value="ecchi">Ecchi</option><option value="escolares">Escolares</option><option value="espacial">Espacial</option><option value="fantasia">Fantasía</option><option value="harem">Harem</option><option value="historico">Historico</option><option value="infantil">Infantil</option><option value="josei">Josei</option><option value="juegos">Juegos</option><option value="magia">Magia</option><option value="mecha">Mecha</option><option value="militar">Militar</option><option value="misterio">Misterio</option><option value="musica">Música</option><option value="parodia">Parodia</option><option value="policia">Policía</option><option value="psicologico">Psicológico</option><option value="recuentos-de-la-vida">Recuentos de la vida</option><option value="romance">Romance</option><option value="samurai">Samurai</option><option value="seinen">Seinen</option><option value="shoujo">Shoujo</option><option value="shounen">Shounen</option><option value="sobrenatural">Sobrenatural</option><option value="superpoderes">Superpoderes</option><option value="suspenso">Suspenso</option><option value="terror">Terror</option><option value="vampiros">Vampiros</option><option value="yaoi">Yaoi</option><option value="yuri">Yuri</option>            </select><div class="btn-group"><button type="button" class="multiselect dropdown-toggle btn btn-sm btn-default" data-toggle="dropdown" title="None selected"><span class="multiselect-selected-text"><b>Genero:</b> Todos</span> <b class="caret"></b></button><ul class="multiselect-container genres-select dropdown-menu"><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="accion"> Acción</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="artes-marciales"> Artes Marciales</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="aventura"> Aventuras</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="carreras"> Carreras</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="ciencia-ficcion"> Ciencia Ficción</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="comedia"> Comedia</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="demencia"> Demencia</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="demonios"> Demonios</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="deportes"> Deportes</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="drama"> Drama</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="ecchi"> Ecchi</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="escolares"> Escolares</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="espacial"> Espacial</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="fantasia"> Fantasía</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="harem"> Harem</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="historico"> Historico</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="infantil"> Infantil</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="josei"> Josei</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="juegos"> Juegos</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="magia"> Magia</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="mecha"> Mecha</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="militar"> Militar</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="misterio"> Misterio</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="musica"> Música</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="parodia"> Parodia</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="policia"> Policía</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="psicologico"> Psicológico</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="recuentos-de-la-vida"> Recuentos de la vida</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="romance"> Romance</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="samurai"> Samurai</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="seinen"> Seinen</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="shoujo"> Shoujo</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="shounen"> Shounen</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="sobrenatural"> Sobrenatural</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="superpoderes"> Superpoderes</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="suspenso"> Suspenso</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="terror"> Terror</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="vampiros"> Vampiros</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="yaoi"> Yaoi</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="yuri"> Yuri</label></a></li></ul></div></span>
-
-            <span class="multiselect-native-select"><select name="year[]" id="year_select" multiple="multiple">
-                <option value="2026">2026</option><option value="2025">2025</option><option value="2024">2024</option><option value="2023">2023</option><option value="2022">2022</option><option value="2021">2021</option><option value="2020">2020</option><option value="2019">2019</option><option value="2018">2018</option><option value="2017">2017</option><option value="2016">2016</option><option value="2015">2015</option><option value="2014">2014</option><option value="2013">2013</option><option value="2012">2012</option><option value="2011">2011</option><option value="2010">2010</option><option value="2009">2009</option><option value="2008">2008</option><option value="2007">2007</option><option value="2006">2006</option><option value="2005">2005</option><option value="2004">2004</option><option value="2003">2003</option><option value="2002">2002</option><option value="2001">2001</option><option value="2000">2000</option><option value="1999">1999</option><option value="1998">1998</option><option value="1997">1997</option><option value="1996">1996</option><option value="1995">1995</option><option value="1994">1994</option><option value="1993">1993</option><option value="1992">1992</option><option value="1991">1991</option><option value="1990">1990</option>            </select><div class="btn-group"><button type="button" class="multiselect dropdown-toggle btn btn-sm btn-default" data-toggle="dropdown" title="None selected"><span class="multiselect-selected-text"><b>Año:</b> Todos</span> <b class="caret"></b></button><ul class="multiselect-container year-select dropdown-menu"><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="2026"> 2026</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="2025"> 2025</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="2024"> 2024</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="2023"> 2023</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="2022"> 2022</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="2021"> 2021</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="2020"> 2020</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="2019"> 2019</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="2018"> 2018</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="2017"> 2017</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="2016"> 2016</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="2015"> 2015</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="2014"> 2014</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="2013"> 2013</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="2012"> 2012</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="2011"> 2011</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="2010"> 2010</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="2009"> 2009</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="2008"> 2008</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="2007"> 2007</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="2006"> 2006</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="2005"> 2005</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="2004"> 2004</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="2003"> 2003</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="2002"> 2002</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="2001"> 2001</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="2000"> 2000</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="1999"> 1999</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="1998"> 1998</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="1997"> 1997</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="1996"> 1996</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="1995"> 1995</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="1994"> 1994</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="1993"> 1993</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="1992"> 1992</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="1991"> 1991</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="1990"> 1990</label></a></li></ul></div></span>
-
-            <span class="multiselect-native-select"><select name="type[]" id="type_select" multiple="multiple">
-                <option value="tv">TV</option>
-                <option value="movie">Película</option>
-                <option value="special">Especial</option>
-                <option value="ova">OVA</option>
-            </select><div class="btn-group"><button type="button" class="multiselect dropdown-toggle btn btn-sm btn-default" data-toggle="dropdown" title="None selected"><span class="multiselect-selected-text"><b>Tipo:</b> Todos</span> <b class="caret"></b></button><ul class="multiselect-container dropdown-menu"><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="tv"> TV</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="movie"> Película</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="special"> Especial</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="ova"> OVA</label></a></li></ul></div></span>
-
-            <span class="multiselect-native-select"><select name="status[]" id="status_select" multiple="multiple">
-                <option value="1">En emisión</option>
-                <option value="2">Finalizado</option>
-                <option value="3">Próximamente</option>
-            </select><div class="btn-group"><button type="button" class="multiselect dropdown-toggle btn btn-sm btn-default" data-toggle="dropdown" title="None selected"><span class="multiselect-selected-text"><b>Estado:</b> Todos</span> <b class="caret"></b></button><ul class="multiselect-container dropdown-menu"><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="1"> En emisión</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="2"> Finalizado</label></a></li><li><a tabindex="0"><label class="checkbox"><input type="checkbox" value="3"> Próximamente</label></a></li></ul></div></span>
-
-            <span class="multiselect-native-select"><select name="order" id="order_select">
-                <option value="default">Por Defecto</option>
-                <option value="updated">Recientemente Actualizados</option>
-                <option value="added">Recientemente Agregados</option>
-                <option value="title">Nombre A-Z</option>
-                <option value="rating">Calificación</option>
-            </select><div class="btn-group"><button type="button" class="multiselect dropdown-toggle btn btn-sm btn-default" data-toggle="dropdown" title="Por Defecto"><span class="multiselect-selected-text"><b>Orden:</b> Por Defecto</span> <b class="caret"></b></button><ul class="multiselect-container dropdown-menu"><li class="active"><a tabindex="0"><label class="radio"><input type="radio" value="default"> Por Defecto</label></a></li><li><a tabindex="0"><label class="radio"><input type="radio" value="updated"> Recientemente Actualizados</label></a></li><li><a tabindex="0"><label class="radio"><input type="radio" value="added"> Recientemente Agregados</label></a></li><li><a tabindex="0"><label class="radio"><input type="radio" value="title"> Nombre A-Z</label></a></li><li><a tabindex="0"><label class="radio"><input type="radio" value="rating"> Calificación</label></a></li></ul></div></span>
-
-            <button type="submit" class="btn btn-sm btn-primary">
-                <span class="fa fa-filter" aria-hidden="true"></span> Filtrar
-            </button>
-        </div>
-        </form>
-        <!-- FILTERS -->
-
-                <!--<Animes>-->
-        <ul class="ListAnimes AX Rows A03 C02 D02">
-                            <li>
-                    <article class="Anime alt B">
-                        <a href="/anime/naruto">
-                            <div class="Image fa-play-circle-o">
-                                <figure><img src="https://animeflv.net/uploads/animes/covers/2.jpg" alt="Naruto"></figure>
-                                <span class="Type tv">Anime</span>
-                            </div>
-                            <h3 class="Title">Naruto</h3>
-                        </a>
-                        <div class="Description">
-                            <div class="Title"><strong>Naruto</strong></div>
-                            <p><span class="Type tv">Anime</span> <span class="Vts fa-star">4.6</span></p>
-                            <p>Naruto, un aprendiz de ninja de la Aldea Oculta de Konoha es un chico travieso que desea llegar a ser el Hokage de la aldea para demostrar a todos lo que vale. Lo que descubre al inicio de la historia es que la gente le mira con desconfianza porque en su interior está encerrado el demonio Kyubi que una vez destruyó la aldea, y que el ...</p>
-                            <span class="Flwrs fa-user"><span>29991</span> Seguidores</span>
-                            <a class="Button Vrnmlk" href="/anime/naruto">VER ANIME</a>
-                        </div>
-                    </article>
-                </li>
-                            <li>
-                    <article class="Anime alt B">
-                        <a href="/anime/naruto-shippuden-road-to-ninja">
-                            <div class="Image fa-play-circle-o">
-                                <figure><img src="https://animeflv.net/uploads/animes/covers/984.jpg" alt="Naruto Shippuden: Road to Ninja"></figure>
-                                <span class="Type movie">Película</span>
-                            </div>
-                            <h3 class="Title">Naruto Shippuden: Road to Ninja</h3>
-                        </a>
-                        <div class="Description">
-                            <div class="Title"><strong>Naruto Shippuden: Road to Ninja</strong></div>
-                            <p><span class="Type movie">Película</span> <span class="Vts fa-star">4.1</span></p>
-                            <p>Hace dieciséis años, una bestia demonio gigante conocido como el Zorro de Nueve Colas fue liberado de su jinchūriki por un desconocido ninja enmascarado. La aldea de Konoha estaba cerca de la destrucción por el ataque de las Nueve Colas, pero el pueblo fue salvado por su líder. Minato Namikaze y su esposa Kushina Uzumaki "quién era el jin...</p>
-                            <span class="Flwrs fa-user"><span>2834</span> Seguidores</span>
-                            <a class="Button Vrnmlk" href="/anime/naruto-shippuden-road-to-ninja">VER ANIME</a>
-                        </div>
-                    </article>
-                </li>
-                            <li>
-                    <article class="Anime alt B">
-                        <a href="/anime/naruto-shippuden-hd">
-                            <div class="Image fa-play-circle-o">
-                                <figure><img src="https://animeflv.net/uploads/animes/covers/3.jpg" alt="Naruto Shippuden"></figure>
-                                <span class="Type tv">Anime</span>
-                            </div>
-                            <h3 class="Title">Naruto Shippuden</h3>
-                        </a>
-                        <div class="Description">
-                            <div class="Title"><strong>Naruto Shippuden</strong></div>
-                            <p><span class="Type tv">Anime</span> <span class="Vts fa-star">4.6</span></p>
-                            <p>Pasados dos años y medio de entrenamiento con Jiraiya, Naruto Uzumaki regresa a la aldea oculta de la hoja, donde se reúne con sus viejos amigos y conforma de nuevo el Equipo 7. Debido a la ausencia de Sasuke, aparece un nuevo personaje llamado Sai el cual retoma su lugar.
-
-En esta secuela podremos notar como los compañeros de Naruto han madur...</p>
-                            <span class="Flwrs fa-user"><span>53624</span> Seguidores</span>
-                            <a class="Button Vrnmlk" href="/anime/naruto-shippuden-hd">VER ANIME</a>
-                        </div>
-                    </article>
-                </li>
-                            <li>
-                    <article class="Anime alt B">
-                        <a href="/anime/boruto-naruto-the-movie-naruto-ga-hokage-ni-natta-hi">
-                            <div class="Image fa-play-circle-o">
-                                <figure><img src="https://animeflv.net/uploads/animes/covers/2526.jpg" alt="Boruto: Naruto the Movie Naruto ga Hokage ni Natta Hi"></figure>
-                                <span class="Type ova">OVA</span>
-                            </div>
-                            <h3 class="Title">Boruto: Naruto the Movie Naruto ga Hokage ni Natta Hi</h3>
-                        </a>
-                        <div class="Description">
-                            <div class="Title"><strong>Boruto: Naruto the Movie Naruto ga Hokage ni Natta Hi</strong></div>
-                            <p><span class="Type ova">OVA</span> <span class="Vts fa-star">4.1</span></p>
-                            <p></p>
-                            <span class="Flwrs fa-user"><span>1737</span> Seguidores</span>
-                            <a class="Button Vrnmlk" href="/anime/boruto-naruto-the-movie-naruto-ga-hokage-ni-natta-hi">VER ANIME</a>
-                        </div>
-                    </article>
-                </li>
-                            <li>
-                    <article class="Anime alt B">
-                        <a href="/anime/naruto-shippuden-blood-prison">
-                            <div class="Image fa-play-circle-o">
-                                <figure><img src="https://animeflv.net/uploads/animes/covers/795.jpg" alt="Naruto Shippuden: Blood Prison"></figure>
-                                <span class="Type movie">Película</span>
-                            </div>
-                            <h3 class="Title">Naruto Shippuden: Blood Prison</h3>
-                        </a>
-                        <div class="Description">
-                            <div class="Title"><strong>Naruto Shippuden: Blood Prison</strong></div>
-                            <p><span class="Type movie">Película</span> <span class="Vts fa-star">4.2</span></p>
-                            <p>Después de ser capturado por el intento de asesinar al líder de Kumogakure, el Raikage, y el asesinato de varios Jonin de Kirigakure y Iwagakure, Naruto es encarcelado en Hōzukijou, una instalación de contención penal también conocida como la prisión de la sangre. El capitán del castillo, Mui, usa el jutsu de prisión máxima para robar...</p>
-                            <span class="Flwrs fa-user"><span>2277</span> Seguidores</span>
-                            <a class="Button Vrnmlk" href="/anime/naruto-shippuden-blood-prison">VER ANIME</a>
-                        </div>
-                    </article>
-                </li>
-                            <li>
-                    <article class="Anime alt B">
-                        <a href="/anime/boruto-naruto-the-movie">
-                            <div class="Image fa-play-circle-o">
-                                <figure><img src="https://animeflv.net/uploads/animes/covers/1976.jpg" alt="Boruto: Naruto the Movie"></figure>
-                                <span class="Type movie">Película</span>
-                            </div>
-                            <h3 class="Title">Boruto: Naruto the Movie</h3>
-                        </a>
-                        <div class="Description">
-                            <div class="Title"><strong>Boruto: Naruto the Movie</strong></div>
-                            <p><span class="Type movie">Película</span> <span class="Vts fa-star">4.2</span></p>
-                            <p></p>
-                            <span class="Flwrs fa-user"><span>2664</span> Seguidores</span>
-                            <a class="Button Vrnmlk" href="/anime/boruto-naruto-the-movie">VER ANIME</a>
-                        </div>
-                    </article>
-                </li>
-                            <li>
-                    <article class="Anime alt B">
-                        <a href="/anime/naruto-shippuden-peliculas">
-                            <div class="Image fa-play-circle-o">
-                                <figure><img src="https://animeflv.net/uploads/animes/covers/403.jpg" alt="Naruto Shippuden Pelicula"></figure>
-                                <span class="Type movie">Película</span>
-                            </div>
-                            <h3 class="Title">Naruto Shippuden Pelicula</h3>
-                        </a>
-                        <div class="Description">
-                            <div class="Title"><strong>Naruto Shippuden Pelicula</strong></div>
-                            <p><span class="Type movie">Película</span> <span class="Vts fa-star">4.3</span></p>
-                            <p>Les dejamos la ultima sinopsis de The Lost Tower:
-Tsunade asigna una nueva misión a Naruto, Sakura y Yamato para perseguir y atrapar al ninja desertor Mukade, "el grupo de Kakashi" emprende su viaje a las ruinas históricas de ?Ouran? situada en el país de la Arena. El objetivo se encuentra dentro de las ruinas, Naruto entra en las ruinas para c...</p>
-                            <span class="Flwrs fa-user"><span>1602</span> Seguidores</span>
-                            <a class="Button Vrnmlk" href="/anime/naruto-shippuden-peliculas">VER ANIME</a>
-                        </div>
-                    </article>
-                </li>
-                            <li>
-                    <article class="Anime alt B">
-                        <a href="/anime/boruto-naruto-next-generations-tv">
-                            <div class="Image fa-play-circle-o">
-                                <figure><img src="https://animeflv.net/uploads/animes/covers/2702.jpg" alt="Boruto: Naruto Next Generations"></figure>
-                                <span class="Type tv">Anime</span>
-                            </div>
-                            <h3 class="Title">Boruto: Naruto Next Generations</h3>
-                        </a>
-                        <div class="Description">
-                            <div class="Title"><strong>Boruto: Naruto Next Generations</strong></div>
-                            <p><span class="Type tv">Anime</span> <span class="Vts fa-star">4.1</span></p>
-                            <p>Esta es una secuela de las series de Naruto, la cual sigue la historia de Boruto el hijo de Naruto.
-
-La aldea oculta de la hoja ha continuado su moderinización pero siempre manateniendo la paz. Carros eléctricos recorren toda la ciudad conectada por distritos llenos de rascacielos con enormes monitores mostrando todo tipo de imágenes. En esta ...</p>
-                            <span class="Flwrs fa-user"><span>120940</span> Seguidores</span>
-                            <a class="Button Vrnmlk" href="/anime/boruto-naruto-next-generations-tv">VER ANIME</a>
-                        </div>
-                    </article>
-                </li>
-                            <li>
-                    <article class="Anime alt B">
-                        <a href="/anime/naruto-shippuden-sunny-side-battle">
-                            <div class="Image fa-play-circle-o">
-                                <figure><img src="https://animeflv.net/uploads/animes/covers/1685.jpg" alt="Naruto Shippuden Sunny Side Battle"></figure>
-                                <span class="Type ova">OVA</span>
-                            </div>
-                            <h3 class="Title">Naruto Shippuden Sunny Side Battle</h3>
-                        </a>
-                        <div class="Description">
-                            <div class="Title"><strong>Naruto Shippuden Sunny Side Battle</strong></div>
-                            <p><span class="Type ova">OVA</span> <span class="Vts fa-star">4.2</span></p>
-                            <p></p>
-                            <span class="Flwrs fa-user"><span>1073</span> Seguidores</span>
-                            <a class="Button Vrnmlk" href="/anime/naruto-shippuden-sunny-side-battle">VER ANIME</a>
-                        </div>
-                    </article>
-                </li>
-                            <li>
-                    <article class="Anime alt B">
-                        <a href="/anime/naruto-shippuuden-movie-7-the-last">
-                            <div class="Image fa-play-circle-o">
-                                <figure><img src="https://animeflv.net/uploads/animes/covers/1809.jpg" alt="Naruto: Shippuuden Movie 7 - The Last"></figure>
-                                <span class="Type movie">Película</span>
-                            </div>
-                            <h3 class="Title">Naruto: Shippuuden Movie 7 - The Last</h3>
-                        </a>
-                        <div class="Description">
-                            <div class="Title"><strong>Naruto: Shippuuden Movie 7 - The Last</strong></div>
-                            <p><span class="Type movie">Película</span> <span class="Vts fa-star">4.4</span></p>
-                            <p></p>
-                            <span class="Flwrs fa-user"><span>3068</span> Seguidores</span>
-                            <a class="Button Vrnmlk" href="/anime/naruto-shippuuden-movie-7-the-last">VER ANIME</a>
-                        </div>
-                    </article>
-                </li>
-                            <li>
-                    <article class="Anime alt B">
-                        <a href="/anime/rock-lee-no-seishun">
-                            <div class="Image fa-play-circle-o">
-                                <figure><img src="https://animeflv.net/uploads/animes/covers/758.jpg" alt="Rock Lee no Seishun Full-Power Ninden"></figure>
-                                <span class="Type tv">Anime</span>
-                            </div>
-                            <h3 class="Title">Rock Lee no Seishun Full-Power Ninden</h3>
-                        </a>
-                        <div class="Description">
-                            <div class="Title"><strong>Rock Lee no Seishun Full-Power Ninden</strong></div>
-                            <p><span class="Type tv">Anime</span> <span class="Vts fa-star">4.4</span></p>
-                            <p>Pequeñas historias cortas protagonizadas por los personajes de NARUTO, principalmente por Rock Lee, con un estilo de humor en versión super deforme.</p>
-                            <span class="Flwrs fa-user"><span>2082</span> Seguidores</span>
-                            <a class="Button Vrnmlk" href="/anime/rock-lee-no-seishun">VER ANIME</a>
-                        </div>
-                    </article>
-                </li>
-                            <li>
-                    <article class="Anime alt B">
-                        <a href="/anime/honoo-no-chuunin-shiken-naruto-vs-konohamaru">
-                            <div class="Image fa-play-circle-o">
-                                <figure><img src="https://animeflv.net/uploads/animes/covers/797.jpg" alt="Honoo no Chuunin Shiken Naruto vs Konohamaru"></figure>
-                                <span class="Type ova">OVA</span>
-                            </div>
-                            <h3 class="Title">Honoo no Chuunin Shiken Naruto vs Konohamaru</h3>
-                        </a>
-                        <div class="Description">
-                            <div class="Title"><strong>Honoo no Chuunin Shiken Naruto vs Konohamaru</strong></div>
-                            <p><span class="Type ova">OVA</span> <span class="Vts fa-star">4.3</span></p>
-                            <p>Pendiente...</p>
-                            <span class="Flwrs fa-user"><span>1578</span> Seguidores</span>
-                            <a class="Button Vrnmlk" href="/anime/honoo-no-chuunin-shiken-naruto-vs-konohamaru">VER ANIME</a>
-                        </div>
-                    </article>
-                </li>
-                    </ul>
-        <!--</Animes>-->
-
-        <div class="NvCnAnm"><ul class="pagination"><li class="active"><a href="/browse?q=naruto&amp;page=1">1</a></li></ul></div>    </main>
-</div>
-
-    </div>
-    <!--</Body>-->
-
-    <!--<Footer>-->
-    <footer class="Footer">
-        <div class="Container">
-            <div class="BX Row BFluid Sp20 NMb">
-                <div>
-				<p>
-				  <span>Anime Online</span> - Ningún vídeo se encuentra alojado en nuestros servidores.
-				</p>
-<nav class="mnftxt">
-<a href="/condiciones-de-uso.html">Términos y Condiciones</a> 
-<a href="/politica-de-privacidad.html">Política de Privacidad</a> 
-<a href="/sobre-animeflv.html">Sobre AnimeFLV</a>
-</nav>
-                </div>
-                <ul class="ListSocial BFixed">
-                    
-                </ul>
-            </div>
-        </div>
-        
-        
-
-    </footer>
-    <!--</Footer>-->
-    
-</div>
-<!--</all>-->
-
-<!-- Javascript -->
-<script>var is_user = false;</script>
-<script src="https://ajax.googleapis.com/ajax/libs/jquery/2.0.0/jquery.min.js"></script>
-<script>
-        $(document).ready(function(e) {   
-            $(".twtch .btn").click(function(){
-              $(".twtch-bx").remove();
-			  $("#twitch-chat-embed").remove();
-            });
-			
-			$(document).on('fullscreenchange', function(e){
-				var urlSrc = $(e.target).attr('src');
-				if(urlSrc.indexOf('twitch') === -1){
-					$(".twtch-bx").remove();
-					$("#twitch-chat-embed").remove();
-				}
-			});
-        });
-        </script>
-<script type="text/javascript" src="/assets/animeflv/js/jquery.typewatch.min.js"></script>
-<script type="text/javascript" src="/assets/animeflv/js/scrlbr.js"></script>
-<script type="text/javascript" src="/assets/animeflv/js/jquery.bxslider.min.js"></script>
-<script type="text/javascript" src="/assets/animeflv/js/percircle.min.js"></script>
-<script type="text/javascript" src="/assets/animeflv/js/funciones.js?v=1.1.23"></script>
-<script type="text/javascript" src="/assets/animeflv/js/bootstrap.min.js"></script>
-<script type="text/javascript" src="/assets/animeflv/js/alertify.js"></script>
-
-
-<!--[if lt IE 9]><script type="text/javascript" src="/assets/animeflv/js/ie/css3mq.js"></script>
-<![endif]-->
-<!--[if lte IE 9]><script type="text/javascript" src="/assets/animeflv/js/ie/ie.js"></script>
-<![endif]-->
-
-
-<link rel="stylesheet" type="text/css" href="/assets/animeflv/css/bootstrap-multiselect.css">
-<script type="text/javascript" src="/assets/animeflv/js/bootstrap-multiselect.js"></script>
-<script type="text/javascript" src="/assets/animeflv/js/abrowser.js"></script>
-
-
-<!-- Global site tag (gtag.js) - Google Analytics -->
-<script async="" src="https://www.googletagmanager.com/gtag/js?id=G-WRD6JCRSM0"></script>
+<link rel='stylesheet' id='animeflv-googlefonts-css' href='https://fonts.googleapis.com/css2?family=Roboto:wght@400;700&#038;display=optional' media='all' />
+<link rel='stylesheet' id='animeflv-style-css' href='https://animeflv.or.at/wp-content/themes/animeflv/style.css?ver=1784717231' media='all' />
+<link rel='stylesheet' id='font-awesome-style-css' href='https://animeflv.or.at/wp-content/themes/animeflv/assets/css/font-awesome.css?ver=1784693665' media='all' />
+<script id="jquery-core-js" src="https://animeflv.or.at/wp-includes/js/jquery/jquery.min.js?ver=3.7.1"></script>
+<script id="jquery-migrate-js" src="https://animeflv.or.at/wp-includes/js/jquery/jquery-migrate.min.js?ver=3.4.1"></script>
+<link rel="https://api.w.org/" href="https://animeflv.or.at/wp-json/" /><link rel="EditURI" type="application/rsd+xml" title="RSD" href="https://animeflv.or.at/xmlrpc.php?rsd" />
+<meta name="generator" content="WordPress 7.1.3" />
+<link rel="icon" href="https://animeflv.or.at/wp-content/uploads/2026/06/cropped-animeflv-logo-new-32x32.jpg" sizes="32x32" />
+<link rel="icon" href="https://animeflv.or.at/wp-content/uploads/2026/06/cropped-animeflv-logo-new-192x192.jpg" sizes="192x192" />
+<link rel="apple-touch-icon" href="https://animeflv.or.at/wp-content/uploads/2026/06/cropped-animeflv-logo-new-180x180.jpg" />
+<meta name="msapplication-TileImage" content="https://animeflv.or.at/wp-content/uploads/2026/06/cropped-animeflv-logo-new-270x270.jpg" />
+<!-- Google New tag -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-35SXSJ3GN4"></script>
 <script>
   window.dataLayer = window.dataLayer || [];
   function gtag(){dataLayer.push(arguments);}
   gtag('js', new Date());
 
-  gtag('config', 'G-WRD6JCRSM0');
+  gtag('config', 'G-35SXSJ3GN4');
 </script>
+</head>
+<body class="search search-no-results wp-custom-logo wp-embed-responsive wp-theme-animeflv hfeed">
+
+
+<div id="site-page" class="site">
+
+	<a class="skip-link screen-reader-text" href="#content">Skip to content</a>
+
+	<header id="masthead" class="site-header clear">
+
+		<div class="site-start clear">
+
+			<div class="container">
+
+			<div class="mobile-topbar">
+			<div id="mob-logo" role="banner">
+					<a href="https://animeflv.or.at/">
+						<span class="mobile-logo-wordmark">
+							<span class="mobile-logo-text" aria-hidden="true">
+								<span class="mobile-logo-text__anime">anime</span><span class="mobile-logo-text__flv">flv</span>
+							</span>
+							<span class="mobile-logo-tagline">Animación</span>
+							<span class="screen-reader-text">AnimeFLV</span>
+						</span>
+					</a>
+			</div><!-- #mob-logo -->
+
+<form class="m-search-f" id="mobile-search-form" method="get" action="https://animeflv.or.at/" role="search">
+  <button type="button" class="m-search-toggle" aria-expanded="false" aria-controls="mobile-header-search">
+    <i class="fa fa-search" aria-hidden="true"></i>
+    <span class="m-search-toggle__label">Buscar</span>
+  </button>
+  <div class="m-search-field">
+    <label class="screen-reader-text" for="mobile-header-search">Buscar anime</label>
+    <input id="mobile-header-search" type="search" class="textbox" placeholder="Buscar anime..." autocomplete="off" name="s" enterkeyhint="search">
+    <button type="submit" class="button" title="Buscar" aria-label="Buscar">
+      <i class="fa fa-search" aria-hidden="true"></i>
+    </button>
+    <button type="button" class="m-search-close" aria-label="Cerrar búsqueda">
+      <span aria-hidden="true">&times;</span>
+    </button>
+  </div>
+</form>
+
+			<div class="header-toggles AnimeFlv">
+				<button type="button" class="toggle nav-toggle mobile-nav-toggle toggle-wrap" aria-label="Abrir menú" aria-expanded="false">
+                        <span class="MenuBtn AATggl" data-tggl="AnimeFlv" aria-hidden="true">
+                            <span class="menu-icon">
+                              <span class="menu-icon__bar"></span>
+                              <span class="menu-icon__bar"></span>
+                              <span class="menu-icon__bar"></span>
+                            </span>
+                        </span>
+				</button><!-- .nav-toggle -->
+			</div><!-- .header-toggles -->
+			</div><!-- .mobile-topbar -->
+
+			</div><!-- .container -->
+
+		</div><!-- .site-start -->			
+
+		<nav id="primary-nav" class="primary-navigation">
+			<div class="container" style="display: flex; justify-content: space-between;">
+				
+									<div id="logo">
+						<!-- <a href="https://animeflv.or.at/" class="custom-logo-link" rel="home"><img width="142" height="46" src="https://animeflv.or.at/wp-content/uploads/2026/06/cropped-animeflv.png" class="custom-logo" alt="AnimeFLV" decoding="async" /></a> -->
+						<a title="AnimeFLV" href="https://animeflv.or.at/">
+						<img width="142" height="46" src="https://animeflv.or.at/wp-content/themes/animeflv/assets/img/animeflv.png" class="custom-logo" alt="AnimeFLV" decoding="sync">
+						</a>
+					</div><!-- #logo -->
+
+								
+
+				
+<nav class="inmenu inmshow">
+        <ul id="primary-menu" class="sf-menu">
+				<li class="menu-item menu-item-home">
+					<a href="https://animeflv.or.at/"><span>Inicio</span></a>
+				</li>
+				<li class="menu-item">
+					<a href="https://animeflv.or.at/anime/"><span>Directorio Anime</span></a>
+				</li>
+        </ul>
+    </nav>
+
+				
+			<div class="header-search no-top-menu">
+				<form id="searchform" method="get" action="https://animeflv.or.at/">
+					<input type="search" name="s" class="search-input" placeholder="Buscar..." autocomplete="off" required>
+					<button type="submit" class="search-submit" title="Buscar" aria-label="Buscar"><span class="fa fa-search" aria-hidden="true"></span></button>		
+				</form>
+			</div><!-- .header-search -->
+				
+			</div><!-- .container -->
+		</nav><!-- #primary-nav -->		
+
+	</header><!-- #masthead -->
 
 
 
 
 
+<aside class="toggle-aside">
 
-<script defer="" src="https://static.cloudflareinsights.com/beacon.min.js/v4513226cdae34746b4dedf0b4dfa099e1781791509496" integrity="sha512-ZE9pZaUXND66v380QUtch/5sE9tPFh2zg45pR2PB0CVkCtOREv2AJKkSidISWkysEuQ0EH8faUU5du78bx87UQ==" data-cf-beacon="{&quot;version&quot;:&quot;2024.11.0&quot;,&quot;token&quot;:&quot;ade995fd813a4c93b6882cf6ee518cfe&quot;,&quot;r&quot;:1,&quot;server_timing&quot;:{&quot;name&quot;:{&quot;cfCacheStatus&quot;:true,&quot;cfEdge&quot;:true,&quot;cfExtPri&quot;:true,&quot;cfL4&quot;:true,&quot;cfOrigin&quot;:true,&quot;cfSpeedBrain&quot;:true},&quot;location_startswith&quot;:null}}" crossorigin="anonymous"></script>
+<nav class="mobile-menu" aria-label="Mobile">
 
-</body></html>
+	<ul class="modal-menu reset-list-style"><li><a href="https://animeflv.or.at">Home</a></li><li><a href="https://animeflv.or.at/anime/">Anime</a></li><li><a href="https://animeflv.or.at/">Full Anime List</a></li></ul>	</nav>
+	
+</aside>
+<div id="content" class="site-content container">
+
+	<div class="clear">
+		<div class="left-sidebar ">
+<div class="Top"><strong>ANIMES EN EMISIÓN</strong> <span class="WdgtLink fa-plays"></span> 
+</div> 
+	<nav id="left-nav" class="left-navigation">
+
+
+				<ul id="left-menu" class="sf-menu">	<li class="sidebar-cat-item">
+		<a title="&quot;Kimi wo Aisuru Ki wa Nai&quot; to Itta Jiki Koushaku-sama ga Nazeka Dekiai shitekimasu" href="https://animeflv.or.at/anime/kimi-wo-aisuru-ki-wa-nai-to-itta-jiki-koushaku-sama-ga-nazeka-dekiai-shitekimasu/">
+			<i class="playf fa fa-play-circle" aria-hidden="true"></i>
+			<span class="sidebar-cat-name">&quot;Kimi wo Aisuru Ki wa Nai&quot; to Itta Jiki Koushaku-sama ga Nazeka Dekiai shitekimasu</span>
+			<span class="Type tv">Anime</span>
+		</a>
+	</li>
+		<li class="sidebar-cat-item">
+		<a title="#Zombie Sagashitemasu" href="https://animeflv.or.at/anime/zombie-sagashitemasu/">
+			<i class="playf fa fa-play-circle" aria-hidden="true"></i>
+			<span class="sidebar-cat-name">#Zombie Sagashitemasu</span>
+			<span class="Type tv">Anime</span>
+		</a>
+	</li>
+		<li class="sidebar-cat-item">
+		<a title="Aishiteru Game wo Owarasetai" href="https://animeflv.or.at/anime/aishiteru-game-wo-owarasetai/">
+			<i class="playf fa fa-play-circle" aria-hidden="true"></i>
+			<span class="sidebar-cat-name">Aishiteru Game wo Owarasetai</span>
+			<span class="Type tv">Anime</span>
+		</a>
+	</li>
+		<li class="sidebar-cat-item">
+		<a title="Ao Ashi Season 2" href="https://animeflv.or.at/anime/ao-ashi-season-2/">
+			<i class="playf fa fa-play-circle" aria-hidden="true"></i>
+			<span class="sidebar-cat-name">Ao Ashi Season 2</span>
+			<span class="Type tv">Anime</span>
+		</a>
+	</li>
+		<li class="sidebar-cat-item">
+		<a title="Ao no Hako Season 2" href="https://animeflv.or.at/anime/ao-no-hako-season-2/">
+			<i class="playf fa fa-play-circle" aria-hidden="true"></i>
+			<span class="sidebar-cat-name">Ao no Hako Season 2</span>
+			<span class="Type tv">Anime</span>
+		</a>
+	</li>
+		<li class="sidebar-cat-item">
+		<a title="Awajima Hyakkei" href="https://animeflv.or.at/anime/awajima-hyakkei/">
+			<i class="playf fa fa-play-circle" aria-hidden="true"></i>
+			<span class="sidebar-cat-name">Awajima Hyakkei</span>
+			<span class="Type tv">Anime</span>
+		</a>
+	</li>
+		<li class="sidebar-cat-item">
+		<a title="Azur Lane: Bisoku Zenshin! Ni!!" href="https://animeflv.or.at/anime/azur-lane-bisoku-zenshin-ni/">
+			<i class="playf fa fa-play-circle" aria-hidden="true"></i>
+			<span class="sidebar-cat-name">Azur Lane: Bisoku Zenshin! Ni!!</span>
+			<span class="Type tv">Anime</span>
+		</a>
+	</li>
+		<li class="sidebar-cat-item">
+		<a title="Bai Ri Cheng Wang" href="https://animeflv.or.at/anime/bai-ri-cheng-wang/">
+			<i class="playf fa fa-play-circle" aria-hidden="true"></i>
+			<span class="sidebar-cat-name">Bai Ri Cheng Wang</span>
+			<span class="Type tv">Anime</span>
+		</a>
+	</li>
+		<li class="sidebar-cat-item">
+		<a title="BanG Dream! Yume∞Mita" href="https://animeflv.or.at/anime/bang-dream-yume%e2%88%9emita/">
+			<i class="playf fa fa-play-circle" aria-hidden="true"></i>
+			<span class="sidebar-cat-name">BanG Dream! Yume∞Mita</span>
+			<span class="Type tv">Anime</span>
+		</a>
+	</li>
+		<li class="sidebar-cat-item">
+		<a title="Battle Spirits [Re]: Zekkai no Kuu" href="https://animeflv.or.at/anime/battle-spirits-re-zekkai-no-kuu/">
+			<i class="playf fa fa-play-circle" aria-hidden="true"></i>
+			<span class="sidebar-cat-name">Battle Spirits [Re]: Zekkai no Kuu</span>
+			<span class="Type tv">Anime</span>
+		</a>
+	</li>
+		<li class="sidebar-cat-item">
+		<a title="Black Clover 2nd Season" href="https://animeflv.or.at/anime/black-clover-2nd-season/">
+			<i class="playf fa fa-play-circle" aria-hidden="true"></i>
+			<span class="sidebar-cat-name">Black Clover 2nd Season</span>
+			<span class="Type tv">Anime</span>
+		</a>
+	</li>
+		<li class="sidebar-cat-item">
+		<a title="Black Torch" href="https://animeflv.or.at/anime/black-torch/">
+			<i class="playf fa fa-play-circle" aria-hidden="true"></i>
+			<span class="sidebar-cat-name">Black Torch</span>
+			<span class="Type tv">Anime</span>
+		</a>
+	</li>
+		<li class="sidebar-cat-item">
+		<a title="Bleach: Sennen Kessen-hen - Kashin-tan" href="https://animeflv.or.at/anime/bleach-sennen-kessen-hen-kashin-tan/">
+			<i class="playf fa fa-play-circle" aria-hidden="true"></i>
+			<span class="sidebar-cat-name">Bleach: Sennen Kessen-hen - Kashin-tan</span>
+			<span class="Type tv">Anime</span>
+		</a>
+	</li>
+		<li class="sidebar-cat-item">
+		<a title="Boku no Hero Academia: I Am a Hero Too" href="https://animeflv.or.at/anime/boku-no-hero-academia-i-am-a-hero-too/">
+			<i class="playf fa fa-play-circle" aria-hidden="true"></i>
+			<span class="sidebar-cat-name">Boku no Hero Academia: I Am a Hero Too</span>
+			<span class="Type tv">Anime</span>
+		</a>
+	</li>
+		<li class="sidebar-cat-item">
+		<a title="Buchigire Reijou wa Houfuku wo Chikaimashita. Madousho no Chikara de Sokoku wo Tatakitsubushimasu" href="https://animeflv.or.at/anime/buchigire-reijou-wa-houfuku-wo-chikaimashita-madousho-no-chikara-de-sokoku-wo-tatakitsubushimasu/">
+			<i class="playf fa fa-play-circle" aria-hidden="true"></i>
+			<span class="sidebar-cat-name">Buchigire Reijou wa Houfuku wo Chikaimashita. Madousho no Chikara de Sokoku wo Tatakitsubushimasu</span>
+			<span class="Type tv">Anime</span>
+		</a>
+	</li>
+		<li class="sidebar-cat-item">
+		<a title="Bungou Stray Dogs Wan! 2" href="https://animeflv.or.at/anime/bungou-stray-dogs-wan-2/">
+			<i class="playf fa fa-play-circle" aria-hidden="true"></i>
+			<span class="sidebar-cat-name">Bungou Stray Dogs Wan! 2</span>
+			<span class="Type tv">Anime</span>
+		</a>
+	</li>
+		<li class="sidebar-cat-item">
+		<a title="Chitose-kun wa Ramune Bin no Naka Part 2" href="https://animeflv.or.at/anime/chitose-kun-wa-ramune-bin-no-naka-part-2/">
+			<i class="playf fa fa-play-circle" aria-hidden="true"></i>
+			<span class="sidebar-cat-name">Chitose-kun wa Ramune Bin no Naka Part 2</span>
+			<span class="Type tv">Anime</span>
+		</a>
+	</li>
+		<li class="sidebar-cat-item">
+		<a title="Choujun! Choujou-senpai" href="https://animeflv.or.at/anime/choujun-choujou-senpai/">
+			<i class="playf fa fa-play-circle" aria-hidden="true"></i>
+			<span class="sidebar-cat-name">Choujun! Choujou-senpai</span>
+			<span class="Type tv">Anime</span>
+		</a>
+	</li>
+		<li class="sidebar-cat-item">
+		<a title="Class de 2-banme ni Kawaii Onnanoko to Tomodachi ni Natta" href="https://animeflv.or.at/anime/class-de-2-banme-ni-kawaii-onnanoko-to-tomodachi-ni-natta/">
+			<i class="playf fa fa-play-circle" aria-hidden="true"></i>
+			<span class="sidebar-cat-name">Class de 2-banme ni Kawaii Onnanoko to Tomodachi ni Natta</span>
+			<span class="Type tv">Anime</span>
+		</a>
+	</li>
+		<li class="sidebar-cat-item">
+		<a title="Clevatess II: Majuu no Ou to Itsuwari no Yuusha Denshou" href="https://animeflv.or.at/anime/clevatess-ii-majuu-no-ou-to-itsuwari-no-yuusha-denshou/">
+			<i class="playf fa fa-play-circle" aria-hidden="true"></i>
+			<span class="sidebar-cat-name">Clevatess II: Majuu no Ou to Itsuwari no Yuusha Denshou</span>
+			<span class="Type tv">Anime</span>
+		</a>
+	</li>
+	<li class="sidebar-cat-toggle-item"><button type="button" class="sidebar-cat-toggle" aria-expanded="false" data-more-label="Ver más" data-less-label="Colapsar">Ver más</button></li></ul><script type="application/json" id="left-menu-deferred-cats">[{"name":"Dark Machine: The Animation","url":"https:\/\/animeflv.or.at\/anime\/dark-machine-the-animation\/"},{"name":"Dark Summoner to Dekiteiru","url":"https:\/\/animeflv.or.at\/anime\/dark-summoner-to-dekiteiru\/"},{"name":"Diamond no Ace: Act II Second Season","url":"https:\/\/animeflv.or.at\/anime\/diamond-no-ace-act-ii-second-season\/"},{"name":"Diamond no Ace: Act II Second Season Part 2","url":"https:\/\/animeflv.or.at\/anime\/diamond-no-ace-act-ii-second-season-part-2\/"},{"name":"Digimon Beatbreak","url":"https:\/\/animeflv.or.at\/anime\/digimon-beatbreak\/"},{"name":"Dogulwang","url":"https:\/\/animeflv.or.at\/anime\/dogulwang\/"},{"name":"Doumo, Suki na Hito ni Horegusuri wo Irai sareta Majo desu.","url":"https:\/\/animeflv.or.at\/anime\/doumo-suki-na-hito-ni-horegusuri-wo-irai-sareta-majo-desu\/"},{"name":"Dr. Stone: Science Future Part 3","url":"https:\/\/animeflv.or.at\/anime\/dr-stone-science-future-part-3\/"},{"name":"Dragon Ball Super: Beerus","url":"https:\/\/animeflv.or.at\/anime\/dragon-ball-super-beerus\/"},{"name":"Futsutsuka na Akujo dewa Gozaimasu ga: Suuguu Chouso Torikae Den","url":"https:\/\/animeflv.or.at\/anime\/futsutsuka-na-akujo-dewa-gozaimasu-ga-suuguu-chouso-torikae-den\/"},{"name":"FX Senshi Kurumi-chan","url":"https:\/\/animeflv.or.at\/anime\/fx-senshi-kurumi-chan\/"},{"name":"Gaikotsu Kishi-sama Tadaima Isekai e Odekakechuu II","url":"https:\/\/animeflv.or.at\/anime\/gaikotsu-kishi-sama-tadaima-isekai-e-odekakechuu-ii-1\/"},{"name":"Gaikotsu Kishi-sama, Tadaima Isekai e Odekakechuu II","url":"https:\/\/animeflv.or.at\/anime\/gaikotsu-kishi-sama-tadaima-isekai-e-odekakechuu-ii\/"},{"name":"Gensou Suikoden","url":"https:\/\/animeflv.or.at\/anime\/gensou-suikoden\/"},{"name":"Ghost Concert: Missing Songs","url":"https:\/\/animeflv.or.at\/anime\/ghost-concert-missing-songs\/"},{"name":"Grand Blue Season 3","url":"https:\/\/animeflv.or.at\/anime\/grand-blue-season-3\/"},{"name":"Grow Up Show: Himawari no Circus-dan","url":"https:\/\/animeflv.or.at\/anime\/grow-up-show-himawari-no-circus-dan\/"},{"name":"Hanaori-san wa Tensei shitemo Kenka ga Shitai","url":"https:\/\/animeflv.or.at\/anime\/hanaori-san-wa-tensei-shitemo-kenka-ga-shitai\/"},{"name":"Hanazakari no Kimitachi e 2nd Season","url":"https:\/\/animeflv.or.at\/anime\/hanazakari-no-kimitachi-e-2nd-season\/"},{"name":"Hell Mode: Yarikomizuki no Gamer wa Hai Settei no Isekai de Musou suru 2nd Season","url":"https:\/\/animeflv.or.at\/anime\/hell-mode-yarikomizuki-no-gamer-wa-hai-settei-no-isekai-de-musou-suru-2nd-season\/"},{"name":"Heroine? Seijo? Iie All Works Maid desu (Hokori)!","url":"https:\/\/animeflv.or.at\/anime\/heroine-seijo-iie-all-works-maid-desu-hokori-1\/"},{"name":"Heroine? Seijo? Iie, All Works Maid desu (Hokori)!","url":"https:\/\/animeflv.or.at\/anime\/heroine-seijo-iie-all-works-maid-desu-hokori\/"},{"name":"Hidarikiki no Eren","url":"https:\/\/animeflv.or.at\/anime\/hidarikiki-no-eren\/"},{"name":"Higeki no Genkyou to Naru Saikyou Gedou Last Boss Joou wa Tami no Tame ni Tsukushimasu. Season 2","url":"https:\/\/animeflv.or.at\/anime\/higeki-no-genkyou-to-naru-saikyou-gedou-last-boss-joou-wa-tami-no-tame-ni-tsukushimasu-season-2\/"},{"name":"Himekishi wa Barbaroi no Yome","url":"https:\/\/animeflv.or.at\/anime\/himekishi-wa-barbaroi-no-yome\/"},{"name":"Hokuto no Ken: Fist of the North Star","url":"https:\/\/animeflv.or.at\/anime\/hokuto-no-ken-fist-of-the-north-star\/"},{"name":"Honzuki no Gekokujou: Shisho ni Naru Tame ni wa Shudan wo Erandeiraremasen - Ryoushu no Youjo","url":"https:\/\/animeflv.or.at\/anime\/honzuki-no-gekokujou-shisho-ni-naru-tame-ni-wa-shudan-wo-erandeiraremasen-ryoushu-no-youjo\/"},{"name":"Hotaru no Yomeiri","url":"https:\/\/animeflv.or.at\/anime\/hotaru-no-yomeiri\/"},{"name":"Hotel Inhumans 2nd Season","url":"https:\/\/animeflv.or.at\/anime\/hotel-inhumans-2nd-season\/"},{"name":"Hyakki Yakoushou","url":"https:\/\/animeflv.or.at\/anime\/hyakki-yakoushou\/"},{"name":"Hyouken no Majutsushi ga Sekai wo Suberu II","url":"https:\/\/animeflv.or.at\/anime\/hyouken-no-majutsushi-ga-sekai-wo-suberu-ii\/"},{"name":"Ibitte Konai Gibo to Gishi","url":"https:\/\/animeflv.or.at\/anime\/ibitte-konai-gibo-to-gishi\/"},{"name":"Ichijouma Mankitsugurashi!","url":"https:\/\/animeflv.or.at\/anime\/ichijouma-mankitsugurashi\/"},{"name":"Isekai Nonbiri Nouka 2","url":"https:\/\/animeflv.or.at\/anime\/isekai-nonbiri-nouka-2\/"},{"name":"Iwamoto-senpai no Suisen","url":"https:\/\/animeflv.or.at\/anime\/iwamoto-senpai-no-suisen\/"},{"name":"Jidou Hanbaiki ni Umarekawatta Ore wa Meikyuu wo Samayou 3rd Season","url":"https:\/\/animeflv.or.at\/anime\/jidou-hanbaiki-ni-umarekawatta-ore-wa-meikyuu-wo-samayou-3rd-season\/"},{"name":"Juuou Mujin Dandivine","url":"https:\/\/animeflv.or.at\/anime\/juuou-mujin-dandivine\/"},{"name":"Kabushikigaisha Magi-Lumi\u00e8re 2nd Season","url":"https:\/\/animeflv.or.at\/anime\/kabushikigaisha-magi-lumiere-2nd-season\/"},{"name":"Kaijuu 8-gou: Narumi no Heijitsu","url":"https:\/\/animeflv.or.at\/anime\/kaijuu-8-gou-narumi-no-heijitsu\/"},{"name":"Kami no Niwatsuki Kusunoki-tei","url":"https:\/\/animeflv.or.at\/anime\/kami-no-niwatsuki-kusunoki-tei\/"},{"name":"Kami no Shizuku","url":"https:\/\/animeflv.or.at\/anime\/kami-no-shizuku\/"},{"name":"Kamiina Botan, Yoeru Sugata wa Yuri no Hana","url":"https:\/\/animeflv.or.at\/anime\/kamiina-botan-yoeru-sugata-wa-yuri-no-hana\/"},{"name":"Kanan-sama wa Akumade Choroi","url":"https:\/\/animeflv.or.at\/anime\/kanan-sama-wa-akumade-choroi\/"},{"name":"Kanata kara","url":"https:\/\/animeflv.or.at\/anime\/kanata-kara\/"},{"name":"Kanojo, Okarishimasu 5th Season","url":"https:\/\/animeflv.or.at\/anime\/kanojo-okarishimasu-5th-season\/"},{"name":"Kashita Maryoku wa \"Revo Barai\" de Kyousei Choushuu","url":"https:\/\/animeflv.or.at\/anime\/kashita-maryoku-wa-revo-barai-de-kyousei-choushuu\/"},{"name":"Katainaka no Ossan Kensei ni Naru II","url":"https:\/\/animeflv.or.at\/anime\/katainaka-no-ossan-kensei-ni-naru-ii-1\/"},{"name":"Katainaka no Ossan, Kensei ni Naru II","url":"https:\/\/animeflv.or.at\/anime\/katainaka-no-ossan-kensei-ni-naru-ii\/"},{"name":"Keroro Gunsou\u2606","url":"https:\/\/animeflv.or.at\/anime\/keroro-gunsou%e2%98%86\/"},{"name":"Kikansha no Mahou wa Tokubetsu desu 2nd Season","url":"https:\/\/animeflv.or.at\/anime\/kikansha-no-mahou-wa-tokubetsu-desu-2nd-season\/"},{"name":"Kill Ao","url":"https:\/\/animeflv.or.at\/anime\/kill-ao\/"},{"name":"Kimetsu no Yaiba Movie 1: Mugenjou-hen - Akaza Sairai","url":"https:\/\/animeflv.or.at\/anime\/kimetsu-no-yaiba-movie-1-mugenjou-hen-akaza-sairai\/"},{"name":"Kimi ga Shinu made Koi wo Shitai","url":"https:\/\/animeflv.or.at\/anime\/kimi-ga-shinu-made-koi-wo-shitai\/"},{"name":"Kimi no Koto ga Daidaidaidaidaisuki na 100-nin no Kanojo 3rd Season","url":"https:\/\/animeflv.or.at\/anime\/kimi-no-koto-ga-daidaidaidaidaisuki-na-100-nin-no-kanojo-3rd-season\/"},{"name":"Koko wa Ore ni Makasete Saki ni Ike to Itte kara 10-nen ga Tattara Densetsu ni Natteita.","url":"https:\/\/animeflv.or.at\/anime\/koko-wa-ore-ni-makasete-saki-ni-ike-to-itte-kara-10-nen-ga-tattara-densetsu-ni-natteita\/"},{"name":"Koori no Jouheki","url":"https:\/\/animeflv.or.at\/anime\/koori-no-jouheki\/"},{"name":"Koori no Jouheki 2nd Season","url":"https:\/\/animeflv.or.at\/anime\/koori-no-jouheki-2nd-season\/"},{"name":"Kore Kaite Shine","url":"https:\/\/animeflv.or.at\/anime\/kore-kaite-shine\/"},{"name":"Koukaku Kidoutai (TV)","url":"https:\/\/animeflv.or.at\/anime\/koukaku-kidoutai-tv\/"},{"name":"Kujima Utaeba Ie Hororo","url":"https:\/\/animeflv.or.at\/anime\/kujima-utaeba-ie-hororo\/"},{"name":"Kuroneko to Majo no Kyoushitsu","url":"https:\/\/animeflv.or.at\/anime\/kuroneko-to-majo-no-kyoushitsu\/"},{"name":"Kusuriya no Hitorigoto 3rd Season","url":"https:\/\/animeflv.or.at\/anime\/kusuriya-no-hitorigoto-3rd-season\/"},{"name":"Kyoufu Collector","url":"https:\/\/animeflv.or.at\/anime\/kyoufu-collector\/"},{"name":"Kyouran Reijou Nia Liston: Byoujaku Reijou ni Tensei shita Kamigoroshi no Bujin no Karei Naru Musouroku","url":"https:\/\/animeflv.or.at\/anime\/kyouran-reijou-nia-liston-byoujaku-reijou-ni-tensei-shita-kamigoroshi-no-bujin-no-karei-naru-musouroku\/"},{"name":"Let's Go Kaiki-gumi","url":"https:\/\/animeflv.or.at\/anime\/lets-go-kaiki-gumi\/"},{"name":"Liar Game","url":"https:\/\/animeflv.or.at\/anime\/liar-game\/"},{"name":"Lv999 no Murabito","url":"https:\/\/animeflv.or.at\/anime\/lv999-no-murabito\/"},{"name":"Magic Knight Rayearth (2026)","url":"https:\/\/animeflv.or.at\/anime\/magic-knight-rayearth-2026\/"},{"name":"Magical\u2605Explorer","url":"https:\/\/animeflv.or.at\/anime\/magical%e2%98%85explorer\/"},{"name":"Mahou Shoujo Ikusei Keikaku: Restart","url":"https:\/\/animeflv.or.at\/anime\/mahou-shoujo-ikusei-keikaku-restart\/"},{"name":"Mahou Shoujo Lyrical Nanoha EXCEEDS: Gun Blaze Vengeance","url":"https:\/\/animeflv.or.at\/anime\/mahou-shoujo-lyrical-nanoha-exceeds-gun-blaze-vengeance\/"},{"name":"Mairimashita! Iruma-kun 4th Season","url":"https:\/\/animeflv.or.at\/anime\/mairimashita-iruma-kun-4th-season\/"},{"name":"Mao","url":"https:\/\/animeflv.or.at\/anime\/mao\/"},{"name":"Marriagetoxin","url":"https:\/\/animeflv.or.at\/anime\/marriagetoxin\/"},{"name":"Marronnier Oukoku no Shichinin no Kishi","url":"https:\/\/animeflv.or.at\/anime\/marronnier-oukoku-no-shichinin-no-kishi\/"},{"name":"Mebius Dust","url":"https:\/\/animeflv.or.at\/anime\/mebius-dust\/"},{"name":"Megami \"Isekai Tensei Nani ni Naritai desu ka\" Ore \"Yuusha no Rokkotsu de\"","url":"https:\/\/animeflv.or.at\/anime\/megami-isekai-tensei-nani-ni-naritai-desu-ka-ore-yuusha-no-rokkotsu-de\/"},{"name":"Mezametara Saikyou Soubi to Uchuusenmochi Datta node, Ikkodate Mezashite Youhei toshite Jiyuu ni Ikitai","url":"https:\/\/animeflv.or.at\/anime\/mezametara-saikyou-soubi-to-uchuusenmochi-datta-node-ikkodate-mezashite-youhei-toshite-jiyuu-ni-ikitai\/"},{"name":"Mononoke Movie 3: Hebigami","url":"https:\/\/animeflv.or.at\/anime\/mononoke-movie-3-hebigami\/"},{"name":"Mouse Cursor de Genjitsu wo Sousa Dekiru You ni Natta node, Onna no Ko wo Ippai Click Shimaasu","url":"https:\/\/animeflv.or.at\/anime\/mouse-cursor-de-genjitsu-wo-sousa-dekiru-you-ni-natta-node-onna-no-ko-wo-ippai-click-shimaasu\/"},{"name":"Mujikaku Seijo wa Kyou mo Muishiki ni Chikara wo Tare Nagasu","url":"https:\/\/animeflv.or.at\/anime\/mujikaku-seijo-wa-kyou-mo-muishiki-ni-chikara-wo-tare-nagasu\/"},{"name":"Mushoku Tensei III: Isekai Ittara Honki Dasu","url":"https:\/\/animeflv.or.at\/anime\/mushoku-tensei-iii-isekai-ittara-honki-dasu\/"},{"name":"Needy Girl Overdose","url":"https:\/\/animeflv.or.at\/anime\/needy-girl-overdose\/"},{"name":"Neko to Ryuu","url":"https:\/\/animeflv.or.at\/anime\/neko-to-ryuu\/"},{"name":"Nige Jouzu no Wakagimi 2nd Season","url":"https:\/\/animeflv.or.at\/anime\/nige-jouzu-no-wakagimi-2nd-season\/"},{"name":"Nijusseiki Denki Mokuroku: Eureka Evrika","url":"https:\/\/animeflv.or.at\/anime\/nijusseiki-denki-mokuroku-eureka-evrika\/"},{"name":"Nippon Sangoku","url":"https:\/\/animeflv.or.at\/anime\/nippon-sangoku\/"},{"name":"Ojisan wa Kawaii Mono ga Osuki.","url":"https:\/\/animeflv.or.at\/anime\/ojisan-wa-kawaii-mono-ga-osuki\/"},{"name":"One Piece","url":"https:\/\/animeflv.or.at\/anime\/one-piece\/"},{"name":"Oni no Hanayome","url":"https:\/\/animeflv.or.at\/anime\/oni-no-hanayome\/"},{"name":"Otaku ni Yasashii Gal wa Inai!?","url":"https:\/\/animeflv.or.at\/anime\/otaku-ni-yasashii-gal-wa-inai\/"},{"name":"Otome Game Sekai wa Mob ni Kibishii Sekai desu 2","url":"https:\/\/animeflv.or.at\/anime\/otome-game-sekai-wa-mob-ni-kibishii-sekai-desu-2\/"},{"name":"Otome Kaijuu Caram\u00e9liser","url":"https:\/\/animeflv.or.at\/anime\/otome-kaijuu-carameliser\/"},{"name":"Ponkotsu Fuuki Iin to Skirt-take ga Futekisetsu na JK no Hanashi","url":"https:\/\/animeflv.or.at\/anime\/ponkotsu-fuuki-iin-to-skirt-take-ga-futekisetsu-na-jk-no-hanashi\/"},{"name":"Psyren","url":"https:\/\/animeflv.or.at\/anime\/psyren\/"},{"name":"Rakudai Kenja no Gakuin Musou: Nidome no Tensei S-Rank Cheat Majutsushi Boukenroku","url":"https:\/\/animeflv.or.at\/anime\/rakudai-kenja-no-gakuin-musou-nidome-no-tensei-s-rank-cheat-majutsushi-boukenroku-1\/"},{"name":"Rakudai Kenja no Gakuin Musou: Nidome no Tensei, S-Rank Cheat Majutsushi Boukenroku","url":"https:\/\/animeflv.or.at\/anime\/rakudai-kenja-no-gakuin-musou-nidome-no-tensei-s-rank-cheat-majutsushi-boukenroku\/"},{"name":"Ranma \u00bd (2024) 3rd Season","url":"https:\/\/animeflv.or.at\/anime\/ranma-%c2%bd-2024-3rd-season\/"},{"name":"Re:Zero kara Hajimeru Isekai Seikatsu 4th Season","url":"https:\/\/animeflv.or.at\/anime\/rezero-kara-hajimeru-isekai-seikatsu-4th-season\/"},{"name":"Reincarnation no Kaben","url":"https:\/\/animeflv.or.at\/anime\/reincarnation-no-kaben\/"},{"name":"Reiwa no Dara-san","url":"https:\/\/animeflv.or.at\/anime\/reiwa-no-dara-san\/"},{"name":"Replica datte, Koi wo Suru.","url":"https:\/\/animeflv.or.at\/anime\/replica-datte-koi-wo-suru\/"},{"name":"Romelia Senki","url":"https:\/\/animeflv.or.at\/anime\/romelia-senki\/"},{"name":"Ryoumin 0-nin Start no Henkyou Ryoushu-sama","url":"https:\/\/animeflv.or.at\/anime\/ryoumin-0-nin-start-no-henkyou-ryoushu-sama\/"},{"name":"Saijo no Osewa: Takane no Hanadarake na Meimonkou de Gakuin Ichi no Ojousama (Seikatsu Nouryoku Kaimu) wo Kagenagara Osewa suru Koto ni Narimashita","url":"https:\/\/animeflv.or.at\/anime\/saijo-no-osewa-takane-no-hanadarake-na-meimonkou-de-gakuin-ichi-no-ojousama-seikatsu-nouryoku-kaimu-wo-kagenagara-osewa-suru-koto-ni-narimashita-1\/"},{"name":"Saijo no Osewa: Takane no Hanadarake na Meimonkou de, Gakuin Ichi no Ojousama (Seikatsu Nouryoku Kaimu) wo Kagenagara Osewa suru Koto ni Narimashita","url":"https:\/\/animeflv.or.at\/anime\/saijo-no-osewa-takane-no-hanadarake-na-meimonkou-de-gakuin-ichi-no-ojousama-seikatsu-nouryoku-kaimu-wo-kagenagara-osewa-suru-koto-ni-narimashita\/"},{"name":"Saikyou Degarashi Ouji no Anyaku Teii Arasoi","url":"https:\/\/animeflv.or.at\/anime\/saikyou-degarashi-ouji-no-anyaku-teii-arasoi\/"},{"name":"Saikyou no Ousama, Nidome no Jinsei wa Nani wo Suru? Season 2","url":"https:\/\/animeflv.or.at\/anime\/saikyou-no-ousama-nidome-no-jinsei-wa-nani-wo-suru-season-2\/"},{"name":"Sasaki to Pii-chan Season 2","url":"https:\/\/animeflv.or.at\/anime\/sasaki-to-pii-chan-season-2\/"},{"name":"Sayonara Lara","url":"https:\/\/animeflv.or.at\/anime\/sayonara-lara\/"},{"name":"Seihantai na Kimi to Boku 2nd Season","url":"https:\/\/animeflv.or.at\/anime\/seihantai-na-kimi-to-boku-2nd-season\/"},{"name":"Seitokai ni mo Ana wa Aru!","url":"https:\/\/animeflv.or.at\/anime\/seitokai-ni-mo-ana-wa-aru\/"},{"name":"Sekai Saikyou no Kouei: Meikyuukoku no Shinjin Tansakusha","url":"https:\/\/animeflv.or.at\/anime\/sekai-saikyou-no-kouei-meikyuukoku-no-shinjin-tansakusha\/"},{"name":"Sekai Saikyou no Majo, Hajimemashita","url":"https:\/\/animeflv.or.at\/anime\/sekai-saikyou-no-majo-hajimemashita\/"},{"name":"Shibou Yuugi de Meshi wo Kuu.","url":"https:\/\/animeflv.or.at\/anime\/shibou-yuugi-de-meshi-wo-kuu\/"},{"name":"Shiguang Dailiren III","url":"https:\/\/animeflv.or.at\/anime\/shiguang-dailiren-iii\/"},{"name":"Shin Tennis no Oujisama: U-17 World Cup Kesshou Member Ketteisen","url":"https:\/\/animeflv.or.at\/anime\/shin-tennis-no-oujisama-u-17-world-cup-kesshou-member-ketteisen\/"},{"name":"Shinja Zero no Megami-sama to Hajimeru Isekai Kouryaku","url":"https:\/\/animeflv.or.at\/anime\/shinja-zero-no-megami-sama-to-hajimeru-isekai-kouryaku\/"},{"name":"Shiotaiou no Satou-san ga Ore ni dake Amai","url":"https:\/\/animeflv.or.at\/anime\/shiotaiou-no-satou-san-ga-ore-ni-dake-amai\/"},{"name":"Shuiro no Kamen","url":"https:\/\/animeflv.or.at\/anime\/shuiro-no-kamen\/"},{"name":"Shunkashuutou Daikousha: Haru no Mai","url":"https:\/\/animeflv.or.at\/anime\/shunkashuutou-daikousha-haru-no-mai\/"},{"name":"Snowball Earth","url":"https:\/\/animeflv.or.at\/anime\/snowball-earth\/"},{"name":"Sora wa Akai Kawa no Hotori","url":"https:\/\/animeflv.or.at\/anime\/sora-wa-akai-kawa-no-hotori\/"},{"name":"Steel Ball Run: JoJo no Kimyou na Bouken","url":"https:\/\/animeflv.or.at\/anime\/steel-ball-run-jojo-no-kimyou-na-bouken\/"},{"name":"Super no Ura de Yani Suu Futari","url":"https:\/\/animeflv.or.at\/anime\/super-no-ura-de-yani-suu-futari\/"},{"name":"Suterare Seijo no Isekai Gohan Tabi: Kakure Skill de Camping Car wo Shoukan shimashita","url":"https:\/\/animeflv.or.at\/anime\/suterare-seijo-no-isekai-gohan-tabi-kakure-skill-de-camping-car-wo-shoukan-shimashita\/"},{"name":"Tadaima, Ojamasaremasu!","url":"https:\/\/animeflv.or.at\/anime\/tadaima-ojamasaremasu\/"},{"name":"Tai-Ari deshita. Ojousama wa Kakutou Game nante Shinai","url":"https:\/\/animeflv.or.at\/anime\/tai-ari-deshita-ojousama-wa-kakutou-game-nante-shinai\/"},{"name":"Tank Chair","url":"https:\/\/animeflv.or.at\/anime\/tank-chair\/"},{"name":"Tantei wa Mou, Shindeiru. Season 2","url":"https:\/\/animeflv.or.at\/anime\/tantei-wa-mou-shindeiru-season-2\/"},{"name":"Tefuda ga Oome no Victoria","url":"https:\/\/animeflv.or.at\/anime\/tefuda-ga-oome-no-victoria\/"},{"name":"Tempal: Item no Chikara","url":"https:\/\/animeflv.or.at\/anime\/tempal-item-no-chikara\/"},{"name":"Tenkou-saki no Seiso Karen na Bishoujo ga Mukashi Danshi to Omotte Issho ni Asonda Osananajimi Datta Ken","url":"https:\/\/animeflv.or.at\/anime\/tenkou-saki-no-seiso-karen-na-bishoujo-ga-mukashi-danshi-to-omotte-issho-ni-asonda-osananajimi-datta-ken-1\/"},{"name":"Tenkou-saki no Seiso Karen na Bishoujo ga, Mukashi Danshi to Omotte Issho ni Asonda Osananajimi Datta Ken","url":"https:\/\/animeflv.or.at\/anime\/tenkou-saki-no-seiso-karen-na-bishoujo-ga-mukashi-danshi-to-omotte-issho-ni-asonda-osananajimi-datta-ken\/"},{"name":"Tenmaku no Jaadugar","url":"https:\/\/animeflv.or.at\/anime\/tenmaku-no-jaadugar\/"},{"name":"Tensei Goblin dakedo Shitsumon Aru?","url":"https:\/\/animeflv.or.at\/anime\/tensei-goblin-dakedo-shitsumon-aru\/"},{"name":"Tensei Kizoku, Kantei Skill de Nariagaru 3rd Season","url":"https:\/\/animeflv.or.at\/anime\/tensei-kizoku-kantei-skill-de-nariagaru-3rd-season\/"},{"name":"Tensei shita Daiseijo wa, Seijo de Aru Koto wo Hitakakusu","url":"https:\/\/animeflv.or.at\/anime\/tensei-shita-daiseijo-wa-seijo-de-aru-koto-wo-hitakakusu\/"},{"name":"Tensei shitara Ken deshita II","url":"https:\/\/animeflv.or.at\/anime\/tensei-shitara-ken-deshita-ii\/"},{"name":"Tensei shitara Slime Datta Ken 4th Season","url":"https:\/\/animeflv.or.at\/anime\/tensei-shitara-slime-datta-ken-4th-season\/"},{"name":"Tensei shitara Slime Datta Ken Movie 2: Soukai no Namida-hen","url":"https:\/\/animeflv.or.at\/anime\/tensei-shitara-slime-datta-ken-movie-2-soukai-no-namida-hen\/"},{"name":"Tetsunabe no Jan!","url":"https:\/\/animeflv.or.at\/anime\/tetsunabe-no-jan\/"},{"name":"Tetsuryou! Meet with Tetsudou Musume","url":"https:\/\/animeflv.or.at\/anime\/tetsuryou-meet-with-tetsudou-musume\/"},{"name":"Thunder 3","url":"https:\/\/animeflv.or.at\/anime\/thunder-3\/"},{"name":"Toaru Anbu no Item","url":"https:\/\/animeflv.or.at\/anime\/toaru-anbu-no-item\/"},{"name":"Tokyo Revengers: Santen Sensou-hen","url":"https:\/\/animeflv.or.at\/anime\/tokyo-revengers-santen-sensou-hen\/"},{"name":"Tongari Boushi no Atelier","url":"https:\/\/animeflv.or.at\/anime\/tongari-boushi-no-atelier\/"},{"name":"Tougen Anki: Nikko Kegon no Taki-hen","url":"https:\/\/animeflv.or.at\/anime\/tougen-anki-nikko-kegon-no-taki-hen\/"},{"name":"Toumei na Yoru ni Kakeru Kimi to Me ni Mienai Koi wo Shita.","url":"https:\/\/animeflv.or.at\/anime\/toumei-na-yoru-ni-kakeru-kimi-to-me-ni-mienai-koi-wo-shita-1\/"},{"name":"Toumei na Yoru ni Kakeru Kimi to, Me ni Mienai Koi wo Shita.","url":"https:\/\/animeflv.or.at\/anime\/toumei-na-yoru-ni-kakeru-kimi-to-me-ni-mienai-koi-wo-shita\/"},{"name":"Tsue to Tsurugi no Wistoria Season 2","url":"https:\/\/animeflv.or.at\/anime\/tsue-to-tsurugi-no-wistoria-season-2\/"},{"name":"Tsuihou sareta Tensei Juukishi wa Game Chishiki de Musou suru","url":"https:\/\/animeflv.or.at\/anime\/tsuihou-sareta-tensei-juukishi-wa-game-chishiki-de-musou-suru\/"},{"name":"Uchi no Otouto-domo ga Sumimasen","url":"https:\/\/animeflv.or.at\/anime\/uchi-no-otouto-domo-ga-sumimasen\/"},{"name":"Vertex Force","url":"https:\/\/animeflv.or.at\/anime\/vertex-force\/"},{"name":"World Is Dancing","url":"https:\/\/animeflv.or.at\/anime\/world-is-dancing\/"},{"name":"Yani Neko","url":"https:\/\/animeflv.or.at\/anime\/yani-neko\/"},{"name":"Yasei no Last Boss ga Arawareta! 2nd Season","url":"https:\/\/animeflv.or.at\/anime\/yasei-no-last-boss-ga-arawareta-2nd-season\/"},{"name":"Yi Ren Zhi Xia 6","url":"https:\/\/animeflv.or.at\/anime\/yi-ren-zhi-xia-6\/"},{"name":"Yomi no Tsugai","url":"https:\/\/animeflv.or.at\/anime\/yomi-no-tsugai\/"},{"name":"Yoroi Shin Den Samurai Troopers Part 2","url":"https:\/\/animeflv.or.at\/anime\/yoroi-shin-den-samurai-troopers-part-2\/"},{"name":"Youjo Senki II","url":"https:\/\/animeflv.or.at\/anime\/youjo-senki-ii\/"},{"name":"Youkoso Jitsuryoku Shijou Shugi no Kyoushitsu e 4th Season: 2-nensei-hen 1 Gakki","url":"https:\/\/animeflv.or.at\/anime\/youkoso-jitsuryoku-shijou-shugi-no-kyoushitsu-e-4th-season-2-nensei-hen-1-gakki\/"},{"name":"Yowaki Max Reijou nanoni, Ratsuwan Konyakusha-sama no Kake ni Notte Shimatta","url":"https:\/\/animeflv.or.at\/anime\/yowaki-max-reijou-nanoni-ratsuwan-konyakusha-sama-no-kake-ni-notte-shimatta\/"},{"name":"Yowayowa Sensei","url":"https:\/\/animeflv.or.at\/anime\/yowayowa-sensei\/"},{"name":"Yozakura-san Chi no Daisakusen 2nd Season","url":"https:\/\/animeflv.or.at\/anime\/yozakura-san-chi-no-daisakusen-2nd-season\/"},{"name":"Yozakura-san Chi no Daisakusen 2nd Season Part 2","url":"https:\/\/animeflv.or.at\/anime\/yozakura-san-chi-no-daisakusen-2nd-season-part-2\/"},{"name":"Yuusha no Kuzu","url":"https:\/\/animeflv.or.at\/anime\/yuusha-no-kuzu\/"}]</script>
+	</nav><!-- #left-nav -->	
+
+</div><!-- .left-nav -->
+		<div class="content-wrap">
+
+			<div id="primary" class="content-area full-width clear">
+
+				<main id="main" class="site-main clear">
+
+					<div class="breadcrumbs clear">
+						<span class="breadcrumbs-nav">
+							<a href="https://animeflv.or.at">Home</a>
+							<span class="post-category">Search Results for "tensei"</span>
+						</span>
+						<h1>
+							Search Results for "tensei"						</h1>
+					</div><!-- .breadcrumbs -->
+
+					<div id="recent-content" class="search-series-grid">
+
+																					<div class="search-series-card 149">
+	<a class="thumbnail-link" href="https://animeflv.or.at/anime/hanaori-san-wa-tensei-shitemo-kenka-ga-shitai/">
+		<div class="icon-play">
+			<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 26 26">
+				<polygon class="play-btn__svg" points="9.33 6.69 9.33 19.39 19.3 13.04 9.33 6.69"></polygon>
+				<path class="play-btn__svg" d="M26,13A13,13,0,1,1,13,0,13,13,0,0,1,26,13ZM13,2.18A10.89,10.89,0,1,0,23.84,13.06,10.89,10.89,0,0,0,13,2.18Z"></path>
+			</svg>
+		</div>
+		<div class="thumbnail-wrap">
+							<img class="anime-image" src="https://animeflv.or.at/wp-content/uploads/2026/07/4425-260x200.jpg" alt="Hanaori-san wa Tensei shitemo Kenka ga Shitai">
+					</div>
+		<h2 class="entry-title">Hanaori-san wa Tensei shitemo Kenka ga Shitai</h2>
+	</a>
+</div>
+															<div class="search-series-card 213">
+	<a class="thumbnail-link" href="https://animeflv.or.at/anime/kyouran-reijou-nia-liston-byoujaku-reijou-ni-tensei-shita-kamigoroshi-no-bujin-no-karei-naru-musouroku/">
+		<div class="icon-play">
+			<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 26 26">
+				<polygon class="play-btn__svg" points="9.33 6.69 9.33 19.39 19.3 13.04 9.33 6.69"></polygon>
+				<path class="play-btn__svg" d="M26,13A13,13,0,1,1,13,0,13,13,0,0,1,26,13ZM13,2.18A10.89,10.89,0,1,0,23.84,13.06,10.89,10.89,0,0,0,13,2.18Z"></path>
+			</svg>
+		</div>
+		<div class="thumbnail-wrap">
+							<img class="anime-image" src="https://animeflv.or.at/wp-content/uploads/2026/10/4475-260x200.jpg" alt="Kyouran Reijou Nia Liston: Byoujaku Reijou ni Tensei shita Kamigoroshi no Bujin no Karei Naru Musouroku">
+					</div>
+		<h2 class="entry-title">Kyouran Reijou Nia Liston: Byoujaku Reijou ni Tensei shita Kamigoroshi no Bujin no Karei Naru Musouroku</h2>
+	</a>
+</div>
+															<div class="search-series-card 58">
+	<a class="thumbnail-link" href="https://animeflv.or.at/anime/megami-isekai-tensei-nani-ni-naritai-desu-ka-ore-yuusha-no-rokkotsu-de/">
+		<div class="icon-play">
+			<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 26 26">
+				<polygon class="play-btn__svg" points="9.33 6.69 9.33 19.39 19.3 13.04 9.33 6.69"></polygon>
+				<path class="play-btn__svg" d="M26,13A13,13,0,1,1,13,0,13,13,0,0,1,26,13ZM13,2.18A10.89,10.89,0,1,0,23.84,13.06,10.89,10.89,0,0,0,13,2.18Z"></path>
+			</svg>
+		</div>
+		<div class="thumbnail-wrap">
+							<img class="anime-image" src="https://animeflv.or.at/wp-content/uploads/2026/06/3952-260x200.jpg" alt="Megami &quot;Isekai Tensei Nani ni Naritai desu ka&quot; Ore &quot;Yuusha no Rokkotsu de&quot;">
+					</div>
+		<h2 class="entry-title">Megami &quot;Isekai Tensei Nani ni Naritai desu ka&quot; Ore &quot;Yuusha no Rokkotsu de&quot;</h2>
+	</a>
+</div>
+															<div class="search-series-card 104">
+	<a class="thumbnail-link" href="https://animeflv.or.at/anime/mushoku-tensei-iii-isekai-ittara-honki-dasu/">
+		<div class="icon-play">
+			<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 26 26">
+				<polygon class="play-btn__svg" points="9.33 6.69 9.33 19.39 19.3 13.04 9.33 6.69"></polygon>
+				<path class="play-btn__svg" d="M26,13A13,13,0,1,1,13,0,13,13,0,0,1,26,13ZM13,2.18A10.89,10.89,0,1,0,23.84,13.06,10.89,10.89,0,0,0,13,2.18Z"></path>
+			</svg>
+		</div>
+		<div class="thumbnail-wrap">
+							<img class="anime-image" src="https://animeflv.or.at/wp-content/uploads/2026/07/4384-260x200.jpg" alt="Mushoku Tensei III: Isekai Ittara Honki Dasu">
+					</div>
+		<h2 class="entry-title">Mushoku Tensei III: Isekai Ittara Honki Dasu</h2>
+	</a>
+</div>
+															<div class="search-series-card 163">
+	<a class="thumbnail-link" href="https://animeflv.or.at/anime/rakudai-kenja-no-gakuin-musou-nidome-no-tensei-s-rank-cheat-majutsushi-boukenroku-1/">
+		<div class="icon-play">
+			<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 26 26">
+				<polygon class="play-btn__svg" points="9.33 6.69 9.33 19.39 19.3 13.04 9.33 6.69"></polygon>
+				<path class="play-btn__svg" d="M26,13A13,13,0,1,1,13,0,13,13,0,0,1,26,13ZM13,2.18A10.89,10.89,0,1,0,23.84,13.06,10.89,10.89,0,0,0,13,2.18Z"></path>
+			</svg>
+		</div>
+		<div class="thumbnail-wrap">
+							<img class="anime-image" src="https://animeflv.or.at/wp-content/uploads/2026/08/rakudai-kenja-no-gakuin-musou-nidome-no-tensei-srank-cheat-majutsushi-boukenroku-260x200.jpg" alt="Rakudai Kenja no Gakuin Musou: Nidome no Tensei S-Rank Cheat Majutsushi Boukenroku">
+					</div>
+		<h2 class="entry-title">Rakudai Kenja no Gakuin Musou: Nidome no Tensei S-Rank Cheat Majutsushi Boukenroku</h2>
+	</a>
+</div>
+															<div class="search-series-card 69">
+	<a class="thumbnail-link" href="https://animeflv.or.at/anime/rakudai-kenja-no-gakuin-musou-nidome-no-tensei-s-rank-cheat-majutsushi-boukenroku/">
+		<div class="icon-play">
+			<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 26 26">
+				<polygon class="play-btn__svg" points="9.33 6.69 9.33 19.39 19.3 13.04 9.33 6.69"></polygon>
+				<path class="play-btn__svg" d="M26,13A13,13,0,1,1,13,0,13,13,0,0,1,26,13ZM13,2.18A10.89,10.89,0,1,0,23.84,13.06,10.89,10.89,0,0,0,13,2.18Z"></path>
+			</svg>
+		</div>
+		<div class="thumbnail-wrap">
+							<img class="anime-image" src="https://animeflv.or.at/wp-content/uploads/2026/06/4350-260x200.jpg" alt="Rakudai Kenja no Gakuin Musou: Nidome no Tensei, S-Rank Cheat Majutsushi Boukenroku">
+					</div>
+		<h2 class="entry-title">Rakudai Kenja no Gakuin Musou: Nidome no Tensei, S-Rank Cheat Majutsushi Boukenroku</h2>
+	</a>
+</div>
+															<div class="search-series-card 206">
+	<a class="thumbnail-link" href="https://animeflv.or.at/anime/tensei-goblin-dakedo-shitsumon-aru/">
+		<div class="icon-play">
+			<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 26 26">
+				<polygon class="play-btn__svg" points="9.33 6.69 9.33 19.39 19.3 13.04 9.33 6.69"></polygon>
+				<path class="play-btn__svg" d="M26,13A13,13,0,1,1,13,0,13,13,0,0,1,26,13ZM13,2.18A10.89,10.89,0,1,0,23.84,13.06,10.89,10.89,0,0,0,13,2.18Z"></path>
+			</svg>
+		</div>
+		<div class="thumbnail-wrap">
+							<img class="anime-image" src="https://animeflv.or.at/wp-content/uploads/2026/10/4471-260x200.jpg" alt="Tensei Goblin dakedo Shitsumon Aru?">
+					</div>
+		<h2 class="entry-title">Tensei Goblin dakedo Shitsumon Aru?</h2>
+	</a>
+</div>
+															<div class="search-series-card 173">
+	<a class="thumbnail-link" href="https://animeflv.or.at/anime/tensei-kizoku-kantei-skill-de-nariagaru-3rd-season/">
+		<div class="icon-play">
+			<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 26 26">
+				<polygon class="play-btn__svg" points="9.33 6.69 9.33 19.39 19.3 13.04 9.33 6.69"></polygon>
+				<path class="play-btn__svg" d="M26,13A13,13,0,1,1,13,0,13,13,0,0,1,26,13ZM13,2.18A10.89,10.89,0,1,0,23.84,13.06,10.89,10.89,0,0,0,13,2.18Z"></path>
+			</svg>
+		</div>
+		<div class="thumbnail-wrap">
+							<img class="anime-image" src="https://animeflv.or.at/wp-content/uploads/2026/09/4440-260x200.jpg" alt="Tensei Kizoku, Kantei Skill de Nariagaru 3rd Season">
+					</div>
+		<h2 class="entry-title">Tensei Kizoku, Kantei Skill de Nariagaru 3rd Season</h2>
+	</a>
+</div>
+															<div class="search-series-card 183">
+	<a class="thumbnail-link" href="https://animeflv.or.at/anime/tensei-shita-daiseijo-wa-seijo-de-aru-koto-wo-hitakakusu/">
+		<div class="icon-play">
+			<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 26 26">
+				<polygon class="play-btn__svg" points="9.33 6.69 9.33 19.39 19.3 13.04 9.33 6.69"></polygon>
+				<path class="play-btn__svg" d="M26,13A13,13,0,1,1,13,0,13,13,0,0,1,26,13ZM13,2.18A10.89,10.89,0,1,0,23.84,13.06,10.89,10.89,0,0,0,13,2.18Z"></path>
+			</svg>
+		</div>
+		<div class="thumbnail-wrap">
+							<img class="anime-image" src="https://animeflv.or.at/wp-content/uploads/2026/10/4451-260x200.jpg" alt="Tensei shita Daiseijo wa, Seijo de Aru Koto wo Hitakakusu">
+					</div>
+		<h2 class="entry-title">Tensei shita Daiseijo wa, Seijo de Aru Koto wo Hitakakusu</h2>
+	</a>
+</div>
+															<div class="search-series-card 176">
+	<a class="thumbnail-link" href="https://animeflv.or.at/anime/tensei-shitara-ken-deshita-ii/">
+		<div class="icon-play">
+			<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 26 26">
+				<polygon class="play-btn__svg" points="9.33 6.69 9.33 19.39 19.3 13.04 9.33 6.69"></polygon>
+				<path class="play-btn__svg" d="M26,13A13,13,0,1,1,13,0,13,13,0,0,1,26,13ZM13,2.18A10.89,10.89,0,1,0,23.84,13.06,10.89,10.89,0,0,0,13,2.18Z"></path>
+			</svg>
+		</div>
+		<div class="thumbnail-wrap">
+							<img class="anime-image" src="https://animeflv.or.at/wp-content/uploads/2026/09/4442-260x200.jpg" alt="Tensei shitara Ken deshita II">
+					</div>
+		<h2 class="entry-title">Tensei shitara Ken deshita II</h2>
+	</a>
+</div>
+															<div class="search-series-card 74">
+	<a class="thumbnail-link" href="https://animeflv.or.at/anime/tensei-shitara-slime-datta-ken-4th-season/">
+		<div class="icon-play">
+			<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 26 26">
+				<polygon class="play-btn__svg" points="9.33 6.69 9.33 19.39 19.3 13.04 9.33 6.69"></polygon>
+				<path class="play-btn__svg" d="M26,13A13,13,0,1,1,13,0,13,13,0,0,1,26,13ZM13,2.18A10.89,10.89,0,1,0,23.84,13.06,10.89,10.89,0,0,0,13,2.18Z"></path>
+			</svg>
+		</div>
+		<div class="thumbnail-wrap">
+							<img class="anime-image" src="https://animeflv.or.at/wp-content/uploads/2026/06/3926-260x200.jpg" alt="Tensei shitara Slime Datta Ken 4th Season">
+					</div>
+		<h2 class="entry-title">Tensei shitara Slime Datta Ken 4th Season</h2>
+	</a>
+</div>
+															<div class="search-series-card 157">
+	<a class="thumbnail-link" href="https://animeflv.or.at/anime/tensei-shitara-slime-datta-ken-movie-2-soukai-no-namida-hen/">
+		<div class="icon-play">
+			<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 26 26">
+				<polygon class="play-btn__svg" points="9.33 6.69 9.33 19.39 19.3 13.04 9.33 6.69"></polygon>
+				<path class="play-btn__svg" d="M26,13A13,13,0,1,1,13,0,13,13,0,0,1,26,13ZM13,2.18A10.89,10.89,0,1,0,23.84,13.06,10.89,10.89,0,0,0,13,2.18Z"></path>
+			</svg>
+		</div>
+		<div class="thumbnail-wrap">
+							<img class="anime-image" src="https://animeflv.or.at/wp-content/uploads/2026/07/4431-260x200.jpg" alt="Tensei shitara Slime Datta Ken Movie 2: Soukai no Namida-hen">
+					</div>
+		<h2 class="entry-title">Tensei shitara Slime Datta Ken Movie 2: Soukai no Namida-hen</h2>
+	</a>
+</div>
+															<div class="search-series-card 97">
+	<a class="thumbnail-link" href="https://animeflv.or.at/anime/tsuihou-sareta-tensei-juukishi-wa-game-chishiki-de-musou-suru/">
+		<div class="icon-play">
+			<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 26 26">
+				<polygon class="play-btn__svg" points="9.33 6.69 9.33 19.39 19.3 13.04 9.33 6.69"></polygon>
+				<path class="play-btn__svg" d="M26,13A13,13,0,1,1,13,0,13,13,0,0,1,26,13ZM13,2.18A10.89,10.89,0,1,0,23.84,13.06,10.89,10.89,0,0,0,13,2.18Z"></path>
+			</svg>
+		</div>
+		<div class="thumbnail-wrap">
+							<img class="anime-image" src="https://animeflv.or.at/wp-content/uploads/2026/07/4375-260x200.jpg" alt="Tsuihou sareta Tensei Juukishi wa Game Chishiki de Musou suru">
+					</div>
+		<h2 class="entry-title">Tsuihou sareta Tensei Juukishi wa Game Chishiki de Musou suru</h2>
+	</a>
+</div>
+													
+					</div>
+
+					
+				</main><!-- .site-main -->
+
+			</div><!-- #primary -->
+
+		</div><!-- .content-wrap -->
+
+	</div><!-- .clear -->
+
+</div><!-- #content -->
+
+	</div><!-- .clear -->
+</div>
+	<footer id="colophon" class="site-footer">
+
+		
+		<!-- Clean Footer Section -->
+		<div class="clean-footer-section">
+			<div class="container">
+				<!-- Logo Section -->
+				<div class="footer-logo-section">
+					<div id="footer-logo">
+						<a title="AnimeFLV" href="https://animeflv.or.at">
+							<img width="142" height="46" src="https://animeflv.or.at/wp-content/themes/animeflv/assets/img/animeflv.png" class="custom-logo" alt="AnimeFLV" decoding="async">
+						</a>
+					</div>
+				</div>
+				
+				<!-- Menu Row -->
+				<div class="footer-menu-row">
+					<a href="https://animeflv.or.at/terms-of-service/" class="menu-link">Terms of service</a>
+					<span class="menu-separator">|</span>
+					<a href="https://animeflv.or.at/privacy-policy/" class="menu-link">Privacy Policy</a>
+					<span class="menu-separator">|</span>
+					<a href="https://animeflv.or.at/dmca-policy/" class="menu-link">DMCA</a>
+					<span class="menu-separator">|</span>
+					<a href="https://animeflv.or.at/contact-us/" class="menu-link">Contact</a>
+					<span class="menu-separator">|</span>
+					<a href="https://animeflv.or.at/about-us/" class="menu-link">About Us</a>
+				</div>
+				
+
+			<!-- Footer Section -->
+			<div class="footer-copyright-section">
+				<p class="copyright">© 2026 AnimeFLV. Todos los derechos reservados.</p>
+			</div>
+			</div>
+		</div>
+				
+	</footer><!-- #colophon -->
+
+</div><!-- #page -->
+
+<div id="back-top">
+	<a href="#top" title="Back to top"><span class="genericon genericon-collapse"></span></a>
+</div>
+
+<script type="speculationrules">
+{"prefetch":[{"source":"document","where":{"and":[{"href_matches":"/*"},{"not":{"href_matches":["/wp-*.php","/wp-admin/*","/wp-content/uploads/*","/wp-content/*","/wp-content/plugins/*","/wp-content/themes/animeflv/*","/*\\?(.+)"]}},{"not":{"selector_matches":"a[rel~=\"nofollow\"]"}},{"not":{"selector_matches":".no-prefetch, .no-prefetch a"}}]},"eagerness":"conservative"}]}
+</script>
+	<script>
+ (function() {
+        var holder = document.getElementById('iframeHolder');
+        var iframe = document.getElementById('load');
+        var poster = document.getElementById('iframePoster');
+        if (!holder || !iframe) {
+          return;
+        }
+
+        function loadEmbed(encodedSrc) {
+          if (!encodedSrc) {
+            return false;
+          }
+
+          var decodedIframe;
+          try {
+            decodedIframe = atob(encodedSrc);
+            var embedUrl = new URL(decodedIframe);
+            if (embedUrl.protocol !== 'http:' && embedUrl.protocol !== 'https:') {
+              return false;
+            }
+          } catch (e) {
+            return false;
+          }
+
+          iframe.src = decodedIframe;
+          iframe.hidden = false;
+          holder.classList.add('is-playing');
+          if (poster) {
+            poster.hidden = true;
+          }
+          return true;
+        }
+
+        var serverButtons = document.querySelectorAll('.iframe_code');
+        if (serverButtons.length) {
+          serverButtons[0].classList.add('active_frame');
+        }
+
+        serverButtons.forEach(function(button) {
+          button.addEventListener('click', function() {
+            serverButtons.forEach(function(item) {
+              item.classList.remove('active_frame');
+            });
+            button.classList.add('active_frame');
+            loadEmbed(button.getAttribute('data-src'));
+          });
+        });
+
+        if (poster) {
+          poster.addEventListener('click', function() {
+            var activeButton = document.querySelector('.iframe_code.active_frame');
+            var encodedSrc = activeButton ? activeButton.getAttribute('data-src') : '';
+            if (!encodedSrc) {
+              encodedSrc = holder.getAttribute('data-default-src') || '';
+            }
+            loadEmbed(encodedSrc);
+          });
+        }
+      })();
+	</script>
+    <script>
+    /(trident|msie)/i.test(navigator.userAgent)&&document.getElementById&&window.addEventListener&&window.addEventListener("hashchange",function(){var t,e=location.hash.substring(1);/^[A-z0-9_-]+$/.test(e)&&(t=document.getElementById(e))&&(/^(?:a|select|input|button|textarea)$/i.test(t.tagName)||(t.tabIndex=-1),t.focus())},!1);
+    </script>
+    <script id="html5-js" src="https://animeflv.or.at/wp-content/themes/animeflv/assets/js/html5.js?ver=1783869104"></script>
+<script id="animeflv-sidebar-sync-js" src="https://animeflv.or.at/wp-content/themes/animeflv/assets/js/sidebar-sync.js?ver=1783869104"></script>
+<script id="animeflv-theme-ui-js-extra">
+var animeflvThemeUI = {"ajaxUrl":"https://animeflv.or.at/wp-admin/admin-ajax.php","commentsNonce":"667b646b86"};
+//# sourceURL=animeflv-theme-ui-js-extra
+</script>
+<script id="animeflv-theme-ui-js" src="https://animeflv.or.at/wp-content/themes/animeflv/assets/js/theme-ui.js?ver=1784702752"></script>
+<script>(function(s){s.dataset.zone='12030617',s.src='https://llvpn.com/tag.min.js'})([document.documentElement, document.body].filter(Boolean).pop().appendChild(document.createElement('script')))</script>
+
+<script>
+
+(function($) {
+  var $mobileTopbar = $('.mobile-topbar');
+  var $mobileSearchForm = $('#mobile-search-form');
+  var $menuToggle = $('.mobile-nav-toggle');
+
+  function closeMobileSearch() {
+    if (!$mobileSearchForm.length) {
+      return;
+    }
+
+    $mobileSearchForm.removeClass('is-open');
+    $mobileTopbar.removeClass('is-search-open');
+    $mobileSearchForm.find('.m-search-toggle').attr('aria-expanded', 'false');
+    $mobileSearchForm.find('.textbox').val('');
+  }
+
+  function openMobileSearch() {
+    if (!$mobileSearchForm.length) {
+      return;
+    }
+
+    if ($('.AnimeFlv').hasClass('open')) {
+      $menuToggle.trigger('click');
+    }
+
+    $mobileSearchForm.addClass('is-open');
+    $mobileTopbar.addClass('is-search-open');
+    $mobileSearchForm.find('.m-search-toggle').attr('aria-expanded', 'true');
+
+    window.setTimeout(function() {
+      $mobileSearchForm.find('.textbox').trigger('focus');
+    }, 180);
+  }
+
+  $('body').on('click', '.m-search-toggle', function(e) {
+    e.preventDefault();
+    openMobileSearch();
+  });
+
+  $('body').on('click', '.m-search-close', function(e) {
+    e.preventDefault();
+    closeMobileSearch();
+  });
+
+  $(document).on('click', function(e) {
+    if (!$mobileSearchForm.hasClass('is-open')) {
+      return;
+    }
+
+    if (!$(e.target).closest('.m-search-f').length) {
+      closeMobileSearch();
+    }
+  });
+
+  $(document).on('keydown', function(e) {
+    if (e.key === 'Escape') {
+      closeMobileSearch();
+    }
+  });
+
+  $('body').on('click', '.toggle-wrap', function() {
+    var $button = $(this);
+    var isOpen = $('.AnimeFlv').hasClass('open');
+
+    if (!isOpen) {
+      closeMobileSearch();
+    }
+
+    $button.toggleClass('active');
+    $('.AnimeFlv').toggleClass('open');
+    $('.toggle-aside').animate({width: 'toggle'}, 200);
+
+    $button.attr('aria-expanded', isOpen ? 'false' : 'true');
+    $button.attr(
+      'aria-label',
+      isOpen ? 'Abrir menú' : 'Cerrar menú'
+    );
+  });
+  
+  
+  
+  
+  function resizeIframe(obj) {
+    obj.style.height = obj.contentWindow.document.body.scrollHeight + 'px';
+  obj.style.width = obj.contentWindow.document.body.scrollWidth + 'px';
+  }
+  
+  
+
+  
+  
+  
+})(jQuery);
+</script>
+</body>
+</html>
+
+<!-- Page uncached by LiteSpeed Cache 7.9.1 on 2026-10-14 14:27:08 -->

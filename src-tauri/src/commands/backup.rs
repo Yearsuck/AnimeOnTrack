@@ -50,7 +50,7 @@ pub(crate) async fn access_token_or_disconnect(
 }
 
 #[tauri::command]
-pub fn backup_status(state: State<'_, AppState>) -> Result<BackupStatus, String> {
+pub async fn backup_status(state: State<'_, AppState>) -> Result<BackupStatus, String> {
     let db = state.db.lock().unwrap();
     let refresh = connected_token(&db);
     let last_at = db.get_setting("backup_last_at_iso").ok().flatten();
@@ -80,7 +80,7 @@ pub fn backup_status(state: State<'_, AppState>) -> Result<BackupStatus, String>
 /// here beats leaving a token behind that fails confusingly on the next
 /// backup.
 #[tauri::command]
-pub fn set_google_credentials(
+pub async fn set_google_credentials(
     state: State<'_, AppState>,
     client_id: String,
     client_secret: String,
@@ -96,7 +96,7 @@ pub fn set_google_credentials(
             db.delete_setting("gdrive_file_id").map_err(|e| e.to_string())?;
         }
     }
-    backup_status(state)
+    backup_status(state).await
 }
 
 #[tauri::command]
@@ -118,17 +118,17 @@ pub async fn connect_drive(app: AppHandle, state: State<'_, AppState>) -> Result
         db.set_setting("gdrive_refresh_token", &backup::secure_store::protect(&refresh))
             .map_err(|e| e.to_string())?;
     }
-    backup_status(state)
+    backup_status(state).await
 }
 
 #[tauri::command]
-pub fn disconnect_drive(state: State<'_, AppState>) -> Result<BackupStatus, String> {
+pub async fn disconnect_drive(state: State<'_, AppState>) -> Result<BackupStatus, String> {
     {
         let db = state.db.lock().unwrap();
         db.delete_setting("gdrive_refresh_token").map_err(|e| e.to_string())?;
         db.delete_setting("gdrive_file_id").map_err(|e| e.to_string())?;
     }
-    backup_status(state)
+    backup_status(state).await
 }
 
 #[tauri::command]
@@ -177,7 +177,7 @@ pub async fn backup_now(app: AppHandle, state: State<'_, AppState>) -> Result<Ba
         // Settings warning banner is about the *current* state, not history.
         db.delete_setting("backup_last_error").ok();
     }
-    backup_status(state)
+    backup_status(state).await
 }
 
 fn backup_now_unix() -> i64 {

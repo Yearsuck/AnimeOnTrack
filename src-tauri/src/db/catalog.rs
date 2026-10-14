@@ -20,7 +20,8 @@ type SiblingIndex = std::collections::HashMap<(String, i64), Vec<(i64, String, i
 /// start_date, genres.
 /// Version 2 = synonyms.
 /// Version 3 = next airing episode and tags.
-pub const CATALOG_METADATA_VERSION: i64 = 3;
+/// Version 4 = relations.
+pub const CATALOG_METADATA_VERSION: i64 = 4;
 
 /// Filters for browsing the locally-synced AniList catalog (`Catalog.tsx`'s
 /// search/filter bar). All fields are optional/empty-by-default so
@@ -148,6 +149,13 @@ impl Db {
             self.conn.execute(
                 "INSERT OR IGNORE INTO anilist_catalog_tags(anilist_id, tag, rank) VALUES(?1, ?2, ?3)",
                 (anime.id, &tag.name, tag.rank),
+            )?;
+        }
+        self.conn.execute("DELETE FROM anilist_catalog_relations WHERE anilist_id=?1", [anime.id])?;
+        for relation in &anime.relations {
+            self.conn.execute(
+                "INSERT OR IGNORE INTO anilist_catalog_relations(anilist_id, related_id, relation_type) VALUES(?1, ?2, ?3)",
+                (anime.id, relation.related_id, &relation.relation_type),
             )?;
         }
         Ok(())
@@ -584,10 +592,23 @@ impl Db {
     pub fn link_series_to_catalog(&self) -> Result<i64> {
         let rows = self.catalog_titles_for_index()?;
         let index = crate::matching::CatalogIndex::build(&rows);
+        self.link_series_to_catalog_with(&index, rows)
+    }
+
+    /// The linking pass given an already-built index. Building the index over
+    /// the whole catalog is the expensive CPU part and needs no DB access, so
+    /// the startup command builds it *outside* the `state.db` mutex and only
+    /// holds the lock for this step; holding it for the build as well froze
+    /// every data query for several seconds after each launch.
+    pub fn link_series_to_catalog_with(
+        &self,
+        index: &crate::matching::CatalogIndex,
+        rows: Vec<crate::matching::CatalogTitleRow>,
+    ) -> Result<i64> {
         let catalog_titles: std::collections::HashMap<i64, Vec<String>> =
             rows.into_iter().map(|row| (row.id, row.titles)).collect();
 
-        self.repair_season_mislinks_with(&index, &catalog_titles)?;
+        self.repair_season_mislinks_with(index, &catalog_titles)?;
 
         // Snapshot AFTER the repair so the sibling step sees the corrected links.
         let mut stmt = self.conn.prepare("SELECT id, title, anilist_id FROM series WHERE anilist_id IS NOT NULL")?;
@@ -596,7 +617,7 @@ impl Db {
         let siblings = Self::sibling_index(&linked_series);
         let mut linked = 0i64;
         for (series_id, title) in self.series_needing_catalog_link()? {
-            if let Some(new_id) = self.resolve_catalog_link(&title, series_id, &index, &catalog_titles, &siblings)? {
+            if let Some(new_id) = self.resolve_catalog_link(&title, series_id, index, &catalog_titles, &siblings)? {
                 self.set_anilist_id(series_id, new_id)?;
                 linked += 1;
             }
@@ -1106,6 +1127,7 @@ impl Db {
             next_episode: r.get("next_episode")?,
             genres: Vec::new(), // filled in by callers that need it — see list_catalog
             tags: Vec::new(), // filled in by callers that need it
+            relations: Vec::new(),
         })
     }
 
@@ -1144,6 +1166,19 @@ impl Db {
             .query_map([anilist_id], |r| Ok(crate::anilist::CatalogTag { name: r.get(0)?, rank: r.get(1)? }))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(tags)
+    }
+
+    /// Stored PREQUEL/SEQUEL edges of one entry as (related id, relation type). Only read by tests today:
+    /// `releasing_sequel_id` walks the table with its own prepared statements.
+    #[cfg(test)]
+    pub fn list_catalog_relations(&self, anilist_id: i64) -> Result<Vec<(i64, String)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT related_id, relation_type FROM anilist_catalog_relations WHERE anilist_id=?1 ORDER BY related_id, relation_type")?;
+        let relations = stmt
+            .query_map([anilist_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(relations)
     }
 
     /// Whether at least one synced catalog row has a non-NULL `status` —
@@ -1249,9 +1284,9 @@ impl Db {
     /// biases toward higher `average_score` rather than being genuinely
     /// uniform — see docs/superpowers/specs/2026-07-13-discover-recommendation-toggle-design.md.
     // The knobs are all independent recommendation inputs; bundling them into
-    // a struct would just move the same eight fields elsewhere.
+    // a struct would just move the same nine fields elsewhere.
     #[allow(clippy::too_many_arguments)]
-    pub fn random_catalog_anime_in_genre(
+    pub fn random_catalog_anime_in_genre_with_signals(
         &self,
         genre: &str,
         banned_formats: &[String],
@@ -1259,6 +1294,7 @@ impl Db {
         excluded_norm_titles: &std::collections::HashSet<String>,
         genre_affinity: &std::collections::HashMap<String, f64>,
         format_affinity: &std::collections::HashMap<String, f64>,
+        taste_signals: &crate::recommend::TasteSignals,
         recommended: bool,
         hide_upcoming: bool,
         min_start_date: Option<i64>,
@@ -1369,17 +1405,60 @@ impl Db {
         };
         let mut survivors: Vec<crate::anilist::CatalogAnime> =
             batch.into_iter().filter(|a| !is_engaged_by_title(a)).collect();
+        // A per-id list_catalog_tags loop is acceptable when survivors <= 50.
         for anime in &mut survivors {
             anime.genres = self.list_catalog_genres(anime.id)?;
-            anime.tags = self.list_catalog_tags(anime.id)?;
+            if anime.tags.is_empty() {
+                anime.tags = self.list_catalog_tags(anime.id)?;
+            }
         }
 
         if recommended {
             let now_unix = chrono::Utc::now().timestamp();
-            Ok(crate::recommend::pick_recommended(survivors, genre_affinity, format_affinity, genre, now_unix))
+            Ok(crate::recommend::pick_recommended(
+                survivors,
+                genre_affinity,
+                format_affinity,
+                taste_signals,
+                genre,
+                now_unix,
+            ))
         } else {
             Ok(survivors.into_iter().next())
         }
+    }
+
+    /// Same pick without taste signals (tags/studios); the app calls `_with_signals`, tests keep this shape.
+    #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn random_catalog_anime_in_genre(
+        &self,
+        genre: &str,
+        banned_formats: &[String],
+        banned_genres: &[String],
+        excluded_norm_titles: &std::collections::HashSet<String>,
+        genre_affinity: &std::collections::HashMap<String, f64>,
+        format_affinity: &std::collections::HashMap<String, f64>,
+        recommended: bool,
+        hide_upcoming: bool,
+        min_start_date: Option<i64>,
+        max_start_date: Option<i64>,
+        min_score: Option<i64>,
+    ) -> Result<Option<crate::anilist::CatalogAnime>> {
+        self.random_catalog_anime_in_genre_with_signals(
+            genre,
+            banned_formats,
+            banned_genres,
+            excluded_norm_titles,
+            genre_affinity,
+            format_affinity,
+            &crate::recommend::TasteSignals::default(),
+            recommended,
+            hide_upcoming,
+            min_start_date,
+            max_start_date,
+            min_score,
+        )
     }
 
     /// Normalized-title exclusion set input: titles of `series` rows the
@@ -1400,6 +1479,306 @@ impl Db {
         )?;
         let titles = stmt.query_map([], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(titles)
+    }
+}
+
+impl Db {
+    /// Replace the stored ani.zip episode map for `anilist_id` with `entries`.
+    /// Runs in a single transaction: deletes existing mapped episodes, inserts
+    /// the new entries, and upserts the `anilist_episode_map_fetched` tracking row.
+    pub fn replace_episode_map(
+        &self,
+        anilist_id: i64,
+        entries: &[crate::anizip::MapEntry],
+        now: i64,
+    ) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        self.conn.execute(
+            "DELETE FROM anilist_episode_map WHERE anilist_id = ?1",
+            [anilist_id],
+        )?;
+        for entry in entries {
+            self.conn.execute(
+                "INSERT INTO anilist_episode_map (anilist_id, episode, season, absolute, air_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![anilist_id, entry.episode, entry.season, entry.absolute, entry.air_at],
+            )?;
+        }
+        self.conn.execute(
+            "INSERT INTO anilist_episode_map_fetched (anilist_id, fetched_at, entries)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(anilist_id) DO UPDATE SET
+                 fetched_at = excluded.fetched_at,
+                 entries = excluded.entries",
+            rusqlite::params![anilist_id, now, entries.len() as i64],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// AniList ids of series that are followed OR airing, have a linked AniList id,
+    /// and either have no fetched episode map or a stale one (older than 3 days for RELEASING/HIATUS,
+    /// older than 30 days otherwise). Distinct, ordered by airing/followed first, then oldest fetched,
+    /// capped at `limit`.
+    pub fn episode_map_stale_ids(&self, now: i64, limit: usize) -> Result<Vec<i64>> {
+        let three_days_ago = now - 3 * 86400;
+        let thirty_days_ago = now - 30 * 86400;
+        let mut stmt = self.conn.prepare(
+            "SELECT s.anilist_id
+             FROM series s
+             LEFT JOIN anilist_episode_map_fetched f ON f.anilist_id = s.anilist_id
+             LEFT JOIN anilist_catalog c ON c.id = s.anilist_id
+             WHERE (s.followed = 1 OR s.is_airing = 1)
+               AND s.anilist_id IS NOT NULL
+               AND (
+                   f.fetched_at IS NULL
+                   OR (
+                       CASE
+                           WHEN c.status IN ('RELEASING', 'HIATUS') THEN f.fetched_at < ?1
+                           ELSE f.fetched_at < ?2
+                       END
+                   )
+               )
+             GROUP BY s.anilist_id
+             ORDER BY
+                 MAX(CASE WHEN s.is_airing = 1 AND s.followed = 1 THEN 2 WHEN s.is_airing = 1 OR s.followed = 1 THEN 1 ELSE 0 END) DESC,
+                 COALESCE(MIN(f.fetched_at), 0) ASC,
+                 s.anilist_id ASC
+             LIMIT ?3",
+        )?;
+        let rows = stmt
+            .query_map(rusqlite::params![three_days_ago, thirty_days_ago, limit as i64], |r| r.get::<_, i64>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// `absolute - episode` of the lowest regular episode when its `absolute` is not NULL.
+    /// None when there is no map, no entries, or absolute is NULL.
+    #[allow(dead_code)] // A later phase uses this helper.
+    pub fn episode_offset(&self, anilist_id: i64) -> Result<Option<i64>> {
+        let row: Option<(i64, Option<i64>)> = self
+            .conn
+            .query_row(
+                "SELECT episode, absolute
+                 FROM anilist_episode_map
+                 WHERE anilist_id = ?1
+                 ORDER BY episode ASC
+                 LIMIT 1",
+                [anilist_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        Ok(row.and_then(|(ep, abs_opt)| abs_opt.map(|abs| abs - ep)))
+    }
+
+    /// The per-entry episode with that absolute number, if mapped.
+    #[allow(dead_code)] // A later phase uses this helper.
+    pub fn episode_number_for_absolute(&self, anilist_id: i64, absolute: i64) -> Result<Option<i64>> {
+        let row: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT episode
+                 FROM anilist_episode_map
+                 WHERE anilist_id = ?1 AND absolute = ?2
+                 LIMIT 1",
+                rusqlite::params![anilist_id, absolute],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(row)
+    }
+
+    /// Smallest future `air_at` (strictly > `now`) and its episode for `anilist_id`.
+    /// Ties on `air_at` broken by lowest episode. Ignores entries with NULL `air_at`.
+    /// Returns None when no map exists or nothing upcoming.
+    pub fn next_airing_episode(&self, anilist_id: i64, now: i64) -> Result<Option<(i64, i64)>> {
+        let row: Option<(i64, i64)> = self
+            .conn
+            .query_row(
+                "SELECT episode, air_at
+                 FROM anilist_episode_map
+                 WHERE anilist_id = ?1 AND air_at > ?2
+                 ORDER BY air_at ASC, episode ASC
+                 LIMIT 1",
+                rusqlite::params![anilist_id, now],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        Ok(row)
+    }
+
+    /// Every catalog row ordered by `sort_order, id` with full fidelity (genres, synonyms,
+    /// tags sorted by rank asc then name, relations sorted by related_id, relation_type).
+    ///
+    /// Reads each child table in a single bulk query into a map, avoiding N+1 queries.
+    #[allow(dead_code)] // Called by catalog_snapshot::export_to_bytes and tests.
+    pub fn catalog_all_for_snapshot(&self) -> Result<Vec<crate::anilist::CatalogAnime>> {
+        let mut genres_map: std::collections::HashMap<i64, Vec<String>> = std::collections::HashMap::new();
+        let mut stmt = self
+            .conn
+            .prepare("SELECT anilist_id, genre FROM anilist_catalog_genres ORDER BY anilist_id, rowid")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let anilist_id: i64 = row.get(0)?;
+            let genre: String = row.get(1)?;
+            genres_map.entry(anilist_id).or_default().push(genre);
+        }
+
+        let mut synonyms_map: std::collections::HashMap<i64, Vec<String>> = std::collections::HashMap::new();
+        let mut stmt = self
+            .conn
+            .prepare("SELECT anilist_id, synonym FROM anilist_catalog_synonyms ORDER BY anilist_id, rowid")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let anilist_id: i64 = row.get(0)?;
+            let synonym: String = row.get(1)?;
+            synonyms_map.entry(anilist_id).or_default().push(synonym);
+        }
+
+        let mut tags_map: std::collections::HashMap<i64, Vec<crate::anilist::CatalogTag>> =
+            std::collections::HashMap::new();
+        let mut stmt = self
+            .conn
+            .prepare("SELECT anilist_id, tag, rank FROM anilist_catalog_tags ORDER BY anilist_id, rank ASC, tag ASC")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let anilist_id: i64 = row.get(0)?;
+            let name: String = row.get(1)?;
+            let rank: i64 = row.get(2)?;
+            tags_map
+                .entry(anilist_id)
+                .or_default()
+                .push(crate::anilist::CatalogTag { name, rank });
+        }
+
+        let mut relations_map: std::collections::HashMap<i64, Vec<crate::anilist::CatalogRelation>> =
+            std::collections::HashMap::new();
+        let mut stmt = self.conn.prepare(
+            "SELECT anilist_id, related_id, relation_type FROM anilist_catalog_relations ORDER BY anilist_id, related_id ASC, relation_type ASC",
+        )?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let anilist_id: i64 = row.get(0)?;
+            let related_id: i64 = row.get(1)?;
+            let relation_type: String = row.get(2)?;
+            relations_map
+                .entry(anilist_id)
+                .or_default()
+                .push(crate::anilist::CatalogRelation { related_id, relation_type });
+        }
+
+        let mut stmt = self.conn.prepare(
+            "SELECT id, title, title_romaji, title_english, cover_url, banner_url, format,
+                    episodes, average_score, popularity, url, status, duration, studio,
+                    start_date, next_airing_at, next_episode
+             FROM anilist_catalog
+             ORDER BY sort_order, id",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<String>>(2)?,
+                r.get::<_, Option<String>>(3)?,
+                r.get::<_, Option<String>>(4)?,
+                r.get::<_, Option<String>>(5)?,
+                r.get::<_, Option<String>>(6)?,
+                r.get::<_, Option<i64>>(7)?,
+                r.get::<_, Option<i64>>(8)?,
+                r.get::<_, Option<i64>>(9)?,
+                r.get::<_, String>(10)?,
+                r.get::<_, Option<String>>(11)?,
+                r.get::<_, Option<i64>>(12)?,
+                r.get::<_, Option<String>>(13)?,
+                r.get::<_, Option<i64>>(14)?,
+                r.get::<_, Option<i64>>(15)?,
+                r.get::<_, Option<i64>>(16)?,
+            ))
+        })?;
+
+        let mut items = Vec::new();
+        for row in rows {
+            let (
+                id,
+                title,
+                title_romaji,
+                title_english,
+                cover_url,
+                banner_url,
+                format,
+                episodes,
+                average_score,
+                popularity,
+                url,
+                status,
+                duration,
+                studio,
+                start_date,
+                next_airing_at,
+                next_episode,
+            ) = row?;
+            let genres = genres_map.remove(&id).unwrap_or_default();
+            let synonyms = synonyms_map.remove(&id).unwrap_or_default();
+            let mut tags = tags_map.remove(&id).unwrap_or_default();
+            tags.sort_by(|a, b| a.rank.cmp(&b.rank).then_with(|| a.name.cmp(&b.name)));
+            let mut relations = relations_map.remove(&id).unwrap_or_default();
+            relations.sort_by(|a, b| {
+                a.related_id
+                    .cmp(&b.related_id)
+                    .then_with(|| a.relation_type.cmp(&b.relation_type))
+            });
+
+            items.push(crate::anilist::CatalogAnime {
+                id,
+                title,
+                title_romaji,
+                title_english,
+                synonyms,
+                cover_url,
+                banner_url,
+                format,
+                genres,
+                episodes,
+                average_score,
+                popularity,
+                url,
+                status,
+                duration,
+                studio,
+                start_date,
+                next_airing_at,
+                next_episode,
+                tags,
+                relations,
+            });
+        }
+        Ok(items)
+    }
+
+    /// Imports snapshot items that are not already present in `anilist_catalog`, preserving
+    /// local rows without overwriting. Inserts in chunks of 500 using `upsert_catalog_anime_batch`,
+    /// assigning `sort_order = base_sort_order + index in items`, so a caller importing in chunks keeps one global order.
+    #[allow(dead_code)] // Called by catalog_snapshot::import_from_bytes and tests.
+    pub fn import_catalog_snapshot(&self, items: &[crate::anilist::CatalogAnime], base_sort_order: i64) -> Result<usize> {
+        let mut existing_ids: std::collections::HashSet<i64> = std::collections::HashSet::new();
+        let mut stmt = self.conn.prepare("SELECT id FROM anilist_catalog")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            existing_ids.insert(row.get(0)?);
+        }
+
+        let mut to_insert: Vec<(&crate::anilist::CatalogAnime, i64)> = Vec::new();
+        for (idx, anime) in items.iter().enumerate() {
+            if existing_ids.insert(anime.id) {
+                to_insert.push((anime, base_sort_order + idx as i64));
+            }
+        }
+
+        let inserted_count = to_insert.len();
+        for chunk in to_insert.chunks(500) {
+            self.upsert_catalog_anime_batch(chunk)?;
+        }
+        Ok(inserted_count)
     }
 }
 
@@ -2632,7 +3011,7 @@ mod tests {
             title: "Attack on Titan".into(),
             title_romaji: Some("Shingeki no Kyojin".into()),
             title_english: Some("Attack on Titan".into()),
-            synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
+            synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(), relations: Vec::new(),
             cover_url: None,
             banner_url: None,
             format: Some("TV".into()),
@@ -2663,7 +3042,7 @@ mod tests {
             id: 43,
             title: "Timed Show".into(),
             title_romaji: None,
-            title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
+            title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(), relations: Vec::new(),
             cover_url: None,
             banner_url: None,
             format: Some("TV".into()),
@@ -2685,7 +3064,7 @@ mod tests {
             id: 44,
             title: "Undated Show".into(),
             title_romaji: None,
-            title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(),
+            title_english: None, synonyms: Vec::new(), next_airing_at: None, next_episode: None, tags: Vec::new(), relations: Vec::new(),
             cover_url: None,
             banner_url: None,
             format: Some("TV".into()),
@@ -2730,7 +3109,7 @@ mod tests {
             duration: None,
             studio: Some("Studio Ghibli".into()),
             start_date: None,
-            next_airing_at: None, next_episode: None, tags: Vec::new(),
+            next_airing_at: None, next_episode: None, tags: Vec::new(), relations: Vec::new(),
         };
         db.upsert_catalog_anime(&with_studio, 0).unwrap();
 
@@ -2754,7 +3133,7 @@ mod tests {
             duration: None,
             studio: None,
             start_date: None,
-            next_airing_at: None, next_episode: None, tags: Vec::new(),
+            next_airing_at: None, next_episode: None, tags: Vec::new(), relations: Vec::new(),
         };
         db.upsert_catalog_anime(&without_studio, 1).unwrap();
 
@@ -2786,7 +3165,7 @@ mod tests {
             duration: None,
             studio: None,
             start_date: Some(1_776_211_200), // 2026-04-15T00:00:00Z
-            next_airing_at: None, next_episode: None, tags: Vec::new(),
+            next_airing_at: None, next_episode: None, tags: Vec::new(), relations: Vec::new(),
         };
         db.upsert_catalog_anime(&with_date, 0).unwrap();
 
@@ -2807,7 +3186,7 @@ mod tests {
             duration: None,
             studio: None,
             start_date: None,
-            next_airing_at: None, next_episode: None, tags: Vec::new(),
+            next_airing_at: None, next_episode: None, tags: Vec::new(), relations: Vec::new(),
         };
         db.upsert_catalog_anime(&without_date, 1).unwrap();
 
@@ -2831,7 +3210,7 @@ mod tests {
                 genres: vec![], episodes: Some(25), average_score: None, popularity: None,
                 url: "https://anilist.co/anime/50".into(), status: None, duration: None, studio: None,
                 start_date: Some(1_776_211_200),
-                next_airing_at: None, next_episode: None, tags: Vec::new(),
+                next_airing_at: None, next_episode: None, tags: Vec::new(), relations: Vec::new(),
             },
             0,
         ).unwrap();
@@ -2844,7 +3223,7 @@ mod tests {
                 cover_url: None, banner_url: None, format: Some("TV".into()), genres: vec![], episodes: None,
                 average_score: None, popularity: None, url: "https://anilist.co/anime/51".into(),
                 status: None, duration: None, studio: None, start_date: None,
-                next_airing_at: None, next_episode: None, tags: Vec::new(),
+                next_airing_at: None, next_episode: None, tags: Vec::new(), relations: Vec::new(),
             },
             1,
         ).unwrap();
@@ -2856,12 +3235,60 @@ mod tests {
         assert_eq!(map.len(), 2, "one entry per distinct title/romaji/english variant with a real start_date");
     }
 
+    #[test]
+    fn upsert_catalog_anime_stores_and_rewrites_relations() {
+        let db = Db::open(":memory:").unwrap();
+
+        let mut anime = crate::anilist::CatalogAnime {
+            id: 99,
+            title: "Relations Show".into(),
+            title_romaji: None,
+            title_english: None,
+            synonyms: Vec::new(),
+            next_airing_at: None,
+            next_episode: None,
+            tags: Vec::new(),
+            relations: vec![
+                crate::anilist::CatalogRelation { related_id: 100, relation_type: "SEQUEL".into() },
+                crate::anilist::CatalogRelation { related_id: 98, relation_type: "PREQUEL".into() },
+            ],
+            cover_url: None,
+            banner_url: None,
+            format: Some("TV".into()),
+            genres: vec![],
+            episodes: Some(12),
+            average_score: None,
+            popularity: None,
+            url: "https://anilist.co/anime/99".into(),
+            status: None,
+            duration: None,
+            studio: None,
+            start_date: None,
+        };
+        db.upsert_catalog_anime(&anime, 0).unwrap();
+
+        let stored = db.list_catalog_relations(99).unwrap();
+        assert_eq!(
+            stored,
+            vec![(98, "PREQUEL".to_string()), (100, "SEQUEL".to_string())]
+        );
+
+        // Second upsert with fewer relations leaves only the new set.
+        anime.relations = vec![
+            crate::anilist::CatalogRelation { related_id: 100, relation_type: "SEQUEL".into() },
+        ];
+        db.upsert_catalog_anime(&anime, 0).unwrap();
+
+        let updated = db.list_catalog_relations(99).unwrap();
+        assert_eq!(updated, vec![(100, "SEQUEL".to_string())]);
+    }
+
     fn mk_catalog_anime(id: i64, title: &str, url: &str) -> crate::anilist::CatalogAnime {
         crate::anilist::CatalogAnime {
             id, title: title.into(), title_romaji: None, title_english: None, synonyms: Vec::new(), cover_url: None,
             banner_url: None, format: Some("TV".into()), genres: vec![], episodes: Some(12), average_score: None,
             popularity: None, url: url.into(), status: None, duration: None, studio: None, start_date: None,
-            next_airing_at: None, next_episode: None, tags: Vec::new(),
+            next_airing_at: None, next_episode: None, tags: Vec::new(), relations: Vec::new(),
         }
     }
 
@@ -2914,7 +3341,7 @@ mod tests {
             average_score: Some(88), popularity: Some(5000), url: format!("https://anilist.co/anime/{id}"),
             status: Some("FINISHED".into()), duration: Some(24), studio: Some("Studio X".into()),
             start_date: None,
-            next_airing_at: None, next_episode: None, tags: Vec::new(),
+            next_airing_at: None, next_episode: None, tags: Vec::new(), relations: Vec::new(),
         }
     }
 
@@ -3815,8 +4242,333 @@ mod tests {
         }
     }
 
+
+    #[test]
+    fn test_replace_episode_map_replaces_previous_entries() {
+        let db = Db::open(":memory:").unwrap();
+        let entries_v1 = vec![
+            crate::anizip::MapEntry { episode: 1, season: 1, absolute: Some(1), air_at: None },
+            crate::anizip::MapEntry { episode: 2, season: 1, absolute: Some(2), air_at: None },
+        ];
+        db.replace_episode_map(100, &entries_v1, 1000).unwrap();
+        assert_eq!(db.episode_offset(100).unwrap(), Some(0));
+
+        let entries_v2 = vec![
+            crate::anizip::MapEntry { episode: 1, season: 2, absolute: Some(25), air_at: None },
+        ];
+        db.replace_episode_map(100, &entries_v2, 2000).unwrap();
+        assert_eq!(db.episode_offset(100).unwrap(), Some(24));
+
+        let count: i64 = db.conn.query_row(
+            "SELECT COUNT(*) FROM anilist_episode_map WHERE anilist_id = 100",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(count, 1);
+
+        let fetched: (i64, i64) = db.conn.query_row(
+            "SELECT fetched_at, entries FROM anilist_episode_map_fetched WHERE anilist_id = 100",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        ).unwrap();
+        assert_eq!(fetched, (2000, 1));
+    }
+
+    #[test]
+    fn test_episode_offset_cases() {
+        let db = Db::open(":memory:").unwrap();
+
+        // 185756 starting at absolute 25 -> 25 - 1 = 24
+        let entries_185756 = vec![
+            crate::anizip::MapEntry { episode: 1, season: 3, absolute: Some(25), air_at: None },
+            crate::anizip::MapEntry { episode: 2, season: 3, absolute: Some(26), air_at: None },
+        ];
+        db.replace_episode_map(185756, &entries_185756, 1000).unwrap();
+        assert_eq!(db.episode_offset(185756).unwrap(), Some(24));
+
+        // season-1 map (absolute 1) -> 1 - 1 = 0
+        let entries_s1 = vec![
+            crate::anizip::MapEntry { episode: 1, season: 1, absolute: Some(1), air_at: None },
+        ];
+        db.replace_episode_map(164702, &entries_s1, 1000).unwrap();
+        assert_eq!(db.episode_offset(164702).unwrap(), Some(0));
+
+        // None with no map
+        assert_eq!(db.episode_offset(999999).unwrap(), None);
+
+        // None when absolute is NULL
+        let entries_no_abs = vec![
+            crate::anizip::MapEntry { episode: 1, season: 1, absolute: None, air_at: None },
+        ];
+        db.replace_episode_map(888888, &entries_no_abs, 1000).unwrap();
+        assert_eq!(db.episode_offset(888888).unwrap(), None);
+    }
+
+    #[test]
+    fn test_episode_number_for_absolute_lookup() {
+        let db = Db::open(":memory:").unwrap();
+        let entries = vec![
+            crate::anizip::MapEntry { episode: 1, season: 3, absolute: Some(25), air_at: None },
+            crate::anizip::MapEntry { episode: 2, season: 3, absolute: Some(26), air_at: None },
+            crate::anizip::MapEntry { episode: 3, season: 3, absolute: Some(27), air_at: None },
+        ];
+        db.replace_episode_map(185756, &entries, 1000).unwrap();
+        assert_eq!(db.episode_number_for_absolute(185756, 27).unwrap(), Some(3));
+        assert_eq!(db.episode_number_for_absolute(185756, 99).unwrap(), None);
+        assert_eq!(db.episode_number_for_absolute(999999, 27).unwrap(), None);
+    }
+
+    #[test]
+    fn test_episode_map_stale_ids_conditions() {
+        let db = Db::open(":memory:").unwrap();
+        let now = 1_000_000;
+        let one_day = 86400;
+
+        db.conn.execute("INSERT INTO sources (id, name, base_url, site_id) VALUES (1, 's', 'https://s.example', 'animeytx')", []).unwrap();
+
+        let insert_series = |id: i64, anilist_id: Option<i64>, followed: i64, is_airing: i64| {
+            db.conn.execute(
+                "INSERT INTO series (id, source_id, slug, title, url, followed, is_airing, anilist_id)
+                 VALUES (?1, 1, ?2, ?2, 'https://example.com', ?3, ?4, ?5)",
+                rusqlite::params![id, format!("slug-{id}"), followed, is_airing, anilist_id],
+            ).unwrap();
+        };
+
+        let insert_catalog = |id: i64, status: &str| {
+            db.conn.execute(
+                "INSERT INTO anilist_catalog (id, title, url, sort_order, status)
+                 VALUES (?1, 'Title', 'https://anilist.co', 0, ?2)",
+                rusqlite::params![id, status],
+            ).unwrap();
+        };
+
+        let insert_fetched = |id: i64, fetched_at: i64| {
+            db.conn.execute(
+                "INSERT INTO anilist_episode_map_fetched (anilist_id, fetched_at, entries)
+                 VALUES (?1, ?2, 1)",
+                rusqlite::params![id, fetched_at],
+            ).unwrap();
+        };
+
+        // 1. Followed linked series with no fetched row -> returned
+        insert_series(1, Some(101), 1, 0);
+        insert_catalog(101, "RELEASING");
+
+        // 2. Fetched 1 day ago (RELEASING) -> NOT returned
+        insert_series(2, Some(102), 1, 0);
+        insert_catalog(102, "RELEASING");
+        insert_fetched(102, now - one_day);
+
+        // 3. Fetched 4 days ago (RELEASING) -> returned
+        insert_series(3, Some(103), 1, 0);
+        insert_catalog(103, "RELEASING");
+        insert_fetched(103, now - 4 * one_day);
+
+        // 4. Fetched 4 days ago (FINISHED) -> NOT returned
+        insert_series(4, Some(104), 1, 0);
+        insert_catalog(104, "FINISHED");
+        insert_fetched(104, now - 4 * one_day);
+
+        // 5. Fetched 31 days ago (FINISHED) -> returned
+        insert_series(5, Some(105), 1, 0);
+        insert_catalog(105, "FINISHED");
+        insert_fetched(105, now - 31 * one_day);
+
+        // 6. Unfollowed non-airing series -> NEVER returned
+        insert_series(6, Some(106), 0, 0);
+        insert_catalog(106, "RELEASING");
+
+        // 7. Unlinked series (anilist_id NULL) -> NEVER returned
+        insert_series(7, None, 1, 1);
+
+        let stale = db.episode_map_stale_ids(now, 100).unwrap();
+        assert!(stale.contains(&101), "no fetched row must be stale");
+        assert!(!stale.contains(&102), "1 day ago RELEASING must not be stale");
+        assert!(stale.contains(&103), "4 days ago RELEASING must be stale");
+        assert!(!stale.contains(&104), "4 days ago FINISHED must not be stale");
+        assert!(stale.contains(&105), "31 days ago FINISHED must be stale");
+        assert!(!stale.contains(&106), "unfollowed non-airing must never be returned");
+        assert_eq!(stale.len(), 3);
+
+        // Limit honoured
+        let limited = db.episode_map_stale_ids(now, 2).unwrap();
+        assert_eq!(limited.len(), 2);
+    }
+
+    #[test]
+    fn test_next_airing_episode_cases() {
+        let db = Db::open(":memory:").unwrap();
+        let now = 1_000_000;
+
+        // 1. Map with episodes 1..3 at air_at now-100, now+100, now+200 -> Some((2, now+100))
+        let entries = vec![
+            crate::anizip::MapEntry { episode: 1, season: 1, absolute: Some(1), air_at: Some(now - 100) },
+            crate::anizip::MapEntry { episode: 2, season: 1, absolute: Some(2), air_at: Some(now + 100) },
+            crate::anizip::MapEntry { episode: 3, season: 1, absolute: Some(3), air_at: Some(now + 200) },
+        ];
+        db.replace_episode_map(100, &entries, now).unwrap();
+        assert_eq!(db.next_airing_episode(100, now).unwrap(), Some((2, now + 100)));
+
+        // 2. All entries in the past -> None
+        let entries_past = vec![
+            crate::anizip::MapEntry { episode: 1, season: 1, absolute: Some(1), air_at: Some(now - 200) },
+            crate::anizip::MapEntry { episode: 2, season: 1, absolute: Some(2), air_at: Some(now - 100) },
+            crate::anizip::MapEntry { episode: 3, season: 1, absolute: Some(3), air_at: Some(now) },
+        ];
+        db.replace_episode_map(200, &entries_past, now).unwrap();
+        assert_eq!(db.next_airing_episode(200, now).unwrap(), None);
+
+        // 3. Unknown anilist_id -> None
+        assert_eq!(db.next_airing_episode(999999, now).unwrap(), None);
+
+        // 4. Entry with NULL air_at ignored (others still found)
+        let entries_with_null = vec![
+            crate::anizip::MapEntry { episode: 1, season: 1, absolute: Some(1), air_at: None },
+            crate::anizip::MapEntry { episode: 2, season: 1, absolute: Some(2), air_at: Some(now + 300) },
+        ];
+        db.replace_episode_map(300, &entries_with_null, now).unwrap();
+        assert_eq!(db.next_airing_episode(300, now).unwrap(), Some((2, now + 300)));
+
+        // 5. Two entries with the same future air_at -> lowest episode wins
+        let entries_tie = vec![
+            crate::anizip::MapEntry { episode: 5, season: 1, absolute: Some(5), air_at: Some(now + 500) },
+            crate::anizip::MapEntry { episode: 4, season: 1, absolute: Some(4), air_at: Some(now + 500) },
+        ];
+        db.replace_episode_map(400, &entries_tie, now).unwrap();
+        assert_eq!(db.next_airing_episode(400, now).unwrap(), Some((4, now + 500)));
+
+        // 6. Past air_at must never be returned as upcoming
+        let entries_strictly_past = vec![
+            crate::anizip::MapEntry { episode: 1, season: 1, absolute: Some(1), air_at: Some(now - 1) },
+        ];
+        db.replace_episode_map(500, &entries_strictly_past, now).unwrap();
+        assert_eq!(db.next_airing_episode(500, now).unwrap(), None);
+    }
+
+    #[test]
+    fn test_import_catalog_snapshot_idempotent_and_no_overwrite() {
+        let db = Db::open(":memory:").unwrap();
+        // Seed an existing catalog row with id 1 and original title
+        let existing = catalog_anime(1, "Original Title", &["Action"]);
+        db.upsert_catalog_anime(&existing, 0).unwrap();
+
+        // Snapshot items: id 1 with DIFFERENT title, and new id 2
+        let item1 = catalog_anime(1, "Changed Title", &["Drama"]);
+        let item2 = catalog_anime(2, "Brand New Anime", &["Comedy"]);
+
+        let items = vec![item1, item2];
+
+        // First import: id 1 skipped (not overwritten), id 2 inserted -> returns 1
+        let inserted = db.import_catalog_snapshot(&items, 0).unwrap();
+        assert_eq!(inserted, 1);
+        assert_eq!(db.catalog_count().unwrap(), 2);
+
+        // Check that id 1's title was NOT overwritten
+        let (title, _, _) = db.get_catalog_titles(1).unwrap().unwrap();
+        assert_eq!(title, "Original Title");
+
+        // Second import with same items: returns 0 and nothing changes
+        let second_inserted = db.import_catalog_snapshot(&items, 0).unwrap();
+        assert_eq!(second_inserted, 0);
+        assert_eq!(db.catalog_count().unwrap(), 2);
+        let (title2, _, _) = db.get_catalog_titles(1).unwrap().unwrap();
+        assert_eq!(title2, "Original Title");
+    }
+
+    #[test]
+    fn test_import_catalog_snapshot_preserves_sort_order() {
+        let db = Db::open(":memory:").unwrap();
+        // Three anime items in a specific sequence
+        let a10 = catalog_anime(10, "Tenth Anime", &["Action"]);
+        let a20 = catalog_anime(20, "Twentieth Anime", &["Sci-Fi"]);
+        let a5 = catalog_anime(5, "Fifth Anime", &["Fantasy"]);
+
+        let items = vec![a10, a20, a5];
+        let inserted = db.import_catalog_snapshot(&items, 0).unwrap();
+        assert_eq!(inserted, 3);
+
+        // catalog_all_for_snapshot orders by sort_order, id
+        let read_back = db.catalog_all_for_snapshot().unwrap();
+        assert_eq!(read_back.len(), 3);
+        assert_eq!(read_back[0].id, 10);
+        assert_eq!(read_back[1].id, 20);
+        assert_eq!(read_back[2].id, 5);
+        assert_eq!(read_back[0].title, "Tenth Anime");
+        assert_eq!(read_back[1].title, "Twentieth Anime");
+        assert_eq!(read_back[2].title, "Fifth Anime");
+    }
+
+    #[test]
+    fn test_catalog_all_for_snapshot_full_fidelity_and_child_tables() {
+        let db = Db::open(":memory:").unwrap();
+        let full = crate::anilist::CatalogAnime {
+            id: 42,
+            title: "Main Title".into(),
+            title_romaji: Some("Romaji Title".into()),
+            title_english: Some("English Title".into()),
+            synonyms: vec!["Synonym 1".into(), "Synonym 2".into()],
+            cover_url: Some("https://example.com/cover.jpg".into()),
+            banner_url: Some("https://example.com/banner.jpg".into()),
+            format: Some("TV".into()),
+            genres: vec!["Action".into(), "Adventure".into()],
+            episodes: Some(24),
+            average_score: Some(88),
+            popularity: Some(12345),
+            url: "https://anilist.co/anime/42".into(),
+            status: Some("FINISHED".into()),
+            duration: Some(25),
+            studio: Some("Kyoto Animation".into()),
+            start_date: Some(1609459200),
+            next_airing_at: Some(1612137600),
+            next_episode: Some(12),
+            tags: vec![
+                crate::anilist::CatalogTag { name: "Magic".into(), rank: 70 },
+                crate::anilist::CatalogTag { name: "Isekai".into(), rank: 50 },
+            ],
+            relations: vec![
+                crate::anilist::CatalogRelation { related_id: 100, relation_type: "PREQUEL".into() },
+                crate::anilist::CatalogRelation { related_id: 101, relation_type: "SEQUEL".into() },
+            ],
+        };
+
+        db.upsert_catalog_anime(&full, 0).unwrap();
+        let snapshot = db.catalog_all_for_snapshot().unwrap();
+        assert_eq!(snapshot.len(), 1);
+        let item = &snapshot[0];
+        assert_eq!(item.id, 42);
+        assert_eq!(item.title, "Main Title");
+        assert_eq!(item.title_romaji.as_deref(), Some("Romaji Title"));
+        assert_eq!(item.title_english.as_deref(), Some("English Title"));
+        assert_eq!(item.synonyms, vec!["Synonym 1", "Synonym 2"]);
+        assert_eq!(item.cover_url.as_deref(), Some("https://example.com/cover.jpg"));
+        assert_eq!(item.banner_url.as_deref(), Some("https://example.com/banner.jpg"));
+        assert_eq!(item.format.as_deref(), Some("TV"));
+        assert_eq!(item.genres, vec!["Action", "Adventure"]);
+        assert_eq!(item.episodes, Some(24));
+        assert_eq!(item.average_score, Some(88));
+        assert_eq!(item.popularity, Some(12345));
+        assert_eq!(item.url, "https://anilist.co/anime/42");
+        assert_eq!(item.status.as_deref(), Some("FINISHED"));
+        assert_eq!(item.duration, Some(25));
+        assert_eq!(item.studio.as_deref(), Some("Kyoto Animation"));
+        assert_eq!(item.start_date, Some(1609459200));
+        assert_eq!(item.next_airing_at, Some(1612137600));
+        assert_eq!(item.next_episode, Some(12));
+        // Tags must be sorted by rank asc then name: 50 ("Isekai") before 70 ("Magic")
+        assert_eq!(
+            item.tags,
+            vec![
+                crate::anilist::CatalogTag { name: "Isekai".into(), rank: 50 },
+                crate::anilist::CatalogTag { name: "Magic".into(), rank: 70 },
+            ]
+        );
+        // Relations sorted by related_id asc then relation_type
+        assert_eq!(
+            item.relations,
+            vec![
+                crate::anilist::CatalogRelation { related_id: 100, relation_type: "PREQUEL".into() },
+                crate::anilist::CatalogRelation { related_id: 101, relation_type: "SEQUEL".into() },
+            ]
+        );
+    }
 }
-
-
-
-

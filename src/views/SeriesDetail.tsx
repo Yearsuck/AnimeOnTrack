@@ -1,61 +1,30 @@
-import { useEffect, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  cancelDownload,
+  deleteDownload,
+  deleteSeriesDownloads,
   downloadEpisode,
+  downloadPending,
   getCatalogInfoForSeries,
+  getNextAir,
+  getPlayerSettings,
   linkCatalogSeries,
   listEpisodes,
   openEpisode,
+  playDownload,
   reclassifySeries,
-  setSeenCascade,
-  getPlayerSettings,
   setPlayerSettings,
+  setSeenCascade,
 } from "../api";
 
 import { useT } from "../i18n";
+import { airCountdown } from "../lib/airCountdown";
 import { isUnlinkedCatalogRow } from "../lib/catalogLink";
+import { summarizeDownloads } from "../lib/downloadSummary";
+import { epNum } from "../lib/episodeNumber";
 import { resolveCoverUrl } from "../lib/posterFallback";
-import type { CatalogAnime, Episode, Series } from "../types";
-
-// Strict numeric parse, matching Rust's `str::parse::<f64>()` rather than
-// JS's `parseFloat` (which accepts trailing garbage — parseFloat("5a") is 5,
-// while Rust's parse errors). The SxE branch below needs it: the backend only
-// takes that branch when *both* halves parse cleanly as numbers.
-const STRICT_NUMBER = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/;
-function strictFloat(s: string): number | null {
-  const t = s.trim();
-  if (!STRICT_NUMBER.test(t)) return null;
-  const n = parseFloat(t);
-  return Number.isFinite(n) ? n : null;
-}
-
-// Mirrors the backend's parse_ep_number (src-tauri/src/db/episodes.rs) — must
-// stay in sync with it or the optimistic cascade below will mark a different
-// set of episodes than what actually got persisted. Same two branches, in the
-// backend's order:
-//  1. Season-prefixed "SxE" numbering, which DooPlay sites render for
-//     multi-cour series ("1x13"): split on the FIRST 'x'/'X'; when both halves
-//     parse as numbers, pack them as `season * 100_000 + episode`, so
-//     "1x05" -> 100005 and "2x03" -> 200003. The old leading-digits-only regex
-//     collapsed every episode of a season to the bare season digit ("1x05" and
-//     "1x12" both -> 1), so marking one episode seen cascaded over whole
-//     seasons at a time while the backend only went up to the real target.
-//  2. Otherwise leading digits (+ one optional decimal part): "12" -> 12,
-//     "12.5" -> 12.5, "0 | Recap" -> 0. Equivalent to the backend's char-walk:
-//     a trailing dot is dropped ("12." -> 12) and a second dot ends the number
-//     ("1.2.3" -> 1.2).
-// Numbers with no leading digit (e.g. "OVA") return null so the optimistic
-// update falls back to an exact-string match instead of guessing an order.
-function epNum(number: string): number | null {
-  const trimmed = number.trim();
-  const xi = trimmed.search(/[xX]/);
-  if (xi !== -1) {
-    const season = strictFloat(trimmed.slice(0, xi));
-    const ep = strictFloat(trimmed.slice(xi + 1));
-    if (season !== null && ep !== null) return season * 100_000 + ep;
-  }
-  const m = trimmed.match(/^\d+(\.\d+)?/);
-  return m ? parseFloat(m[0]) : null;
-}
+import type { CatalogAnime, Episode, NextAir, Series } from "../types";
 
 export function SeriesDetail({
   series,
@@ -74,6 +43,21 @@ export function SeriesDetail({
   // comes from AniList, not the scraped site — the site only still supplies
   // episode links and the "is it airing" signal (see `listEpisodes` below).
   const [catalogInfo, setCatalogInfo] = useState<CatalogAnime | null>(null);
+  const [nextAir, setNextAir] = useState<NextAir | null>(null);
+  // Live state of downloads started or running while this screen is open
+  // (`download-progress` events); the episode row's own `download_status`
+  // covers everything else, e.g. a finished download from an earlier visit.
+  const [dl, setDl] = useState<Record<number, { percent: number | null; error?: string }>>({});
+  const [batchRunning, setBatchRunning] = useState(false);
+  const [panelMsg, setPanelMsg] = useState<string | null>(null);
+  const [confirmDeleteAll, setConfirmDeleteAll] = useState(false);
+  const [deletingAll, setDeletingAll] = useState(false);
+
+  useEffect(() => {
+    setConfirmDeleteAll(false);
+    setPanelMsg(null);
+  }, [series.id]);
+
   // AniList's CDN cover wins; otherwise the series' own (possibly a cached
   // local `file:` path, which the raw <img> would be blocked from loading).
   const detailCover = resolveCoverUrl(catalogInfo?.cover_url ?? series.cover_url);
@@ -118,6 +102,46 @@ export function SeriesDetail({
     getCatalogInfoForSeries(series.id)
       .then(setCatalogInfo)
       .catch(() => setCatalogInfo(null));
+  }, [series.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!catalogInfo?.id) {
+      setNextAir(null);
+      return;
+    }
+    getNextAir(catalogInfo.id)
+      .then((res) => {
+        if (!cancelled) setNextAir(res);
+      })
+      .catch(() => {
+        if (!cancelled) setNextAir(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [catalogInfo?.id]);
+
+  useEffect(() => {
+    const unlisten = listen<{
+      episode_id: number;
+      status: "downloading" | "downloaded" | "failed" | "cancelled";
+      percent: number | null;
+      error: string | null;
+    }>("download-progress", (e) => {
+      const p = e.payload;
+      setDl((prev) => ({
+        ...prev,
+        [p.episode_id]: { percent: p.percent, error: p.error ?? undefined },
+      }));
+      if (p.status !== "downloading") {
+        load().catch(() => {});
+      }
+    });
+    return () => {
+      unlisten.then((f) => f()).catch(() => {});
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [series.id]);
 
   useEffect(() => {
@@ -188,6 +212,67 @@ export function SeriesDetail({
 
   const seenCount = episodes.filter((e) => e.seen).length;
   const pct = episodes.length ? Math.round((seenCount / episodes.length) * 100) : 0;
+  const countdown =
+    nextAir != null ? airCountdown(nextAir.air_at, Date.now() / 1000) : null;
+  const when = countdown
+    ? t(
+        countdown.unit === "minutes"
+          ? "seriesDetail.nextAir.minutes"
+          : countdown.unit === "hours"
+          ? "seriesDetail.nextAir.hours"
+          : "seriesDetail.nextAir.days",
+        { n: countdown.value }
+      )
+    : "";
+
+  const summary = useMemo(() => summarizeDownloads(episodes), [episodes]);
+
+  const panelStatus = useMemo(() => {
+    const parts: string[] = [];
+    if (summary.downloaded > 0) {
+      parts.push(t("download.statusDownloaded", { count: summary.downloaded }));
+    }
+    if (summary.active > 0) {
+      parts.push(t("download.statusActive", { count: summary.active }));
+    }
+    if (summary.failed > 0) {
+      parts.push(t("download.statusFailed", { count: summary.failed }));
+    }
+    return parts.length > 0 ? parts.join(" · ") : t("download.panelEmpty");
+  }, [summary.downloaded, summary.active, summary.failed, t]);
+
+  async function handleDownloadPending() {
+    setBatchRunning(true);
+    setPanelMsg(null);
+    try {
+      const res = await downloadPending(series.id);
+      await load();
+      let msg = t("download.batchQueued", { count: res.queued });
+      if (res.unsupported > 0) {
+        msg += ` ${t("download.batchUnsupported", { count: res.unsupported })}`;
+      }
+      setPanelMsg(msg);
+    } catch (err) {
+      console.error("downloadPending failed", err);
+      setPanelMsg(t("download.batchError"));
+    } finally {
+      setBatchRunning(false);
+    }
+  }
+
+  async function handleDeleteAll() {
+    setDeletingAll(true);
+    try {
+      const count = await deleteSeriesDownloads(series.id);
+      await load();
+      setPanelMsg(t("download.deleteAllDone", { count }));
+    } catch (err) {
+      console.error("deleteSeriesDownloads failed", err);
+    } finally {
+      setDeletingAll(false);
+      setConfirmDeleteAll(false);
+    }
+  }
 
   return (
     <div className="page">
@@ -205,10 +290,16 @@ export function SeriesDetail({
             // The "open page" link points at AniList — the reliable source of
             // truth for anime info. The pirate site only supplies episodes (the
             // play buttons below), so it's the fallback only when this show
-            // isn't linked to the catalog.
+            // isn't linked to the catalog. Opens inside an app-owned WebView2
+            // window instead of spawning the system browser.
             href={catalogInfo?.url ?? series.url}
-            target="_blank"
-            rel="noreferrer"
+            onClick={(e) => {
+              e.preventDefault();
+              const url = catalogInfo?.url ?? series.url;
+              openEpisode(url).catch((err) =>
+                console.error("openEpisode failed for", url, err)
+              );
+            }}
           >
             {t("seriesDetail.openPage")}
           </a>
@@ -229,6 +320,11 @@ export function SeriesDetail({
             </div>
           ) : (
             <div className="muted detail-meta">{t("seriesDetail.info.notSynced")}</div>
+          )}
+          {nextAir && countdown && (
+            <p className="muted detail-next-air">
+              {t("seriesDetail.nextAir", { episode: nextAir.episode, when })}
+            </p>
           )}
           {catalogInfo != null && catalogInfo.genres.length > 0 && (
             <div className="detail-genres">
@@ -270,6 +366,66 @@ export function SeriesDetail({
         )}
       </div>
 
+      {summary.downloadable > 0 && (
+        <section className="dl-panel">
+          <div className="dl-panel-head">
+            <h3 className="section-title">{t("download.panelTitle")}</h3>
+            <span className="dl-panel-status">{panelStatus}</span>
+          </div>
+
+          <div className="dl-panel-actions">
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={batchRunning || summary.pending === 0}
+              title={summary.pending === 0 ? t("download.nothingPending") : undefined}
+              onClick={handleDownloadPending}
+            >
+              {t("download.downloadPending", { count: summary.pending })}
+            </button>
+
+            {summary.downloaded + summary.active + summary.failed > 0 && (
+              confirmDeleteAll ? (
+                <>
+                  <button
+                    type="button"
+                    className="btn btn-danger"
+                    disabled={deletingAll}
+                    onClick={handleDeleteAll}
+                  >
+                    {t("download.deleteAllYes")}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    disabled={deletingAll}
+                    onClick={() => setConfirmDeleteAll(false)}
+                  >
+                    {t("download.deleteAllNo")}
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => setConfirmDeleteAll(true)}
+                >
+                  {t("download.deleteAll", { count: summary.downloaded + summary.active })}
+                </button>
+              )
+            )}
+          </div>
+
+          <p className="dl-panel-hint">
+            {t("download.keepWatchedHint")}
+          </p>
+
+          {panelMsg && (
+            <p className="dl-panel-msg">{panelMsg}</p>
+          )}
+        </section>
+      )}
+
       {linking ? (
         <div className="empty">{t("seriesDetail.linking")}</div>
       ) : loading ? (
@@ -278,48 +434,127 @@ export function SeriesDetail({
         <div className="empty">{t("seriesDetail.noEpisodes")}</div>
       ) : (
         <div className="series-block">
-          {episodes.map((ep) => (
-            <div
-              key={ep.id}
-              ref={(el) => {
-                if (el) rowRefs.current.set(ep.id, el);
-                else rowRefs.current.delete(ep.id);
-              }}
-              className={`ep-row ${ep.seen ? "seen" : ""}`}
-            >
-              <span className="ep-num">{ep.number}</span>
-              <div className="ep-main">
-                <div className="ep-title" onClick={() => openEpisode(ep.url)}>
-                  {t("common.episodeNumber", { number: ep.number })}
+          {episodes.map((ep) => {
+            const isDownloading = ep.download_status === "downloading";
+            const isDownloaded = ep.download_status === "downloaded";
+            const rowClass = [
+              "ep-row",
+              ep.seen ? "seen" : "",
+              isDownloading ? "dl-row-active" : "",
+              isDownloaded ? "dl-row-done" : "",
+            ]
+              .filter(Boolean)
+              .join(" ");
+
+            return (
+              <div
+                key={ep.id}
+                ref={(el) => {
+                  if (el) rowRefs.current.set(ep.id, el);
+                  else rowRefs.current.delete(ep.id);
+                }}
+                className={rowClass}
+              >
+                <span className="ep-num">{ep.number}</span>
+                <div className="ep-main">
+                  <div className="ep-title" onClick={() => openEpisode(ep.url)}>
+                    {t("common.episodeNumber", { number: ep.number })}
+                  </div>
+                  {ep.download_status === "failed" && (
+                    <div className="dl-error">
+                      {dl[ep.id]?.error || t("download.failed")}
+                    </div>
+                  )}
+                </div>
+                <div className="ep-actions">
+                  {ep.download_status === "downloaded" ? (
+                    <>
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-primary"
+                        title={t("download.downloaded")}
+                        onClick={() => playDownload(ep.id).catch(console.error)}
+                      >
+                        {t("download.playOffline")}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-ghost"
+                        title={t("download.deleteKeepsWatched")}
+                        aria-label={t("download.delete")}
+                        onClick={() => deleteDownload(ep.id).then(() => load()).catch(console.error)}
+                      >
+                        🗑
+                      </button>
+                    </>
+                  ) : ep.download_status === "downloading" ? (
+                    <>
+                      <span className="dl-badge dl-active">
+                        {typeof dl[ep.id]?.percent === "number"
+                          ? t("download.downloading", { percent: dl[ep.id]?.percent! })
+                          : t("download.queued")}
+                      </span>
+                      <button
+                        type="button"
+                        className="btn btn-sm"
+                        title={t("download.cancel")}
+                        onClick={() => cancelDownload(ep.id).catch(console.error)}
+                      >
+                        ✕
+                      </button>
+                    </>
+                  ) : ep.download_status === "failed" ? (
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      title={`${t("download.failed")}${dl[ep.id]?.error ? `: ${dl[ep.id]?.error}` : ""}`}
+                      onClick={() => {
+                        setDl((prev) => ({ ...prev, [ep.id]: { percent: 0, error: undefined } }));
+                        downloadEpisode(ep.id)
+                          .then(() => load())
+                          .catch(console.error);
+                      }}
+                    >
+                      ⚠ {t("download.retry")}
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      title={t("download.download")}
+                      onClick={() => {
+                        setDl((prev) => ({ ...prev, [ep.id]: { percent: 0 } }));
+                        downloadEpisode(ep.id)
+                          .then(() => load())
+                          .catch(console.error);
+                      }}
+                    >
+                      ⬇
+                    </button>
+                  )}
+                  <button type="button" className="btn" onClick={() => openEpisode(ep.url)}>
+                    {t("common.watch")}
+                  </button>
+                  <button
+                    type="button"
+                    className={`check ${ep.seen ? "on" : ""}`}
+                    title={ep.seen ? t("common.markUnseen") : t("common.markSeen")}
+                    onClick={() => toggleSeen(ep)}
+                  >
+                    ✓
+                  </button>
+                  {ep.download_status === "downloading" && typeof dl[ep.id]?.percent === "number" && (
+                    <div className="dl-progress">
+                      <div
+                        className="dl-progress-fill"
+                        style={{ width: `${dl[ep.id]?.percent}%` }}
+                      />
+                    </div>
+                  )}
                 </div>
               </div>
-              <div className="ep-actions">
-                {ep.download_status === "downloaded" ? (
-                  <span className="dl-badge" title={t("download.downloaded")}>💾</span>
-                ) : ep.download_status === "downloading" ? (
-                  <span className="dl-badge dl-active" title={t("download.downloading", { percent: "…" })}>⏳</span>
-                ) : (
-                  <button
-                    className="btn btn-sm"
-                    title={t("download.download")}
-                    onClick={() => downloadEpisode(ep.id).catch(console.error)}
-                  >
-                    ⬇
-                  </button>
-                )}
-                <button className="btn" onClick={() => openEpisode(ep.url)}>
-                  {t("common.watch")}
-                </button>
-                <button
-                  className={`check ${ep.seen ? "on" : ""}`}
-                  title={ep.seen ? t("common.markUnseen") : t("common.markSeen")}
-                  onClick={() => toggleSeen(ep)}
-                >
-                  ✓
-                </button>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>

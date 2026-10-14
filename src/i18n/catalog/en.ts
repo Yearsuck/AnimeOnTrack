@@ -145,8 +145,8 @@ export const en: Messages = {
   "settings.playerMonitorPrimaryTag": " (Primary)",
   "settings.playerMode": "Display mode",
   "settings.playerWindowed": "Windowed",
-  "settings.playerFullscreen": "Full screen",
-  "settings.playerHelp": "Configure which monitor episodes open on and whether they launch in full screen or in a window.",
+  "settings.playerFullscreen": "Maximised window",
+  "settings.playerHelp": "Configure which monitor episodes open on and whether they open in a normal window or a maximised one. Real full screen is up to you once the episode starts.",
 
 
   "library.searchAriaLabel": "Search by name",
@@ -196,6 +196,10 @@ export const en: Messages = {
   "seriesDetail.openPage": "View on AniList ↗",
   "seriesDetail.seenCount": "{seen} / {total} watched",
   "seriesDetail.jumpToCurrent": "⇒ Jump to current episode",
+  "seriesDetail.nextAir": "Next episode: Ep {episode} · {when}",
+  "seriesDetail.nextAir.minutes": "in {n} min",
+  "seriesDetail.nextAir.hours": "in {n} h",
+  "seriesDetail.nextAir.days": "in {n} days",
   "seriesDetail.linking": "Searching the site…",
   "seriesDetail.loadingEpisodes": "Loading episodes…",
   "seriesDetail.noEpisodes": "No episodes recorded yet. Hit Refresh.",
@@ -285,6 +289,8 @@ export const en: Messages = {
   "discover.filtersSave": "Save filters",
   "discover.filtersSaving": "Saving…",
   "discover.filtersSaved": "Filters saved.",
+  "discover.filtersReset": "Reset filters",
+  "discover.filtersAutoHint": "Changes apply automatically.",
   "discover.deckPanelTitle": "Deck settings",
   "discover.deckPanelToggleAria": "Show or hide the deck settings",
   "discover.deckPanelBansBadge": "{count} active filters",
@@ -326,6 +332,10 @@ export const en: Messages = {
   "catalog.linking": "Linking {current}/{total}…",
   "catalog.batchWantDone": "{count} added to Want to watch.",
   "catalog.batchSeenDone": "{count} marked as seen.",
+  "catalog.batchStart": "Start watching",
+  "catalog.starting": "Starting {current}/{total}…",
+  "catalog.batchStartDone": "{started} started, {problems} with problems.",
+  "catalog.startNotFound": "“{title}” was not found on the active site.",
 
   "progress.stageOpening": "Opening page…",
   "progress.stageVerifying": "Verifying (Cloudflare)…",
@@ -453,6 +463,24 @@ export const en: Messages = {
   "download.clearAll": "Delete all downloads",
   "download.clearAllConfirm": "Delete all downloaded files? This cannot be undone.",
   "download.nothingDownloaded": "Nothing downloaded.",
+  "download.panelTitle": "Offline downloads",
+  "download.panelEmpty": "Nothing downloaded yet.",
+  "download.statusDownloaded": "{count} downloaded",
+  "download.statusActive": "{count} queued or downloading",
+  "download.statusFailed": "{count} failed",
+  "download.downloadPending": "⬇ Download pending ({count})",
+  "download.nothingPending": "No pending episodes can be downloaded.",
+  "download.batchQueued": "{count} queued.",
+  "download.batchUnsupported": "{count} cannot be downloaded from this site.",
+  "download.batchError": "Could not queue the downloads.",
+  "download.deleteAll": "🗑 Delete downloads ({count})",
+  "download.deleteAllYes": "Yes, delete",
+  "download.deleteAllNo": "Cancel",
+  "download.deleteAllDone": "{count} downloads deleted.",
+  "download.keepWatchedHint": "Deleting downloads does not mark episodes as watched.",
+  "download.deleteKeepsWatched": "Deletes the file; the episode keeps its watched state.",
+  "download.queued": "Queued…",
+  "download.retry": "Retry",
 
   // filters (v0.6.5)
   "filters.scorePresetsAria": "Score presets",
@@ -601,5 +629,39 @@ export const en: Messages = {
   "settings.sitePriorityDown": "Down",
   "settings.sitePriorityMoveUp": "Increase priority of {site}",
   "settings.sitePriorityMoveDown": "Decrease priority of {site}",
-};
 
+  // keyboard shortcuts
+  "shortcuts.title": "Keyboard shortcuts",
+  "shortcuts.close": "Close",
+  "shortcuts.nav": "Switch tab (1-7)",
+  "shortcuts.refresh": "Refresh catalog and episodes",
+  "shortcuts.search": "Search catalog",
+  "shortcuts.help": "Show or hide this help",
+  "shortcuts.escape": "Close detail or this help",
+
+  // diagnostics
+  "settings.diagnosticsHeading": "System diagnostics",
+  "settings.diagnosticsDesc": "Generate a report with versions, counts, and recent error logs. Never includes your personal data or settings values.",
+  "settings.diagnosticsExport": "Export diagnostics",
+  "settings.diagnosticsExporting": "Exporting…",
+  "settings.diagnosticsSaved": "Report saved to: {path}",
+  "settings.diagnosticsReveal": "Show in folder",
+
+  // continue watching
+  "continue.discover": "Discover anime",
+
+  // notifications
+  "notify.title": "AnimeOnTrack",
+  "notify.body": "{count} new episodes",
+  "settings.notifyLabel": "Notifications",
+  "settings.notifyOn": "On",
+  "settings.notifyOff": "Off",
+  "settings.notifyHint":
+    "Windows notification when a refresh finds new episodes and the window is in the background.",
+
+  // niche slider
+  "niche.label": "Taste: mainstream <-> cult",
+  "niche.mainstream": "Mainstream",
+  "niche.niche": "Cult",
+  "niche.hint": "Only affects Recommended mode.",
+};

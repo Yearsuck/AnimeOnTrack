@@ -250,6 +250,23 @@ impl Db {
         let json = serde_json::to_string(order)?;
         self.set_setting("site_priority", &json)
     }
+
+    /// Discover niche bias in `[-1.0, 1.0]`, where -1.0 is strongly mainstream,
+    /// +1.0 is strongly niche/cult, and 0.0 is neutral (default).
+    pub fn get_discover_niche(&self) -> Result<f64> {
+        let val = self
+            .get_setting("discover_niche_bias")?
+            .and_then(|v| v.parse::<f64>().ok())
+            .filter(|v| !v.is_nan())
+            .unwrap_or(0.0)
+            .clamp(-1.0, 1.0);
+        Ok(val)
+    }
+
+    pub fn set_discover_niche(&self, v: f64) -> Result<()> {
+        let clamped = if v.is_nan() { 0.0 } else { v.clamp(-1.0, 1.0) };
+        self.set_setting("discover_niche_bias", &format!("{:.2}", clamped))
+    }
 }
 
 #[cfg(test)]
@@ -404,6 +421,29 @@ mod tests {
         db.set_site_priority(&order).unwrap();
         assert_eq!(db.get_site_priority(&["a", "b", "c"]).unwrap(), order);
         assert_eq!(db.get_setting("site_priority").unwrap().as_deref(), Some(r#"["b","c","a"]"#));
+    }
+
+    #[test]
+    fn discover_niche_round_trip_and_clamping() {
+        let db = Db::open(":memory:").unwrap();
+        // unset -> 0.0
+        assert_eq!(db.get_discover_niche().unwrap(), 0.0);
+
+        // set 0.5 -> 0.5
+        db.set_discover_niche(0.5).unwrap();
+        assert!((db.get_discover_niche().unwrap() - 0.5).abs() < 1e-6);
+
+        // set 7.0 -> stored/read as 1.0
+        db.set_discover_niche(7.0).unwrap();
+        assert_eq!(db.get_discover_niche().unwrap(), 1.0);
+
+        // set -3.0 -> -1.0
+        db.set_discover_niche(-3.0).unwrap();
+        assert_eq!(db.get_discover_niche().unwrap(), -1.0);
+
+        // garbage string stored under the key -> 0.0
+        db.set_setting("discover_niche_bias", "not-a-number").unwrap();
+        assert_eq!(db.get_discover_niche().unwrap(), 0.0);
     }
 }
 

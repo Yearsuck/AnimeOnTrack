@@ -1,15 +1,16 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
 import { Onboarding } from "./views/Onboarding";
 import { AiringGrid } from "./views/AiringGrid";
 import { Pending } from "./views/Pending";
 import { SeriesDetail } from "./views/SeriesDetail";
 import { Settings } from "./views/Settings";
 import { Library } from "./views/Library";
-import { Stats } from "./views/Stats";
 import { Descubrir } from "./views/Descubrir";
 import { Catalog } from "./views/Catalog";
 import { ProgressBar } from "./views/ProgressBar";
 import { WindowControls } from "./views/WindowControls";
+import { ShortcutsOverlay } from "./views/ShortcutsOverlay";
+import { shortcutFor } from "./lib/shortcuts";
 import {
   listAiring,
   refresh,
@@ -22,8 +23,14 @@ import {
   refreshCatalogStatus,
   listLibrary,
 } from "./api";
+import { notifyNewEpisodes, readNotifyPref, shouldNotify } from "./lib/notify";
 import { useT } from "./i18n";
 import type { Series } from "./types";
+
+// Lazy-loaded to defer heavy 3D graph dependencies (three, react-force-graph-3d)
+// until Estadísticas is first visited.
+const loadStats = () => import("./views/Stats");
+const Stats = lazy(() => loadStats().then((m) => ({ default: m.Stats })));
 
 type View =
   | "loading"
@@ -62,6 +69,7 @@ export default function App() {
   // layout. Lazy: only mounts on first visit, not eagerly at app start.
   const [statsVisited, setStatsVisited] = useState(false);
   const [descubrirSubView, setDescubrirSubView] = useState<"swipe" | "listas">("swipe");
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
 
   const refreshBadge = useCallback(async () => {
     try {
@@ -92,8 +100,9 @@ export default function App() {
         await listAiring(); // throws if no source configured
         setView("pending");
         setRefreshing(true);
-        await refresh().catch(() => 0);
+        const n = await refresh().catch(() => 0);
         setRefreshing(false);
+        maybeNotify(n);
         // Pending is already mounted by now (it's the first screen), so it has
         // fetched the *pre*-refresh list — reload it, not just the badge.
         await onPendingDataChanged();
@@ -125,6 +134,18 @@ export default function App() {
     })();
   }, [onPendingDataChanged]);
 
+  function maybeNotify(n: number) {
+    if (
+      shouldNotify({
+        newCount: n,
+        enabled: readNotifyPref(),
+        windowFocused: document.hasFocus(),
+      })
+    ) {
+      void notifyNewEpisodes(n, t("notify.title"), t("notify.body", { count: n }));
+    }
+  }
+
   async function doRefresh() {
     setRefreshing(true);
     try {
@@ -134,7 +155,8 @@ export default function App() {
         await rescanAiring().catch(() => 0);
         setAiringRefreshSignal((n) => n + 1);
       }
-      await refresh();
+      const n = await refresh();
+      maybeNotify(n);
     } finally {
       setRefreshing(false);
       // Reloads Pendientes as well as its badge — this is the "Actualizar"
@@ -210,6 +232,70 @@ export default function App() {
     navigate("airing");
   }
 
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName?.toUpperCase();
+      const targetIsEditable =
+        tag === "INPUT" ||
+        tag === "TEXTAREA" ||
+        tag === "SELECT" ||
+        Boolean(target?.isContentEditable);
+
+      const action = shortcutFor({
+        key: e.key,
+        ctrlKey: e.ctrlKey,
+        metaKey: e.metaKey,
+        altKey: e.altKey,
+        shiftKey: e.shiftKey,
+        targetIsEditable,
+      });
+
+      if (!action) return;
+
+      switch (action.kind) {
+        case "navigate":
+          if (view !== "loading" && view !== "onboarding") {
+            navigate(action.view);
+          }
+          break;
+        case "refresh":
+          if (!refreshing) {
+            void doRefresh();
+          }
+          break;
+        case "search":
+          e.preventDefault();
+          navigate("catalog");
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+              const input = document.querySelector<HTMLInputElement>("input[data-shortcut-search]");
+              input?.focus();
+            });
+          });
+          break;
+        case "help":
+          e.preventDefault();
+          setShortcutsOpen((prev) => !prev);
+          break;
+        case "escape":
+          if (shortcutsOpen) {
+            e.preventDefault();
+            setShortcutsOpen(false);
+          } else if (selected) {
+            e.preventDefault();
+            setSelected(null);
+          }
+          break;
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [view, refreshing, shortcutsOpen, selected]);
+
   // Frameless window: every screen needs *some* draggable strip with the
   // window controls, or the loading/onboarding views (which don't render the
   // main topbar) would leave the user unable to move or close the window.
@@ -245,6 +331,8 @@ export default function App() {
     <button
       className={`tab ${view === id ? "active" : ""}`}
       onClick={() => navigate(id)}
+      onMouseEnter={id === "stats" ? () => void loadStats() : undefined}
+      onFocus={id === "stats" ? () => void loadStats() : undefined}
     >
       {label}
       {id === "pending" && pending > 0 && <span className="badge">{pending}</span>}
@@ -287,6 +375,7 @@ export default function App() {
               onOpenSeries={setSelected}
               onChanged={onPendingDataChanged}
               refreshSignal={pendingRefreshSignal}
+              onGoDiscover={() => navigate("descubrir")}
             />
           </div>
         )}
@@ -317,23 +406,25 @@ export default function App() {
         )}
         {view === "catalog" && (
           <div className="view-panel" ref={panelRef}>
-            <Catalog />
+            <Catalog onChanged={onPendingDataChanged} />
           </div>
         )}
         {statsVisited && (
           <div className="view-panel" hidden={view !== "stats"}>
-            <Stats
-              active={view === "stats"}
-              onOpenSeries={(id) => {
-                // The graph only knows ids; SeriesDetail needs the full row.
-                listLibrary()
-                  .then((items) => {
-                    const hit = items.find((i) => i.series.id === id);
-                    if (hit) setSelected(hit.series);
-                  })
-                  .catch((err) => console.error("open series from graph failed", err));
-              }}
-            />
+            <Suspense fallback={<div className="empty">{t("common.loading")}</div>}>
+              <Stats
+                active={view === "stats"}
+                onOpenSeries={(id) => {
+                  // The graph only knows ids; SeriesDetail needs the full row.
+                  listLibrary()
+                    .then((items) => {
+                      const hit = items.find((i) => i.series.id === id);
+                      if (hit) setSelected(hit.series);
+                    })
+                    .catch((err) => console.error("open series from graph failed", err));
+                }}
+              />
+            </Suspense>
           </div>
         )}
         {view === "settings" && (
@@ -357,6 +448,7 @@ export default function App() {
           </div>
         )}
       </div>
+      <ShortcutsOverlay open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
     </div>
   );
 }

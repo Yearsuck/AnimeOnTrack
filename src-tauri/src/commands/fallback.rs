@@ -105,14 +105,22 @@ async fn run_episode_fallback(app: AppHandle) -> Result<(), String> {
         if !candidate.known_rows.is_empty() {
             let rows = rows_to_refresh(&candidate.known_rows, &priority, &active_site_id);
             for (series_id, site_id, url) in rows {
+                if crate::domain_breaker::is_open(&url) {
+                    continue;
+                }
+
                 let a = match crate::adapter::adapter_for(&site_id) {
                     Some(adapter) => adapter,
                     None => continue,
                 };
 
                 let scraped = match fetch_html_with_script(&app, &url, a.episode_fetch_script()).await {
-                    Ok(s) => s,
+                    Ok(s) => {
+                        crate::domain_breaker::record_success(&url);
+                        s
+                    }
                     Err(e) => {
+                        crate::domain_breaker::record_failure(&url);
                         eprintln!("[fallback] refetch failed for {} on {}: {e}", candidate.title, site_id);
                         had_refetch_error = true;
                         tokio::time::sleep(FALLBACK_PACED).await;
@@ -191,6 +199,10 @@ async fn run_episode_fallback(app: AppHandle) -> Result<(), String> {
                     let db = state.db.lock().unwrap();
                     mirrors_or_default(crate::commands::mirrors::load_mirrors(&db, site.id).map_err(|e| e.to_string()), site.default_base_url)
                 };
+
+                if mirrors.first().map(|m| crate::domain_breaker::is_open(m)).unwrap_or(false) {
+                    continue;
+                }
 
                 let outcome = async {
                     let mut cards = match search_site(&app, &mirrors, &primary_query, a.as_ref()).await {

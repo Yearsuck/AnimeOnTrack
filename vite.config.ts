@@ -29,4 +29,33 @@ export default defineConfig(async () => ({
       ignored: ["**/src-tauri/**"],
     },
   },
+
+  // Code-splitting manual chunks: isolates the heavy 3D graph libraries (three,
+  // react-force-graph-3d, d3-*) and React vendor into dedicated chunks so app
+  // startup does not parse them until Stats is first visited.
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          const normalized = id.replace(/\\/g, "/");
+          if (normalized.includes("/node_modules/")) {
+            if (
+              normalized.includes("/three/") ||
+              normalized.includes("/three-") ||
+              normalized.includes("/react-force-graph-3d") ||
+              normalized.includes("/d3-")
+            ) {
+              return "graph3d";
+            }
+            if (
+              normalized.includes("/react/") ||
+              normalized.includes("/react-dom/")
+            ) {
+              return "vendor";
+            }
+          }
+        },
+      },
+    },
+  },
 }));

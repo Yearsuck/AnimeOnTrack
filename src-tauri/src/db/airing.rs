@@ -282,6 +282,14 @@ impl EpKey {
 
 impl Db {
     fn merged_pending_episodes(&self, priority: &[String]) -> Result<Vec<(i64, Vec<i64>)>> {
+        self.merged_pending_episodes_at(priority, chrono::Utc::now().timestamp())
+    }
+
+    pub(crate) fn merged_pending_episodes_at(
+        &self,
+        priority: &[String],
+        now: i64,
+    ) -> Result<Vec<(i64, Vec<i64>)>> {
         let mut stmt = self.conn.prepare(
             "SELECT s.id, s.source_id, s.anilist_id, s.title, c.title AS catalog_title,
                     s.watched_externally, s.followed, so.site_id
@@ -399,15 +407,26 @@ impl Db {
                 continue;
             }
 
-            // W = the highest numeric episode number that is seen=1 over all members (0 if none).
+            // Compute row_align once for every candidate member.
+            let mut member_align: std::collections::HashMap<i64, super::episode_align::RowAlign> =
+                std::collections::HashMap::new();
+            for m in &candidate_members {
+                let align = self.row_align(m.id, now)?;
+                member_align.insert(m.id, align);
+            }
+
+            // W = the highest canonical episode number that is seen=1 over all members (0.0 if none).
             let mut w: f64 = 0.0;
             for m in &candidate_members {
+                let align = &member_align[&m.id];
                 if let Some(eps) = eps_by_series.get(&m.id) {
                     for ep in eps {
                         if ep.seen {
                             if let Some(num) = crate::db::episodes::parse_ep_number(&ep.number) {
-                                if num > w {
-                                    w = num;
+                                if let Some(canon) = align.to_canonical(num) {
+                                    if canon > w {
+                                        w = canon;
+                                    }
                                 }
                             }
                         }
@@ -415,13 +434,14 @@ impl Db {
                 }
             }
 
-            // For each distinct episode number > W that exists unseen in some member, choose the
+            // For each distinct canonical episode number > W that exists unseen in some member, choose the
             // member whose site ranks first in priority (rank of the member's sources.site_id;
             // unknown site = last; ties by lowest series id). That member's episode row is the chosen one.
             let mut best_by_key: std::collections::HashMap<EpKey, ChosenEpisode> =
                 std::collections::HashMap::new();
 
             for m in &candidate_members {
+                let align = &member_align[&m.id];
                 let rank = site_rank(m.site_id.as_deref(), priority);
                 if let Some(eps) = eps_by_series.get(&m.id) {
                     for ep in eps {
@@ -430,10 +450,14 @@ impl Db {
                         }
                         let key = match crate::db::episodes::parse_ep_number(&ep.number) {
                             Some(v) => {
-                                if v <= w {
+                                let Some(canon) = align.to_canonical(v) else {
+                                    // Episodes whose canonical number is None (earlier-season numbers of a cumulative row) are never pending
+                                    continue;
+                                };
+                                if canon <= w {
                                     continue;
                                 }
-                                EpKey::Numeric(v.to_bits())
+                                EpKey::Numeric(canon.to_bits())
                             }
                             None => EpKey::Text(ep.number.trim().to_string()),
                         };
@@ -479,6 +503,7 @@ impl Db {
 
         Ok(show_results)
     }
+
 
     /// Returns followed canonical shows with no row that has episodes on ANY site
     /// (old rule), or followed releasing shows behind what AniList says has aired,
@@ -2168,5 +2193,80 @@ mod tests {
         assert_eq!(db.pending_count(src_a, &priority).unwrap(), 0);
         let pending = db.list_pending(src_a, PendingSort::RemainingAsc, &priority).unwrap();
         assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn merged_pending_canonical_alignment_tensei_fixture() {
+        let db = Db::open(":memory:").unwrap();
+        let now = 1_700_000_000;
+        let src_a = db.upsert_source("AnimeYT", "https://animeyt.cc", "animeytx").unwrap();
+        let src_b = db.upsert_source("TioAnime", "https://tioanime.com", "tioanime").unwrap();
+
+        let entries = vec![
+            crate::anizip::MapEntry { episode: 1, season: 3, absolute: Some(25), air_at: Some(now - 14 * 86400) },
+            crate::anizip::MapEntry { episode: 2, season: 3, absolute: Some(26), air_at: Some(now - 7 * 86400) },
+            crate::anizip::MapEntry { episode: 3, season: 3, absolute: Some(27), air_at: Some(now) },
+            crate::anizip::MapEntry { episode: 4, season: 3, absolute: Some(28), air_at: Some(now + 7 * 86400) },
+            crate::anizip::MapEntry { episode: 5, season: 3, absolute: Some(29), air_at: Some(now + 14 * 86400) },
+            crate::anizip::MapEntry { episode: 6, season: 3, absolute: Some(30), air_at: Some(now + 21 * 86400) },
+            crate::anizip::MapEntry { episode: 7, season: 3, absolute: Some(31), air_at: Some(now + 28 * 86400) },
+            crate::anizip::MapEntry { episode: 8, season: 3, absolute: Some(32), air_at: Some(now + 35 * 86400) },
+        ];
+        db.replace_episode_map(185756, &entries, now).unwrap();
+
+        let mk = |slug: &str, title: &str| crate::models::Series {
+            id: 0, slug: slug.into(), title: title.into(), url: format!("https://site/{slug}"),
+            cover_url: None, is_airing: true, followed: true, next_episode_at: None, site_episode_count: None,
+        };
+
+        let row_a = db.upsert_series(src_a, &mk("tensei-a", "Tensei")).unwrap();
+        db.set_anilist_id(row_a, 185756).unwrap();
+        db.set_followed(row_a, true).unwrap();
+        for i in 1..=3 {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: row_a, number: i.to_string(), title: None,
+                url: format!("https://animeyt.cc/tv/tensei/{i}"), released_at: None, seen: false,
+                download_path: None, download_status: None,
+            }).unwrap();
+        }
+
+        let row_b = db.upsert_series(src_b, &mk("tensei-b", "Tensei")).unwrap();
+        db.set_anilist_id(row_b, 185756).unwrap();
+        db.set_followed(row_b, true).unwrap();
+        for i in 1..=27 {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: row_b, number: i.to_string(), title: None,
+                url: format!("https://tioanime.com/ver/tensei-{i}"), released_at: None, seen: false,
+                download_path: None, download_status: None,
+            }).unwrap();
+        }
+
+        let priority = vec!["animeytx".to_string(), "tioanime".to_string()];
+        let pending = db.merged_pending_episodes_at(&priority, now).unwrap();
+        assert_eq!(pending.len(), 1);
+        let (rep_id, ep_ids) = &pending[0];
+        assert_eq!(*rep_id, row_a);
+        assert_eq!(ep_ids.len(), 3, "exactly 3 pending episodes (canonical 1..3), all from animeyt");
+        for ep_id in ep_ids {
+            let ep = db.get_episode(*ep_id).unwrap();
+            assert_eq!(ep.series_id, row_a);
+        }
+
+        // Now if TioAnime also has "28" (canonical 4, aired later), it appears as the fourth, from TioAnime
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: row_b, number: "28".into(), title: None,
+            url: "https://tioanime.com/ver/tensei-28".into(), released_at: None, seen: false,
+            download_path: None, download_status: None,
+        }).unwrap();
+
+        let pending2 = db.merged_pending_episodes_at(&priority, now).unwrap();
+        assert_eq!(pending2.len(), 1);
+        let (rep_id2, ep_ids2) = &pending2[0];
+        assert_eq!(*rep_id2, row_a);
+        assert_eq!(ep_ids2.len(), 4, "four pending episodes now");
+        let ep4 = db.get_episode(ep_ids2[3]).unwrap();
+        assert_eq!(ep4.series_id, row_b);
+        assert_eq!(ep4.number, "28");
+        assert_eq!(ep4.url, "https://tioanime.com/ver/tensei-28");
     }
 }
