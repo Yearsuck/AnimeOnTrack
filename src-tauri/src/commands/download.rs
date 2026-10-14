@@ -1,5 +1,8 @@
 use super::*;
-use crate::download_sources::{candidates, parse_tioanime_servers, resolve_yourupload, Media};
+use crate::download_sources::{
+    candidates, mytsumi_direct_media, parse_animeyt_container_url, parse_jkanime_servers, parse_mytsumi_tabs,
+    parse_tioanime_servers, resolve_from_page, supported_host, Media, Server,
+};
 use crate::downloader::{self, DlError};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -28,9 +31,9 @@ fn emit(app: &AppHandle, episode_id: i64, status: &'static str, percent: Option<
 ///
 /// Returns as soon as the download is queued; progress and the outcome arrive
 /// as `download-progress` events and in the episode row's `download_status`.
-/// Only TioAnime episode pages are understood so far (the other sites need the
-/// same research as `download_sources`), and only YourUpload mirrors can be
-/// resolved to a plain mp4; anything else reports a clear reason.
+/// TioAnime, JKAnime and animeyt.cc episode pages are understood; the hosts that
+/// hand out a plain file are YourUpload, Mp4upload, Mediafire, Streamtape and
+/// the direct mp4 tab of animeyt.cc's player. Anything else reports a reason.
 #[tauri::command]
 pub async fn download_episode(
     app: AppHandle,
@@ -85,12 +88,9 @@ fn enqueue(app: &AppHandle, episode_id: i64) -> Result<(), String> {
     Ok(())
 }
 
-/// Whether the downloader understands this episode link (TioAnime pages only so far).
+/// Whether the downloader understands this episode link.
 fn is_supported_episode_url(url: &str) -> bool {
-    url::Url::parse(url)
-        .ok()
-        .and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase()))
-        .is_some_and(|h| h == "tioanime.com" || h.ends_with(".tioanime.com"))
+    site_of(url).is_some()
 }
 
 #[derive(Serialize)]
@@ -201,25 +201,98 @@ async fn run_download(app: &AppHandle, episode_id: i64, cancel: &Arc<AtomicBool>
     Ok(dest.to_string_lossy().into_owned())
 }
 
-/// Episode page -> list of mirrors -> first mirror that resolves to a plain mp4.
+/// The sites whose episode pages the downloader understands.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Site {
+    TioAnime,
+    JkAnime,
+    AnimeYt,
+}
+
+fn site_of(url: &str) -> Option<Site> {
+    let host = url::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase()))?;
+    let is = |d: &str| host == d || host.ends_with(&format!(".{d}"));
+    if is("tioanime.com") {
+        Some(Site::TioAnime)
+    } else if is("jkanime.net") {
+        Some(Site::JkAnime)
+    } else if is("animeyt.cc") {
+        Some(Site::AnimeYt)
+    } else {
+        None
+    }
+}
+
+/// Plain HTTP GET of an embed / host page (these hosts are not behind
+/// Cloudflare, unlike the episode pages): browser UA, the previous page as
+/// Referer, 20 s, size-capped.
+async fn fetch_text(url: &str, referer: &str) -> Result<String, String> {
+    const MAX_PAGE_BYTES: u64 = 3 * 1024 * 1024;
+    if !is_safe_external_url(url) {
+        return Err("not a public web address".into());
+    }
+    let resp = downloader::client()
+        .get(url)
+        .header(reqwest::header::USER_AGENT, downloader::browser_user_agent())
+        .header(reqwest::header::REFERER, referer)
+        .timeout(std::time::Duration::from_secs(20))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    if resp.content_length().is_some_and(|n| n > MAX_PAGE_BYTES) {
+        return Err("page too large".into());
+    }
+    resp.text().await.map_err(|e| e.to_string())
+}
+
+/// Episode page -> list of mirrors -> first mirror that resolves to a plain file.
 async fn resolve_media(app: &AppHandle, episode_url: &str) -> Result<Media, DlError> {
     if !is_safe_external_url(episode_url) {
         return Err(DlError::Net("the episode link is not a public web address".into()));
     }
-    let host = url::Url::parse(episode_url)
-        .ok()
-        .and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase()))
-        .unwrap_or_default();
-    if !is_supported_episode_url(episode_url) {
+    let Some(site) = site_of(episode_url) else {
+        let host = url::Url::parse(episode_url)
+            .ok()
+            .and_then(|u| u.host_str().map(str::to_owned))
+            .unwrap_or_default();
         return Err(DlError::Net(format!("downloads from {host} are not supported yet")));
-    }
+    };
 
     // The episode page sits behind Cloudflare, so it goes through the browser
     // engine like every other page fetch.
     let page = fetch_html_with_script(app, episode_url, None)
         .await
         .map_err(|e| DlError::Net(format!("could not load the episode page: {e}")))?;
-    let servers = parse_tioanime_servers(&page.html);
+
+    let servers = match site {
+        Site::TioAnime => parse_tioanime_servers(&page.html),
+        Site::JkAnime => parse_jkanime_servers(&page.html),
+        Site::AnimeYt => {
+            // animeyt.cc embeds one "container" player; its runtime page is plain
+            // HTML listing the servers and, often, a direct mp4 tab.
+            let container = parse_animeyt_container_url(&page.html)
+                .ok_or_else(|| DlError::Net("this episode has no player container".into()))?;
+            let runtime = fetch_text(&container, episode_url)
+                .await
+                .map_err(|e| DlError::Net(format!("could not open the player container: {e}")))?;
+            let tabs = parse_mytsumi_tabs(&runtime);
+            if let Some(media) = mytsumi_direct_media(&tabs) {
+                if is_safe_external_url(&media.url) {
+                    return Ok(media);
+                }
+            }
+            tabs.into_iter()
+                .filter(|t| !t.direct_video)
+                .map(|t| Server { name: t.label, url: t.url })
+                .collect()
+        }
+    };
+
     let options = candidates(&servers);
     if options.is_empty() {
         let names: Vec<&str> = servers.iter().map(|s| s.name.as_str()).collect();
@@ -231,28 +304,15 @@ async fn resolve_media(app: &AppHandle, episode_url: &str) -> Result<Media, DlEr
 
     let mut last_err = String::from("no mirror could be resolved");
     for server in options {
-        if !is_safe_external_url(&server.url) {
-            continue;
-        }
-        let resp = downloader::client()
-            .get(&server.url)
-            .header(reqwest::header::USER_AGENT, downloader::browser_user_agent())
-            .header(reqwest::header::REFERER, episode_url)
-            .timeout(std::time::Duration::from_secs(20))
-            .send()
-            .await;
-        let html = match resp {
-            Ok(r) if r.status().is_success() => r.text().await.unwrap_or_default(),
-            Ok(r) => {
-                last_err = format!("{} answered HTTP {}", server.name, r.status());
-                continue;
-            }
+        let Some(host) = supported_host(&server) else { continue };
+        let html = match fetch_text(&server.url, episode_url).await {
+            Ok(h) => h,
             Err(e) => {
                 last_err = format!("{}: {e}", server.name);
                 continue;
             }
         };
-        match resolve_yourupload(&html, &server.url) {
+        match resolve_from_page(host, &html, &server.url) {
             Some(media) if is_safe_external_url(&media.url) => return Ok(media),
             _ => last_err = format!("{} has no downloadable file", server.name),
         }
@@ -339,4 +399,29 @@ pub async fn clear_all_downloads(
 ) -> Result<usize, String> {
     let db = state.db.lock().unwrap();
     db.clear_all_downloads().map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn site_detection_covers_the_three_supported_sites_and_their_subdomains() {
+        assert_eq!(site_of("https://tioanime.com/ver/x-1"), Some(Site::TioAnime));
+        assert_eq!(site_of("https://www.tioanime.com/ver/x-1"), Some(Site::TioAnime));
+        assert_eq!(site_of("https://jkanime.net/kanojo/2/"), Some(Site::JkAnime));
+        assert_eq!(site_of("https://animeyt.cc/1/anime/x-capitulo-8/"), Some(Site::AnimeYt));
+        assert_eq!(site_of("https://ANIMEYT.CC/x"), Some(Site::AnimeYt));
+    }
+
+    #[test]
+    fn site_detection_rejects_lookalikes_and_other_sites() {
+        assert_eq!(site_of("https://tioanime.com.evil.example/x"), None);
+        assert_eq!(site_of("https://notjkanime.net/x"), None);
+        assert_eq!(site_of("https://www4.animeflv.net/ver/x-1"), None);
+        assert_eq!(site_of("https://gogoanime.by/x-episode-1/"), None);
+        assert_eq!(site_of("not a url"), None);
+        assert!(!is_supported_episode_url("https://example.com/x"));
+        assert!(is_supported_episode_url("https://jkanime.net/x/1/"));
+    }
 }
