@@ -10,6 +10,7 @@ mod db;
 mod diff;
 mod domain_breaker;
 mod download_sources;
+mod downloader;
 mod file_log;
 mod genres;
 mod html_cache;

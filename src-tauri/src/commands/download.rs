@@ -1,18 +1,43 @@
 use super::*;
+use crate::download_sources::{candidates, parse_tioanime_servers, resolve_yourupload, Media};
+use crate::downloader::{self, DlError};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, LazyLock};
 
-/// Download an episode's video for offline viewing. This is a placeholder
-/// implementation — full video-URL extraction from the streaming sites'
-/// embedded players requires site-specific JavaScript evaluation (like
-/// `scraper_engine`), which is a complex follow-up. For now this sets up
-/// the DB bookkeeping and file structure so the auto-delete-on-seen path
-/// and the UI are fully functional.
+/// Cancel flags of the downloads that are queued or running, by episode id.
+static ACTIVE: LazyLock<Mutex<HashMap<i64, Arc<AtomicBool>>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+/// One transfer at a time: several parallel multi-hundred-MB downloads from the
+/// same mirror get throttled, and the second one would only slow the first.
+static SLOT: LazyLock<tokio::sync::Semaphore> = LazyLock::new(|| tokio::sync::Semaphore::new(1));
+
+#[derive(Serialize, Clone)]
+struct DownloadProgress {
+    episode_id: i64,
+    /// `downloading` | `downloaded` | `failed` | `cancelled`
+    status: &'static str,
+    percent: Option<u8>,
+    error: Option<String>,
+}
+
+fn emit(app: &AppHandle, episode_id: i64, status: &'static str, percent: Option<u8>, error: Option<String>) {
+    let _ = app.emit("download-progress", DownloadProgress { episode_id, status, percent, error });
+}
+
+/// Download an episode's video for offline viewing.
+///
+/// Returns as soon as the download is queued; progress and the outcome arrive
+/// as `download-progress` events and in the episode row's `download_status`.
+/// Only TioAnime episode pages are understood so far (the other sites need the
+/// same research as `download_sources`), and only YourUpload mirrors can be
+/// resolved to a plain mp4; anything else reports a clear reason.
 #[tauri::command]
 pub async fn download_episode(
-    _app: AppHandle,
+    app: AppHandle,
     state: State<'_, AppState>,
     episode_id: i64,
 ) -> Result<(), String> {
-    let (_url, _series_id) = {
+    {
         let db = state.db.lock().unwrap();
         let ep = db.get_episode(episode_id).map_err(|e| e.to_string())?;
         if ep.download_status.as_deref() == Some("downloading") {
@@ -21,41 +46,153 @@ pub async fn download_episode(
         if ep.download_status.as_deref() == Some("downloaded") {
             return Err("Episode is already downloaded".into());
         }
-        db.set_download_status(episode_id, "downloading", None)
-            .map_err(|e| e.to_string())?;
-        (ep.url, ep.series_id)
-    };
-
-    // TODO: Implement video URL extraction + streaming download.
-    // The architecture is ready:
-    //   1. Open episode page in a hidden WebView (like scraper_engine)
-    //   2. Inject JS to find the <video> source or iframe embed URL
-    //   3. Stream-download via reqwest with progress events:
-    //      app.emit("download-progress", DownloadProgress { episode_id, percent })
-    //   4. Save to <app_data_dir>/downloads/<series_id>/<episode_id>.mp4
-    //   5. Update DB: set_download_status(episode_id, "downloaded", Some(path))
-    //
-    // For now, mark as failed so the UI reflects the real state.
-    {
-        let db = state.db.lock().unwrap();
-        db.set_download_status(episode_id, "failed", None)
-            .map_err(|e| e.to_string())?;
+        db.set_download_status(episode_id, "downloading", None).map_err(|e| e.to_string())?;
     }
 
-    Err("Video download is not yet implemented — the auto-delete-on-seen infrastructure is ready.".into())
+    let cancel = Arc::new(AtomicBool::new(false));
+    ACTIVE.lock().unwrap().insert(episode_id, cancel.clone());
+    emit(&app, episode_id, "downloading", Some(0), None);
+
+    tauri::async_runtime::spawn(async move {
+        let outcome = run_download(&app, episode_id, &cancel).await;
+        ACTIVE.lock().unwrap().remove(&episode_id);
+        let state = app.state::<AppState>();
+        match outcome {
+            Ok(path) => {
+                let _ = state.db.lock().unwrap().set_download_status(episode_id, "downloaded", Some(&path));
+                crate::file_log::info(&format!("download finished: episode {episode_id}"));
+                emit(&app, episode_id, "downloaded", Some(100), None);
+            }
+            Err(DlError::Cancelled) => {
+                let _ = state.db.lock().unwrap().clear_download_columns(&[episode_id]);
+                emit(&app, episode_id, "cancelled", None, None);
+            }
+            Err(e) => {
+                let _ = state.db.lock().unwrap().set_download_status(episode_id, "failed", None);
+                crate::file_log::warn(&format!("download failed: episode {episode_id}: {e}"));
+                emit(&app, episode_id, "failed", None, Some(e.to_string()));
+            }
+        }
+    });
+    Ok(())
 }
 
-/// Cancel an in-progress download.
+async fn run_download(app: &AppHandle, episode_id: i64, cancel: &Arc<AtomicBool>) -> Result<String, DlError> {
+    let _slot = SLOT.acquire().await.map_err(|e| DlError::Net(e.to_string()))?;
+    if cancel.load(Ordering::SeqCst) {
+        return Err(DlError::Cancelled);
+    }
+
+    let (episode_url, series_id) = {
+        let state = app.state::<AppState>();
+        let db = state.db.lock().unwrap();
+        let ep = db.get_episode(episode_id).map_err(|e| DlError::Io(e.to_string()))?;
+        (ep.url, ep.series_id)
+    };
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| DlError::Io(e.to_string()))?
+        .join("downloads");
+    let dest = downloader::episode_file_path(&dir, series_id, episode_id);
+
+    let media = resolve_media(app, &episode_url).await?;
+    if cancel.load(Ordering::SeqCst) {
+        return Err(DlError::Cancelled);
+    }
+
+    let mut last_pct: i16 = -1;
+    let app_for_progress = app.clone();
+    downloader::fetch_to_file(&media, &dest, cancel, move |done, total| {
+        let Some(total) = total.filter(|t| *t > 0) else { return };
+        let pct = ((done.saturating_mul(100)) / total).min(100) as i16;
+        if pct != last_pct {
+            last_pct = pct;
+            emit(&app_for_progress, episode_id, "downloading", Some(pct as u8), None);
+        }
+    })
+    .await?;
+    Ok(dest.to_string_lossy().into_owned())
+}
+
+/// Episode page -> list of mirrors -> first mirror that resolves to a plain mp4.
+async fn resolve_media(app: &AppHandle, episode_url: &str) -> Result<Media, DlError> {
+    if !is_safe_external_url(episode_url) {
+        return Err(DlError::Net("the episode link is not a public web address".into()));
+    }
+    let host = url::Url::parse(episode_url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase()))
+        .unwrap_or_default();
+    if !(host == "tioanime.com" || host.ends_with(".tioanime.com")) {
+        return Err(DlError::Net(format!("downloads from {host} are not supported yet")));
+    }
+
+    // The episode page sits behind Cloudflare, so it goes through the browser
+    // engine like every other page fetch.
+    let page = fetch_html_with_script(app, episode_url, None)
+        .await
+        .map_err(|e| DlError::Net(format!("could not load the episode page: {e}")))?;
+    let servers = parse_tioanime_servers(&page.html);
+    let options = candidates(&servers);
+    if options.is_empty() {
+        let names: Vec<&str> = servers.iter().map(|s| s.name.as_str()).collect();
+        return Err(DlError::Net(format!(
+            "no supported mirror on this episode (found: {})",
+            if names.is_empty() { "none".to_string() } else { names.join(", ") }
+        )));
+    }
+
+    let mut last_err = String::from("no mirror could be resolved");
+    for server in options {
+        if !is_safe_external_url(&server.url) {
+            continue;
+        }
+        let resp = downloader::client()
+            .get(&server.url)
+            .header(reqwest::header::USER_AGENT, downloader::browser_user_agent())
+            .header(reqwest::header::REFERER, episode_url)
+            .timeout(std::time::Duration::from_secs(20))
+            .send()
+            .await;
+        let html = match resp {
+            Ok(r) if r.status().is_success() => r.text().await.unwrap_or_default(),
+            Ok(r) => {
+                last_err = format!("{} answered HTTP {}", server.name, r.status());
+                continue;
+            }
+            Err(e) => {
+                last_err = format!("{}: {e}", server.name);
+                continue;
+            }
+        };
+        match resolve_yourupload(&html, &server.url) {
+            Some(media) if is_safe_external_url(&media.url) => return Ok(media),
+            _ => last_err = format!("{} has no downloadable file", server.name),
+        }
+    }
+    Err(DlError::Net(last_err))
+}
+
+/// Cancel a queued or running download.
 #[tauri::command]
 pub async fn cancel_download(
     state: State<'_, AppState>,
     episode_id: i64,
 ) -> Result<(), String> {
-    let db = state.db.lock().unwrap();
-    db.set_download_status(episode_id, "failed", None)
-        .map_err(|e| e.to_string())?;
-    // TODO: Cancel the actual reqwest download task.
-    Ok(())
+    let flag = ACTIVE.lock().unwrap().get(&episode_id).cloned();
+    match flag {
+        // The running task notices the flag, removes its `.part` file and
+        // clears the row itself.
+        Some(flag) => {
+            flag.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+        None => {
+            let db = state.db.lock().unwrap();
+            db.clear_download_columns(&[episode_id]).map_err(|e| e.to_string())
+        }
+    }
 }
 
 /// Delete a downloaded episode's file and clear its DB state.
