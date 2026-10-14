@@ -174,6 +174,32 @@ async fn resolve_media(app: &AppHandle, episode_url: &str) -> Result<Media, DlEr
     Err(DlError::Net(last_err))
 }
 
+/// Open a downloaded episode with the system's default video player.
+/// Only files inside the app's own downloads folder are ever opened.
+#[tauri::command]
+pub async fn play_download(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    episode_id: i64,
+) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let path = {
+        let db = state.db.lock().unwrap();
+        db.downloaded_paths(&[episode_id])
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .next()
+            .map(|(_, p)| p)
+            .ok_or_else(|| "this episode is not downloaded".to_string())?
+    };
+    let downloads = app.path().app_data_dir().map_err(|e| e.to_string())?.join("downloads");
+    let file = std::path::PathBuf::from(&path);
+    if !file.starts_with(&downloads) || !file.is_file() {
+        return Err("the downloaded file is missing".into());
+    }
+    app.opener().open_path(&path, None::<&str>).map_err(|e| e.to_string())
+}
+
 /// Cancel a queued or running download.
 #[tauri::command]
 pub async fn cancel_download(
