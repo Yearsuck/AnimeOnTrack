@@ -13,7 +13,12 @@ Instantánea del 2026-10-14 (release 0.9.0). Actualízala al cerrar cada tarea o
 - Anteriores seguidas: 0.7.0 (filtros de catálogo, listas de Descubrir, estadísticas rediseñadas), 0.6.x.
 
 ## En `develop` sin publicar
-- Nada: `develop` y `main` coinciden con 0.9.0.
+- **Actualización automática** (rama `feature/auto-update`, ver PR): `tauri-plugin-updater` + aviso al arrancar +
+  ajuste en Ajustes → Apariencia. Los instaladores los firma `release.yml` con los secretos de GitHub
+  `TAURI_SIGNING_PRIVATE_KEY` y `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`; la clave pública está en `tauri.conf.json`.
+  La clave privada y su contraseña están **solo** en esos secretos y en `~/.aot-secrets/` del PC del autor
+  (fuera del repo): si se pierden, las apps ya instaladas no podrán actualizarse. No verificado de extremo a
+  extremo: hace falta publicar una versión con el updater y luego otra más nueva para ver una actualización real.
 
 ## Contenido de 0.9.0 (antes en `feature/new-additions`, fusionada el 2026-10-14 con aprobación del usuario) La lista completa de cambios, cómo probarlos y qué se validó está en
 `docs/new-additions-review.md` (Batches 0 a 15); el plan en `docs/superpowers/plans/2026-10-14-*.md`.
