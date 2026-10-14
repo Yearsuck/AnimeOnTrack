@@ -180,7 +180,10 @@ async fn run_download(app: &AppHandle, episode_id: i64, cancel: &Arc<AtomicBool>
         .app_data_dir()
         .map_err(|e| DlError::Io(e.to_string()))?
         .join("downloads");
-    let dest = downloader::episode_file_path(&dir, series_id, episode_id);
+    // Created and locked down (no execute rights on its files) before anything lands in it.
+    let hardened_dir = dir.clone();
+    let _ = tokio::task::spawn_blocking(move || crate::download_safety::harden_downloads_dir(&hardened_dir)).await;
+    let base = downloader::episode_file_base(&dir, series_id, episode_id);
 
     let media = resolve_media(app, &episode_url).await?;
     if cancel.load(Ordering::SeqCst) {
@@ -189,7 +192,7 @@ async fn run_download(app: &AppHandle, episode_id: i64, cancel: &Arc<AtomicBool>
 
     let mut last_pct: i16 = -1;
     let app_for_progress = app.clone();
-    downloader::fetch_to_file(&media, &dest, cancel, move |done, total| {
+    let final_file = downloader::fetch_to_file(&media, &base, cancel, move |done, total| {
         let Some(total) = total.filter(|t| *t > 0) else { return };
         let pct = ((done.saturating_mul(100)) / total).min(100) as i16;
         if pct != last_pct {
@@ -198,7 +201,7 @@ async fn run_download(app: &AppHandle, episode_id: i64, cancel: &Arc<AtomicBool>
         }
     })
     .await?;
-    Ok(dest.to_string_lossy().into_owned())
+    Ok(final_file.to_string_lossy().into_owned())
 }
 
 /// The sites whose episode pages the downloader understands.
