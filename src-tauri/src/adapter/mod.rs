@@ -25,7 +25,7 @@ pub fn all_sites() -> &'static [SiteInfo] {
     &[
         SiteInfo { id: "animeytx", name: "AnimeYT", default_base_url: "https://animeyt.cc" },
         SiteInfo { id: "tioanime", name: "TioAnime", default_base_url: "https://tioanime.com" },
-        SiteInfo { id: "animeflv", name: "AnimeFLV", default_base_url: "https://www4.animeflv.net" },
+        SiteInfo { id: "animeflv", name: "AnimeFLV", default_base_url: "https://animeflv.or.at" },
         SiteInfo { id: "jkanime", name: "JKanime", default_base_url: "https://jkanime.net" },
         SiteInfo { id: "gogoanime", name: "GogoAnime", default_base_url: "https://gogoanime.by" },
         SiteInfo { id: "animeland", name: "AnimeLand", default_base_url: "https://w7.animeland.tv" },
