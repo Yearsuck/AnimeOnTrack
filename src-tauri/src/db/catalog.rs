@@ -1757,9 +1757,9 @@ impl Db {
 
     /// Imports snapshot items that are not already present in `anilist_catalog`, preserving
     /// local rows without overwriting. Inserts in chunks of 500 using `upsert_catalog_anime_batch`,
-    /// assigning `sort_order` matching the item's index in `items`.
+    /// assigning `sort_order = base_sort_order + index in items`, so a caller importing in chunks keeps one global order.
     #[allow(dead_code)] // Called by catalog_snapshot::import_from_bytes and tests.
-    pub fn import_catalog_snapshot(&self, items: &[crate::anilist::CatalogAnime]) -> Result<usize> {
+    pub fn import_catalog_snapshot(&self, items: &[crate::anilist::CatalogAnime], base_sort_order: i64) -> Result<usize> {
         let mut existing_ids: std::collections::HashSet<i64> = std::collections::HashSet::new();
         let mut stmt = self.conn.prepare("SELECT id FROM anilist_catalog")?;
         let mut rows = stmt.query([])?;
@@ -1770,7 +1770,7 @@ impl Db {
         let mut to_insert: Vec<(&crate::anilist::CatalogAnime, i64)> = Vec::new();
         for (idx, anime) in items.iter().enumerate() {
             if existing_ids.insert(anime.id) {
-                to_insert.push((anime, idx as i64));
+                to_insert.push((anime, base_sort_order + idx as i64));
             }
         }
 
@@ -4459,7 +4459,7 @@ mod tests {
         let items = vec![item1, item2];
 
         // First import: id 1 skipped (not overwritten), id 2 inserted -> returns 1
-        let inserted = db.import_catalog_snapshot(&items).unwrap();
+        let inserted = db.import_catalog_snapshot(&items, 0).unwrap();
         assert_eq!(inserted, 1);
         assert_eq!(db.catalog_count().unwrap(), 2);
 
@@ -4468,7 +4468,7 @@ mod tests {
         assert_eq!(title, "Original Title");
 
         // Second import with same items: returns 0 and nothing changes
-        let second_inserted = db.import_catalog_snapshot(&items).unwrap();
+        let second_inserted = db.import_catalog_snapshot(&items, 0).unwrap();
         assert_eq!(second_inserted, 0);
         assert_eq!(db.catalog_count().unwrap(), 2);
         let (title2, _, _) = db.get_catalog_titles(1).unwrap().unwrap();
@@ -4484,7 +4484,7 @@ mod tests {
         let a5 = catalog_anime(5, "Fifth Anime", &["Fantasy"]);
 
         let items = vec![a10, a20, a5];
-        let inserted = db.import_catalog_snapshot(&items).unwrap();
+        let inserted = db.import_catalog_snapshot(&items, 0).unwrap();
         assert_eq!(inserted, 3);
 
         // catalog_all_for_snapshot orders by sort_order, id
