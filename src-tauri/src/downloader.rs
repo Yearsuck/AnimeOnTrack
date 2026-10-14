@@ -408,6 +408,28 @@ async fn finalize(part: &Path, base: &Path, source_url: &str) -> Result<PathBuf,
     Ok(dest)
 }
 
+/// Delete the leftovers of downloads that were cut short (`*.part` files under
+/// `downloads_dir`, one level of series folders deep). Run at startup, when no
+/// download can be in progress. Returns how many files were removed.
+pub fn sweep_partial_downloads(downloads_dir: &Path) -> usize {
+    let mut removed = 0;
+    let Ok(series_dirs) = std::fs::read_dir(downloads_dir) else { return 0 };
+    for dir in series_dirs.flatten() {
+        let path = dir.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Ok(files) = std::fs::read_dir(&path) else { continue };
+        for f in files.flatten() {
+            let p = f.path();
+            if p.extension().is_some_and(|e| e == "part") && std::fs::remove_file(&p).is_ok() {
+                removed += 1;
+            }
+        }
+    }
+    removed
+}
+
 async fn write_body(
     resp: &mut reqwest::Response,
     part: &Path,
@@ -797,6 +819,23 @@ mod tests {
         assert_eq!(data[0], 0x47);
         assert_eq!(data[1], 1);
         assert_eq!(data[188 * 3 + 1], 2);
+        cleanup(&base);
+    }
+
+    #[test]
+    fn the_startup_sweep_removes_only_part_files() {
+        let base = temp_dest("sweep");
+        let series_dir = base.parent().unwrap().to_path_buf();
+        std::fs::create_dir_all(&series_dir).unwrap();
+        std::fs::write(series_dir.join("5.part"), b"half").unwrap();
+        std::fs::write(series_dir.join("6.mp4"), b"keep").unwrap();
+        std::fs::write(series_dir.join("7.ts"), b"keep").unwrap();
+        let root = series_dir.parent().unwrap();
+        assert_eq!(sweep_partial_downloads(root), 1);
+        assert!(!series_dir.join("5.part").exists());
+        assert!(series_dir.join("6.mp4").exists());
+        assert!(series_dir.join("7.ts").exists());
+        assert_eq!(sweep_partial_downloads(&root.join("missing")), 0);
         cleanup(&base);
     }
 }

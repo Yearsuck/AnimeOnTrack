@@ -129,6 +129,10 @@ pub fn run() {
             backup::apply_pending_restore(&dir);
             let db_path = dir.join("animeontrack.sqlite");
             let db = db::Db::open(db_path.to_str().unwrap()).expect("open db");
+            // Nothing can be downloading at startup: reset rows left "downloading" by a
+            // crash or a close mid-transfer, and remove their half-written files.
+            let _ = db.clear_interrupted_downloads();
+            let _ = downloader::sweep_partial_downloads(&dir.join("downloads"));
             // Restore the active site from settings (installs that predate
             // multi-site support have no such key — default to the one site
             // that ever existed before this), then the most recent source

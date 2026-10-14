@@ -435,6 +435,12 @@ pub async fn delete_download(
     state: State<'_, AppState>,
     episode_id: i64,
 ) -> Result<(), String> {
+    // A download still running for this episode must stop first, otherwise it
+    // would finish later and bring the file back; its task cleans up after itself.
+    if let Some(flag) = ACTIVE.lock().unwrap().get(&episode_id) {
+        flag.store(true, Ordering::SeqCst);
+        return Ok(());
+    }
     let db = state.db.lock().unwrap();
     if let Ok(paths) = db.downloaded_paths(&[episode_id]) {
         for (_, path) in &paths {
