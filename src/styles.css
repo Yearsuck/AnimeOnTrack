@@ -1094,18 +1094,23 @@ textarea.input {
 }
 .ep-actions {
   display: flex;
+  align-items: center;
+  justify-content: flex-end;
   gap: 6px;
   flex-shrink: 0;
+  flex-wrap: wrap;
 }
 .dl-badge {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
+  padding: 0 var(--sp-2);
+  min-height: 26px;
   border-radius: var(--radius-round);
-  font-size: 14px;
+  font-size: var(--fs-xs);
+  color: var(--muted);
   flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
 }
 .dl-badge.dl-active {
   animation: dl-pulse 1.5s ease-in-out infinite;
@@ -1120,6 +1125,76 @@ textarea.input {
 .ep-row.seen .ep-num {
   background: var(--success-dim);
   color: var(--success);
+}
+.ep-row.dl-row-active {
+  border-left: 3px solid var(--accent);
+  background: var(--accent-dim);
+}
+.ep-row.dl-row-done {
+  border-left: 3px solid var(--success);
+}
+
+/* ---------- Offline downloads panel & per-row styles ---------- */
+.dl-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--sp-3);
+  margin-bottom: var(--sp-4);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+.dl-panel-head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+.dl-panel-status {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+.dl-panel-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+.dl-panel-hint {
+  width: 100%;
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  margin: 0;
+}
+.dl-panel-msg {
+  width: 100%;
+  font-size: var(--fs-sm);
+  color: var(--text);
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
+}
+.dl-progress {
+  width: 100%;
+  height: 4px;
+  background: var(--border);
+  border-radius: var(--radius-round);
+  overflow: hidden;
+  margin-top: var(--sp-1);
+}
+.dl-progress-fill {
+  height: 100%;
+  background: var(--accent-solid);
+  border-radius: inherit;
+  transition: width var(--dur-fast) var(--ease);
+}
+.dl-error {
+  color: var(--danger);
+  font-size: var(--fs-xs);
+  margin-top: 2px;
 }
 
 /* seen checkbox: interruptible transition for the base states, a one-shot

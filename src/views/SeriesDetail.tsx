@@ -1,9 +1,11 @@
 import { listen } from "@tauri-apps/api/event";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   cancelDownload,
   deleteDownload,
+  deleteSeriesDownloads,
   downloadEpisode,
+  downloadPending,
   getCatalogInfoForSeries,
   getNextAir,
   getPlayerSettings,
@@ -19,6 +21,7 @@ import {
 import { useT } from "../i18n";
 import { airCountdown } from "../lib/airCountdown";
 import { isUnlinkedCatalogRow } from "../lib/catalogLink";
+import { summarizeDownloads } from "../lib/downloadSummary";
 import { epNum } from "../lib/episodeNumber";
 import { resolveCoverUrl } from "../lib/posterFallback";
 import type { CatalogAnime, Episode, NextAir, Series } from "../types";
@@ -45,6 +48,16 @@ export function SeriesDetail({
   // (`download-progress` events); the episode row's own `download_status`
   // covers everything else, e.g. a finished download from an earlier visit.
   const [dl, setDl] = useState<Record<number, { percent: number | null; error?: string }>>({});
+  const [batchRunning, setBatchRunning] = useState(false);
+  const [panelMsg, setPanelMsg] = useState<string | null>(null);
+  const [confirmDeleteAll, setConfirmDeleteAll] = useState(false);
+  const [deletingAll, setDeletingAll] = useState(false);
+
+  useEffect(() => {
+    setConfirmDeleteAll(false);
+    setPanelMsg(null);
+  }, [series.id]);
+
   // AniList's CDN cover wins; otherwise the series' own (possibly a cached
   // local `file:` path, which the raw <img> would be blocked from loading).
   const detailCover = resolveCoverUrl(catalogInfo?.cover_url ?? series.cover_url);
@@ -212,6 +225,55 @@ export function SeriesDetail({
       )
     : "";
 
+  const summary = useMemo(() => summarizeDownloads(episodes), [episodes]);
+
+  const panelStatus = useMemo(() => {
+    const parts: string[] = [];
+    if (summary.downloaded > 0) {
+      parts.push(t("download.statusDownloaded", { count: summary.downloaded }));
+    }
+    if (summary.active > 0) {
+      parts.push(t("download.statusActive", { count: summary.active }));
+    }
+    if (summary.failed > 0) {
+      parts.push(t("download.statusFailed", { count: summary.failed }));
+    }
+    return parts.length > 0 ? parts.join(" · ") : t("download.panelEmpty");
+  }, [summary.downloaded, summary.active, summary.failed, t]);
+
+  async function handleDownloadPending() {
+    setBatchRunning(true);
+    setPanelMsg(null);
+    try {
+      const res = await downloadPending(series.id);
+      await load();
+      let msg = t("download.batchQueued", { count: res.queued });
+      if (res.unsupported > 0) {
+        msg += ` ${t("download.batchUnsupported", { count: res.unsupported })}`;
+      }
+      setPanelMsg(msg);
+    } catch (err) {
+      console.error("downloadPending failed", err);
+      setPanelMsg(t("download.batchError"));
+    } finally {
+      setBatchRunning(false);
+    }
+  }
+
+  async function handleDeleteAll() {
+    setDeletingAll(true);
+    try {
+      const count = await deleteSeriesDownloads(series.id);
+      await load();
+      setPanelMsg(t("download.deleteAllDone", { count }));
+    } catch (err) {
+      console.error("deleteSeriesDownloads failed", err);
+    } finally {
+      setDeletingAll(false);
+      setConfirmDeleteAll(false);
+    }
+  }
+
   return (
     <div className="page">
       <button className="btn btn-ghost detail-back" onClick={onBack}>
@@ -304,6 +366,66 @@ export function SeriesDetail({
         )}
       </div>
 
+      {summary.downloadable > 0 && (
+        <section className="dl-panel">
+          <div className="dl-panel-head">
+            <h3 className="section-title">{t("download.panelTitle")}</h3>
+            <span className="dl-panel-status">{panelStatus}</span>
+          </div>
+
+          <div className="dl-panel-actions">
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={batchRunning || summary.pending === 0}
+              title={summary.pending === 0 ? t("download.nothingPending") : undefined}
+              onClick={handleDownloadPending}
+            >
+              {t("download.downloadPending", { count: summary.pending })}
+            </button>
+
+            {summary.downloaded + summary.active + summary.failed > 0 && (
+              confirmDeleteAll ? (
+                <>
+                  <button
+                    type="button"
+                    className="btn btn-danger"
+                    disabled={deletingAll}
+                    onClick={handleDeleteAll}
+                  >
+                    {t("download.deleteAllYes")}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    disabled={deletingAll}
+                    onClick={() => setConfirmDeleteAll(false)}
+                  >
+                    {t("download.deleteAllNo")}
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => setConfirmDeleteAll(true)}
+                >
+                  {t("download.deleteAll", { count: summary.downloaded + summary.active })}
+                </button>
+              )
+            )}
+          </div>
+
+          <p className="dl-panel-hint">
+            {t("download.keepWatchedHint")}
+          </p>
+
+          {panelMsg && (
+            <p className="dl-panel-msg">{panelMsg}</p>
+          )}
+        </section>
+      )}
+
       {linking ? (
         <div className="empty">{t("seriesDetail.linking")}</div>
       ) : loading ? (
@@ -312,83 +434,127 @@ export function SeriesDetail({
         <div className="empty">{t("seriesDetail.noEpisodes")}</div>
       ) : (
         <div className="series-block">
-          {episodes.map((ep) => (
-            <div
-              key={ep.id}
-              ref={(el) => {
-                if (el) rowRefs.current.set(ep.id, el);
-                else rowRefs.current.delete(ep.id);
-              }}
-              className={`ep-row ${ep.seen ? "seen" : ""}`}
-            >
-              <span className="ep-num">{ep.number}</span>
-              <div className="ep-main">
-                <div className="ep-title" onClick={() => openEpisode(ep.url)}>
-                  {t("common.episodeNumber", { number: ep.number })}
+          {episodes.map((ep) => {
+            const isDownloading = ep.download_status === "downloading";
+            const isDownloaded = ep.download_status === "downloaded";
+            const rowClass = [
+              "ep-row",
+              ep.seen ? "seen" : "",
+              isDownloading ? "dl-row-active" : "",
+              isDownloaded ? "dl-row-done" : "",
+            ]
+              .filter(Boolean)
+              .join(" ");
+
+            return (
+              <div
+                key={ep.id}
+                ref={(el) => {
+                  if (el) rowRefs.current.set(ep.id, el);
+                  else rowRefs.current.delete(ep.id);
+                }}
+                className={rowClass}
+              >
+                <span className="ep-num">{ep.number}</span>
+                <div className="ep-main">
+                  <div className="ep-title" onClick={() => openEpisode(ep.url)}>
+                    {t("common.episodeNumber", { number: ep.number })}
+                  </div>
+                  {ep.download_status === "failed" && (
+                    <div className="dl-error">
+                      {dl[ep.id]?.error || t("download.failed")}
+                    </div>
+                  )}
+                </div>
+                <div className="ep-actions">
+                  {ep.download_status === "downloaded" ? (
+                    <>
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-primary"
+                        title={t("download.downloaded")}
+                        onClick={() => playDownload(ep.id).catch(console.error)}
+                      >
+                        {t("download.playOffline")}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-ghost"
+                        title={t("download.deleteKeepsWatched")}
+                        aria-label={t("download.delete")}
+                        onClick={() => deleteDownload(ep.id).then(() => load()).catch(console.error)}
+                      >
+                        🗑
+                      </button>
+                    </>
+                  ) : ep.download_status === "downloading" ? (
+                    <>
+                      <span className="dl-badge dl-active">
+                        {typeof dl[ep.id]?.percent === "number"
+                          ? t("download.downloading", { percent: dl[ep.id]?.percent! })
+                          : t("download.queued")}
+                      </span>
+                      <button
+                        type="button"
+                        className="btn btn-sm"
+                        title={t("download.cancel")}
+                        onClick={() => cancelDownload(ep.id).catch(console.error)}
+                      >
+                        ✕
+                      </button>
+                    </>
+                  ) : ep.download_status === "failed" ? (
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      title={`${t("download.failed")}${dl[ep.id]?.error ? `: ${dl[ep.id]?.error}` : ""}`}
+                      onClick={() => {
+                        setDl((prev) => ({ ...prev, [ep.id]: { percent: 0, error: undefined } }));
+                        downloadEpisode(ep.id)
+                          .then(() => load())
+                          .catch(console.error);
+                      }}
+                    >
+                      ⚠ {t("download.retry")}
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      title={t("download.download")}
+                      onClick={() => {
+                        setDl((prev) => ({ ...prev, [ep.id]: { percent: 0 } }));
+                        downloadEpisode(ep.id)
+                          .then(() => load())
+                          .catch(console.error);
+                      }}
+                    >
+                      ⬇
+                    </button>
+                  )}
+                  <button type="button" className="btn" onClick={() => openEpisode(ep.url)}>
+                    {t("common.watch")}
+                  </button>
+                  <button
+                    type="button"
+                    className={`check ${ep.seen ? "on" : ""}`}
+                    title={ep.seen ? t("common.markUnseen") : t("common.markSeen")}
+                    onClick={() => toggleSeen(ep)}
+                  >
+                    ✓
+                  </button>
+                  {ep.download_status === "downloading" && typeof dl[ep.id]?.percent === "number" && (
+                    <div className="dl-progress">
+                      <div
+                        className="dl-progress-fill"
+                        style={{ width: `${dl[ep.id]?.percent}%` }}
+                      />
+                    </div>
+                  )}
                 </div>
               </div>
-              <div className="ep-actions">
-                {ep.download_status === "downloaded" ? (
-                  <>
-                    <button
-                      className="btn btn-sm"
-                      title={t("download.downloaded")}
-                      onClick={() => playDownload(ep.id).catch(console.error)}
-                    >
-                      {t("download.playOffline")}
-                    </button>
-                    <button
-                      className="btn btn-sm"
-                      title={t("download.delete")}
-                      onClick={() => deleteDownload(ep.id).then(() => load()).catch(console.error)}
-                    >
-                      🗑
-                    </button>
-                  </>
-                ) : ep.download_status === "downloading" ? (
-                  <>
-                    <span className="dl-badge dl-active">
-                      {t("download.downloading", { percent: dl[ep.id]?.percent ?? "…" })}
-                    </span>
-                    <button
-                      className="btn btn-sm"
-                      title={t("download.cancel")}
-                      onClick={() => cancelDownload(ep.id).catch(console.error)}
-                    >
-                      ✕
-                    </button>
-                  </>
-                ) : (
-                  <button
-                    className="btn btn-sm"
-                    title={
-                      ep.download_status === "failed"
-                        ? `${t("download.failed")}${dl[ep.id]?.error ? `: ${dl[ep.id]?.error}` : ""}`
-                        : t("download.download")
-                    }
-                    onClick={() => {
-                      setDl((prev) => ({ ...prev, [ep.id]: { percent: 0 } }));
-                      downloadEpisode(ep.id)
-                        .then(() => load())
-                        .catch(console.error);
-                    }}
-                  >
-                    {ep.download_status === "failed" ? "⚠" : "⬇"}
-                  </button>
-                )}
-                <button className="btn" onClick={() => openEpisode(ep.url)}>
-                  {t("common.watch")}
-                </button>
-                <button
-                  className={`check ${ep.seen ? "on" : ""}`}
-                  title={ep.seen ? t("common.markUnseen") : t("common.markSeen")}
-                  onClick={() => toggleSeen(ep)}
-                >
-                  ✓
-                </button>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
