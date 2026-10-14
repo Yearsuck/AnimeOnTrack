@@ -592,10 +592,23 @@ impl Db {
     pub fn link_series_to_catalog(&self) -> Result<i64> {
         let rows = self.catalog_titles_for_index()?;
         let index = crate::matching::CatalogIndex::build(&rows);
+        self.link_series_to_catalog_with(&index, rows)
+    }
+
+    /// The linking pass given an already-built index. Building the index over
+    /// the whole catalog is the expensive CPU part and needs no DB access, so
+    /// the startup command builds it *outside* the `state.db` mutex and only
+    /// holds the lock for this step; holding it for the build as well froze
+    /// every data query for several seconds after each launch.
+    pub fn link_series_to_catalog_with(
+        &self,
+        index: &crate::matching::CatalogIndex,
+        rows: Vec<crate::matching::CatalogTitleRow>,
+    ) -> Result<i64> {
         let catalog_titles: std::collections::HashMap<i64, Vec<String>> =
             rows.into_iter().map(|row| (row.id, row.titles)).collect();
 
-        self.repair_season_mislinks_with(&index, &catalog_titles)?;
+        self.repair_season_mislinks_with(index, &catalog_titles)?;
 
         // Snapshot AFTER the repair so the sibling step sees the corrected links.
         let mut stmt = self.conn.prepare("SELECT id, title, anilist_id FROM series WHERE anilist_id IS NOT NULL")?;
@@ -604,7 +617,7 @@ impl Db {
         let siblings = Self::sibling_index(&linked_series);
         let mut linked = 0i64;
         for (series_id, title) in self.series_needing_catalog_link()? {
-            if let Some(new_id) = self.resolve_catalog_link(&title, series_id, &index, &catalog_titles, &siblings)? {
+            if let Some(new_id) = self.resolve_catalog_link(&title, series_id, index, &catalog_titles, &siblings)? {
                 self.set_anilist_id(series_id, new_id)?;
                 linked += 1;
             }

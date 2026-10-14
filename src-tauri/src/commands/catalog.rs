@@ -237,8 +237,20 @@ pub fn should_stamp_auto_sync<T, E>(outcome: &Result<T, E>) -> bool {
 /// can also call it, on every site switch, not just at app startup).
 #[tauri::command]
 pub async fn link_series_to_catalog(state: State<'_, AppState>) -> Result<i64, String> {
+    // Read the titles under the lock, build the (CPU-heavy) index without it,
+    // then take the lock again only to link — see `link_series_to_catalog_with`.
+    let rows = {
+        let db = state.db.lock().unwrap();
+        db.catalog_titles_for_index().map_err(|e| e.to_string())?
+    };
+    let (index, rows) = tauri::async_runtime::spawn_blocking(move || {
+        let index = crate::matching::CatalogIndex::build(&rows);
+        (index, rows)
+    })
+    .await
+    .map_err(|e| e.to_string())?;
     let db = state.db.lock().unwrap();
-    db.link_series_to_catalog().map_err(|e| e.to_string())
+    db.link_series_to_catalog_with(&index, rows).map_err(|e| e.to_string())
 }
 
 #[derive(Serialize, Clone)]
