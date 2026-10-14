@@ -1,13 +1,16 @@
 import type { Episode } from "../types";
 
-// Checks whether an episode URL belongs to a site supported by the offline
-// downloader. Currently only tioanime.com (and subdomains) supports downloads.
+// The sites whose episode pages the offline downloader understands (keep in
+// step with `site_of` in src-tauri/src/commands/download.rs).
+const DOWNLOAD_HOSTS = ["tioanime.com", "jkanime.net", "animeyt.cc", "gogoanime.by"];
+
+// Checks whether an episode URL belongs to one of those sites (or a subdomain).
 // Never throws on malformed or empty URLs.
 export function isDownloadableUrl(url: string): boolean {
   if (!url) return false;
   try {
     const hostname = new URL(url).hostname.toLowerCase();
-    return hostname === "tioanime.com" || hostname.endsWith(".tioanime.com");
+    return DOWNLOAD_HOSTS.some((h) => hostname === h || hostname.endsWith(`.${h}`));
   } catch {
     return false;
   }
