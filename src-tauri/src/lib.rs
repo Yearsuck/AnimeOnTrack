@@ -248,6 +248,7 @@ pub fn run() {
             commands::set_deck_bans,
             commands::get_discover_niche,
             commands::get_next_air,
+            commands::export_catalog_snapshot,
             commands::set_discover_niche,
             commands::backup_status,
             commands::set_google_credentials,

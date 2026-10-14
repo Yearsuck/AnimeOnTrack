@@ -255,6 +255,8 @@ export const refreshCatalogStatus = () =>
 export const getCatalogInfoForSeries = (seriesId: number) =>
   invoke<CatalogAnime | null>("get_catalog_info_for_series", { seriesId });
 
+export const exportCatalogSnapshot = () => invoke<string>("export_catalog_snapshot");
+
 export const getNextAir = (anilistId: number) =>
   invoke<NextAir | null>("get_next_air", { anilistId });
 

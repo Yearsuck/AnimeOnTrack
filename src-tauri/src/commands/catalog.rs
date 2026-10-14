@@ -376,6 +376,143 @@ pub async fn refresh_catalog_status(state: State<'_, AppState>) -> Result<Option
     Ok(Some(done))
 }
 
+/// Where a new install fetches the pre-built catalog snapshot from (a GitHub
+/// Release asset kept up to date by the owner). `AOT_CATALOG_SNAPSHOT_URL`
+/// overrides it for development; an override skips the "public host" check so
+/// a local file server can be used.
+const SNAPSHOT_URL: &str =
+    "https://github.com/Yearsuck/AnimeOnTrack/releases/download/catalog-snapshot/catalog-snapshot.json.gz";
+/// A catalog this small is treated as "new install"; anything bigger already
+/// has data the snapshot must not second-guess.
+const BOOTSTRAP_MAX_EXISTING: i64 = 1_000;
+const MAX_SNAPSHOT_DOWNLOAD_BYTES: usize = 64 * 1024 * 1024;
+
+async fn download_snapshot(url: &str) -> Result<Vec<u8>, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(180))
+        .user_agent(format!("AnimeOnTrack/{}", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let resp = client.get(url).send().await.map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("snapshot download answered HTTP {}", resp.status()));
+    }
+    if resp.content_length().is_some_and(|n| n as usize > MAX_SNAPSHOT_DOWNLOAD_BYTES) {
+        return Err("snapshot is larger than the allowed size".into());
+    }
+    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
+    if bytes.len() > MAX_SNAPSHOT_DOWNLOAD_BYTES {
+        return Err("snapshot is larger than the allowed size".into());
+    }
+    Ok(bytes.to_vec())
+}
+
+/// First-run shortcut: instead of crawling ~21,000 titles from AniList at
+/// ~28 requests/minute (over 15 minutes), download the pre-built snapshot (one
+/// request), import it in chunks without holding the DB lock for long, and
+/// record the full sync as completed so the regular incremental sync only has
+/// to close the gap. Best effort: any failure returns `None` and the caller
+/// falls back to the normal crawl.
+async fn try_snapshot_bootstrap(app: &AppHandle, state: &State<'_, AppState>) -> Option<i64> {
+    use crate::anilist::CatalogSyncState;
+
+    let skip = {
+        let db = state.db.lock().unwrap();
+        let existing = db.catalog_count().unwrap_or(i64::MAX);
+        let done = db
+            .get_setting("catalog_sync_state")
+            .ok()
+            .flatten()
+            .map(|raw| CatalogSyncState::from_json(&raw).full_sync_completed_at.is_some())
+            .unwrap_or(false);
+        existing >= BOOTSTRAP_MAX_EXISTING || done
+    };
+    if skip {
+        return None;
+    }
+
+    let override_url = std::env::var("AOT_CATALOG_SNAPSHOT_URL").ok().filter(|u| !u.trim().is_empty());
+    let url = override_url.clone().unwrap_or_else(|| SNAPSHOT_URL.to_string());
+    if override_url.is_none() && !crate::scraper_engine::is_safe_external_url(&url) {
+        return None;
+    }
+
+    let started = std::time::Instant::now();
+    let bytes = match download_snapshot(&url).await {
+        Ok(b) => b,
+        Err(e) => {
+            crate::file_log::warn(&format!("catalog snapshot download failed: {e}"));
+            return None;
+        }
+    };
+    let decoded = tauri::async_runtime::spawn_blocking(move || crate::catalog_snapshot::decode(&bytes)).await;
+    let (header, items) = match decoded {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => {
+            crate::file_log::warn(&format!("catalog snapshot rejected: {e}"));
+            return None;
+        }
+        Err(e) => {
+            crate::file_log::warn(&format!("catalog snapshot decode task failed: {e}"));
+            return None;
+        }
+    };
+
+    let total = items.len() as i64;
+    let mut inserted = 0i64;
+    for (chunk_idx, chunk) in items.chunks(1000).enumerate() {
+        {
+            let db = state.db.lock().unwrap();
+            match db.import_catalog_snapshot(chunk, (chunk_idx * 1000) as i64) {
+                Ok(n) => inserted += n as i64,
+                Err(e) => {
+                    crate::file_log::warn(&format!("catalog snapshot import failed: {e}"));
+                    return None;
+                }
+            }
+        }
+        let done = ((chunk_idx + 1) * 1000).min(items.len()) as i64;
+        let _ = app.emit("catalog-sync-progress", CatalogSyncProgress { synced: done, total });
+        // Yield so other commands get the DB lock between chunks.
+        tokio::task::yield_now().await;
+    }
+
+    let at = chrono::DateTime::from_timestamp(header.generated_at, 0)
+        .unwrap_or_else(chrono::Utc::now)
+        .to_rfc3339();
+    {
+        let db = state.db.lock().unwrap();
+        let st = CatalogSyncState { completed: Vec::new(), full_sync_completed_at: Some(at) };
+        let _ = db.set_setting("catalog_sync_state", &st.to_json());
+    }
+    crate::file_log::info(&format!(
+        "catalog snapshot imported: {inserted} new of {total} rows in {} ms",
+        started.elapsed().as_millis()
+    ));
+    Some(inserted)
+}
+
+/// Write a snapshot of the whole local catalog next to the database
+/// (`catalog-snapshot.json.gz` in the app data dir) and return its path. This is
+/// how the owner produces the file that is published for new installs.
+#[tauri::command]
+pub async fn export_catalog_snapshot(app: AppHandle, state: State<'_, AppState>) -> Result<String, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let items = {
+        let db = state.db.lock().unwrap();
+        db.catalog_all_for_snapshot().map_err(|e| e.to_string())?
+    };
+    let path = dir.join("catalog-snapshot.json.gz");
+    let out = path.clone();
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        let bytes = crate::catalog_snapshot::encode(chrono::Utc::now().timestamp(), &items).map_err(|e| e.to_string())?;
+        std::fs::write(&out, bytes).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    Ok(path.to_string_lossy().into_owned())
+}
+
 async fn run_catalog_sync(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -398,6 +535,12 @@ async fn run_catalog_sync(
         return db.catalog_count().map_err(|e| e.to_string());
     }
     let _clear = crate::commands::follow::RunningGuard(&state.catalog_sync_running);
+
+    // A new install imports the pre-built snapshot instead of crawling (see
+    // `try_snapshot_bootstrap`); on any failure the regular crawl below runs.
+    if !force_full {
+        let _ = try_snapshot_bootstrap(&app, &state).await;
+    }
 
     const PAGE_SIZE: i64 = 50;
     // Real total (~21,000) can't be known up front (AniList's own totals

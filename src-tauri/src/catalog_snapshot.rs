@@ -13,15 +13,12 @@ use flate2::Compression;
 use std::io::{BufRead, BufReader, Read, Write};
 
 /// Current snapshot format version. Incremented if header or serialization changes.
-#[allow(dead_code)] // Supervisor wires this in the next task.
 pub const FORMAT_VERSION: u32 = 1;
 
 /// Maximum allowable decompressed snapshot payload size (256 MB) to prevent gzip bombs.
-#[allow(dead_code)] // Supervisor wires this in the next task.
 pub const MAX_DECOMPRESSED_BYTES: u64 = 256 * 1024 * 1024;
 
 /// Metadata header stored as the first line of every snapshot payload.
-#[allow(dead_code)] // Supervisor wires this in the next task.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SnapshotHeader {
     pub format: u32,
@@ -33,7 +30,6 @@ pub struct SnapshotHeader {
 ///
 /// The first line contains the [`SnapshotHeader`], followed by one JSON object
 /// per [`CatalogAnime`] item separated by newlines.
-#[allow(dead_code)] // Supervisor wires this in the next task.
 pub fn encode(generated_at: i64, items: &[CatalogAnime]) -> anyhow::Result<Vec<u8>> {
     let header = SnapshotHeader {
         format: FORMAT_VERSION,
@@ -52,7 +48,6 @@ pub fn encode(generated_at: i64, items: &[CatalogAnime]) -> anyhow::Result<Vec<u
 }
 
 /// Decodes a gzip-compressed snapshot using the standard [`MAX_DECOMPRESSED_BYTES`] limit.
-#[allow(dead_code)] // Supervisor wires this in the next task.
 pub fn decode(bytes: &[u8]) -> anyhow::Result<(SnapshotHeader, Vec<CatalogAnime>)> {
     decode_with_limit(bytes, MAX_DECOMPRESSED_BYTES)
 }
@@ -164,19 +159,19 @@ fn decode_with_limit(
 }
 
 /// Exports the local database catalog as a gzip-compressed snapshot payload.
-#[allow(dead_code)] // Supervisor wires this in the next task.
+#[allow(dead_code)] // Only exercised by tests; the command encodes from rows it already holds.
 pub fn export_to_bytes(db: &crate::db::Db, generated_at: i64) -> anyhow::Result<Vec<u8>> {
     encode(generated_at, &db.catalog_all_for_snapshot()?)
 }
 
 /// Decodes and imports a snapshot payload into the local database, returning header and count inserted.
-#[allow(dead_code)] // Supervisor wires this in the next task.
+#[allow(dead_code)] // Only exercised by tests; the bootstrap imports chunk by chunk.
 pub fn import_from_bytes(
     db: &crate::db::Db,
     bytes: &[u8],
 ) -> anyhow::Result<(SnapshotHeader, usize)> {
     let (header, items) = decode(bytes)?;
-    let inserted = db.import_catalog_snapshot(&items)?;
+    let inserted = db.import_catalog_snapshot(&items, 0)?;
     Ok((header, inserted))
 }
 
