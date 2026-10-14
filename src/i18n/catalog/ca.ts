@@ -346,7 +346,6 @@ export const ca: Messages = {
   "catalog.batchStart": "Comença a veure",
   "catalog.starting": "Començant {current}/{total}…",
   "catalog.batchStartDone": "{started} en marxa, {problems} amb problemes.",
-  "catalog.startTitle": "Comença a veure (passa a Pendents)",
   "catalog.startNotFound": "«{title}» no s'ha trobat al lloc actiu.",
 
   // ProgressBar.tsx
@@ -646,8 +645,6 @@ export const ca: Messages = {
   "settings.diagnosticsReveal": "Mostra la carpeta",
 
   // continue watching
-  "continue.title": "Continuar veient",
-  "continue.play": "Reprodueix",
   "continue.discover": "Descobrir anime",
 
   // notifications
