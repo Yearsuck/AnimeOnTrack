@@ -1606,6 +1606,180 @@ impl Db {
             .optional()?;
         Ok(row)
     }
+
+    /// Every catalog row ordered by `sort_order, id` with full fidelity (genres, synonyms,
+    /// tags sorted by rank asc then name, relations sorted by related_id, relation_type).
+    ///
+    /// Reads each child table in a single bulk query into a map, avoiding N+1 queries.
+    #[allow(dead_code)] // Called by catalog_snapshot::export_to_bytes and tests.
+    pub fn catalog_all_for_snapshot(&self) -> Result<Vec<crate::anilist::CatalogAnime>> {
+        let mut genres_map: std::collections::HashMap<i64, Vec<String>> = std::collections::HashMap::new();
+        let mut stmt = self
+            .conn
+            .prepare("SELECT anilist_id, genre FROM anilist_catalog_genres ORDER BY anilist_id, rowid")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let anilist_id: i64 = row.get(0)?;
+            let genre: String = row.get(1)?;
+            genres_map.entry(anilist_id).or_default().push(genre);
+        }
+
+        let mut synonyms_map: std::collections::HashMap<i64, Vec<String>> = std::collections::HashMap::new();
+        let mut stmt = self
+            .conn
+            .prepare("SELECT anilist_id, synonym FROM anilist_catalog_synonyms ORDER BY anilist_id, rowid")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let anilist_id: i64 = row.get(0)?;
+            let synonym: String = row.get(1)?;
+            synonyms_map.entry(anilist_id).or_default().push(synonym);
+        }
+
+        let mut tags_map: std::collections::HashMap<i64, Vec<crate::anilist::CatalogTag>> =
+            std::collections::HashMap::new();
+        let mut stmt = self
+            .conn
+            .prepare("SELECT anilist_id, tag, rank FROM anilist_catalog_tags ORDER BY anilist_id, rank ASC, tag ASC")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let anilist_id: i64 = row.get(0)?;
+            let name: String = row.get(1)?;
+            let rank: i64 = row.get(2)?;
+            tags_map
+                .entry(anilist_id)
+                .or_default()
+                .push(crate::anilist::CatalogTag { name, rank });
+        }
+
+        let mut relations_map: std::collections::HashMap<i64, Vec<crate::anilist::CatalogRelation>> =
+            std::collections::HashMap::new();
+        let mut stmt = self.conn.prepare(
+            "SELECT anilist_id, related_id, relation_type FROM anilist_catalog_relations ORDER BY anilist_id, related_id ASC, relation_type ASC",
+        )?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let anilist_id: i64 = row.get(0)?;
+            let related_id: i64 = row.get(1)?;
+            let relation_type: String = row.get(2)?;
+            relations_map
+                .entry(anilist_id)
+                .or_default()
+                .push(crate::anilist::CatalogRelation { related_id, relation_type });
+        }
+
+        let mut stmt = self.conn.prepare(
+            "SELECT id, title, title_romaji, title_english, cover_url, banner_url, format,
+                    episodes, average_score, popularity, url, status, duration, studio,
+                    start_date, next_airing_at, next_episode
+             FROM anilist_catalog
+             ORDER BY sort_order, id",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<String>>(2)?,
+                r.get::<_, Option<String>>(3)?,
+                r.get::<_, Option<String>>(4)?,
+                r.get::<_, Option<String>>(5)?,
+                r.get::<_, Option<String>>(6)?,
+                r.get::<_, Option<i64>>(7)?,
+                r.get::<_, Option<i64>>(8)?,
+                r.get::<_, Option<i64>>(9)?,
+                r.get::<_, String>(10)?,
+                r.get::<_, Option<String>>(11)?,
+                r.get::<_, Option<i64>>(12)?,
+                r.get::<_, Option<String>>(13)?,
+                r.get::<_, Option<i64>>(14)?,
+                r.get::<_, Option<i64>>(15)?,
+                r.get::<_, Option<i64>>(16)?,
+            ))
+        })?;
+
+        let mut items = Vec::new();
+        for row in rows {
+            let (
+                id,
+                title,
+                title_romaji,
+                title_english,
+                cover_url,
+                banner_url,
+                format,
+                episodes,
+                average_score,
+                popularity,
+                url,
+                status,
+                duration,
+                studio,
+                start_date,
+                next_airing_at,
+                next_episode,
+            ) = row?;
+            let genres = genres_map.remove(&id).unwrap_or_default();
+            let synonyms = synonyms_map.remove(&id).unwrap_or_default();
+            let mut tags = tags_map.remove(&id).unwrap_or_default();
+            tags.sort_by(|a, b| a.rank.cmp(&b.rank).then_with(|| a.name.cmp(&b.name)));
+            let mut relations = relations_map.remove(&id).unwrap_or_default();
+            relations.sort_by(|a, b| {
+                a.related_id
+                    .cmp(&b.related_id)
+                    .then_with(|| a.relation_type.cmp(&b.relation_type))
+            });
+
+            items.push(crate::anilist::CatalogAnime {
+                id,
+                title,
+                title_romaji,
+                title_english,
+                synonyms,
+                cover_url,
+                banner_url,
+                format,
+                genres,
+                episodes,
+                average_score,
+                popularity,
+                url,
+                status,
+                duration,
+                studio,
+                start_date,
+                next_airing_at,
+                next_episode,
+                tags,
+                relations,
+            });
+        }
+        Ok(items)
+    }
+
+    /// Imports snapshot items that are not already present in `anilist_catalog`, preserving
+    /// local rows without overwriting. Inserts in chunks of 500 using `upsert_catalog_anime_batch`,
+    /// assigning `sort_order` matching the item's index in `items`.
+    #[allow(dead_code)] // Called by catalog_snapshot::import_from_bytes and tests.
+    pub fn import_catalog_snapshot(&self, items: &[crate::anilist::CatalogAnime]) -> Result<usize> {
+        let mut existing_ids: std::collections::HashSet<i64> = std::collections::HashSet::new();
+        let mut stmt = self.conn.prepare("SELECT id FROM anilist_catalog")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            existing_ids.insert(row.get(0)?);
+        }
+
+        let mut to_insert: Vec<(&crate::anilist::CatalogAnime, i64)> = Vec::new();
+        for (idx, anime) in items.iter().enumerate() {
+            if existing_ids.insert(anime.id) {
+                to_insert.push((anime, idx as i64));
+            }
+        }
+
+        let inserted_count = to_insert.len();
+        for chunk in to_insert.chunks(500) {
+            self.upsert_catalog_anime_batch(chunk)?;
+        }
+        Ok(inserted_count)
+    }
 }
 
 #[cfg(test)]
@@ -4269,5 +4443,132 @@ mod tests {
         ];
         db.replace_episode_map(500, &entries_strictly_past, now).unwrap();
         assert_eq!(db.next_airing_episode(500, now).unwrap(), None);
+    }
+
+    #[test]
+    fn test_import_catalog_snapshot_idempotent_and_no_overwrite() {
+        let db = Db::open(":memory:").unwrap();
+        // Seed an existing catalog row with id 1 and original title
+        let existing = catalog_anime(1, "Original Title", &["Action"]);
+        db.upsert_catalog_anime(&existing, 0).unwrap();
+
+        // Snapshot items: id 1 with DIFFERENT title, and new id 2
+        let item1 = catalog_anime(1, "Changed Title", &["Drama"]);
+        let item2 = catalog_anime(2, "Brand New Anime", &["Comedy"]);
+
+        let items = vec![item1, item2];
+
+        // First import: id 1 skipped (not overwritten), id 2 inserted -> returns 1
+        let inserted = db.import_catalog_snapshot(&items).unwrap();
+        assert_eq!(inserted, 1);
+        assert_eq!(db.catalog_count().unwrap(), 2);
+
+        // Check that id 1's title was NOT overwritten
+        let (title, _, _) = db.get_catalog_titles(1).unwrap().unwrap();
+        assert_eq!(title, "Original Title");
+
+        // Second import with same items: returns 0 and nothing changes
+        let second_inserted = db.import_catalog_snapshot(&items).unwrap();
+        assert_eq!(second_inserted, 0);
+        assert_eq!(db.catalog_count().unwrap(), 2);
+        let (title2, _, _) = db.get_catalog_titles(1).unwrap().unwrap();
+        assert_eq!(title2, "Original Title");
+    }
+
+    #[test]
+    fn test_import_catalog_snapshot_preserves_sort_order() {
+        let db = Db::open(":memory:").unwrap();
+        // Three anime items in a specific sequence
+        let a10 = catalog_anime(10, "Tenth Anime", &["Action"]);
+        let a20 = catalog_anime(20, "Twentieth Anime", &["Sci-Fi"]);
+        let a5 = catalog_anime(5, "Fifth Anime", &["Fantasy"]);
+
+        let items = vec![a10, a20, a5];
+        let inserted = db.import_catalog_snapshot(&items).unwrap();
+        assert_eq!(inserted, 3);
+
+        // catalog_all_for_snapshot orders by sort_order, id
+        let read_back = db.catalog_all_for_snapshot().unwrap();
+        assert_eq!(read_back.len(), 3);
+        assert_eq!(read_back[0].id, 10);
+        assert_eq!(read_back[1].id, 20);
+        assert_eq!(read_back[2].id, 5);
+        assert_eq!(read_back[0].title, "Tenth Anime");
+        assert_eq!(read_back[1].title, "Twentieth Anime");
+        assert_eq!(read_back[2].title, "Fifth Anime");
+    }
+
+    #[test]
+    fn test_catalog_all_for_snapshot_full_fidelity_and_child_tables() {
+        let db = Db::open(":memory:").unwrap();
+        let full = crate::anilist::CatalogAnime {
+            id: 42,
+            title: "Main Title".into(),
+            title_romaji: Some("Romaji Title".into()),
+            title_english: Some("English Title".into()),
+            synonyms: vec!["Synonym 1".into(), "Synonym 2".into()],
+            cover_url: Some("https://example.com/cover.jpg".into()),
+            banner_url: Some("https://example.com/banner.jpg".into()),
+            format: Some("TV".into()),
+            genres: vec!["Action".into(), "Adventure".into()],
+            episodes: Some(24),
+            average_score: Some(88),
+            popularity: Some(12345),
+            url: "https://anilist.co/anime/42".into(),
+            status: Some("FINISHED".into()),
+            duration: Some(25),
+            studio: Some("Kyoto Animation".into()),
+            start_date: Some(1609459200),
+            next_airing_at: Some(1612137600),
+            next_episode: Some(12),
+            tags: vec![
+                crate::anilist::CatalogTag { name: "Magic".into(), rank: 70 },
+                crate::anilist::CatalogTag { name: "Isekai".into(), rank: 50 },
+            ],
+            relations: vec![
+                crate::anilist::CatalogRelation { related_id: 100, relation_type: "PREQUEL".into() },
+                crate::anilist::CatalogRelation { related_id: 101, relation_type: "SEQUEL".into() },
+            ],
+        };
+
+        db.upsert_catalog_anime(&full, 0).unwrap();
+        let snapshot = db.catalog_all_for_snapshot().unwrap();
+        assert_eq!(snapshot.len(), 1);
+        let item = &snapshot[0];
+        assert_eq!(item.id, 42);
+        assert_eq!(item.title, "Main Title");
+        assert_eq!(item.title_romaji.as_deref(), Some("Romaji Title"));
+        assert_eq!(item.title_english.as_deref(), Some("English Title"));
+        assert_eq!(item.synonyms, vec!["Synonym 1", "Synonym 2"]);
+        assert_eq!(item.cover_url.as_deref(), Some("https://example.com/cover.jpg"));
+        assert_eq!(item.banner_url.as_deref(), Some("https://example.com/banner.jpg"));
+        assert_eq!(item.format.as_deref(), Some("TV"));
+        assert_eq!(item.genres, vec!["Action", "Adventure"]);
+        assert_eq!(item.episodes, Some(24));
+        assert_eq!(item.average_score, Some(88));
+        assert_eq!(item.popularity, Some(12345));
+        assert_eq!(item.url, "https://anilist.co/anime/42");
+        assert_eq!(item.status.as_deref(), Some("FINISHED"));
+        assert_eq!(item.duration, Some(25));
+        assert_eq!(item.studio.as_deref(), Some("Kyoto Animation"));
+        assert_eq!(item.start_date, Some(1609459200));
+        assert_eq!(item.next_airing_at, Some(1612137600));
+        assert_eq!(item.next_episode, Some(12));
+        // Tags must be sorted by rank asc then name: 50 ("Isekai") before 70 ("Magic")
+        assert_eq!(
+            item.tags,
+            vec![
+                crate::anilist::CatalogTag { name: "Isekai".into(), rank: 50 },
+                crate::anilist::CatalogTag { name: "Magic".into(), rank: 70 },
+            ]
+        );
+        // Relations sorted by related_id asc then relation_type
+        assert_eq!(
+            item.relations,
+            vec![
+                crate::anilist::CatalogRelation { related_id: 100, relation_type: "PREQUEL".into() },
+                crate::anilist::CatalogRelation { related_id: 101, relation_type: "SEQUEL".into() },
+            ]
+        );
     }
 }
