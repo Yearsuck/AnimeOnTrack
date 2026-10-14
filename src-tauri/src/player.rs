@@ -126,7 +126,11 @@ impl EpisodePlayer for AppWindowPlayer {
             .inner_size(1280.0, 800.0)
             .resizable(true)
             .visible(false)
+            // Pop-ups and pop-unders are the worst of the ads on these sites:
+            // nothing the user wants to watch needs a second window.
+            .on_new_window(|_url, _features| tauri::webview::NewWindowResponse::Deny)
             .build()?;
+        crate::ad_block::install(&win);
 
         if let Some(m) = selected_monitor {
             let pos = *m.position();
