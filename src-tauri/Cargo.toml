@@ -53,6 +53,11 @@ webview2-com = "0.38"
 windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
 
 
+# Our own code at opt-level 1: the matching/stats loops ran 5-10x slower than the
+# release build at level 0, which made the dev app feel frozen at startup.
+[profile.dev]
+opt-level = 1
+
 # Dependencies (bundled SQLite above all) run unoptimised in dev builds and make every
 # query several times slower than in the release the owner installs; optimise them,
 # keep our own crate at opt-level 0 for fast incremental builds.
