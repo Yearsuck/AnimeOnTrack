@@ -32,3 +32,9 @@ key), real download engine, taskbar badge, rotating file log.
 |---|---|---|
 | New-episode toast (`feat(notify)`) | After the startup refresh and the Actualizar button, a native Windows notification says "N episodios nuevos" when the window is NOT focused. On/off in Ajustes -> General (stored in localStorage, default on). The plugin is `tauri-plugin-notification` pinned to ~2.4 so `tauri`/`wry` stay as they were. | Minimise the app, trigger a refresh that finds new episodes (or force one with new data in the sandbox). The very first notification asks Windows for permission. |
 | Popular <-> cult slider (`feat(discover)`) | Descubrir options panel: a 5-step slider that biases Recomendado toward mainstream or cult titles (popularity, log scale). Centre = neutral = previous ranking. Saved when you release it. | Move it to the right and swipe a few Recomendado cards: lower-popularity titles should show up more. |
+
+## Batch 5 - ani.zip numbering (done, validated by tests; not by live data)
+| Change | What it does | How to check it |
+|---|---|---|
+| ani.zip episode map (`feat(episodes)`) | 30 s after start, a background job stores the per-season/absolute episode map (https://api.ani.zip) of the shows you track (20 per run). No UI. | `anilist_episode_map` table fills in the app DB. |
+| Number alignment (`feat(episodes)`) | Sites that number cumulatively (TioAnime 1..27) and per season (animeyt 1..3) are converted to one canonical number before merging Pendientes, cascading "seen" and syncing progress across sites. Fixes a risk after the season relink: a watermark of 27 could mark all animeyt episodes seen. Covered by a Tensei Kizoku fixture test. | Follow the same show on two sites with different numbering; mark an episode seen on one; the other must advance to the same real episode, not further. |
