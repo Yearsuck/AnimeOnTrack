@@ -134,8 +134,12 @@ impl EpisodePlayer for AppWindowPlayer {
             let scale = m.scale_factor();
 
             if fullscreen {
+                // Maximised, not true fullscreen: a fullscreen window hides the
+                // title bar and its close button, so the episode window could not
+                // be closed without Alt+F4. The viewer goes fullscreen themselves
+                // once the episode plays.
                 let _ = win.set_position(tauri::Position::Physical(pos));
-                let _ = win.set_fullscreen(true);
+                let _ = win.maximize();
             } else {
                 let win_phys_w = (1280.0 * scale) as i32;
                 let win_phys_h = (800.0 * scale) as i32;
@@ -144,7 +148,7 @@ impl EpisodePlayer for AppWindowPlayer {
                 let _ = win.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(center_x, center_y)));
             }
         } else if fullscreen {
-            let _ = win.set_fullscreen(true);
+            let _ = win.maximize();
         }
 
         let _ = win.show();
