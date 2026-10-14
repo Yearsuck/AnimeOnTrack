@@ -1256,6 +1256,8 @@ pub fn supported_host(server: &Server) -> Option<&'static str> {
             Some("vidhide")
         } else if name_lower == "mixdrop" {
             Some("mixdrop")
+        } else if name_lower == "voe" || host_lower == "voe.sx" || host_lower.ends_with(".voe.sx") {
+            Some("voe")
         } else {
             None
         }
@@ -1273,6 +1275,7 @@ fn host_preference(host: &str) -> u8 {
         "okru" => 4,
         "mixdrop" => 5,
         "vidhide" => 6,
+        "voe" => 7,
         _ => 255,
     }
 }
@@ -1308,8 +1311,106 @@ pub fn resolve_from_page(host: &str, page_html: &str, page_url: &str) -> Option<
         "okru" => resolve_okru(page_html),
         "mixdrop" => resolve_mixdrop(page_html, page_url),
         "vidhide" => resolve_vidhide(page_html, page_url),
+        "voe" => resolve_voe(page_html, page_url),
         _ => None,
     }
+}
+
+/// VOE answers `/e/<id>` with a tiny page whose script sends the browser to the
+/// domain that currently serves it (`window.location.href = 'https://...'`).
+/// Returns that target so the caller can fetch it; the first http(s) URL after
+/// the assignment wins, a bare `localStorage` branch is ignored.
+#[allow(dead_code)] // Consumed by the download command layer
+pub fn voe_redirect_target(html: &str) -> Option<String> {
+    let marker = "window.location.href";
+    let mut from = 0;
+    while let Some(pos) = html.get(from..)?.find(marker) {
+        let after = from + pos + marker.len();
+        from = after;
+        let rest = html.get(after..)?.trim_start();
+        let Some(rest) = rest.strip_prefix('=') else { continue };
+        let rest = rest.trim_start();
+        let Some(quote) = rest.chars().next().filter(|c| *c == '\'' || *c == '"') else {
+            continue;
+        };
+        let inner = &rest[1..];
+        let Some(end) = inner.find(quote) else { continue };
+        let candidate = &inner[..end];
+        if let Ok(u) = Url::parse(candidate) {
+            if (u.scheme() == "http" || u.scheme() == "https") && u.host_str().is_some() {
+                return Some(candidate.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// ROT13 over ASCII letters.
+fn rot13(text: &str) -> String {
+    text.chars()
+        .map(|c| match c {
+            'a'..='z' => (((c as u8 - b'a') + 13) % 26 + b'a') as char,
+            'A'..='Z' => (((c as u8 - b'A') + 13) % 26 + b'A') as char,
+            other => other,
+        })
+        .collect()
+}
+
+/// Undo VOE's player-config obfuscation: ROT13, strip the junk tokens, base64,
+/// shift every byte down by 3, reverse, base64 again -> a JSON document.
+fn voe_decode_blob(blob: &str) -> Option<serde_json::Value> {
+    use base64::Engine;
+    let engine = base64::engine::general_purpose::STANDARD;
+    let mut text = rot13(blob);
+    for junk in ["@$", "^^", "~@", "%?", "*~", "!!", "#&"] {
+        text = text.replace(junk, "");
+    }
+    let first = engine.decode(text.trim()).ok()?;
+    let mut shifted: Vec<u8> = first.iter().map(|b| b.wrapping_sub(3)).collect();
+    shifted.reverse();
+    let second = engine.decode(&shifted).ok()?;
+    serde_json::from_slice(&second).ok()
+}
+
+/// The stream VOE's embed page carries: its player config sits in a
+/// `<script type="application/json">` holding one obfuscated string. The decoded
+/// JSON names the HLS playlist in `source` (and sometimes a direct file in
+/// `direct_access_url`). HLS is preferred, as the player does.
+#[allow(dead_code)] // Consumed by the download command layer
+pub fn resolve_voe(page_html: &str, page_url: &str) -> Option<Media> {
+    static SCRIPT_SELECTOR: OnceLock<Selector> = OnceLock::new();
+    let selector = SCRIPT_SELECTOR.get_or_init(|| {
+        Selector::parse(r#"script[type="application/json"]"#).expect("valid json script selector")
+    });
+    let doc = Html::parse_document(page_html);
+    for script in doc.select(selector) {
+        let raw: String = script.text().collect();
+        let Ok(serde_json::Value::Array(items)) = serde_json::from_str::<serde_json::Value>(raw.trim()) else {
+            continue;
+        };
+        let Some(blob) = items.first().and_then(|v| v.as_str()) else { continue };
+        let Some(config) = voe_decode_blob(blob) else { continue };
+
+        let hls = config.get("source").and_then(|v| v.as_str());
+        let direct = config.get("direct_access_url").and_then(|v| v.as_str());
+        for candidate in [hls, direct].into_iter().flatten() {
+            let Some(resolved) = resolve_http_url(candidate, page_url) else { continue };
+            let Ok(parsed) = Url::parse(&resolved) else { continue };
+            let path = parsed.path().to_ascii_lowercase();
+            if !(path.ends_with(".m3u8") || path.ends_with(".mp4")) {
+                continue;
+            }
+            let origin = origin_of(page_url)?;
+            return Some(Media { url: resolved, referer: origin, host: "voe" });
+        }
+    }
+    None
+}
+
+/// `scheme://host/` of a URL, used as the Referer a host expects.
+fn origin_of(url: &str) -> Option<String> {
+    let u = Url::parse(url).ok()?;
+    Some(format!("{}://{}/", u.scheme(), u.host_str()?))
 }
 
 #[cfg(test)]
@@ -1605,6 +1706,10 @@ mod tests {
                 Server {
                     name: "Vidhide".to_string(),
                     url: "https://vidhidevip.com/embed/etxwwazwbqtr".to_string(),
+                },
+                Server {
+                    name: "VOE".to_string(),
+                    url: "https://voe.sx/e/n8r51a1os2gh".to_string(),
                 },
             ]
         );
@@ -2185,5 +2290,64 @@ mod tests {
             resolve_from_page("okru", okru_fix, "https://ok.ru/videoembed/1815852419665"),
             resolve_okru(okru_fix)
         );
+    }
+
+    #[test]
+    fn voe_redirect_page_points_at_the_serving_domain() {
+        let redirect = include_str!("../tests/fixtures/voe_redirect.html");
+        assert_eq!(
+            voe_redirect_target(redirect),
+            Some("https://megankiddifference.com/e/n8r51a1os2gh".to_string())
+        );
+        assert_eq!(voe_redirect_target(""), None);
+        assert_eq!(voe_redirect_target("window.location.href = 'javascript:alert(1)'"), None);
+        assert_eq!(voe_redirect_target("var x = window.location.href;"), None);
+        assert_eq!(
+            voe_redirect_target("a window.location.href=\"http://x.example/y\" b"),
+            Some("http://x.example/y".to_string())
+        );
+    }
+
+    #[test]
+    fn voe_player_config_is_decoded_into_the_hls_playlist() {
+        let page = include_str!("../tests/fixtures/voe_embed.html");
+        let media = resolve_voe(page, "https://megankiddifference.com/e/n8r51a1os2gh").expect("voe fixture resolves");
+        assert!(media.url.starts_with("https://ugc-cdn-caching-n39hkqbevdlsunmsrc.cloudwindow-route.com/engine/hls2-c/01/18507/n8r51a1os2gh_,n,.urlset/master.m3u8?t="));
+        assert_eq!(media.referer, "https://megankiddifference.com/");
+        assert_eq!(media.host, "voe");
+    }
+
+    #[test]
+    fn voe_rejects_pages_without_a_decodable_config() {
+        assert_eq!(resolve_voe("", "https://x.example/e/1"), None);
+        assert_eq!(resolve_voe("<html><body>nothing</body></html>", "https://x.example/e/1"), None);
+        assert_eq!(
+            resolve_voe(r#"<script type="application/json">["not a voe blob"]</script>"#, "https://x.example/e/1"),
+            None
+        );
+        assert_eq!(resolve_voe(r#"<script type="application/json">{"a":1}</script>"#, "https://x.example/e/1"), None);
+    }
+
+    #[test]
+    fn rot13_is_its_own_inverse_and_leaves_symbols_alone() {
+        assert_eq!(rot13("Hello, World 1!"), "Uryyb, Jbeyq 1!");
+        assert_eq!(rot13(&rot13("MixedCase_09@$")), "MixedCase_09@$");
+    }
+
+    #[test]
+    fn voe_is_recognised_by_name_or_domain_and_ranked_last() {
+        let by_name = Server { name: "VOE".into(), url: "https://megankiddifference.com/e/x".into() };
+        assert_eq!(supported_host(&by_name), Some("voe"));
+        let by_domain = Server { name: "x".into(), url: "https://voe.sx/e/x".into() };
+        assert_eq!(supported_host(&by_domain), Some("voe"));
+        let other = Server { name: "x".into(), url: "https://notvoe.sx/e/x".into() };
+        assert_eq!(supported_host(&other), None);
+        let list = vec![
+            Server { name: "VOE".into(), url: "https://voe.sx/e/a".into() },
+            Server { name: "Vidhide".into(), url: "https://vidhidevip.com/embed/b".into() },
+            Server { name: "Mp4upload".into(), url: "https://www.mp4upload.com/embed-c.html".into() },
+        ];
+        let order: Vec<&str> = candidates(&list).iter().map(|s| supported_host(s).unwrap()).collect::<Vec<_>>().into_iter().collect();
+        assert_eq!(order, vec!["mp4upload", "vidhide", "voe"]);
     }
 }

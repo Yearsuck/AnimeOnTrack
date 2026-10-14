@@ -1,7 +1,7 @@
 use super::*;
 use crate::download_sources::{
     candidates, mytsumi_direct_media, parse_animeyt_container_url, parse_jkanime_servers, parse_mytsumi_tabs,
-    parse_tioanime_servers, resolve_from_page, supported_host, Media, Server,
+    parse_tioanime_servers, resolve_from_page, supported_host, voe_redirect_target, Media, Server,
 };
 use crate::hls::{parse_gogoanime_player_url, parse_megaplay_playlist_url, parse_wrapper_iframe};
 use crate::downloader::{self, DlError};
@@ -241,8 +241,8 @@ fn site_of(url: &str) -> Option<Site> {
 
 /// Plain HTTP GET of an embed / host page (these hosts are not behind
 /// Cloudflare, unlike the episode pages): browser UA, the previous page as
-/// Referer, 20 s, size-capped.
-async fn fetch_text(url: &str, referer: &str) -> Result<String, String> {
+/// Referer, 20 s, size-capped. Returns `(final_url, body)`.
+async fn fetch_text(url: &str, referer: &str) -> Result<(String, String), String> {
     const MAX_PAGE_BYTES: u64 = 3 * 1024 * 1024;
     if !is_safe_external_url(url) {
         return Err("not a public web address".into());
@@ -261,7 +261,10 @@ async fn fetch_text(url: &str, referer: &str) -> Result<String, String> {
     if resp.content_length().is_some_and(|n| n > MAX_PAGE_BYTES) {
         return Err("page too large".into());
     }
-    resp.text().await.map_err(|e| e.to_string())
+    // The URL after redirects: relative links and Referer checks depend on it.
+    let final_url = resp.url().to_string();
+    let body = resp.text().await.map_err(|e| e.to_string())?;
+    Ok((final_url, body))
 }
 
 /// GogoAnime: episode page -> its player wrapper -> the megaplay embed -> an
@@ -269,12 +272,12 @@ async fn fetch_text(url: &str, referer: &str) -> Result<String, String> {
 async fn resolve_gogoanime(episode_html: &str, episode_url: &str) -> Result<Media, DlError> {
     let player_url = parse_gogoanime_player_url(episode_html)
         .ok_or_else(|| DlError::Net("this episode has no player".into()))?;
-    let wrapper = fetch_text(&player_url, episode_url)
+    let (_, wrapper) = fetch_text(&player_url, episode_url)
         .await
         .map_err(|e| DlError::Net(format!("could not open the player: {e}")))?;
     let embed_url = parse_wrapper_iframe(&wrapper)
         .ok_or_else(|| DlError::Net("the player has no video frame".into()))?;
-    let embed = fetch_text(&embed_url, &player_url)
+    let (_, embed) = fetch_text(&embed_url, &player_url)
         .await
         .map_err(|e| DlError::Net(format!("could not open the video frame: {e}")))?;
     let playlist = parse_megaplay_playlist_url(&embed)
@@ -317,7 +320,7 @@ async fn resolve_media(app: &AppHandle, episode_url: &str) -> Result<Media, DlEr
             // HTML listing the servers and, often, a direct mp4 tab.
             let container = parse_animeyt_container_url(&page.html)
                 .ok_or_else(|| DlError::Net("this episode has no player container".into()))?;
-            let runtime = fetch_text(&container, episode_url)
+            let (_, runtime) = fetch_text(&container, episode_url)
                 .await
                 .map_err(|e| DlError::Net(format!("could not open the player container: {e}")))?;
             let tabs = parse_mytsumi_tabs(&runtime);
@@ -343,16 +346,30 @@ async fn resolve_media(app: &AppHandle, episode_url: &str) -> Result<Media, DlEr
     }
 
     let mut last_err = String::from("no mirror could be resolved");
-    for server in options {
+    'servers: for server in options {
         let Some(host) = supported_host(&server) else { continue };
-        let html = match fetch_text(&server.url, episode_url).await {
-            Ok(h) => h,
+        let (mut page_url, mut html) = match fetch_text(&server.url, episode_url).await {
+            Ok(p) => p,
             Err(e) => {
                 last_err = format!("{}: {e}", server.name);
                 continue;
             }
         };
-        match resolve_from_page(host, &html, &server.url) {
+        // VOE answers with a tiny page whose script redirects to the domain
+        // that currently serves the video; follow it (at most twice).
+        if host == "voe" {
+            for _ in 0..2 {
+                let Some(next) = voe_redirect_target(&html) else { break };
+                match fetch_text(&next, &page_url).await {
+                    Ok(p) => (page_url, html) = p,
+                    Err(e) => {
+                        last_err = format!("{}: {e}", server.name);
+                        continue 'servers;
+                    }
+                }
+            }
+        }
+        match resolve_from_page(host, &html, &page_url) {
             Some(media) if is_safe_external_url(&media.url) => return Ok(media),
             _ => last_err = format!("{} has no downloadable file", server.name),
         }
