@@ -37,6 +37,10 @@ function decideArgs(a: CatalogAnime, decision: "Want" | "Seen") {
 
 const EMPTY_FACETS: CatalogFacets = { genres: [], formats: [], studios: [] };
 
+// Module-level cache for catalog facets so tab switching does not re-run the
+// ~150ms SQLite scan across all ~22k titles on every remount.
+let cachedFacets: CatalogFacets | null = null;
+
 // Survives unmount/remount of this view (tab switch in App.tsx).
 const catalogFilterCache = createFilterCache<{
   searchInput: string;
@@ -81,7 +85,7 @@ export function Catalog() {
   const [syncProgress, setSyncProgress] = useState<CatalogSyncProgress | null>(null);
   const syncingRef = useRef(false);
 
-  const [facets, setFacets] = useState<CatalogFacets>(EMPTY_FACETS);
+  const [facets, setFacets] = useState<CatalogFacets>(() => cachedFacets ?? EMPTY_FACETS);
   const [searchInput, setSearchInput] = useState(() => catalogFilterCache.current?.searchInput ?? "");
   const [search, setSearch] = useState(() => catalogFilterCache.current?.search ?? "");
   const [selectedGenres, setSelectedGenres] = useState<string[]>(() => catalogFilterCache.current?.selectedGenres ?? []);
@@ -140,7 +144,7 @@ export function Catalog() {
   const [batching, setBatching] = useState(false);
   const [batchMsg, setBatchMsg] = useState<string | null>(null);
 
-  function toggleSelect(a: CatalogAnime) {
+  const toggleSelect = useCallback((a: CatalogAnime) => {
     setSelected((prev) => {
       const next = new Map(prev);
       if (next.has(a.id)) next.delete(a.id);
@@ -148,7 +152,7 @@ export function Catalog() {
       return next;
     });
     setBatchMsg(null);
-  }
+  }, []);
 
   // "Quiero ver" is fully local (decide_catalog_card never scrapes), so the
   // decides may run concurrently.
@@ -232,20 +236,26 @@ export function Catalog() {
     ]
   );
 
-  const secondaryActiveCount =
-    (minScore !== null || maxScore !== null ? 1 : 0) +
-    (minStartDate !== null || maxStartDate !== null ? 1 : 0) +
-    (status !== "" ? 1 : 0) +
-    (sort !== "" && sort !== "popularity" ? 1 : 0) +
-    (studio !== "" ? 1 : 0) +
-    (episodes !== "" ? 1 : 0) +
-    (hideWatched ? 1 : 0);
+  const secondaryActiveCount = useMemo(
+    () =>
+      (minScore !== null || maxScore !== null ? 1 : 0) +
+      (minStartDate !== null || maxStartDate !== null ? 1 : 0) +
+      (status !== "" ? 1 : 0) +
+      (sort !== "" && sort !== "popularity" ? 1 : 0) +
+      (studio !== "" ? 1 : 0) +
+      (episodes !== "" ? 1 : 0) +
+      (hideWatched ? 1 : 0),
+    [minScore, maxScore, minStartDate, maxStartDate, status, sort, studio, episodes, hideWatched]
+  );
 
-  const anyFilterActive =
-    search !== "" ||
-    selectedGenres.length > 0 ||
-    format !== "" ||
-    secondaryActiveCount > 0;
+  const anyFilterActive = useMemo(
+    () =>
+      search !== "" ||
+      selectedGenres.length > 0 ||
+      format !== "" ||
+      secondaryActiveCount > 0,
+    [search, selectedGenres.length, format, secondaryActiveCount]
+  );
 
   // Monotonic id for the newest in-flight load, same guard Stats.tsx uses.
   // Several triggers can overlap — a "Cargar más" click, the debounced
@@ -344,8 +354,15 @@ export function Catalog() {
   }, [filter]);
 
   useEffect(() => {
+    if (cachedFacets) {
+      setFacets(cachedFacets);
+      return;
+    }
     getCatalogFacets()
-      .then(setFacets)
+      .then((data) => {
+        cachedFacets = data;
+        setFacets(data);
+      })
       .catch((e) => console.error("get_catalog_facets failed", e));
   }, []);
 
@@ -365,6 +382,13 @@ export function Catalog() {
     setSyncProgress(null);
     try {
       await syncAnimeCatalog();
+      cachedFacets = null;
+      getCatalogFacets()
+        .then((data) => {
+          cachedFacets = data;
+          setFacets(data);
+        })
+        .catch((e) => console.error("get_catalog_facets failed after sync", e));
       await loadThrough(1);
     } catch (e) {
       setError(t("errors.generic", { detail: String(e) }));
@@ -372,13 +396,13 @@ export function Catalog() {
       setSyncing(false);
       syncingRef.current = false;
     }
-  }, [loadThrough]);
+  }, [loadThrough, t]);
 
-  function toggleGenre(g: string) {
+  const toggleGenre = useCallback((g: string) => {
     setSelectedGenres((prev) => (prev.includes(g) ? prev.filter((x) => x !== g) : [...prev, g]));
-  }
+  }, []);
 
-  function clearFilters() {
+  const clearFilters = useCallback(() => {
     setSearchInput("");
     setSearch("");
     setSelectedGenres([]);
@@ -392,7 +416,17 @@ export function Catalog() {
     setEpisodes("");
     setStudio("");
     setHideWatched(false);
-  }
+  }, []);
+
+  const handleScoreChange = useCallback((min: number | null, max: number | null) => {
+    setMinScore(min);
+    setMaxScore(max);
+  }, []);
+
+  const handleDateChange = useCallback((min: number | null, max: number | null) => {
+    setMinStartDate(min);
+    setMaxStartDate(max);
+  }, []);
 
   return (
     <div className="page">
@@ -540,19 +574,13 @@ export function Catalog() {
               <ScoreRangeControl
                 minScore={minScore}
                 maxScore={maxScore}
-                onChange={(min, max) => {
-                  setMinScore(min);
-                  setMaxScore(max);
-                }}
+                onChange={handleScoreChange}
                 label={t("catalog.scoreRangeLabel")}
               />
               <DateRangeControl
                 minStartDate={minStartDate}
                 maxStartDate={maxStartDate}
-                onChange={(min, max) => {
-                  setMinStartDate(min);
-                  setMaxStartDate(max);
-                }}
+                onChange={handleDateChange}
                 label={t("catalog.dateRangeLabel")}
               />
             </div>

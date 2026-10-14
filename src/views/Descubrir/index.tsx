@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useT } from "../../i18n";
 import type { Series } from "../../types";
 import type { SubView } from "./types";
@@ -27,10 +27,17 @@ export function Descubrir({
     setSubView(initialSubView);
   }, [initialSubView]);
 
-  function handleSetSubView(v: SubView) {
-    setSubView(v);
-    onSubViewChange?.(v);
-  }
+  const handleSetSubView = useCallback(
+    (v: SubView) => {
+      setSubView(v);
+      onSubViewChange?.(v);
+    },
+    [onSubViewChange]
+  );
+
+  const handleSwitchToSwipe = useCallback(() => {
+    handleSetSubView("swipe");
+  }, [handleSetSubView]);
 
   return (
     <div className="page">
@@ -56,7 +63,7 @@ export function Descubrir({
       {subView === "listas" && (
         <ListasView
           onOpenSeries={onOpenSeries}
-          onSwitchToSwipe={() => handleSetSubView("swipe")}
+          onSwitchToSwipe={handleSwitchToSwipe}
         />
       )}
     </div>
