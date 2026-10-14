@@ -34,10 +34,17 @@ fn emit(app: &AppHandle, episode_id: i64, status: &'static str, percent: Option<
 #[tauri::command]
 pub async fn download_episode(
     app: AppHandle,
-    state: State<'_, AppState>,
+    _state: State<'_, AppState>,
     episode_id: i64,
 ) -> Result<(), String> {
+    enqueue(&app, episode_id)
+}
+
+/// Validate, mark `downloading` and hand the episode to the background task.
+/// Shared by the single-episode command and the "download all pending" batch.
+fn enqueue(app: &AppHandle, episode_id: i64) -> Result<(), String> {
     {
+        let state = app.state::<AppState>();
         let db = state.db.lock().unwrap();
         let ep = db.get_episode(episode_id).map_err(|e| e.to_string())?;
         if ep.download_status.as_deref() == Some("downloading") {
@@ -51,8 +58,9 @@ pub async fn download_episode(
 
     let cancel = Arc::new(AtomicBool::new(false));
     ACTIVE.lock().unwrap().insert(episode_id, cancel.clone());
-    emit(&app, episode_id, "downloading", Some(0), None);
+    emit(app, episode_id, "downloading", None, None);
 
+    let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let outcome = run_download(&app, episode_id, &cancel).await;
         ACTIVE.lock().unwrap().remove(&episode_id);
@@ -75,6 +83,84 @@ pub async fn download_episode(
         }
     });
     Ok(())
+}
+
+/// Whether the downloader understands this episode link (TioAnime pages only so far).
+fn is_supported_episode_url(url: &str) -> bool {
+    url::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase()))
+        .is_some_and(|h| h == "tioanime.com" || h.ends_with(".tioanime.com"))
+}
+
+#[derive(Serialize)]
+pub struct DownloadBatch {
+    /// Episodes put in the queue just now.
+    pub queued: u32,
+    /// Pending episodes whose site the downloader does not understand yet.
+    pub unsupported: u32,
+    /// Pending episodes that are already downloaded or already in the queue.
+    pub already: u32,
+}
+
+/// Queue every episode of a series that is still unwatched and not yet
+/// downloaded, oldest first (the queue runs one transfer at a time, in order).
+#[tauri::command]
+pub async fn download_pending(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    series_id: i64,
+) -> Result<DownloadBatch, String> {
+    let episodes = {
+        let db = state.db.lock().unwrap();
+        db.list_series_episodes(series_id).map_err(|e| e.to_string())?
+    };
+    let mut batch = DownloadBatch { queued: 0, unsupported: 0, already: 0 };
+    for ep in episodes.iter().filter(|e| !e.seen) {
+        match ep.download_status.as_deref() {
+            Some("downloading") | Some("downloaded") => batch.already += 1,
+            _ if !is_supported_episode_url(&ep.url) => batch.unsupported += 1,
+            _ => {
+                if enqueue(&app, ep.id).is_ok() {
+                    batch.queued += 1;
+                }
+            }
+        }
+    }
+    Ok(batch)
+}
+
+/// Delete every downloaded file of a series (and cancel its running or queued
+/// downloads) without touching the episodes' watched state. Returns how many
+/// episodes were cleaned up.
+#[tauri::command]
+pub async fn delete_series_downloads(
+    state: State<'_, AppState>,
+    series_id: i64,
+) -> Result<u32, String> {
+    let db = state.db.lock().unwrap();
+    let episodes = db.list_series_episodes(series_id).map_err(|e| e.to_string())?;
+    let mut cleaned = 0u32;
+    for ep in &episodes {
+        if ep.download_status.as_deref() == Some("downloading") {
+            // The running task removes its `.part` file and clears the row;
+            // a stale flag-less row (e.g. after a crash) is cleared here.
+            match ACTIVE.lock().unwrap().get(&ep.id) {
+                Some(flag) => flag.store(true, Ordering::SeqCst),
+                None => {
+                    db.clear_download_columns(&[ep.id]).map_err(|e| e.to_string())?;
+                }
+            }
+            cleaned += 1;
+        } else if ep.download_path.is_some() || ep.download_status.is_some() {
+            if let Some(path) = &ep.download_path {
+                let _ = std::fs::remove_file(path);
+            }
+            db.clear_download_columns(&[ep.id]).map_err(|e| e.to_string())?;
+            cleaned += 1;
+        }
+    }
+    Ok(cleaned)
 }
 
 async fn run_download(app: &AppHandle, episode_id: i64, cancel: &Arc<AtomicBool>) -> Result<String, DlError> {
@@ -124,7 +210,7 @@ async fn resolve_media(app: &AppHandle, episode_url: &str) -> Result<Media, DlEr
         .ok()
         .and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase()))
         .unwrap_or_default();
-    if !(host == "tioanime.com" || host.ends_with(".tioanime.com")) {
+    if !is_supported_episode_url(episode_url) {
         return Err(DlError::Net(format!("downloads from {host} are not supported yet")));
     }
 

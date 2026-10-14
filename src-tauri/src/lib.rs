@@ -261,6 +261,8 @@ pub fn run() {
             commands::uninstall_app,
             commands::download_episode,
             commands::play_download,
+            commands::download_pending,
+            commands::delete_series_downloads,
             commands::cancel_download,
             commands::delete_download,
             commands::get_downloads_size,
