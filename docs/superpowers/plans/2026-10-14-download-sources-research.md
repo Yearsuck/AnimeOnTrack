@@ -21,3 +21,21 @@ browser is needed. Fixtures of the real pages live in `src-tauri/tests/fixtures/
    output as `.ts` (no remux). Planned as the next step.
 3. Packed-JS hosts (Streamwish, Vidhide, Mixdrop, Doodstream, VOE): need a small `eval(function(p,a,c,k,e,d)` unpacker; planned after HLS.
 4. AnimeLand and AnimeFLV need either the browser engine for the embed page or a re-check once the site is reachable.
+
+## Update (second pass, same day): every host checked, what ships and what cannot
+| Host | Result | Why |
+|---|---|---|
+| YourUpload, Mp4upload, Mediafire, Streamtape | **ships** | plain pages with a direct link (Streamtape assembled from its JS) |
+| Mixdrop | **ships** (live test OK) | packed JS (`MDCore.wurl`), unpacked by a pure P.A.C.K.E.R. port |
+| Vidhide | **ships** (live test OK) | packed JS -> HLS; its segments are disguised as PNGs from an ad CDN with the transport stream appended, so segments are unwrapped |
+| VOE | **ships** (live test OK) | obfuscated config (ROT13 + junk tokens + 2x base64) decoded without running JS; its `/e/` page redirects to a rotating domain (followed) |
+| Ok.ru | **ships** (resolver verified: valid MP4 stream received) | player options JSON, quality-ranked mp4; the CDN is slow (~0.25 MB/s here), so a full episode takes minutes |
+| GogoAnime | **ships** (live test OK) | HLS via the player -> megaplay chain |
+| animeyt.cc / JKAnime / TioAnime | **ships** | see the table above |
+| Filemoon / Byse | **cannot** | its playback API answers `captcha_required` (HTTP 428); we do not bypass captchas |
+| Streamwish | **cannot (plain HTTP)** | a JS anti-bot loader ("Page is loading…") that needs a real browser session |
+| Doodstream | **cannot** | the domains were unreachable (connection refused) |
+| Mega | **cannot** | end-to-end encrypted, key in the URL fragment, needs its own client |
+| 1Fichier / Gofile / Fireload | **cannot** | wait timers / captcha / tokens |
+| AnimeLand | **cannot** | its embed returns an empty page to plain HTTP and its site redirects the window to scam "allow notifications" pages |
+| AnimeFLV | **unknown** | origin down (HTTP 522) for the whole session; nothing was implemented blind |

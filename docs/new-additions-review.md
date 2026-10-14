@@ -103,3 +103,13 @@ Hosts that need more work: Streamwish, Vidhide, Filemoon, VOE, Mixdrop, Doodstre
 | Panel for every supported site | The downloads panel now also shows for JKAnime, animeyt.cc and GogoAnime series (it only showed for TioAnime). | Open one. |
 
 What this does NOT do: it is hardening, not a virtual machine. A flaw in the media player that later opens a hostile file is outside what the app can rule out, which is why files are only ever opened by the OS default player (keep it updated) and never executed by the app.
+
+## Batch 13 - the rest of the download hosts (done; each tested live in the sandbox)
+| Host | Result |
+|---|---|
+| Mixdrop (JKAnime) | downloads an mp4 (live test OK) |
+| Vidhide (JKAnime) | HLS with PNG-disguised segments -> `.ts` (live test OK; the first attempt was correctly rejected by the quarantine, then the unwrapping fix made it work) |
+| VOE (JKAnime) | HLS -> `.ts` (live test OK) |
+| Ok.ru (TioAnime) | resolver verified (valid MP4 stream arrives); a full episode is slow on this CDN |
+| Not possible | Filemoon/Byse (captcha), Streamwish (anti-bot loader), Doodstream (unreachable), Mega (encrypted), 1Fichier/Gofile/Fireload, AnimeLand (scam redirects), AnimeFLV (origin down). Reasons in `docs/superpowers/plans/2026-10-14-download-sources-research.md`. |
+Also fixed: deleting an episode's download while it is still running now stops it (before, it finished and brought the file back); rows left "downloading" by a crash are reset at startup and their half files removed. `AOT_DOWNLOAD_PREFER=<host>` (dev only) tries one host's mirrors first.
