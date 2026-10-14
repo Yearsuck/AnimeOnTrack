@@ -3,6 +3,7 @@ use crate::download_sources::{
     candidates, mytsumi_direct_media, parse_animeyt_container_url, parse_jkanime_servers, parse_mytsumi_tabs,
     parse_tioanime_servers, resolve_from_page, supported_host, Media, Server,
 };
+use crate::hls::{parse_gogoanime_player_url, parse_megaplay_playlist_url, parse_wrapper_iframe};
 use crate::downloader::{self, DlError};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -192,15 +193,22 @@ async fn run_download(app: &AppHandle, episode_id: i64, cancel: &Arc<AtomicBool>
 
     let mut last_pct: i16 = -1;
     let app_for_progress = app.clone();
-    let final_file = downloader::fetch_to_file(&media, &base, cancel, move |done, total| {
+    let progress = move |done: u64, total: Option<u64>| {
         let Some(total) = total.filter(|t| *t > 0) else { return };
         let pct = ((done.saturating_mul(100)) / total).min(100) as i16;
         if pct != last_pct {
             last_pct = pct;
             emit(&app_for_progress, episode_id, "downloading", Some(pct as u8), None);
         }
-    })
-    .await?;
+    };
+    let is_hls = url::Url::parse(&media.url)
+        .map(|u| u.path().to_ascii_lowercase().ends_with(".m3u8"))
+        .unwrap_or(false);
+    let final_file = if is_hls {
+        downloader::fetch_hls_to_file(&media.url, &media.referer, &base, cancel, progress).await?
+    } else {
+        downloader::fetch_to_file(&media, &base, cancel, progress).await?
+    };
     Ok(final_file.to_string_lossy().into_owned())
 }
 
@@ -210,6 +218,7 @@ enum Site {
     TioAnime,
     JkAnime,
     AnimeYt,
+    GogoAnime,
 }
 
 fn site_of(url: &str) -> Option<Site> {
@@ -223,6 +232,8 @@ fn site_of(url: &str) -> Option<Site> {
         Some(Site::JkAnime)
     } else if is("animeyt.cc") {
         Some(Site::AnimeYt)
+    } else if is("gogoanime.by") {
+        Some(Site::GogoAnime)
     } else {
         None
     }
@@ -253,6 +264,27 @@ async fn fetch_text(url: &str, referer: &str) -> Result<String, String> {
     resp.text().await.map_err(|e| e.to_string())
 }
 
+/// GogoAnime: episode page -> its player wrapper -> the megaplay embed -> an
+/// HLS playlist. Every hop is plain HTTP; the result is a `.m3u8` for the HLS downloader.
+async fn resolve_gogoanime(episode_html: &str, episode_url: &str) -> Result<Media, DlError> {
+    let player_url = parse_gogoanime_player_url(episode_html)
+        .ok_or_else(|| DlError::Net("this episode has no player".into()))?;
+    let wrapper = fetch_text(&player_url, episode_url)
+        .await
+        .map_err(|e| DlError::Net(format!("could not open the player: {e}")))?;
+    let embed_url = parse_wrapper_iframe(&wrapper)
+        .ok_or_else(|| DlError::Net("the player has no video frame".into()))?;
+    let embed = fetch_text(&embed_url, &player_url)
+        .await
+        .map_err(|e| DlError::Net(format!("could not open the video frame: {e}")))?;
+    let playlist = parse_megaplay_playlist_url(&embed)
+        .ok_or_else(|| DlError::Net("the video frame has no stream".into()))?;
+    if !is_safe_external_url(&playlist) {
+        return Err(DlError::Net("the stream is not a public web address".into()));
+    }
+    Ok(Media { url: playlist, referer: "https://megaplay.su/".to_string(), host: "hls" })
+}
+
 /// Episode page -> list of mirrors -> first mirror that resolves to a plain file.
 async fn resolve_media(app: &AppHandle, episode_url: &str) -> Result<Media, DlError> {
     if !is_safe_external_url(episode_url) {
@@ -272,7 +304,12 @@ async fn resolve_media(app: &AppHandle, episode_url: &str) -> Result<Media, DlEr
         .await
         .map_err(|e| DlError::Net(format!("could not load the episode page: {e}")))?;
 
+    if site == Site::GogoAnime {
+        return resolve_gogoanime(&page.html, episode_url).await;
+    }
+
     let servers = match site {
+        Site::GogoAnime => unreachable!("handled above"),
         Site::TioAnime => parse_tioanime_servers(&page.html),
         Site::JkAnime => parse_jkanime_servers(&page.html),
         Site::AnimeYt => {
@@ -415,6 +452,7 @@ mod tests {
         assert_eq!(site_of("https://jkanime.net/kanojo/2/"), Some(Site::JkAnime));
         assert_eq!(site_of("https://animeyt.cc/1/anime/x-capitulo-8/"), Some(Site::AnimeYt));
         assert_eq!(site_of("https://ANIMEYT.CC/x"), Some(Site::AnimeYt));
+        assert_eq!(site_of("https://gogoanime.by/dark-machine-episode-1-english-subbed/"), Some(Site::GogoAnime));
     }
 
     #[test]
@@ -422,7 +460,7 @@ mod tests {
         assert_eq!(site_of("https://tioanime.com.evil.example/x"), None);
         assert_eq!(site_of("https://notjkanime.net/x"), None);
         assert_eq!(site_of("https://www4.animeflv.net/ver/x-1"), None);
-        assert_eq!(site_of("https://gogoanime.by/x-episode-1/"), None);
+        assert_eq!(site_of("https://gogoanime.by.evil.example/x"), None);
         assert_eq!(site_of("not a url"), None);
         assert!(!is_supported_episode_url("https://example.com/x"));
         assert!(is_supported_episode_url("https://jkanime.net/x/1/"));

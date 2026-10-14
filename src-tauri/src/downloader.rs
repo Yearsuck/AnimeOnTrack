@@ -159,28 +159,226 @@ pub async fn fetch_to_file(
                 let _ = tokio::fs::remove_file(&part).await;
                 return Err(DlError::Incomplete { got: 0, expected: expected.unwrap_or(0) });
             }
-            // Blocking work (reads the head, runs Defender): off the async workers.
-            let to_inspect = part.clone();
-            let verdict = tokio::task::spawn_blocking(move || crate::download_safety::inspect(&to_inspect))
-                .await
-                .map_err(|e| DlError::Io(e.to_string()))?;
-            let container = match verdict {
-                crate::download_safety::Inspection::Accept(c) => c,
-                crate::download_safety::Inspection::Reject(why) => {
-                    let _ = tokio::fs::remove_file(&part).await;
-                    return Err(DlError::Rejected(why));
-                }
-            };
-            let dest = final_path(base, container.extension());
-            tokio::fs::rename(&part, &dest).await.map_err(|e| DlError::Io(e.to_string()))?;
-            crate::download_safety::mark_of_the_web(&dest, &media.url);
-            Ok(dest)
+            finalize(&part, base, &media.url).await
         }
         Err(e) => {
             let _ = tokio::fs::remove_file(&part).await;
             Err(e)
         }
     }
+}
+
+/// Only public web addresses may be fetched. Unit tests talk to a loopback
+/// server, so they get that one exception (compiled out of real builds).
+fn url_allowed(url: &str) -> bool {
+    #[cfg(test)]
+    if url.starts_with("http://127.0.0.1:") {
+        return true;
+    }
+    crate::scraper_engine::is_safe_external_url(url)
+}
+
+/// Plain GET of a (small) text resource such as a playlist.
+async fn get_text(url: &str, referer: &str) -> Result<String, DlError> {
+    const MAX_PLAYLIST_BYTES: usize = 4 * 1024 * 1024;
+    if !url_allowed(url) {
+        return Err(DlError::Net("the playlist is not a public web address".into()));
+    }
+    let resp = CLIENT
+        .get(url)
+        .header(reqwest::header::USER_AGENT, USER_AGENT)
+        .header(reqwest::header::REFERER, referer)
+        .timeout(Duration::from_secs(30))
+        .send()
+        .await
+        .map_err(|e| DlError::Net(e.to_string()))?;
+    if !resp.status().is_success() {
+        return Err(DlError::Http(resp.status().as_u16()));
+    }
+    let bytes = resp.bytes().await.map_err(|e| DlError::Net(e.to_string()))?;
+    if bytes.len() > MAX_PLAYLIST_BYTES {
+        return Err(DlError::TooLarge);
+    }
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// Append one HLS segment to `file`; on any failure the file is cut back to
+/// `start_len` so a retry never leaves half a segment in the middle.
+async fn append_segment(
+    url: &str,
+    referer: &str,
+    file: &mut tokio::fs::File,
+    start_len: u64,
+    total: &mut u64,
+    cancel: &AtomicBool,
+) -> Result<(), DlError> {
+    use tokio::io::AsyncSeekExt;
+    let result: Result<(), DlError> = async {
+        if !url_allowed(url) {
+            return Err(DlError::Net("a segment is not a public web address".into()));
+        }
+        let mut resp = CLIENT
+            .get(url)
+            .header(reqwest::header::USER_AGENT, USER_AGENT)
+            .header(reqwest::header::REFERER, referer)
+            .send()
+            .await
+            .map_err(|e| DlError::Net(e.to_string()))?;
+        if !resp.status().is_success() {
+            return Err(DlError::Http(resp.status().as_u16()));
+        }
+        let ct = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        // Segments are served as video/mp2t, octet-stream or even image/* to
+        // dodge filters, so only a text answer (an error page) is refused here;
+        // the finished file is sniffed anyway.
+        if ct.starts_with("text/") {
+            return Err(DlError::BadContentType(ct));
+        }
+        loop {
+            if cancel.load(Ordering::SeqCst) {
+                return Err(DlError::Cancelled);
+            }
+            let chunk = match tokio::time::timeout(STALL_TIMEOUT, resp.chunk()).await {
+                Err(_) => return Err(DlError::Stalled),
+                Ok(Err(e)) => return Err(DlError::Net(e.to_string())),
+                Ok(Ok(c)) => c,
+            };
+            let Some(chunk) = chunk else { return Ok(()) };
+            *total += chunk.len() as u64;
+            if *total > MAX_DOWNLOAD_BYTES {
+                return Err(DlError::TooLarge);
+            }
+            file.write_all(&chunk).await.map_err(|e| DlError::Io(e.to_string()))?;
+        }
+    }
+    .await;
+    if result.is_err() {
+        let _ = file.flush().await;
+        let _ = file.set_len(start_len).await;
+        let _ = file.seek(std::io::SeekFrom::Start(start_len)).await;
+        *total = start_len;
+    }
+    result
+}
+
+/// Download an HLS stream (`.m3u8`) by fetching its segments one after the
+/// other into one file (no remux: MPEG-TS segments simply concatenate into a
+/// playable `.ts`). A master playlist picks its best variant first. Encrypted,
+/// live, fragmented-mp4 or oversized streams are refused with a clear reason.
+/// Progress is `(segments_done, Some(total_segments))`.
+pub async fn fetch_hls_to_file(
+    playlist_url: &str,
+    referer: &str,
+    base: &Path,
+    cancel: &AtomicBool,
+    mut on_progress: impl FnMut(u64, Option<u64>),
+) -> Result<PathBuf, DlError> {
+    use crate::hls::{best_variant, check_downloadable, parse_playlist, Playlist};
+    const SEGMENT_ATTEMPTS: u32 = 3;
+
+    if let Some(parent) = base.parent() {
+        tokio::fs::create_dir_all(parent).await.map_err(|e| DlError::Io(e.to_string()))?;
+    }
+
+    let mut media_url = playlist_url.to_string();
+    let mut parsed = None;
+    // A master playlist points at media playlists; one hop is all that is valid.
+    for _ in 0..2 {
+        let text = get_text(&media_url, referer).await?;
+        match parse_playlist(&text, &media_url) {
+            Some(Playlist::Master { variants }) => {
+                let Some(best) = best_variant(&variants) else {
+                    return Err(DlError::Net("the playlist has no streams".into()));
+                };
+                media_url = best.url.clone();
+            }
+            Some(media @ Playlist::Media { .. }) => {
+                parsed = Some(media);
+                break;
+            }
+            None => return Err(DlError::Net("the stream playlist is not valid".into())),
+        }
+    }
+    let Some(Playlist::Media { segments, ended, encrypted, has_init_map }) = parsed else {
+        return Err(DlError::Net("the stream playlist is nested too deeply".into()));
+    };
+    check_downloadable(&segments, ended, encrypted, has_init_map)
+        .map_err(|crate::hls::HlsError::NotPlayable(why)| DlError::Net(format!("this stream cannot be downloaded: {why}")))?;
+
+    let part = part_path(base);
+    let mut file = tokio::fs::File::create(&part).await.map_err(|e| DlError::Io(e.to_string()))?;
+    let total_segments = segments.len() as u64;
+    let mut written = 0u64;
+    on_progress(0, Some(total_segments));
+
+    let outcome: Result<(), DlError> = async {
+        for (idx, seg) in segments.iter().enumerate() {
+            let start_len = written;
+            let mut last_err = None;
+            for attempt in 1..=SEGMENT_ATTEMPTS {
+                match append_segment(&seg.url, &media_url, &mut file, start_len, &mut written, cancel).await {
+                    Ok(()) => {
+                        last_err = None;
+                        break;
+                    }
+                    // A cancel or a size cap is final; a flaky segment gets retries.
+                    Err(e @ (DlError::Cancelled | DlError::TooLarge | DlError::Io(_))) => return Err(e),
+                    Err(e) => {
+                        last_err = Some(e);
+                        if attempt < SEGMENT_ATTEMPTS {
+                            tokio::time::sleep(Duration::from_millis(500 * attempt as u64)).await;
+                        }
+                    }
+                }
+            }
+            if let Some(e) = last_err {
+                return Err(e);
+            }
+            on_progress(idx as u64 + 1, Some(total_segments));
+        }
+        file.flush().await.map_err(|e| DlError::Io(e.to_string()))?;
+        Ok(())
+    }
+    .await;
+    drop(file);
+
+    match outcome {
+        Ok(()) if written == 0 => {
+            let _ = tokio::fs::remove_file(&part).await;
+            Err(DlError::Incomplete { got: 0, expected: 1 })
+        }
+        Ok(()) => finalize(&part, base, playlist_url).await,
+        Err(e) => {
+            let _ = tokio::fs::remove_file(&part).await;
+            Err(e)
+        }
+    }
+}
+
+/// Inspect the finished `.part` (real container + Defender), then move it to its
+/// final name and mark it as downloaded from the Internet. A rejected file is deleted.
+async fn finalize(part: &Path, base: &Path, source_url: &str) -> Result<PathBuf, DlError> {
+    // Blocking work (reads the head, runs Defender): off the async workers.
+    let to_inspect = part.to_path_buf();
+    let verdict = tokio::task::spawn_blocking(move || crate::download_safety::inspect(&to_inspect))
+        .await
+        .map_err(|e| DlError::Io(e.to_string()))?;
+    let container = match verdict {
+        crate::download_safety::Inspection::Accept(c) => c,
+        crate::download_safety::Inspection::Reject(why) => {
+            let _ = tokio::fs::remove_file(part).await;
+            return Err(DlError::Rejected(why));
+        }
+    };
+    let dest = final_path(base, container.extension());
+    tokio::fs::rename(part, &dest).await.map_err(|e| DlError::Io(e.to_string()))?;
+    crate::download_safety::mark_of_the_web(&dest, source_url);
+    Ok(dest)
 }
 
 async fn write_body(
@@ -374,6 +572,151 @@ mod tests {
         let path = fetch_to_file(&media(url), &base, &AtomicBool::new(false), |_, _| {}).await.unwrap();
         assert_eq!(path, final_path(&base, "ts"));
         assert!(path.is_file());
+        cleanup(&base);
+    }
+
+    /// Loopback server answering any number of requests from a path -> (content-type, body) table.
+    async fn serve_routes(routes: Vec<(&'static str, &'static str, Vec<u8>)>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else { return };
+                let routes = routes.clone();
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 4096];
+                    let n = sock.read(&mut buf).await.unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let path = req.split_whitespace().nth(1).unwrap_or("/").to_string();
+                    let resp = match routes.iter().find(|(p, _, _)| *p == path) {
+                        Some((_, ct, body)) => response("200 OK", ct, body.len(), body),
+                        None => response("404 Not Found", "text/plain", 0, b""),
+                    };
+                    let _ = sock.write_all(&resp).await;
+                    let _ = sock.shutdown().await;
+                });
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    fn ts_segment(fill: u8) -> Vec<u8> {
+        let mut v = vec![fill; 188 * 3];
+        for i in 0..3 {
+            v[i * 188] = 0x47;
+        }
+        v
+    }
+
+    fn media_playlist(n: usize) -> Vec<u8> {
+        let mut s = String::from("#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:6\n#EXT-X-PLAYLIST-TYPE:VOD\n");
+        for i in 0..n {
+            s.push_str(&format!("#EXTINF:6.0,\nseg{i}.ts\n"));
+        }
+        s.push_str("#EXT-X-ENDLIST\n");
+        s.into_bytes()
+    }
+
+    #[tokio::test]
+    async fn hls_segments_are_joined_into_one_ts_through_a_master_playlist() {
+        let master = b"#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=900000,RESOLUTION=640x360\nlow.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=1280x720\nhi.m3u8\n".to_vec();
+        let base_url = serve_routes(vec![
+            ("/master.m3u8", "application/vnd.apple.mpegurl", master),
+            ("/low.m3u8", "application/vnd.apple.mpegurl", media_playlist(1)),
+            ("/hi.m3u8", "application/vnd.apple.mpegurl", media_playlist(3)),
+            ("/seg0.ts", "video/mp2t", ts_segment(1)),
+            ("/seg1.ts", "video/mp2t", ts_segment(2)),
+            ("/seg2.ts", "application/octet-stream", ts_segment(3)),
+        ])
+        .await;
+        let base = temp_dest("hls");
+        let mut progress = Vec::new();
+        let path = fetch_hls_to_file(&format!("{base_url}/master.m3u8"), "https://megaplay.su/", &base, &AtomicBool::new(false), |d, t| {
+            progress.push((d, t))
+        })
+        .await
+        .unwrap();
+        assert_eq!(path, final_path(&base, "ts"));
+        let data = std::fs::read(&path).unwrap();
+        assert_eq!(data.len(), 188 * 3 * 3, "the 720p variant has three segments");
+        assert_eq!(data[1], 1);
+        assert_eq!(data[188 * 3 + 1], 2);
+        assert_eq!(data[188 * 6 + 1], 3);
+        assert_eq!(progress.first(), Some(&(0, Some(3))));
+        assert_eq!(progress.last(), Some(&(3, Some(3))));
+        cleanup(&base);
+    }
+
+    #[tokio::test]
+    async fn an_encrypted_or_live_stream_is_refused_before_downloading() {
+        let enc = b"#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"k.key\"\n#EXTINF:6.0,\nseg0.ts\n#EXT-X-ENDLIST\n".to_vec();
+        let live = b"#EXTM3U\n#EXTINF:6.0,\nseg0.ts\n".to_vec();
+        let base_url = serve_routes(vec![
+            ("/enc.m3u8", "application/vnd.apple.mpegurl", enc),
+            ("/live.m3u8", "application/vnd.apple.mpegurl", live),
+            ("/seg0.ts", "video/mp2t", ts_segment(1)),
+        ])
+        .await;
+        for (name, expect) in [("enc", "encrypted stream"), ("live", "live stream")] {
+            let base = temp_dest(name);
+            let err = fetch_hls_to_file(&format!("{base_url}/{name}.m3u8"), "https://x/", &base, &AtomicBool::new(false), |_, _| {})
+                .await
+                .unwrap_err();
+            assert!(matches!(&err, DlError::Net(m) if m.contains(expect)), "got {err:?}");
+            assert!(no_leftovers(&base));
+            cleanup(&base);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_missing_segment_fails_the_download_and_leaves_nothing() {
+        let base_url = serve_routes(vec![
+            ("/p.m3u8", "application/vnd.apple.mpegurl", media_playlist(2)),
+            ("/seg0.ts", "video/mp2t", ts_segment(1)),
+            // seg1.ts is a 404
+        ])
+        .await;
+        let base = temp_dest("hlsmiss");
+        let err = fetch_hls_to_file(&format!("{base_url}/p.m3u8"), "https://x/", &base, &AtomicBool::new(false), |_, _| {})
+            .await
+            .unwrap_err();
+        assert_eq!(err, DlError::Http(404));
+        assert!(no_leftovers(&base));
+        cleanup(&base);
+    }
+
+    #[tokio::test]
+    async fn hls_segments_that_are_not_video_are_discarded() {
+        let mut exe = b"MZ\x90\x00".to_vec();
+        exe.resize(188 * 3, 0);
+        let base_url = serve_routes(vec![
+            ("/p.m3u8", "application/vnd.apple.mpegurl", media_playlist(1)),
+            ("/seg0.ts", "video/mp2t", exe),
+        ])
+        .await;
+        let base = temp_dest("hlsexe");
+        let err = fetch_hls_to_file(&format!("{base_url}/p.m3u8"), "https://x/", &base, &AtomicBool::new(false), |_, _| {})
+            .await
+            .unwrap_err();
+        assert!(matches!(&err, DlError::Rejected(_)), "got {err:?}");
+        assert!(no_leftovers(&base));
+        cleanup(&base);
+    }
+
+    #[tokio::test]
+    async fn an_hls_cancel_stops_between_chunks_and_cleans_up() {
+        let base_url = serve_routes(vec![
+            ("/p.m3u8", "application/vnd.apple.mpegurl", media_playlist(2)),
+            ("/seg0.ts", "video/mp2t", ts_segment(1)),
+            ("/seg1.ts", "video/mp2t", ts_segment(2)),
+        ])
+        .await;
+        let base = temp_dest("hlscancel");
+        let err = fetch_hls_to_file(&format!("{base_url}/p.m3u8"), "https://x/", &base, &AtomicBool::new(true), |_, _| {})
+            .await
+            .unwrap_err();
+        assert_eq!(err, DlError::Cancelled);
+        assert!(no_leftovers(&base));
         cleanup(&base);
     }
 }
