@@ -34,6 +34,7 @@ import type {
   PlayerSettings,
   ListEntryMeta,
   NextAir,
+  DownloadBatch,
 } from "./types";
 
 export const scanAiring = (baseUrl: string) =>
@@ -291,6 +292,12 @@ export const setGoogleCredentials = (clientId: string, clientSecret: string) =>
 // Offline downloads
 export const downloadEpisode = (episodeId: number) =>
   invoke<void>("download_episode", { episodeId });
+
+export const downloadPending = (seriesId: number) =>
+  invoke<DownloadBatch>("download_pending", { seriesId });
+
+export const deleteSeriesDownloads = (seriesId: number) =>
+  invoke<number>("delete_series_downloads", { seriesId });
 
 export const playDownload = (episodeId: number) =>
   invoke<void>("play_download", { episodeId });
