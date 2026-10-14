@@ -93,3 +93,13 @@ Research and per-site findings: `docs/superpowers/plans/2026-10-14-download-sour
 | AnimeLand | not yet | the embed answers an empty page to plain HTTP: needs the browser engine |
 | AnimeFLV | not checked | its origin was down (HTTP 522) the whole session, like the app's own scans |
 Hosts that need more work: Streamwish, Vidhide, Filemoon, VOE, Mixdrop, Doodstream (packed JS / HLS), Mega (encrypted), 1Fichier, Okru.
+
+## Batch 12 - safe downloads + HLS + GogoAnime (done; tested live in the sandbox)
+| Change | What it does | How to check it |
+|---|---|---|
+| Quarantine for every download (`feat(download)`) | Each file stays a `.part` until it passes: (1) its first bytes are a real video container (MP4, MPEG-TS or Matroska) — an exe, script, archive or HTML page renamed to .mp4 is deleted, and the extension comes from the content, never the URL; (2) Windows Defender scans it (`MpCmdRun`, detection or unreadable verdict = deleted; no Defender = that layer is skipped and logged); then the file gets the Mark of the Web (`Zone.Identifier`, ZoneId=3) and the downloads folder denies *execute* on its files (inherit-only ACE for Everyone). Live check: the ACL (`Todos:(OI)(IO)(DENY)(X)`), the `Zone.Identifier` stream and a "scanned by Windows Defender: clean" line in `aot.log` all present, and the file stays readable. | `icacls "%APPDATA%\com.animeontrack.app\downloads"`; `Get-Content <file> -Stream Zone.Identifier`; `aot.log`. |
+| HLS downloader (`feat(download)`) | Downloads `.m3u8` streams segment by segment into one `.ts` (master playlist -> best variant; retries flaky segments; refuses encrypted/live/fragmented streams). Same quarantine checks. | GogoAnime episode -> ⬇. |
+| GogoAnime downloads | Episode page -> player -> megaplay -> m3u8. Live test: 229 segments -> 127 MB `.ts` with valid MPEG-TS sync bytes, scanned clean. The `.ts` plays in VLC / Windows Media Player (not in the browser). | A gogoanime.by series -> ⬇. |
+| Panel for every supported site | The downloads panel now also shows for JKAnime, animeyt.cc and GogoAnime series (it only showed for TioAnime). | Open one. |
+
+What this does NOT do: it is hardening, not a virtual machine. A flaw in the media player that later opens a hostile file is outside what the app can rule out, which is why files are only ever opened by the OS default player (keep it updated) and never executed by the app.
