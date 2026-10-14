@@ -1,10 +1,10 @@
 # Estado de AnimeOnTrack
 
-Instantánea del 2026-10-14 (release 0.9.0). Actualízala al cerrar cada tarea o antes de compactar una conversación
+Instantánea del 2026-10-14 (release 0.10.0). Actualízala al cerrar cada tarea o antes de compactar una conversación
 (regla global `session-state`). Lo que no está aquí hay que mirarlo en git, no darlo por sabido.
 
 ## Publicado
-- Última versión: **v0.9.0** (tag en `main`, 2026-10-14; instaladores en la release). Trae todo lo de la antigua rama
+- Última versión: **v0.10.0** (tag en `main`, 2026-10-14; instaladores en la release; primera con actualización automática). Trae todo lo de la antigua rama
   `feature/new-additions` (descargas offline, snapshot de catálogo, rastreo AniList ~3 min, fluidez, UI).
 - Anterior: **v0.8.0** (2026-10-13).
 - Contenido de 0.8.0: AniList como fuente de verdad (títulos, portadas y metadatos), soporte del relanzamiento
@@ -13,7 +13,7 @@ Instantánea del 2026-10-14 (release 0.9.0). Actualízala al cerrar cada tarea o
 - Anteriores seguidas: 0.7.0 (filtros de catálogo, listas de Descubrir, estadísticas rediseñadas), 0.6.x.
 
 ## En `develop` sin publicar
-- **Actualización automática** (rama `feature/auto-update`, ver PR): `tauri-plugin-updater` + aviso al arrancar +
+- Nada pendiente. **Actualización automática** (en 0.10.0): `tauri-plugin-updater` + aviso al arrancar +
   ajuste en Ajustes → Apariencia. Los instaladores los firma `release.yml` con los secretos de GitHub
   `TAURI_SIGNING_PRIVATE_KEY` y `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`; la clave pública está en `tauri.conf.json`.
   La clave privada y su contraseña están **solo** en esos secretos y en `~/.aot-secrets/` del PC del autor

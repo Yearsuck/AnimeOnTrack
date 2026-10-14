@@ -28,7 +28,7 @@
     Tracks currently-airing anime, notifies you the second a new episode drops, downloads episodes for offline viewing (in development), and unifies your progress across six streaming sites — without an account or cloud lock-in.
     <br />
     <br />
-    <a href="https://github.com/Yearsuck/AnimeOnTrack/releases/latest"><strong>⬇ Download Installer (v0.9.0) »</strong></a>
+    <a href="https://github.com/Yearsuck/AnimeOnTrack/releases/latest"><strong>⬇ Download Installer (v0.10.0) »</strong></a>
     <br />
     <br />
     <a href="#about-the-project">About The Project</a>
@@ -69,8 +69,8 @@
     </li>
     <li><a href="#architecture--engineering-highlights">Architecture & Engineering Highlights</a></li>
     <li><a href="#project-layout">Project Layout</a></li>
-    <li><a href="#whats-new-in-v090">What's New in v0.9.0</a></li>
-    <li><a href="#in-development-unreleased">In Development (unreleased)</a></li>
+    <li><a href="#whats-new-in-v0100">What's New in v0.10.0</a></li>
+    <li><a href="#previous-release-v090">Previous release: v0.9.0</a></li>
     <li><a href="#previous-release-v080">Previous release: v0.8.0</a></li>
     <li><a href="#contributing">Contributing</a></li>
     <li><a href="#a-note-on-piracy">A Note on Piracy</a></li>
@@ -318,7 +318,15 @@ AnimeOnTrack/
 
 ---
 
-## What's New in v0.9.0
+## What's New in v0.10.0
+
+* **In-app updates**: the app checks GitHub for a newer release shortly after start (switchable in Settings → Appearance, with a manual "Check now") and offers *Install and restart*. Nothing installs without a click, and every installer is signed; the app verifies the signature against the public key in `tauri.conf.json`. 0.10.0 is the first release that ships it, so it has to be installed by hand once; from then on new versions arrive by themselves.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+---
+
+## Previous release: v0.9.0
 
 Details of each change and how it was tested: [`docs/new-additions-review.md`](docs/new-additions-review.md).
 
@@ -329,14 +337,6 @@ Details of each change and how it was tested: [`docs/new-additions-review.md`](d
 * **Discover**: deck filters apply on their own and can be reset; a popular ↔ niche slider and tag/studio-aware recommendations; the slider is hidden in random mode.
 * **Catalog**: start watching a series (it moves to Pendientes) straight from the selection bar.
 * **Smaller things**: next-episode air date on the series screen (ani.zip), per-episode number alignment across sites, keyboard shortcuts (`?`), a Windows toast for new episodes, export diagnostics + a rotating `aot.log`, ad and pop-up blocking in the app's own windows, and the AniList page opening inside the app.
-
-## In Development (unreleased)
-
-* **In-app updates**: the app checks GitHub for a newer release shortly after start (switchable in Settings → Appearance, with a manual "Check now") and offers *Install and restart*. Nothing installs without a click, and every installer is signed; the app verifies the signature against the public key in `tauri.conf.json`. Needs a release that ships the updater to take effect, so the first one has to be installed by hand.
-
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
-
----
 
 ## Previous release: v0.8.0
 
