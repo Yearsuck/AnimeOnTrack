@@ -433,7 +433,7 @@ fn jaccard(a: &str, b: &str) -> f64 {
 /// "ova", "special", "arc"/"saga" — those name different content, and treating
 /// them as season markers would import the wrong episodes.
 const SEASON_MARKERS: &[&str] =
-    &["season", "temporada", "part", "parte", "cour", "final", "the"];
+    &["season", "temporada", "part", "parte", "cour", "final", "the", "stage"];
 const ROMAN_NUMERALS: &[&str] = &["ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x"];
 
 fn is_ascii_int(t: &str) -> bool {
@@ -485,12 +485,14 @@ pub(crate) fn strip_season_markers(
     // variants reduce to the same base.
     let is_year = |t: &str| t.len() == 4 && is_int(t) && (t.starts_with("19") || t.starts_with("20"));
 
+    let mut popped_any = false;
     while let Some(&last) = tokens.last() {
         let normalized = normalize(last);
         if is_marker(&normalized) || is_ordinal(&normalized) || ROMAN_NUMERALS.contains(&normalized.as_str())
             || is_year(&normalized)
         {
             tokens.pop();
+            popped_any = true;
             continue;
         }
         if is_int(&normalized) {
@@ -499,8 +501,21 @@ pub(crate) fn strip_season_markers(
             if introduced_by_marker {
                 tokens.pop(); // the number
                 tokens.pop(); // its preceding marker word
+                popped_any = true;
                 continue;
             }
+        }
+        // Delimiters or connectors between/before season markers (e.g. "&" or "-"
+        // in "... - 2nd & 3rd STAGE") — only strip when season markers have been popped.
+        if popped_any
+            && (normalized.is_empty()
+                || normalized == "-"
+                || normalized == "&"
+                || normalized == "and"
+                || normalized == "y")
+        {
+            tokens.pop();
+            continue;
         }
         break;
     }
@@ -541,7 +556,19 @@ pub fn extract_season_number(normalized_title: &str) -> Option<u32> {
         // "... 2nd Season": ordinal immediately before the marker word.
         if is_marker(last) {
             if let Some(n) = ordinal_num(prev) {
-                return Some(n);
+                // A multi-ordinal range like "... 2nd 3rd stage" names an arc or
+                // stage span, not a single season number.
+                let multi_range = tokens.len() >= 3 && (
+                    ordinal_num(tokens[tokens.len() - 3]).is_some()
+                    || (tokens.len() >= 4
+                        && (tokens[tokens.len() - 3] == "and"
+                            || tokens[tokens.len() - 3] == "to"
+                            || tokens[tokens.len() - 3] == "y")
+                        && ordinal_num(tokens[tokens.len() - 4]).is_some())
+                );
+                if !multi_range {
+                    return Some(n);
+                }
             }
         }
         // "... Temporada 2" / "... Part 2": marker word immediately before
@@ -573,13 +600,38 @@ fn franchise_base(norm: &str) -> String {
 /// many one-word franchises with numbered seasons while rejecting a bare short
 /// word ("one", "the", a lone roman numeral) that could collapse unrelated
 /// shows. An empty base (two pure season markers) never matches.
+///
+/// Also accepts bases where subtitle and main-title clauses are transposed
+/// across a colon (e.g. "Steel Ball Run: JoJo no Kimyou na Bouken" vs
+/// "JoJo no Kimyou na Bouken: Steel Ball Run") when both bases share the
+/// identical multiset of tokens (sorted token vectors equal) and have at least
+/// 4 tokens.
 fn same_franchise(a: &str, b: &str) -> bool {
     let ba = franchise_base(a);
+    let bb = franchise_base(b);
     let tokens = ba.split_whitespace().count();
     if ba.is_empty() || (tokens < 2 && ba.chars().count() < 4) {
         return false;
     }
-    ba == franchise_base(b)
+    if ba == bb {
+        return true;
+    }
+    // Subtitle / main-title clauses transposed across a colon or spacing difference:
+    // if both franchise bases share the identical multiset of tokens, they describe
+    // the same show with clause order inverted. Guarded by >= 4 tokens so short
+    // ambiguous titles never collapse.
+    if tokens >= 4 {
+        let mut ta: Vec<&str> = ba.split_whitespace().collect();
+        let mut tb: Vec<&str> = bb.split_whitespace().collect();
+        if ta.len() == tb.len() {
+            ta.sort_unstable();
+            tb.sort_unstable();
+            if ta == tb {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// A key for deduping *unlinked* (no `anilist_id`) rows of the same show across
@@ -1361,6 +1413,7 @@ mod tests {
         ("My Hero Academia", "My Hero Academia Final Season"),
         ("Jujutsu Kaisen", "Jujutsu Kaisen Season 2"),
         ("Attack on Titan", "Attack on Titan Season 2"),
+        ("JoJo no Kimyou na Bouken: Steel Ball Run - 2nd & 3rd STAGE", "Steel Ball Run: JoJo no Kimyou na Bouken"),
     ];
 
     /// Safety corpus: pairs that share tokens but are DIFFERENT works, and must
@@ -1386,6 +1439,8 @@ mod tests {
         ("Digimon Adventure", "Digimon Tamers"),
         ("Digimon Adventure", "Digimon Frontier"),
         ("Precure", "Heartcatch Precure"),
+        ("JoJo no Kimyou na Bouken: Stone Ocean", "Steel Ball Run: JoJo no Kimyou na Bouken"),
+        ("Initial D First Stage", "Initial D Second Stage"),
         // Share exactly one common word — must never carry a match.
         ("Attack on Titan", "Attack No. 1"),
         ("One Piece", "One Punch Man"),
@@ -1696,5 +1751,74 @@ mod tests {
         // Genuine season suffixes are not distinct extensions
         assert!(!distinct_extension(&normalize_title("Attack on Titan"), &normalize_title("Attack on Titan Final Season")));
         assert!(!distinct_extension(&normalize_title("My Hero Academia"), &normalize_title("My Hero Academia Season 2")));
+    }
+
+    #[test]
+    fn test_strip_season_markers_multi_ordinal_stage_suffix() {
+        assert_eq!(
+            franchise_base("jojo no kimyou na bouken steel ball run 2nd 3rd stage"),
+            "jojo no kimyou na bouken steel ball run"
+        );
+        let raw = vec![
+            "JoJo", "no", "Kimyou", "na", "Bouken:", "Steel", "Ball", "Run", "-", "2nd", "&",
+            "3rd", "STAGE",
+        ];
+        let stripped = strip_season_markers(raw, normalize_title);
+        assert_eq!(
+            stripped.join(" "),
+            "JoJo no Kimyou na Bouken: Steel Ball Run"
+        );
+        assert_eq!(
+            extract_season_number("jojo no kimyou na bouken steel ball run 2nd 3rd stage"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_steel_ball_run_matches_and_distinct_seasons_rejected() {
+        assert!(same_franchise(
+            "jojo no kimyou na bouken steel ball run 2nd 3rd stage",
+            "steel ball run jojo no kimyou na bouken"
+        ));
+
+        let candidates = vec![
+            TitleCandidate { title: "Steel Ball Run: JoJo no Kimyou na Bouken", url: "u1" },
+            TitleCandidate { title: "JoJo no Kimyou na Bouken: Stone Ocean", url: "u2" },
+        ];
+        let m = best_match(
+            &["JoJo no Kimyou na Bouken: Steel Ball Run - 2nd & 3rd STAGE"],
+            &candidates,
+        )
+        .expect("expected Steel Ball Run to match");
+        assert_eq!(m.index, 0);
+        assert!(m.score >= 0.9, "expected score >= 0.9, got {}", m.score);
+
+        let sbr_cand = vec![TitleCandidate {
+            title: "Steel Ball Run: JoJo no Kimyou na Bouken",
+            url: "u1",
+        }];
+        assert_eq!(
+            best_match(&["JoJo no Kimyou na Bouken: Stone Ocean"], &sbr_cand),
+            None
+        );
+
+        assert!(!same_franchise(
+            "initial d first stage",
+            "initial d second stage"
+        ));
+        let second_stage = vec![TitleCandidate {
+            title: "Initial D Second Stage",
+            url: "u1",
+        }];
+        assert_eq!(
+            best_match(&["Initial D First Stage"], &second_stage),
+            None
+        );
+
+        let sg0 = vec![TitleCandidate {
+            title: "Steins;Gate 0",
+            url: "u1",
+        }];
+        assert_eq!(best_match(&["Steins;Gate"], &sg0), None);
     }
 }

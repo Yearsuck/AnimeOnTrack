@@ -561,6 +561,31 @@ async fn link_series_core(
         }
     }
 
+    // Third search: if still unlinked and the romaji/primary title contains
+    // a colon, try searching using the cleaned subtitle clause after the first
+    // colon with trailing season/stage markers stripped. Scraped sites frequently
+    // index the subtitle as the primary series title (e.g. "Steel Ball Run: JoJo
+    // no Kimyou na Bouken"), whereas AniList romaji places the franchise name
+    // before the colon ("JoJo no Kimyou na Bouken: Steel Ball Run...").
+    if best.is_none() {
+        if let Some((_, raw_sub)) = primary_query.split_once(':') {
+            let tokens = crate::matching::strip_season_markers(
+                raw_sub.split_whitespace().collect(),
+                crate::matching::normalize_title,
+            );
+            let cleaned_sub = tokens.join(" ").trim().to_string();
+            let word_count = cleaned_sub.split_whitespace().count();
+            let already_tried = cleaned_sub.eq_ignore_ascii_case(&primary_query)
+                || english
+                    .as_deref()
+                    .is_some_and(|eng| cleaned_sub.eq_ignore_ascii_case(eng));
+            if word_count >= 2 && !already_tried {
+                cards = search_site(app, &mirrors, &cleaned_sub, a.as_ref()).await?;
+                best = crate::matching::best_match(&[&primary_query], &to_candidates(&cards));
+            }
+        }
+    }
+
     let Some(m) = best else { return Ok((LinkOutcome::NoMatch, None)) };
     let matched = cards[m.index].clone();
     let new_slug = slug_from_url(&matched.url);
