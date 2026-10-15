@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
-import { listPending, openEpisode, setSeenCascade } from "../api";
+import { listPending, openEpisode, playDownload, setSeenCascade } from "../api";
 import { useT } from "../i18n";
 import type { PendingItem, Series } from "../types";
 import { initials, resolveCoverUrl, useCoverFailure } from "../lib/posterFallback";
+import { watchTarget } from "../lib/watchTarget";
 
 // A series' cover_url on the Pendientes list can be a remote URL still waiting
 // for its first cover-cache download — the app's CSP blocks such URLs silently,
@@ -61,6 +62,14 @@ export function Pending({
   }, [load, refreshSignal]);
 
   async function watch(it: PendingItem) {
+    if (watchTarget(it.episode) === "download") {
+      try {
+        await playDownload(it.episode.id);
+        return;
+      } catch (e) {
+        console.error("playDownload failed, opening site:", e);
+      }
+    }
     await openEpisode(it.episode.url);
   }
 
