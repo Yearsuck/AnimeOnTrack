@@ -94,6 +94,49 @@ fn is_supported_episode_url(url: &str) -> bool {
     site_of(url).is_some()
 }
 
+/// Plans the ordered sequence of URLs to attempt for an episode download.
+///
+/// The episode's own URL is attempted first if supported by the downloader (`is_supported_episode_url`),
+/// so the user's active site preference is preserved.
+/// Sibling URLs on other sites are then ordered by the user's configured `priority`
+/// (sites not present in `priority` sort last in stable order).
+/// URLs on unsupported sites (e.g. AnimeLand) are dropped, and duplicate URLs are deduplicated.
+pub(crate) fn plan_download_urls(
+    own_url: &str,
+    siblings: &[(String, String)],
+    priority: &[String],
+) -> Vec<String> {
+    let mut result = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    if is_supported_episode_url(own_url) && seen.insert(own_url.to_string()) {
+        result.push(own_url.to_string());
+    }
+
+    let mut eligible: Vec<(usize, usize, &String)> = siblings
+        .iter()
+        .enumerate()
+        .filter(|(_, (_site_id, url))| is_supported_episode_url(url))
+        .map(|(idx, (site_id, url))| {
+            let rank = priority
+                .iter()
+                .position(|p| p == site_id)
+                .unwrap_or(usize::MAX);
+            (rank, idx, url)
+        })
+        .collect();
+
+    eligible.sort_by_key(|&(rank, idx, _)| (rank, idx));
+
+    for (_, _, url) in eligible {
+        if seen.insert(url.clone()) {
+            result.push(url.clone());
+        }
+    }
+
+    result
+}
+
 #[derive(Serialize)]
 pub struct DownloadBatch {
     /// Episodes put in the queue just now.
@@ -112,17 +155,48 @@ pub async fn download_pending(
     state: State<'_, AppState>,
     series_id: i64,
 ) -> Result<DownloadBatch, String> {
-    let episodes = {
+    let (episodes, priority) = {
         let db = state.db.lock().unwrap();
-        db.list_series_episodes(series_id).map_err(|e| e.to_string())?
+        let eps = db.list_series_episodes(series_id).map_err(|e| e.to_string())?;
+        let known: Vec<&str> = crate::adapter::all_sites().iter().map(|s| s.id).collect();
+        let priority = db.get_site_priority(&known).unwrap_or_default();
+        (eps, priority)
     };
     let mut batch = DownloadBatch { queued: 0, unsupported: 0, already: 0 };
+    let mut cached_sids: Option<Vec<i64>> = None;
     for ep in episodes.iter().filter(|e| !e.seen) {
         match ep.download_status.as_deref() {
             Some("downloading") | Some("downloaded") => batch.already += 1,
-            _ if !is_supported_episode_url(&ep.url) => batch.unsupported += 1,
             _ => {
-                if enqueue(&app, ep.id).is_ok() {
+                let has_candidate = if is_supported_episode_url(&ep.url) {
+                    true
+                } else {
+                    let sids = match &cached_sids {
+                        Some(s) => s.as_slice(),
+                        None => {
+                            let s = {
+                                let db = state.db.lock().unwrap();
+                                db.canonical_series_ids(series_id)
+                                    .map_err(|e| e.to_string())?
+                            };
+                            cached_sids = Some(s);
+                            cached_sids.as_deref().unwrap()
+                        }
+                    };
+                    let siblings = {
+                        let db = state.db.lock().unwrap();
+                        db.sibling_episodes_in(ep.id, sids)
+                            .map_err(|e| e.to_string())?
+                            .into_iter()
+                            .map(|s| (s.site_id, s.url))
+                            .collect::<Vec<_>>()
+                    };
+                    !plan_download_urls(&ep.url, &siblings, &priority).is_empty()
+                };
+
+                if !has_candidate {
+                    batch.unsupported += 1;
+                } else if enqueue(&app, ep.id).is_ok() {
                     batch.queued += 1;
                 }
             }
@@ -164,29 +238,14 @@ pub async fn delete_series_downloads(
     Ok(cleaned)
 }
 
-async fn run_download(app: &AppHandle, episode_id: i64, cancel: &Arc<AtomicBool>) -> Result<String, DlError> {
-    let _slot = SLOT.acquire().await.map_err(|e| DlError::Net(e.to_string()))?;
-    if cancel.load(Ordering::SeqCst) {
-        return Err(DlError::Cancelled);
-    }
-
-    let (episode_url, series_id) = {
-        let state = app.state::<AppState>();
-        let db = state.db.lock().unwrap();
-        let ep = db.get_episode(episode_id).map_err(|e| DlError::Io(e.to_string()))?;
-        (ep.url, ep.series_id)
-    };
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| DlError::Io(e.to_string()))?
-        .join("downloads");
-    // Created and locked down (no execute rights on its files) before anything lands in it.
-    let hardened_dir = dir.clone();
-    let _ = tokio::task::spawn_blocking(move || crate::download_safety::harden_downloads_dir(&hardened_dir)).await;
-    let base = downloader::episode_file_base(&dir, series_id, episode_id);
-
-    let media = resolve_media(app, &episode_url).await?;
+async fn attempt(
+    app: &AppHandle,
+    url: &str,
+    episode_id: i64,
+    base: &std::path::Path,
+    cancel: &Arc<AtomicBool>,
+) -> Result<String, DlError> {
+    let media = resolve_media(app, url).await?;
     if cancel.load(Ordering::SeqCst) {
         return Err(DlError::Cancelled);
     }
@@ -205,11 +264,89 @@ async fn run_download(app: &AppHandle, episode_id: i64, cancel: &Arc<AtomicBool>
         .map(|u| u.path().to_ascii_lowercase().ends_with(".m3u8"))
         .unwrap_or(false);
     let final_file = if is_hls {
-        downloader::fetch_hls_to_file(&media.url, &media.referer, &base, cancel, progress).await?
+        downloader::fetch_hls_to_file(&media.url, &media.referer, base, cancel, progress).await?
     } else {
-        downloader::fetch_to_file(&media, &base, cancel, progress).await?
+        downloader::fetch_to_file(&media, base, cancel, progress).await?
     };
     Ok(final_file.to_string_lossy().into_owned())
+}
+
+async fn run_download(app: &AppHandle, episode_id: i64, cancel: &Arc<AtomicBool>) -> Result<String, DlError> {
+    let _slot = SLOT.acquire().await.map_err(|e| DlError::Net(e.to_string()))?;
+    if cancel.load(Ordering::SeqCst) {
+        return Err(DlError::Cancelled);
+    }
+
+    let (episode_url, series_id, siblings, priority) = {
+        let state = app.state::<AppState>();
+        let db = state.db.lock().unwrap();
+        let ep = db.get_episode(episode_id).map_err(|e| DlError::Io(e.to_string()))?;
+        let siblings = db
+            .sibling_episodes(episode_id)
+            .map_err(|e| DlError::Io(e.to_string()))?
+            .into_iter()
+            .map(|s| (s.site_id, s.url))
+            .collect::<Vec<_>>();
+        let known: Vec<&str> = crate::adapter::all_sites().iter().map(|s| s.id).collect();
+        let priority = db.get_site_priority(&known).unwrap_or_default();
+        (ep.url, ep.series_id, siblings, priority)
+    };
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| DlError::Io(e.to_string()))?
+        .join("downloads");
+    // Created and locked down (no execute rights on its files) before anything lands in it.
+    let hardened_dir = dir.clone();
+    let _ = tokio::task::spawn_blocking(move || crate::download_safety::harden_downloads_dir(&hardened_dir)).await;
+    let base = downloader::episode_file_base(&dir, series_id, episode_id);
+
+    let candidates = plan_download_urls(&episode_url, &siblings, &priority);
+    if candidates.is_empty() {
+        return Err(DlError::Net(unsupported_site_error(&episode_url)));
+    }
+
+    let mut errors: Vec<(String, DlError)> = Vec::new();
+    for (idx, candidate_url) in candidates.iter().enumerate() {
+        if cancel.load(Ordering::SeqCst) {
+            return Err(DlError::Cancelled);
+        }
+        let site = site_label(candidate_url);
+        match attempt(app, candidate_url, episode_id, &base, cancel).await {
+            Ok(final_path) => {
+                if candidate_url != &episode_url {
+                    crate::file_log::info(&format!(
+                        "download finished: episode {episode_id} via {site}"
+                    ));
+                }
+                return Ok(final_path);
+            }
+            Err(DlError::Cancelled) => {
+                return Err(DlError::Cancelled);
+            }
+            Err(err) => {
+                if idx + 1 < candidates.len() {
+                    crate::file_log::info(&format!(
+                        "download fallback: episode {episode_id} failed on {site} ({err}), trying next"
+                    ));
+                    emit(app, episode_id, "downloading", None, None);
+                }
+                errors.push((site, err));
+            }
+        }
+    }
+
+    if errors.len() == 1 {
+        let (_, single_err) = errors.pop().unwrap();
+        Err(single_err)
+    } else {
+        let details = errors
+            .iter()
+            .map(|(site, err)| format!("{site} ({err})"))
+            .collect::<Vec<_>>()
+            .join("; ");
+        Err(DlError::Net(format!("all sources failed: {details}")))
+    }
 }
 
 /// The sites whose episode pages the downloader understands.
@@ -240,6 +377,28 @@ fn site_of(url: &str) -> Option<Site> {
     } else {
         None
     }
+}
+
+fn site_label(url: &str) -> String {
+    match site_of(url) {
+        Some(Site::TioAnime) => "tioanime".to_string(),
+        Some(Site::JkAnime) => "jkanime".to_string(),
+        Some(Site::AnimeYt) => "animeytx".to_string(),
+        Some(Site::GogoAnime) => "gogoanime".to_string(),
+        Some(Site::AnimeFlv) => "animeflv".to_string(),
+        None => url::Url::parse(url)
+            .ok()
+            .and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase()))
+            .unwrap_or_else(|| "unknown".to_string()),
+    }
+}
+
+fn unsupported_site_error(url: &str) -> String {
+    let host = url::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_owned))
+        .unwrap_or_default();
+    format!("downloads from {host} are not supported yet")
 }
 
 /// Plain HTTP GET of an embed / host page (these hosts are not behind
@@ -297,11 +456,7 @@ async fn resolve_media(app: &AppHandle, episode_url: &str) -> Result<Media, DlEr
         return Err(DlError::Net("the episode link is not a public web address".into()));
     }
     let Some(site) = site_of(episode_url) else {
-        let host = url::Url::parse(episode_url)
-            .ok()
-            .and_then(|u| u.host_str().map(str::to_owned))
-            .unwrap_or_default();
-        return Err(DlError::Net(format!("downloads from {host} are not supported yet")));
+        return Err(DlError::Net(unsupported_site_error(episode_url)));
     };
 
     // The episode page sits behind Cloudflare, so it goes through the browser
@@ -498,5 +653,105 @@ mod tests {
         assert_eq!(site_of("not a url"), None);
         assert!(!is_supported_episode_url("https://example.com/x"));
         assert!(is_supported_episode_url("https://jkanime.net/x/1/"));
+    }
+
+    #[test]
+    fn plan_download_urls_own_first_and_siblings_ordered_by_priority_and_animeland_dropped() {
+        let own = "https://tioanime.com/ver/x-1";
+        let siblings = vec![
+            ("animeytx".to_string(), "https://animeyt.cc/tv/x/1".to_string()),
+            ("animeflv".to_string(), "https://animeflv.or.at/ver/x-1".to_string()),
+            ("animeland".to_string(), "https://w7.animeland.tv/x-1".to_string()),
+        ];
+        let priority = vec!["animeflv".to_string(), "animeytx".to_string(), "tioanime".to_string()];
+        let plan = plan_download_urls(own, &siblings, &priority);
+        assert_eq!(
+            plan,
+            vec![
+                "https://tioanime.com/ver/x-1",
+                "https://animeflv.or.at/ver/x-1",
+                "https://animeyt.cc/tv/x/1",
+            ]
+        );
+    }
+
+    #[test]
+    fn plan_download_urls_unsupported_own_url_falls_back_to_siblings_in_priority_order() {
+        let own = "https://w7.animeland.tv/x-1";
+        let siblings = vec![
+            ("tioanime".to_string(), "https://tioanime.com/ver/x-1".to_string()),
+            ("animeflv".to_string(), "https://animeflv.or.at/ver/x-1".to_string()),
+        ];
+        let priority = vec!["animeflv".to_string(), "tioanime".to_string()];
+        let plan = plan_download_urls(own, &siblings, &priority);
+        assert_eq!(
+            plan,
+            vec![
+                "https://animeflv.or.at/ver/x-1",
+                "https://tioanime.com/ver/x-1",
+            ]
+        );
+    }
+
+    #[test]
+    fn plan_download_urls_deduplicates_identical_urls() {
+        let own = "https://tioanime.com/ver/x-1";
+        let siblings = vec![
+            ("tioanime".to_string(), "https://tioanime.com/ver/x-1".to_string()),
+            ("animeflv".to_string(), "https://animeflv.or.at/ver/x-1".to_string()),
+            ("animeytx".to_string(), "https://animeflv.or.at/ver/x-1".to_string()),
+        ];
+        let priority = vec!["animeflv".to_string(), "animeytx".to_string()];
+        let plan = plan_download_urls(own, &siblings, &priority);
+        assert_eq!(
+            plan,
+            vec![
+                "https://tioanime.com/ver/x-1",
+                "https://animeflv.or.at/ver/x-1",
+            ]
+        );
+    }
+
+    #[test]
+    fn plan_download_urls_unknown_site_id_sorts_after_listed_priority() {
+        let own = "https://tioanime.com/ver/x-1";
+        let siblings = vec![
+            ("unknown_site".to_string(), "https://jkanime.net/x/1/".to_string()),
+            ("animeflv".to_string(), "https://animeflv.or.at/ver/x-1".to_string()),
+        ];
+        let priority = vec!["animeflv".to_string()];
+        let plan = plan_download_urls(own, &siblings, &priority);
+        assert_eq!(
+            plan,
+            vec![
+                "https://tioanime.com/ver/x-1",
+                "https://animeflv.or.at/ver/x-1",
+                "https://jkanime.net/x/1/",
+            ]
+        );
+    }
+
+    #[test]
+    fn plan_download_urls_returns_empty_when_nothing_supported() {
+        let own = "https://w7.animeland.tv/x-1";
+        let siblings = vec![
+            ("animeland".to_string(), "https://w7.animeland.tv/alt/x-1".to_string()),
+            ("unsupported".to_string(), "https://example.com/video/1".to_string()),
+        ];
+        let priority = vec!["animeflv".to_string(), "tioanime".to_string()];
+        let plan = plan_download_urls(own, &siblings, &priority);
+        assert!(plan.is_empty());
+    }
+
+    #[test]
+    fn unsupported_site_error_formats_host() {
+        assert_eq!(
+            unsupported_site_error("https://w7.animeland.tv/x-1"),
+            "downloads from w7.animeland.tv are not supported yet"
+        );
+        assert_eq!(
+            unsupported_site_error("invalid-url"),
+            "downloads from  are not supported yet"
+        );
     }
 }

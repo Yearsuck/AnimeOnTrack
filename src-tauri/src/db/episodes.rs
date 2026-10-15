@@ -71,6 +71,16 @@ pub(crate) fn parse_ep_number(s: &str) -> Option<f64> {
     }
 }
 
+/// Sibling episode on another source in the same canonical group.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SiblingEpisode {
+    pub series_id: i64,
+    pub source_id: i64,
+    pub site_id: String,
+    pub episode_id: i64,
+    pub url: String,
+}
+
 impl Db {
     /// Episode-row count for one series. Test-only: the production skip
     /// decision moved to `max_episode_number` (a row COUNT gets inflated by
@@ -442,6 +452,106 @@ impl Db {
             self.set_seen_cascade(clicked_id, number, seen)?;
         }
         Ok(())
+    }
+
+    /// Sibling episodes of `episode_id` across other sources in the same canonical group.
+    ///
+    /// Maps the episode number through canonical space (`RowAlign::to_canonical`)
+    /// and resolves each sibling series' episode number via `RowAlign::to_row`.
+    /// Sibling rows whose series has no episodes or no episode matching the aligned number are omitted.
+    /// Results are returned in deterministic order: by `sid` ascending.
+    pub fn sibling_episodes(&self, episode_id: i64) -> Result<Vec<SiblingEpisode>> {
+        let series_id: i64 = match self.conn.query_row(
+            "SELECT series_id FROM episodes WHERE id=?1",
+            [episode_id],
+            |r| r.get(0),
+        ) {
+            Ok(v) => v,
+            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(vec![]),
+            Err(e) => return Err(e.into()),
+        };
+
+        let sids = self.canonical_series_ids(series_id)?;
+        self.sibling_episodes_in(episode_id, &sids)
+    }
+
+    /// Same as `sibling_episodes` for a canonical group the caller already resolved, so
+    /// `canonical_series_ids` is not repeated per episode.
+    pub fn sibling_episodes_in(&self, episode_id: i64, sids: &[i64]) -> Result<Vec<SiblingEpisode>> {
+        let clicked: Option<(i64, String, Option<i64>, String)> = self
+            .conn
+            .query_row(
+                "SELECT e.series_id, e.number, s.anilist_id, s.title
+                 FROM episodes e
+                 JOIN series s ON s.id = e.series_id
+                 WHERE e.id = ?1",
+                [episode_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .optional()?;
+
+        let (series_id, number, clicked_al_id, clicked_title) = match clicked {
+            Some(v) => v,
+            None => return Ok(vec![]),
+        };
+
+        let mut sorted_sids = sids.to_vec();
+        sorted_sids.sort_unstable();
+        sorted_sids.dedup();
+
+        let now = chrono::Utc::now().timestamp();
+        let clicked_align = self.row_align(series_id, now)?;
+        let canon = match parse_ep_number(&number).and_then(|n| clicked_align.to_canonical(n)) {
+            Some(c) => c,
+            None => return Ok(vec![]),
+        };
+
+        let mut out = Vec::new();
+        for sid in sorted_sids {
+            if sid == series_id {
+                continue;
+            }
+            let align = self.row_align(sid, now)?;
+            let row_target = align.to_row(canon);
+            let row_number = super::episode_align::format_ep_number(row_target);
+
+            let row: Option<(i64, String, Option<i64>, String, i64, String)> = self
+                .conn
+                .query_row(
+                    "SELECT s.source_id, COALESCE(so.site_id, ''), s.anilist_id, s.title, e.id, e.url
+                     FROM episodes e
+                     JOIN series s ON s.id = e.series_id
+                     LEFT JOIN sources so ON so.id = s.source_id
+                     WHERE e.series_id = ?1 AND e.number = ?2
+                     ORDER BY e.id ASC
+                     LIMIT 1",
+                    rusqlite::params![sid, row_number],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+                )
+                .optional()?;
+
+            if let Some((source_id, site_id, sib_al_id, sib_title, ep_id, url)) = row {
+                let same_non_null_al = match (clicked_al_id, sib_al_id) {
+                    (Some(a), Some(b)) => a == b,
+                    _ => false,
+                };
+                let titles_equal = crate::matching::normalize_title(&clicked_title)
+                    == crate::matching::normalize_title(&sib_title);
+
+                if !same_non_null_al && !titles_equal {
+                    continue;
+                }
+
+                out.push(SiblingEpisode {
+                    series_id: sid,
+                    source_id,
+                    site_id,
+                    episode_id: ep_id,
+                    url,
+                });
+            }
+        }
+        Ok(out)
     }
 
     /// All episodes of a series (seen or not), oldest number first — the
@@ -1780,5 +1890,289 @@ mod tests {
         assert_eq!(db.get_episode(a).unwrap().download_status, None);
         assert_eq!(db.get_episode(b).unwrap().download_status.as_deref(), Some("downloaded"));
         assert_eq!(db.get_episode(c).unwrap().download_status.as_deref(), Some("failed"));
+    }
+
+    #[test]
+    fn sibling_episodes_unlinked_two_sources_reciprocal() {
+        let db = Db::open(":memory:").unwrap();
+        let src_a = db.upsert_source("AnimeYT", "https://animeyt.cc", "animeytx").unwrap();
+        let src_b = db.upsert_source("TioAnime", "https://tioanime.com", "tioanime").unwrap();
+
+        let mk = |slug: &str, title: &str| crate::models::Series {
+            id: 0,
+            slug: slug.into(),
+            title: title.into(),
+            url: format!("https://site/{slug}"),
+            cover_url: None,
+            is_airing: true,
+            followed: true,
+            next_episode_at: None,
+            site_episode_count: None,
+        };
+
+        let row_a = db.upsert_series(src_a, &mk("show-a", "Shared Show")).unwrap();
+        let row_b = db.upsert_series(src_b, &mk("show-b", "Shared Show")).unwrap();
+
+        let (ep_a1, _) = db.insert_episode(&crate::models::Episode {
+            id: 0,
+            series_id: row_a,
+            number: "1".into(),
+            title: None,
+            url: "https://a/1".into(),
+            released_at: None,
+            seen: false,
+            download_path: None,
+            download_status: None,
+        }).unwrap();
+
+        let (ep_b1, _) = db.insert_episode(&crate::models::Episode {
+            id: 0,
+            series_id: row_b,
+            number: "1".into(),
+            title: None,
+            url: "https://b/1".into(),
+            released_at: None,
+            seen: false,
+            download_path: None,
+            download_status: None,
+        }).unwrap();
+
+        let sibs_of_a = db.sibling_episodes(ep_a1).unwrap();
+        assert_eq!(
+            sibs_of_a,
+            vec![SiblingEpisode {
+                series_id: row_b,
+                source_id: src_b,
+                site_id: "tioanime".into(),
+                episode_id: ep_b1,
+                url: "https://b/1".into(),
+            }]
+        );
+
+        let sibs_of_b = db.sibling_episodes(ep_b1).unwrap();
+        assert_eq!(
+            sibs_of_b,
+            vec![SiblingEpisode {
+                series_id: row_a,
+                source_id: src_a,
+                site_id: "animeytx".into(),
+                episode_id: ep_a1,
+                url: "https://a/1".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn sibling_episodes_cumulative_offset_tensei_fixture() {
+        let db = Db::open(":memory:").unwrap();
+        let now = chrono::Utc::now().timestamp();
+        let src_a = db.upsert_source("AnimeYT", "https://animeyt.cc", "animeytx").unwrap();
+        let src_b = db.upsert_source("TioAnime", "https://tioanime.com", "tioanime").unwrap();
+
+        let entries = vec![
+            crate::anizip::MapEntry { episode: 1, season: 3, absolute: Some(25), air_at: Some(now - 14 * 86400) },
+            crate::anizip::MapEntry { episode: 2, season: 3, absolute: Some(26), air_at: Some(now - 7 * 86400) },
+            crate::anizip::MapEntry { episode: 3, season: 3, absolute: Some(27), air_at: Some(now) },
+            crate::anizip::MapEntry { episode: 4, season: 3, absolute: Some(28), air_at: Some(now + 7 * 86400) },
+        ];
+        db.replace_episode_map(185756, &entries, now).unwrap();
+
+        let mk = |slug: &str, title: &str| crate::models::Series {
+            id: 0, slug: slug.into(), title: title.into(), url: format!("https://site/{slug}"),
+            cover_url: None, is_airing: true, followed: true, next_episode_at: None, site_episode_count: None,
+        };
+
+        let row_a = db.upsert_series(src_a, &mk("tensei-a", "Tensei")).unwrap();
+        db.set_anilist_id(row_a, 185756).unwrap();
+        let (ep_a3, _) = db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: row_a, number: "3".into(), title: None,
+            url: "https://animeyt.cc/tv/tensei/3".into(), released_at: None, seen: false,
+            download_path: None, download_status: None,
+        }).unwrap();
+
+        let row_b = db.upsert_series(src_b, &mk("tensei-b", "Tensei")).unwrap();
+        db.set_anilist_id(row_b, 185756).unwrap();
+        let mut ep_b20_id = 0;
+        let mut ep_b27_id = 0;
+        for i in 1..=28 {
+            let (id, _) = db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: row_b, number: i.to_string(), title: None,
+                url: format!("https://tioanime.com/ver/tensei-{i}"), released_at: None, seen: false,
+                download_path: None, download_status: None,
+            }).unwrap();
+            if i == 20 { ep_b20_id = id; }
+            if i == 27 { ep_b27_id = id; }
+        }
+
+        // Ep 3 on AnimeYT aligns to Ep 27 on TioAnime
+        let sibs = db.sibling_episodes(ep_a3).unwrap();
+        assert_eq!(
+            sibs,
+            vec![SiblingEpisode {
+                series_id: row_b,
+                source_id: src_b,
+                site_id: "tioanime".into(),
+                episode_id: ep_b27_id,
+                url: "https://tioanime.com/ver/tensei-27".into(),
+            }]
+        );
+
+        // Ep 20 on TioAnime is earlier season (<= offset 24) -> no canonical alignment -> empty vec
+        let sibs_earlier = db.sibling_episodes(ep_b20_id).unwrap();
+        assert!(sibs_earlier.is_empty());
+    }
+
+    #[test]
+    fn sibling_episodes_no_matching_episode_returns_empty() {
+        let db = Db::open(":memory:").unwrap();
+        let src_a = db.upsert_source("AnimeYT", "https://animeyt.cc", "animeytx").unwrap();
+        let src_b = db.upsert_source("TioAnime", "https://tioanime.com", "tioanime").unwrap();
+
+        let mk = |slug: &str, title: &str| crate::models::Series {
+            id: 0, slug: slug.into(), title: title.into(), url: format!("https://site/{slug}"),
+            cover_url: None, is_airing: true, followed: true, next_episode_at: None, site_episode_count: None,
+        };
+
+        let row_a = db.upsert_series(src_a, &mk("show-a", "Unfinished Show")).unwrap();
+        let row_b = db.upsert_series(src_b, &mk("show-b", "Unfinished Show")).unwrap();
+
+        // Episode 5 on row_a, but row_b only has episode 1
+        let (ep_a5, _) = db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: row_a, number: "5".into(), title: None,
+            url: "https://a/5".into(), released_at: None, seen: false,
+            download_path: None, download_status: None,
+        }).unwrap();
+        let (_ep_b1, _) = db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: row_b, number: "1".into(), title: None,
+            url: "https://b/1".into(), released_at: None, seen: false,
+            download_path: None, download_status: None,
+        }).unwrap();
+
+        let sibs = db.sibling_episodes(ep_a5).unwrap();
+        assert!(sibs.is_empty());
+
+        // Sibling series with zero episodes also yields empty
+        let src_c = db.upsert_source("JKAnime", "https://jkanime.net", "jkanime").unwrap();
+        let _row_c = db.upsert_series(src_c, &mk("show-c", "Unfinished Show")).unwrap();
+        let sibs_again = db.sibling_episodes(ep_a5).unwrap();
+        assert!(sibs_again.is_empty());
+    }
+
+    #[test]
+    fn sibling_episodes_bridged_different_titles_rejected() {
+        let db = Db::open(":memory:").unwrap();
+        let src_a = db.upsert_source("AnimeYT", "https://animeyt.cc", "animeytx").unwrap();
+        let src_b = db.upsert_source("TioAnime", "https://tioanime.com", "tioanime").unwrap();
+
+        // Seed catalog row with title "Bridged Title"
+        db.conn.execute(
+            "INSERT INTO anilist_catalog (id, title, url, sort_order) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![500, "Bridged Title", "https://anilist.co/anime/500", 0],
+        ).unwrap();
+
+        let mk = |slug: &str, title: &str| crate::models::Series {
+            id: 0, slug: slug.into(), title: title.into(), url: format!("https://site/{slug}"),
+            cover_url: None, is_airing: true, followed: true, next_episode_at: None, site_episode_count: None,
+        };
+
+        // row_a is unlinked (None) but its title matches the catalog row ("Bridged Title")
+        let row_a = db.upsert_series(src_a, &mk("show-a", "Bridged Title")).unwrap();
+        // row_b is linked to AniList 500 but has a different title
+        let row_b = db.upsert_series(src_b, &mk("show-b", "Different Local Title")).unwrap();
+        db.set_anilist_id(row_b, 500).unwrap();
+
+        // Verify canonical_series_ids groups them
+        let group = db.canonical_series_ids(row_a).unwrap();
+        assert!(group.contains(&row_a) && group.contains(&row_b));
+
+        let (ep_a1, _) = db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: row_a, number: "1".into(), title: None,
+            url: "https://a/1".into(), released_at: None, seen: false,
+            download_path: None, download_status: None,
+        }).unwrap();
+        let (ep_b1, _) = db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: row_b, number: "1".into(), title: None,
+            url: "https://b/1".into(), released_at: None, seen: false,
+            download_path: None, download_status: None,
+        }).unwrap();
+
+        // Even though canonical_series_ids grouped row_a and row_b,
+        // sibling_episodes rejects row_b because row_a is unlinked and titles differ.
+        let sibs_a = db.sibling_episodes(ep_a1).unwrap();
+        assert!(sibs_a.is_empty(), "different titles with unlinked row must be rejected");
+
+        let sibs_b = db.sibling_episodes(ep_b1).unwrap();
+        assert!(sibs_b.is_empty(), "reciprocal rejection for linked row with different title");
+    }
+
+    #[test]
+    fn sibling_episodes_same_anilist_id_different_titles_are_siblings() {
+        let db = Db::open(":memory:").unwrap();
+        let src_a = db.upsert_source("AnimeYT", "https://animeyt.cc", "animeytx").unwrap();
+        let src_b = db.upsert_source("TioAnime", "https://tioanime.com", "tioanime").unwrap();
+
+        let mk = |slug: &str, title: &str| crate::models::Series {
+            id: 0, slug: slug.into(), title: title.into(), url: format!("https://site/{slug}"),
+            cover_url: None, is_airing: true, followed: true, next_episode_at: None, site_episode_count: None,
+        };
+
+        let row_a = db.upsert_series(src_a, &mk("show-a", "Attack on Titan")).unwrap();
+        db.set_anilist_id(row_a, 999).unwrap();
+        let row_b = db.upsert_series(src_b, &mk("show-b", "Shingeki no Kyojin")).unwrap();
+        db.set_anilist_id(row_b, 999).unwrap();
+
+        let (ep_a1, _) = db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: row_a, number: "1".into(), title: None,
+            url: "https://a/1".into(), released_at: None, seen: false,
+            download_path: None, download_status: None,
+        }).unwrap();
+        let (ep_b1, _) = db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: row_b, number: "1".into(), title: None,
+            url: "https://b/1".into(), released_at: None, seen: false,
+            download_path: None, download_status: None,
+        }).unwrap();
+
+        let sibs_a = db.sibling_episodes(ep_a1).unwrap();
+        assert_eq!(sibs_a.len(), 1);
+        assert_eq!(sibs_a[0].series_id, row_b);
+        assert_eq!(sibs_a[0].episode_id, ep_b1);
+
+        let sibs_b = db.sibling_episodes(ep_b1).unwrap();
+        assert_eq!(sibs_b.len(), 1);
+        assert_eq!(sibs_b[0].series_id, row_a);
+        assert_eq!(sibs_b[0].episode_id, ep_a1);
+    }
+
+    #[test]
+    fn sibling_episodes_in_matches_sibling_episodes() {
+        let db = Db::open(":memory:").unwrap();
+        let src_a = db.upsert_source("AnimeYT", "https://animeyt.cc", "animeytx").unwrap();
+        let src_b = db.upsert_source("TioAnime", "https://tioanime.com", "tioanime").unwrap();
+
+        let mk = |slug: &str, title: &str| crate::models::Series {
+            id: 0, slug: slug.into(), title: title.into(), url: format!("https://site/{slug}"),
+            cover_url: None, is_airing: true, followed: true, next_episode_at: None, site_episode_count: None,
+        };
+
+        let row_a = db.upsert_series(src_a, &mk("show-a", "Same Title")).unwrap();
+        let row_b = db.upsert_series(src_b, &mk("show-b", "Same Title")).unwrap();
+
+        let (ep_a1, _) = db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: row_a, number: "1".into(), title: None,
+            url: "https://a/1".into(), released_at: None, seen: false,
+            download_path: None, download_status: None,
+        }).unwrap();
+        let (ep_b1, _) = db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: row_b, number: "1".into(), title: None,
+            url: "https://b/1".into(), released_at: None, seen: false,
+            download_path: None, download_status: None,
+        }).unwrap();
+
+        let sids = db.canonical_series_ids(row_a).unwrap();
+        let sibs_via_in = db.sibling_episodes_in(ep_a1, &sids).unwrap();
+        let sibs_direct = db.sibling_episodes(ep_a1).unwrap();
+        assert_eq!(sibs_via_in, sibs_direct);
+        assert_eq!(sibs_via_in.len(), 1);
+        assert_eq!(sibs_via_in[0].episode_id, ep_b1);
     }
 }
