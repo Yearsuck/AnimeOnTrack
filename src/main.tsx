@@ -1,6 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
+import { SplashHost } from "./views/Splash";
 import { I18nProvider } from "./i18n";
 import { ThemeProvider } from "./theme";
 // Inter, bundled as a local variable-weight woff2 rather than pulled from a
@@ -15,6 +16,7 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     <I18nProvider>
       <ThemeProvider>
         <App />
+        <SplashHost />
       </ThemeProvider>
     </I18nProvider>
   </React.StrictMode>,
