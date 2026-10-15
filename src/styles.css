@@ -2930,3 +2930,91 @@ select.lib-filter-select {
 .update-banner-text {
   font-size: var(--fs-base);
 }
+
+/* ---------- Startup splash animation ---------- */
+.splash {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+  opacity: 1;
+  transition: opacity 300ms var(--ease-out);
+  will-change: opacity;
+}
+
+.splash--fading {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.splash-logo {
+  width: 96px;
+  height: 96px;
+  flex-shrink: 0;
+  opacity: 0;
+  transform: scale(0.9);
+  animation: splash-logo-enter 500ms var(--ease-out) forwards;
+  will-change: transform, opacity;
+}
+
+.splash-bar {
+  width: 96px;
+  height: 2px;
+  margin-top: var(--sp-4);
+  background: var(--accent-solid);
+  transform-origin: left;
+  transform: scaleX(0);
+  animation: splash-bar-sweep 600ms var(--ease-out) 400ms forwards;
+  will-change: transform;
+}
+
+.splash-name {
+  margin-top: var(--sp-3);
+  font-size: var(--fs-xl);
+  font-weight: var(--fw-bold);
+  letter-spacing: -0.01em;
+  color: var(--text);
+  opacity: 0;
+  animation: splash-name-fade 350ms var(--ease-out) 520ms forwards;
+  will-change: opacity;
+}
+
+@keyframes splash-logo-enter {
+  from {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes splash-bar-sweep {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+@keyframes splash-name-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .splash {
+    display: none !important;
+  }
+}
+
