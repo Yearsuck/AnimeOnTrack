@@ -1231,7 +1231,11 @@ pub fn resolve_okru(embed_html: &str) -> Option<Media> {
 /// Supports `"mp4upload"`, `"yourupload"`, `"mediafire"`, `"streamtape"`, and `"okru"`
 /// when the URL's host matches the domain or is a subdomain thereof.
 /// Also supports `"vidhide"` and `"mixdrop"` when the server name matches (case-insensitive, trimmed)
-/// and the URL is http(s). Domain-based matching takes priority over name-based matching.
+/// and the URL is http(s), and `"voe"` by name or `voe.sx` domain.
+/// Domain-based matching takes priority over name-based matching.
+/// Hosts requiring unavailable client-side crypto (e.g. Mega with AES fragment keys,
+/// Netu/hqq with obfuscated token protocols) or unsupported hosts without extractor fixtures
+/// (e.g. StreamSB, Streamwish, Filemoon/Byse, Doodstream, 1Fichier) return `None`.
 #[allow(dead_code)] // Consumed by download supervisor in later stages
 pub fn supported_host(server: &Server) -> Option<&'static str> {
     let parsed = Url::parse(&server.url).ok()?;

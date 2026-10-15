@@ -273,8 +273,9 @@ async fn attempt(
 
 /// On-demand scraping of sibling series episode lists when DB candidate downloads failed.
 ///
-/// Queries `siblings_to_scrape`, orders them by user priority, checks downloader support
-/// and domain breaker status, caps at 3 rows, and fetches/diffs episodes on demand.
+/// Queries `siblings_to_scrape`, orders them by user priority, checks downloader support,
+/// caps at 3 rows, and fetches/diffs episodes on demand. A user-initiated download bypasses
+/// the domain breaker cooldown so explicit user intent is always attempted.
 /// Stops and returns at the first candidate that downloads successfully.
 #[allow(clippy::too_many_arguments)]
 async fn scrape_and_try_siblings(
@@ -298,23 +299,47 @@ async fn scrape_and_try_siblings(
             .map_err(|e| DlError::Io(e.to_string()))?
     };
 
-    let mut eligible: Vec<(usize, usize, _)> = to_scrape
-        .into_iter()
-        .filter(|row| is_supported_episode_url(&row.url) && !crate::domain_breaker::is_open(&row.url))
-        .enumerate()
-        .map(|(idx, row)| {
-            let rank = priority
-                .iter()
-                .position(|p| p == &row.site_id)
-                .unwrap_or(usize::MAX);
-            (rank, idx, row)
-        })
-        .collect();
+    crate::file_log::info(&format!(
+        "download fallback: siblings_to_scrape returned {} row(s) for episode {episode_id}",
+        to_scrape.len()
+    ));
+
+    let mut eligible = Vec::new();
+    for (idx, row) in to_scrape.into_iter().enumerate() {
+        let site = if !row.site_id.is_empty() {
+            row.site_id.clone()
+        } else {
+            site_label(&row.url)
+        };
+
+        if !is_supported_episode_url(&row.url) {
+            crate::file_log::info(&format!(
+                "download fallback: skipped series {} on {site} (unsupported site)",
+                row.series_id
+            ));
+            continue;
+        }
+
+        if crate::adapter::adapter_for(&row.site_id).is_none() {
+            crate::file_log::info(&format!(
+                "download fallback: skipped series {} on {site} (no adapter)",
+                row.series_id
+            ));
+            continue;
+        }
+
+        let rank = priority
+            .iter()
+            .position(|p| p == &row.site_id)
+            .unwrap_or(usize::MAX);
+        eligible.push((rank, idx, row));
+    }
 
     eligible.sort_by_key(|&(rank, idx, _)| (rank, idx));
 
     let rows_to_scrape: Vec<_> = eligible.into_iter().map(|(_, _, row)| row).take(3).collect();
 
+    let mut unaligned_sites = Vec::new();
     for row in rows_to_scrape {
         if cancel.load(Ordering::SeqCst) {
             return Err(DlError::Cancelled);
@@ -329,14 +354,9 @@ async fn scrape_and_try_siblings(
         let a = match crate::adapter::adapter_for(&row.site_id) {
             Some(adapter) => adapter,
             None => {
-                let err_msg = format!("unknown adapter for site {}", row.site_id);
                 crate::file_log::info(&format!(
-                    "download fallback: scrape failed for series {} on {site}: {err_msg}",
+                    "download fallback: skipped series {} on {site} (no adapter)",
                     row.series_id
-                ));
-                errors.push((
-                    site,
-                    DlError::Net(format!("could not load episode list: {err_msg}")),
                 ));
                 continue;
             }
@@ -375,6 +395,12 @@ async fn scrape_and_try_siblings(
                 continue;
             }
         };
+
+        crate::file_log::info(&format!(
+            "download fallback: scraped series {} on {site}, parsed {} episode(s)",
+            row.series_id,
+            episodes.len()
+        ));
 
         // `fetch_html_with_script` cannot be interrupted, so honour a cancel that
         // arrived during the scrape before writing anything.
@@ -417,6 +443,19 @@ async fn scrape_and_try_siblings(
             .filter(|url| !attempted.contains(url))
             .collect();
 
+        crate::file_log::info(&format!(
+            "download fallback: new candidate urls for episode {episode_id} from {site}: {}",
+            if new_candidates.is_empty() {
+                "none".to_string()
+            } else {
+                new_candidates.join(", ")
+            }
+        ));
+
+        if new_candidates.is_empty() {
+            unaligned_sites.push(site);
+        }
+
         for candidate_url in new_candidates {
             if cancel.load(Ordering::SeqCst) {
                 return Err(DlError::Cancelled);
@@ -441,6 +480,12 @@ async fn scrape_and_try_siblings(
                     errors.push((cand_site, err));
                 }
             }
+        }
+    }
+
+    for site in unaligned_sites {
+        if !errors.iter().any(|(s, _)| s == &site) {
+            errors.push((site, DlError::Net("episode not listed".to_string())));
         }
     }
 
@@ -593,6 +638,25 @@ fn unsupported_site_error(url: &str) -> String {
     format!("downloads from {host} are not supported yet")
 }
 
+/// Formats a list of per-server outcomes into a single diagnostic string.
+///
+/// Each pair `(server, reason)` is formatted as `<server>: <reason>`, where
+/// `reason` is capped to at most 120 characters to keep user-facing error messages
+/// readable without panicking on multi-byte UTF-8 boundaries. Pairs are joined
+/// by `; ` preserving their input order. Returns an empty string when the slice is empty.
+pub(crate) fn format_server_errors<S1: AsRef<str>, S2: AsRef<str>>(errors: &[(S1, S2)]) -> String {
+    errors
+        .iter()
+        .map(|(server, reason)| {
+            let s = server.as_ref();
+            let r = reason.as_ref();
+            let capped: String = r.chars().take(120).collect();
+            format!("{s}: {capped}")
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
 /// Plain HTTP GET of an embed / host page (these hosts are not behind
 /// Cloudflare, unlike the episode pages): browser UA, the previous page as
 /// Referer, 20 s, size-capped. Returns `(final_url, body)`.
@@ -687,27 +751,26 @@ async fn resolve_media(app: &AppHandle, episode_url: &str) -> Result<Media, DlEr
         }
     };
 
+    let url_host = url::Url::parse(episode_url)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_owned))
+        .unwrap_or_else(|| "unknown".to_string());
+
     let mut options = candidates(&servers);
     // Development aid: `AOT_DOWNLOAD_PREFER=<host id>` (e.g. `voe`, `mixdrop`) tries
     // that host's mirrors first, so one extractor can be exercised on a live page.
     if let Some(prefer) = std::env::var("AOT_DOWNLOAD_PREFER").ok().filter(|p| !p.trim().is_empty()) {
         options.sort_by_key(|s| supported_host(s) != Some(prefer.trim().to_ascii_lowercase().as_str()));
     }
-    if options.is_empty() {
-        let names: Vec<&str> = servers.iter().map(|s| s.name.as_str()).collect();
-        return Err(DlError::Net(format!(
-            "no supported mirror on this episode (found: {})",
-            if names.is_empty() { "none".to_string() } else { names.join(", ") }
-        )));
-    }
 
-    let mut last_err = String::from("no mirror could be resolved");
+    let mut outcomes: Vec<(String, String)> = Vec::new();
     'servers: for server in options {
         let Some(host) = supported_host(&server) else { continue };
         let (mut page_url, mut html) = match fetch_text(&server.url, episode_url).await {
             Ok(p) => p,
             Err(e) => {
-                last_err = format!("{}: {e}", server.name);
+                crate::file_log::info(&format!("download: {url_host} server {}: {e}", server.name));
+                outcomes.push((server.name.clone(), e));
                 continue;
             }
         };
@@ -719,7 +782,8 @@ async fn resolve_media(app: &AppHandle, episode_url: &str) -> Result<Media, DlEr
                 match fetch_text(&next, &page_url).await {
                     Ok(p) => (page_url, html) = p,
                     Err(e) => {
-                        last_err = format!("{}: {e}", server.name);
+                        crate::file_log::info(&format!("download: {url_host} server {}: {e}", server.name));
+                        outcomes.push((server.name.clone(), e));
                         continue 'servers;
                     }
                 }
@@ -727,10 +791,33 @@ async fn resolve_media(app: &AppHandle, episode_url: &str) -> Result<Media, DlEr
         }
         match resolve_from_page(host, &html, &page_url) {
             Some(media) if is_safe_external_url(&media.url) => return Ok(media),
-            _ => last_err = format!("{} has no downloadable file", server.name),
+            _ => {
+                let reason = "no downloadable file".to_string();
+                crate::file_log::info(&format!("download: {url_host} server {}: {reason}", server.name));
+                outcomes.push((server.name.clone(), reason));
+            }
         }
     }
-    Err(DlError::Net(last_err))
+
+    let mut seen_unsupported = std::collections::HashSet::new();
+    for server in &servers {
+        if supported_host(server).is_none() && seen_unsupported.insert(server.name.as_str()) {
+            let reason = "unsupported host".to_string();
+            crate::file_log::info(&format!("download: {url_host} server {}: {reason}", server.name));
+            outcomes.push((server.name.clone(), reason));
+        }
+    }
+
+    let combined_err = format_server_errors(&outcomes);
+    if combined_err.is_empty() {
+        let names: Vec<&str> = servers.iter().map(|s| s.name.as_str()).collect();
+        Err(DlError::Net(format!(
+            "no supported mirror on this episode (found: {})",
+            if names.is_empty() { "none".to_string() } else { names.join(", ") }
+        )))
+    } else {
+        Err(DlError::Net(combined_err))
+    }
 }
 
 /// Open a downloaded episode with the system's default video player.
@@ -955,5 +1042,47 @@ mod tests {
         assert!(is_supported_episode_url("https://animeyt.cc/tv/steel-ball-run"));
         assert!(is_supported_episode_url("https://jkanime.net/steel-ball-run"));
         assert!(!is_supported_episode_url("https://w7.animeland.tv/steel-ball-run"));
+    }
+
+    #[test]
+    fn format_server_errors_empty_list_returns_empty_string() {
+        let errors: &[(&str, &str)] = &[];
+        assert_eq!(format_server_errors(errors), "");
+    }
+
+    #[test]
+    fn format_server_errors_preserves_ordering_and_joins_with_semicolon() {
+        let errors = vec![
+            ("YourUpload", "HTTP 404 Not Found"),
+            ("Voe", "HTTP 404 Not Found"),
+            ("Mega", "unsupported host"),
+            ("Netu", "unsupported host"),
+        ];
+        assert_eq!(
+            format_server_errors(&errors),
+            "YourUpload: HTTP 404 Not Found; Voe: HTTP 404 Not Found; Mega: unsupported host; Netu: unsupported host"
+        );
+    }
+
+    #[test]
+    fn format_server_errors_truncates_long_reason_at_120_chars() {
+        let long_reason = "x".repeat(150);
+        let errors = vec![("Voe", long_reason.as_str())];
+        let expected = format!("Voe: {}", "x".repeat(120));
+        assert_eq!(format_server_errors(&errors), expected);
+    }
+
+    #[test]
+    fn format_server_errors_truncates_multibyte_utf8_safely() {
+        let utf8_reason = "é".repeat(150);
+        let errors = vec![("Server1", utf8_reason.as_str())];
+        let expected = format!("Server1: {}", "é".repeat(120));
+        assert_eq!(format_server_errors(&errors), expected);
+    }
+
+    #[test]
+    fn format_server_errors_does_not_truncate_short_reason() {
+        let errors = vec![("Server1", "Short reason")];
+        assert_eq!(format_server_errors(&errors), "Server1: Short reason");
     }
 }
