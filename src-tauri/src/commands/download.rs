@@ -271,6 +271,182 @@ async fn attempt(
     Ok(final_file.to_string_lossy().into_owned())
 }
 
+/// On-demand scraping of sibling series episode lists when DB candidate downloads failed.
+///
+/// Queries `siblings_to_scrape`, orders them by user priority, checks downloader support
+/// and domain breaker status, caps at 3 rows, and fetches/diffs episodes on demand.
+/// Stops and returns at the first candidate that downloads successfully.
+#[allow(clippy::too_many_arguments)]
+async fn scrape_and_try_siblings(
+    app: &AppHandle,
+    episode_id: i64,
+    episode_url: &str,
+    priority: &[String],
+    base: &std::path::Path,
+    cancel: &Arc<AtomicBool>,
+    attempted: &mut std::collections::HashSet<String>,
+    errors: &mut Vec<(String, DlError)>,
+) -> Result<Option<String>, DlError> {
+    if cancel.load(Ordering::SeqCst) {
+        return Err(DlError::Cancelled);
+    }
+
+    let to_scrape = {
+        let state = app.state::<AppState>();
+        let db = state.db.lock().unwrap();
+        db.siblings_to_scrape(episode_id)
+            .map_err(|e| DlError::Io(e.to_string()))?
+    };
+
+    let mut eligible: Vec<(usize, usize, _)> = to_scrape
+        .into_iter()
+        .filter(|row| is_supported_episode_url(&row.url) && !crate::domain_breaker::is_open(&row.url))
+        .enumerate()
+        .map(|(idx, row)| {
+            let rank = priority
+                .iter()
+                .position(|p| p == &row.site_id)
+                .unwrap_or(usize::MAX);
+            (rank, idx, row)
+        })
+        .collect();
+
+    eligible.sort_by_key(|&(rank, idx, _)| (rank, idx));
+
+    let rows_to_scrape: Vec<_> = eligible.into_iter().map(|(_, _, row)| row).take(3).collect();
+
+    for row in rows_to_scrape {
+        if cancel.load(Ordering::SeqCst) {
+            return Err(DlError::Cancelled);
+        }
+
+        let site = if !row.site_id.is_empty() {
+            row.site_id.clone()
+        } else {
+            site_label(&row.url)
+        };
+
+        let a = match crate::adapter::adapter_for(&row.site_id) {
+            Some(adapter) => adapter,
+            None => {
+                let err_msg = format!("unknown adapter for site {}", row.site_id);
+                crate::file_log::info(&format!(
+                    "download fallback: scrape failed for series {} on {site}: {err_msg}",
+                    row.series_id
+                ));
+                errors.push((
+                    site,
+                    DlError::Net(format!("could not load episode list: {err_msg}")),
+                ));
+                continue;
+            }
+        };
+
+        let scraped = match fetch_html_with_script(app, &row.url, a.episode_fetch_script()).await {
+            Ok(s) => {
+                crate::domain_breaker::record_success(&row.url);
+                s
+            }
+            Err(e) => {
+                crate::domain_breaker::record_failure(&row.url);
+                crate::file_log::info(&format!(
+                    "download fallback: scrape failed for series {} on {site}: {e}",
+                    row.series_id
+                ));
+                errors.push((
+                    site,
+                    DlError::Net(format!("could not load episode list: {e}")),
+                ));
+                continue;
+            }
+        };
+
+        let episodes = match a.parse_series(scraped.extra.as_deref().unwrap_or(&scraped.html)) {
+            Ok(eps) => eps,
+            Err(e) => {
+                crate::file_log::info(&format!(
+                    "download fallback: parse failed for series {} on {site}: {e}",
+                    row.series_id
+                ));
+                errors.push((
+                    site,
+                    DlError::Net(format!("could not load episode list: {e}")),
+                ));
+                continue;
+            }
+        };
+
+        // `fetch_html_with_script` cannot be interrupted, so honour a cancel that
+        // arrived during the scrape before writing anything.
+        if cancel.load(Ordering::SeqCst) {
+            return Err(DlError::Cancelled);
+        }
+
+        {
+            let state = app.state::<AppState>();
+            let db = state.db.lock().unwrap();
+            if let Err(e) = db.apply_episode_diff(row.series_id, None, &episodes) {
+                crate::file_log::info(&format!(
+                    "download fallback: apply diff failed for series {} on {site}: {e}",
+                    row.series_id
+                ));
+                errors.push((
+                    site,
+                    DlError::Net(format!("could not load episode list: {e}")),
+                ));
+                continue;
+            }
+            // Same as the episode fallback after a refetch: carry the watched
+            // progress of the sibling's twins onto the freshly inserted rows so
+            // they do not surface as unseen in Pendientes.
+            let _ = db.sync_seen_progress_across_sites();
+        }
+
+        let updated_siblings = {
+            let state = app.state::<AppState>();
+            let db = state.db.lock().unwrap();
+            db.sibling_episodes(episode_id)
+                .map_err(|e| DlError::Io(e.to_string()))?
+                .into_iter()
+                .map(|s| (s.site_id, s.url))
+                .collect::<Vec<_>>()
+        };
+
+        let new_candidates: Vec<String> = plan_download_urls(episode_url, &updated_siblings, priority)
+            .into_iter()
+            .filter(|url| !attempted.contains(url))
+            .collect();
+
+        for candidate_url in new_candidates {
+            if cancel.load(Ordering::SeqCst) {
+                return Err(DlError::Cancelled);
+            }
+            attempted.insert(candidate_url.clone());
+            let cand_site = site_label(&candidate_url);
+            match attempt(app, &candidate_url, episode_id, base, cancel).await {
+                Ok(final_path) => {
+                    crate::file_log::info(&format!(
+                        "download finished: episode {episode_id} via {cand_site}"
+                    ));
+                    return Ok(Some(final_path));
+                }
+                Err(DlError::Cancelled) => {
+                    return Err(DlError::Cancelled);
+                }
+                Err(err) => {
+                    crate::file_log::info(&format!(
+                        "download fallback: episode {episode_id} failed on {cand_site} ({err}), trying next"
+                    ));
+                    emit(app, episode_id, "downloading", None, None);
+                    errors.push((cand_site, err));
+                }
+            }
+        }
+    }
+
+    Ok(None)
+}
+
 async fn run_download(app: &AppHandle, episode_id: i64, cancel: &Arc<AtomicBool>) -> Result<String, DlError> {
     let _slot = SLOT.acquire().await.map_err(|e| DlError::Net(e.to_string()))?;
     if cancel.load(Ordering::SeqCst) {
@@ -306,6 +482,7 @@ async fn run_download(app: &AppHandle, episode_id: i64, cancel: &Arc<AtomicBool>
         return Err(DlError::Net(unsupported_site_error(&episode_url)));
     }
 
+    let mut attempted: std::collections::HashSet<String> = candidates.iter().cloned().collect();
     let mut errors: Vec<(String, DlError)> = Vec::new();
     for (idx, candidate_url) in candidates.iter().enumerate() {
         if cancel.load(Ordering::SeqCst) {
@@ -334,6 +511,21 @@ async fn run_download(app: &AppHandle, episode_id: i64, cancel: &Arc<AtomicBool>
                 errors.push((site, err));
             }
         }
+    }
+
+    if let Some(final_path) = scrape_and_try_siblings(
+        app,
+        episode_id,
+        &episode_url,
+        &priority,
+        &base,
+        cancel,
+        &mut attempted,
+        &mut errors,
+    )
+    .await?
+    {
+        return Ok(final_path);
     }
 
     if errors.len() == 1 {
@@ -753,5 +945,15 @@ mod tests {
             unsupported_site_error("invalid-url"),
             "downloads from  are not supported yet"
         );
+    }
+
+    #[test]
+    fn is_supported_episode_url_works_on_series_urls_by_host() {
+        assert!(is_supported_episode_url("https://tioanime.com/anime/steel-ball-run"));
+        assert!(is_supported_episode_url("https://animeflv.or.at/anime/steel-ball-run"));
+        assert!(is_supported_episode_url("https://gogoanime.by/category/steel-ball-run"));
+        assert!(is_supported_episode_url("https://animeyt.cc/tv/steel-ball-run"));
+        assert!(is_supported_episode_url("https://jkanime.net/steel-ball-run"));
+        assert!(!is_supported_episode_url("https://w7.animeland.tv/steel-ball-run"));
     }
 }
