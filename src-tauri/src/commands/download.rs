@@ -312,7 +312,7 @@ async fn attempt(
     cancel: &Arc<AtomicBool>,
     preferred_height: Option<u32>,
 ) -> Result<String, DlError> {
-    let media = resolve_media(app, url).await?;
+    let media = resolve_media(app, url, preferred_height).await?;
     if cancel.load(Ordering::SeqCst) {
         return Err(DlError::Cancelled);
     }
@@ -1115,7 +1115,11 @@ async fn resolve_gogoanime(episode_html: &str, episode_url: &str) -> Result<Medi
 }
 
 /// Episode page -> list of mirrors -> first mirror that resolves to a plain file.
-async fn resolve_media(app: &AppHandle, episode_url: &str) -> Result<Media, DlError> {
+async fn resolve_media(
+    app: &AppHandle,
+    episode_url: &str,
+    preferred_height: Option<u32>,
+) -> Result<Media, DlError> {
     if !is_safe_external_url(episode_url) {
         return Err(DlError::Net("the episode link is not a public web address".into()));
     }
@@ -1147,7 +1151,7 @@ async fn resolve_media(app: &AppHandle, episode_url: &str) -> Result<Media, DlEr
                 .await
                 .map_err(|e| DlError::Net(format!("could not open the player container: {e}")))?;
             let tabs = parse_mytsumi_tabs(&runtime);
-            if let Some(media) = mytsumi_direct_media(&tabs) {
+            if let Some(media) = mytsumi_direct_media(&tabs, preferred_height) {
                 if is_safe_external_url(&media.url) {
                     return Ok(media);
                 }
