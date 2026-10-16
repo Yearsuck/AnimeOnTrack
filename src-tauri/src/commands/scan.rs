@@ -404,22 +404,32 @@ pub async fn list_airing(state: State<'_, AppState>) -> Result<Vec<Series>, Stri
 /// 2026-07 addendum: a scraped first episode (`db::first_episode_dates`) is
 /// preferred when present — day-accurate, from the actual episode — with a
 /// fallback to the locally-synced AniList catalog's `start_date`
-/// (`db::catalog_start_dates_by_normalized_title`) so unfollowed/unopened
+/// (`db::catalog::build_catalog_airing_meta`) so unfollowed/unopened
 /// airing series (which have no scraped episode data at all) still resolve a
 /// verdict instead of being silently excluded. The catalog fallback requires
 /// a Catálogo sync to have populated `start_date`; still `None` when neither
 /// source has a date (title not found in the synced catalog, or synced
 /// before this field existed).
+///
+/// The lock covers only the reads: normalising ~22k catalog titles into the
+/// lookup maps runs after it is released, off the async runtime.
 #[tauri::command]
 pub async fn list_airing_season(state: State<'_, AppState>) -> Result<Vec<AiringItem>, String> {
     let src = get_source_id(&state)?;
-    let db = state.db.lock().unwrap();
-    let series = db.list_airing(src).map_err(|e| e.to_string())?;
-    let first_dates = db.first_episode_dates(src).map_err(|e| e.to_string())?;
-    let catalog_dates = db.catalog_start_dates_by_normalized_title().map_err(|e| e.to_string())?;
-    let catalog_banners = db.catalog_banners_by_normalized_title().map_err(|e| e.to_string())?;
-    let catalog_covers = db.catalog_covers_by_normalized_title().map_err(|e| e.to_string())?;
-    let catalog_scores = db.catalog_scores_by_normalized_title().map_err(|e| e.to_string())?;
+    let (series, first_dates, meta_rows, banners_and_scores) = {
+        let db = state.db.lock().unwrap();
+        let series = db.list_airing(src).map_err(|e| e.to_string())?;
+        let first_dates = db.first_episode_dates(src).map_err(|e| e.to_string())?;
+        let meta_rows = db.catalog_airing_meta_rows().map_err(|e| e.to_string())?;
+        let airing_ids: Vec<i64> = series.iter().map(|s| s.id).collect();
+        let banners_and_scores = db.series_banners_and_scores(&airing_ids).map_err(|e| e.to_string())?;
+        (series, first_dates, meta_rows, banners_and_scores)
+    };
+    let meta = tauri::async_runtime::spawn_blocking(move || {
+        Db::build_catalog_airing_meta(meta_rows)
+    })
+    .await
+    .map_err(|e| e.to_string())?;
     Ok(series
         .into_iter()
         .map(|mut s| {
@@ -430,17 +440,21 @@ pub async fn list_airing_season(state: State<'_, AppState>) -> Result<Vec<Airing
                 .map(|dt| dt.and_utc().timestamp());
             let norm = crate::matching::normalize_title(&s.title);
             let first_episode_at = scraped
-                .or_else(|| catalog_dates.get(&norm).copied());
+                .or_else(|| meta.start_dates.get(&norm).copied());
             // If series cover is not CSP-displayable, fall back to AniList catalog cover
             if !crate::db::is_csp_displayable_cover(s.cover_url.as_deref()) {
-                if let Some(cat_cover) = catalog_covers.get(&norm) {
+                if let Some(cat_cover) = meta.covers.get(&norm) {
                     s.cover_url = Some(cat_cover.clone());
                 }
             }
-            let banner_url = db.get_series_banner(s.id).ok().flatten()
-                .or_else(|| catalog_banners.get(&norm).cloned());
-            let score = db.get_series_score(s.id).ok().flatten()
-                .or_else(|| catalog_scores.get(&norm).copied());
+            let (series_banner, series_score) = banners_and_scores
+                .get(&s.id)
+                .cloned()
+                .unwrap_or((None, None));
+            let banner_url = series_banner
+                .or_else(|| meta.banners.get(&norm).cloned());
+            let score = series_score
+                .or_else(|| meta.scores.get(&norm).copied());
             AiringItem { series: s, first_episode_at, banner_url, score }
         })
         .collect())
@@ -622,6 +636,27 @@ fn should_fetch_series(
     }
 }
 
+/// How long a failed episode-list fetch holds off the time-based rechecks.
+/// Short on purpose: one bad cycle (a Cloudflare 503, a timeout) must not
+/// push the next real check a whole `OFF_LISTING_RECHECK_SECS` away; a page
+/// that is gone for good is then retried every couple of hours instead of
+/// on every refresh.
+const FAILED_FETCH_RETRY_SECS: i64 = 2 * 3600;
+
+/// Age fed to `should_fetch_series`'s time-based rechecks. A failed fetch
+/// (every mirror errored or parsed empty, e.g. a page that now 404s) used to
+/// leave no trace, so a series off the listing that had never been fetched
+/// OK was fetched again on every refresh. A failure younger than
+/// `FAILED_FETCH_RETRY_SECS` now counts as a recent attempt; an older one is
+/// ignored and the last successful check decides, as before. Signals of a
+/// new episode (badge ahead, past countdown) do not look at this age.
+fn effective_check_age(checked: Option<i64>, failed: Option<i64>) -> Option<i64> {
+    match failed {
+        Some(f) if f < FAILED_FETCH_RETRY_SECS => Some(checked.map_or(f, |c| c.min(f))),
+        _ => checked,
+    }
+}
+
 /// Fetch one series' episode list across mirrors. `None` means "skip, keep
 /// cached data" (malformed stored URL, or every mirror failed/mismatched) —
 /// same not-an-error semantics `refresh()`'s loop always had here.
@@ -686,6 +721,17 @@ async fn run_episode_backfill(app: AppHandle) -> Result<(), String> {
     }
     let _clear = crate::commands::follow::RunningGuard(&state.episode_backfill_running);
 
+    let rows = {
+        let db = state.db.lock().unwrap();
+        db.catalog_titles_for_index().map_err(|e| e.to_string())?
+    };
+    let (index, rows) = tauri::async_runtime::spawn_blocking(move || {
+        let index = crate::matching::CatalogIndex::build(&rows);
+        (index, rows)
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+
     let (a, mirrors, needing) = {
         let db = state.db.lock().unwrap();
         let src = get_source_id(&state)?;
@@ -703,7 +749,7 @@ async fn run_episode_backfill(app: AppHandle) -> Result<(), String> {
         // runtime long enough to crash the app — confirmed live 2026-08-14.
         // Local-only (no network) so it's safe to run before the paced
         // network loop below, not after.
-        db.link_series_to_catalog().map_err(|e| e.to_string())?;
+        db.link_series_to_catalog_with(&index, rows).map_err(|e| e.to_string())?;
         db.sync_status_from_catalog().map_err(|e| e.to_string())?;
         let needing = db.followed_series_without_episodes(src).map_err(|e| e.to_string())?;
         (a, mirrors, needing)
@@ -877,11 +923,12 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
     // from either map (no episode rows yet / theoretically impossible for
     // `last_checked_ages`) falls back to the same defaults the old
     // per-series calls used (0, and `None`).
-    let (max_numbers, checked_ages, linked_ids) = {
+    let (max_numbers, checked_ages, failed_ages, linked_ids) = {
         let db = state.db.lock().unwrap();
         (
             db.max_episode_numbers_for_source(src).map_err(|e| e.to_string())?,
             db.last_checked_ages_for_source(src).map_err(|e| e.to_string())?,
+            db.fetch_failure_ages_for_source(src).map_err(|e| e.to_string())?,
             db.followed_linked_series_ids(src).map_err(|e| e.to_string())?,
         )
     };
@@ -907,7 +954,10 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
     let mut idx = 0usize;
     for s in followed {
         let db_max_number = max_numbers.get(&s.id).copied().unwrap_or(0);
-        let checked_age = checked_ages.get(&s.id).copied().flatten();
+        let checked_age = effective_check_age(
+            checked_ages.get(&s.id).copied().flatten(),
+            failed_ages.get(&s.id).copied(),
+        );
         let on_listing = listing_slugs.as_ref().is_some_and(|set| set.contains(&s.slug));
         if should_fetch_series(
             force,
@@ -987,7 +1037,10 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
         };
 
         for (s, result) in chunk.iter().zip(fetched) {
-            let Some((eps, working_mirror, path)) = result else { continue };
+            let Some((eps, working_mirror, path)) = result else {
+                let _ = state.db.lock().unwrap().set_last_fetch_failed_at(s.id);
+                continue;
+            };
             // A per-series DB error (a data-integrity problem this
             // particular series' scraped page happens to trip, a locked
             // file, whatever) must never abort the whole cycle — the other
@@ -1160,6 +1213,7 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
                     }
                     Err(err) => {
                         eprintln!("[cover] airing series {id} ({title}): direct download failed: {err}");
+                        let _ = state.db.lock().unwrap().record_cover_failure(id, &remote);
                     }
                 }
             }
@@ -1180,6 +1234,7 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
             Ok(data_uri) => {
                 if crate::cover_cache::is_placeholder_data_uri(&data_uri) {
                     eprintln!("[cover] airing series {id} ({title}): webview fallback returned a placeholder");
+                    let _ = state.db.lock().unwrap().record_cover_failure(id, &remote);
                 } else {
                     let db = state.db.lock().unwrap();
                     let _ = db.update_series_cover(id, &data_uri);
@@ -1187,6 +1242,7 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
             }
             Err(e) => {
                 eprintln!("[cover] airing series {id} ({title}): webview fallback failed: {e}");
+                let _ = state.db.lock().unwrap().record_cover_failure(id, &remote);
             }
         }
     }
@@ -1233,6 +1289,42 @@ mod tests {
     /// but Bug A (2026-07-12 airing-refresh fix) showed a future countdown
     /// alone can't justify skipping when the badge gives no signal at all —
     /// see `unknown_badge_with_future_countdown_uses_bounded_recheck` below.
+    /// A failed fetch counts as an attempt: the age-based rechecks wait from
+    /// whichever happened last, so a dead URL is not re-fetched every cycle.
+    #[test]
+    fn effective_check_age_takes_the_most_recent_attempt() {
+        assert_eq!(effective_check_age(None, None), None);
+        assert_eq!(effective_check_age(Some(100), None), Some(100));
+        assert_eq!(effective_check_age(None, Some(50)), Some(50));
+        assert_eq!(effective_check_age(Some(100), Some(50)), Some(50));
+        assert_eq!(effective_check_age(Some(10), Some(5000)), Some(10));
+        // An old failure no longer counts: the last success decides, so one
+        // transient failure cannot delay the next real check by a full window.
+        assert_eq!(effective_check_age(None, Some(FAILED_FETCH_RETRY_SECS)), None);
+        assert_eq!(
+            effective_check_age(Some(25 * 3600), Some(FAILED_FETCH_RETRY_SECS + 1)),
+            Some(25 * 3600)
+        );
+    }
+
+    /// The real case from the sandbox: an off-listing series whose page 404s
+    /// was never stamped as checked, so it was re-fetched on every refresh.
+    #[test]
+    fn off_listing_series_that_just_failed_is_not_refetched_until_the_recheck() {
+        let failed_an_hour_ago = effective_check_age(None, Some(3600));
+        assert!(!should_fetch_series(false, true, false, None, None, 0, failed_an_hour_ago, NOW));
+        let failed_hours_ago = effective_check_age(None, Some(FAILED_FETCH_RETRY_SECS));
+        assert!(should_fetch_series(false, true, false, None, None, 0, failed_hours_ago, NOW));
+        // Last good check 25 h ago, one failure 1 h ago: waits only for the
+        // short retry window, not another 24 h.
+        let transient = effective_check_age(Some(25 * 3600), Some(3600));
+        assert!(!should_fetch_series(false, true, false, None, None, 0, transient, NOW));
+        let transient_later = effective_check_age(Some(27 * 3600), Some(FAILED_FETCH_RETRY_SECS + 60));
+        assert!(should_fetch_series(false, true, false, None, None, 0, transient_later, NOW));
+        // A new-episode signal still wins over a recent failure.
+        assert!(should_fetch_series(false, true, true, None, Some(9), 5, failed_an_hour_ago, NOW));
+    }
+
     #[test]
     fn skip_when_next_episode_in_future_and_no_count_conflict() {
         // .sb = db_max+1: up to date under the verified next-episode-number

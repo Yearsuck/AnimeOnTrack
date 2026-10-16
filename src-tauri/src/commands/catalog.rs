@@ -281,6 +281,12 @@ struct CatalogBackfillProgress {
 /// it already fixed and the next run simply sees fewer stale ids.
 #[tauri::command]
 pub async fn backfill_catalog_metadata(app: AppHandle, state: State<'_, AppState>) -> Result<i64, String> {
+    static RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if RUNNING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return Ok(0);
+    }
+    let _guard = crate::commands::follow::RunningGuard(&RUNNING);
+
     // Same ~28.6 req/min pacing as `run_catalog_sync`, and unconditional here:
     // every request in this loop is one full 50-row batch, so there are never
     // cheap pages worth spending fresh-window headroom on.
@@ -337,6 +343,12 @@ pub fn should_refresh_catalog_status(last_at: Option<&str>, now: chrono::DateTim
 /// flag corrected when AniList reports them as finished.
 #[tauri::command]
 pub async fn refresh_catalog_status(state: State<'_, AppState>) -> Result<Option<i64>, String> {
+    static RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if RUNNING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return Ok(None);
+    }
+    let _guard = crate::commands::follow::RunningGuard(&RUNNING);
+
     const PACED_SLEEP: std::time::Duration = std::time::Duration::from_millis(2100);
 
     let last_at = {
@@ -817,5 +829,17 @@ mod status_refresh_tests {
         let now = Utc::now();
         let last = (now - Duration::hours(6)).to_rfc3339();
         assert!(should_refresh_catalog_status(Some(&last), now));
+    }
+
+    #[test]
+    fn backfill_and_status_guards_turn_away_concurrent_calls() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let running = AtomicBool::new(false);
+        assert!(!running.swap(true, Ordering::SeqCst));
+        {
+            let _guard = crate::commands::follow::RunningGuard(&running);
+            assert!(running.swap(true, Ordering::SeqCst));
+        }
+        assert!(!running.load(Ordering::SeqCst));
     }
 }

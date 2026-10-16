@@ -275,6 +275,62 @@ pub fn best_variant(variants: &[Variant]) -> Option<&Variant> {
     best
 }
 
+/// Selects a variant stream from an HLS master playlist based on user preference.
+///
+/// When `preferred_height` is `None`, selects the best variant (highest height,
+/// breaking ties by bandwidth). When `Some(preferred)`, returns the highest
+/// variant with height <= preferred. If none exist with height <= preferred, returns
+/// the lowest variant above preferred (breaking ties by highest bandwidth).
+/// Returns `None` for an empty slice.
+pub fn select_variant(variants: &[Variant], preferred_height: Option<u32>) -> Option<&Variant> {
+    let pref = match preferred_height {
+        Some(h) => h,
+        None => return best_variant(variants),
+    };
+
+    // Variants without RESOLUTION are skipped here: their height is unknown
+    // (they can even be audio-only), so a preference can't rank them. They are
+    // still reachable through the `best_variant` fallback below.
+    // Highest variant with height <= preferred
+    let mut under_or_eq: Option<&Variant> = None;
+    for v in variants {
+        let Some(h) = v.height else { continue };
+        if h <= pref {
+            match under_or_eq {
+                None => under_or_eq = Some(v),
+                Some(cur) => {
+                    let cur_key = (cur.height.unwrap_or(0), cur.bandwidth);
+                    let v_key = (h, v.bandwidth);
+                    if v_key > cur_key {
+                        under_or_eq = Some(v);
+                    }
+                }
+            }
+        }
+    }
+    if let Some(v) = under_or_eq {
+        return Some(v);
+    }
+
+    // Else: lowest variant above preferred (min height; ties broken by max bandwidth)
+    let mut above: Option<&Variant> = None;
+    for v in variants {
+        let Some(h) = v.height else { continue };
+        if h > pref {
+            match above {
+                None => above = Some(v),
+                Some(cur) => {
+                    let cur_h = cur.height.unwrap_or(0);
+                    if h < cur_h || (h == cur_h && v.bandwidth > cur.bandwidth) {
+                        above = Some(v);
+                    }
+                }
+            }
+        }
+    }
+    above.or_else(|| best_variant(variants))
+}
+
 /// Validates that an HLS stream is playable and suitable for downloading.
 ///
 /// Checks are performed in strict order:
@@ -587,6 +643,57 @@ https://cdn.example/hi/index.m3u8\n";
 
         // Empty slice returns None
         assert_eq!(best_variant(&[]), None);
+    }
+
+    #[test]
+    fn select_variant_quality_preference() {
+        let v1080 = Variant {
+            url: "https://example.com/1080.m3u8".to_string(),
+            bandwidth: 3_000_000,
+            height: Some(1080),
+        };
+        let v720 = Variant {
+            url: "https://example.com/720.m3u8".to_string(),
+            bandwidth: 1_800_000,
+            height: Some(720),
+        };
+        let v480 = Variant {
+            url: "https://example.com/480.m3u8".to_string(),
+            bandwidth: 900_000,
+            height: Some(480),
+        };
+
+        let all_three = vec![v1080.clone(), v720.clone(), v480.clone()];
+
+        // 1. best (= None preferred_height) picks highest (1080)
+        assert_eq!(select_variant(&all_three, None), Some(&v1080));
+
+        // 2. 720 with 1080/720/480 present picks 720 (highest <= 720)
+        assert_eq!(select_variant(&all_three, Some(720)), Some(&v720));
+
+        // 3. 720 with only 1080 present picks 1080 (lowest above 720)
+        let only_1080 = vec![v1080.clone()];
+        assert_eq!(select_variant(&only_1080, Some(720)), Some(&v1080));
+
+        // 4. 480 with only 720+ present picks 720 (lowest above 480)
+        let only_720_plus = vec![v1080.clone(), v720.clone()];
+        assert_eq!(select_variant(&only_720_plus, Some(480)), Some(&v720));
+
+        // A variant without RESOLUTION (possibly audio-only) never wins a
+        // preference over one whose height is known
+        let no_res = Variant {
+            url: "https://example.com/audio.m3u8".to_string(),
+            bandwidth: 128_000,
+            height: None,
+        };
+        let with_unknown = vec![no_res.clone(), v1080.clone()];
+        assert_eq!(select_variant(&with_unknown, Some(720)), Some(&v1080));
+
+        // Only unknown heights: falls back to best_variant
+        assert_eq!(select_variant(std::slice::from_ref(&no_res), Some(720)), Some(&no_res));
+
+        // Empty slice returns None
+        assert_eq!(select_variant(&[], Some(720)), None);
     }
 
     #[test]

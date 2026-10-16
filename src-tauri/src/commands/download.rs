@@ -68,8 +68,11 @@ fn enqueue(app: &AppHandle, episode_id: i64) -> Result<(), String> {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let outcome = run_download(&app, episode_id, &cancel).await;
-        ACTIVE.lock().unwrap().remove(&episode_id);
         let state = app.state::<AppState>();
+        // The row is updated before the episode leaves ACTIVE, so a finished
+        // file is always covered by one or the other and the orphan scan can
+        // never mistake it for a stray.
+        let _active = ActiveEntry(episode_id, cancel.clone());
         match outcome {
             Ok(path) => {
                 let _ = state.db.lock().unwrap().set_download_status(episode_id, "downloaded", Some(&path));
@@ -88,6 +91,35 @@ fn enqueue(app: &AppHandle, episode_id: i64) -> Result<(), String> {
         }
     });
     Ok(())
+}
+
+/// Removes the episode from `ACTIVE` when dropped, after the row is written —
+/// only if the entry is still this task's (a retry enqueued in between owns a
+/// new flag that must stay).
+struct ActiveEntry(i64, Arc<AtomicBool>);
+impl Drop for ActiveEntry {
+    fn drop(&mut self) {
+        let mut active = ACTIVE.lock().unwrap();
+        if active.get(&self.0).is_some_and(|f| Arc::ptr_eq(f, &self.1)) {
+            active.remove(&self.0);
+        }
+    }
+}
+
+/// Episode ids with a download task running right now.
+pub(crate) fn active_episode_ids() -> std::collections::HashSet<i64> {
+    ACTIVE.lock().unwrap().keys().copied().collect()
+}
+
+/// Ask the running downloads of these episodes to stop; each task removes its
+/// own `.part` file. Never call while holding `state.db`.
+pub(crate) fn cancel_active(episode_ids: &[i64]) {
+    let active = ACTIVE.lock().unwrap();
+    for id in episode_ids {
+        if let Some(flag) = active.get(id) {
+            flag.store(true, Ordering::SeqCst);
+        }
+    }
 }
 
 /// Whether the downloader understands this episode link.
@@ -224,30 +256,50 @@ pub async fn download_pending(
 /// episodes were cleaned up.
 #[tauri::command]
 pub async fn delete_series_downloads(
+    app: AppHandle,
     state: State<'_, AppState>,
     series_id: i64,
 ) -> Result<u32, String> {
-    let db = state.db.lock().unwrap();
-    let episodes = db.list_series_episodes(series_id).map_err(|e| e.to_string())?;
+    let (episodes, downloads_dir) = {
+        let db = state.db.lock().unwrap();
+        let eps = db.list_series_episodes(series_id).map_err(|e| e.to_string())?;
+        let dir = app.path().app_data_dir().ok().map(|d| d.join("downloads"));
+        (eps, dir)
+    };
     let mut cleaned = 0u32;
     for ep in &episodes {
         if ep.download_status.as_deref() == Some("downloading") {
             // The running task removes its `.part` file and clears the row;
             // a stale flag-less row (e.g. after a crash) is cleared here.
-            match ACTIVE.lock().unwrap().get(&ep.id) {
+            // Release ACTIVE before taking state.db: never hold both at once.
+            let flag = ACTIVE.lock().unwrap().get(&ep.id).cloned();
+            match flag {
                 Some(flag) => flag.store(true, Ordering::SeqCst),
                 None => {
+                    let db = state.db.lock().unwrap();
                     db.clear_download_columns(&[ep.id]).map_err(|e| e.to_string())?;
                 }
             }
             cleaned += 1;
         } else if ep.download_path.is_some() || ep.download_status.is_some() {
             if let Some(path) = &ep.download_path {
-                let _ = std::fs::remove_file(path);
+                let p = std::path::Path::new(path);
+                let can_delete = match &downloads_dir {
+                    Some(base) => crate::commands::storage::is_safe_file_in_dir(base, p),
+                    None => p.is_file(),
+                };
+                if can_delete {
+                    let _ = std::fs::remove_file(p);
+                }
             }
+            let db = state.db.lock().unwrap();
             db.clear_download_columns(&[ep.id]).map_err(|e| e.to_string())?;
             cleaned += 1;
         }
+    }
+    if let Some(ref base) = downloads_dir {
+        let series_dir = base.join(series_id.to_string());
+        crate::commands::storage::remove_empty_dir_in_dir(base, &series_dir);
     }
     Ok(cleaned)
 }
@@ -258,8 +310,9 @@ async fn attempt(
     episode_id: i64,
     base: &std::path::Path,
     cancel: &Arc<AtomicBool>,
+    preferred_height: Option<u32>,
 ) -> Result<String, DlError> {
-    let media = resolve_media(app, url).await?;
+    let media = resolve_media(app, url, preferred_height).await?;
     if cancel.load(Ordering::SeqCst) {
         return Err(DlError::Cancelled);
     }
@@ -279,7 +332,7 @@ async fn attempt(
             .map(|u| u.path().to_ascii_lowercase().ends_with(".m3u8"))
             .unwrap_or(false);
     let final_file = if is_hls {
-        downloader::fetch_hls_to_file(&media.url, &media.referer, base, cancel, progress).await?
+        downloader::fetch_hls_to_file(&media.url, &media.referer, base, cancel, preferred_height, progress).await?
     } else {
         downloader::fetch_to_file(&media, base, cancel, progress).await?
     };
@@ -302,6 +355,7 @@ async fn scrape_and_try_siblings(
     cancel: &Arc<AtomicBool>,
     attempted: &mut std::collections::HashSet<String>,
     errors: &mut Vec<(String, DlError)>,
+    preferred_height: Option<u32>,
 ) -> Result<Option<String>, DlError> {
     if cancel.load(Ordering::SeqCst) {
         return Err(DlError::Cancelled);
@@ -477,7 +531,7 @@ async fn scrape_and_try_siblings(
             }
             attempted.insert(candidate_url.clone());
             let cand_site = site_label(&candidate_url);
-            match attempt(app, &candidate_url, episode_id, base, cancel).await {
+            match attempt(app, &candidate_url, episode_id, base, cancel, preferred_height).await {
                 Ok(final_path) => {
                     crate::file_log::info(&format!(
                         "download finished: episode {episode_id} via {cand_site}"
@@ -519,6 +573,7 @@ async fn search_other_sites_and_try(
     cancel: &Arc<AtomicBool>,
     attempted: &mut std::collections::HashSet<String>,
     errors: &mut Vec<(String, DlError)>,
+    preferred_height: Option<u32>,
 ) -> Result<Option<String>, DlError> {
     if cancel.load(Ordering::SeqCst) {
         return Err(DlError::Cancelled);
@@ -697,7 +752,7 @@ async fn search_other_sites_and_try(
         }
 
         let cand_site = site_label(&candidate_url);
-        match attempt(app, &candidate_url, episode_id, base, cancel).await {
+        match attempt(app, &candidate_url, episode_id, base, cancel, preferred_height).await {
             Ok(final_path) => {
                 crate::file_log::info(&format!(
                     "download finished: episode {episode_id} via {cand_site}"
@@ -726,7 +781,7 @@ async fn run_download(app: &AppHandle, episode_id: i64, cancel: &Arc<AtomicBool>
         return Err(DlError::Cancelled);
     }
 
-    let (episode_url, series_id, siblings, priority) = {
+    let (episode_url, series_id, siblings, priority, preferred_height) = {
         let state = app.state::<AppState>();
         let db = state.db.lock().unwrap();
         let ep = db.get_episode(episode_id).map_err(|e| DlError::Io(e.to_string()))?;
@@ -738,7 +793,14 @@ async fn run_download(app: &AppHandle, episode_id: i64, cancel: &Arc<AtomicBool>
             .collect::<Vec<_>>();
         let known: Vec<&str> = crate::adapter::all_sites().iter().map(|s| s.id).collect();
         let priority = db.get_site_priority(&known).unwrap_or_default();
-        (ep.url, ep.series_id, siblings, priority)
+        let quality_str = db.get_download_quality().unwrap_or_else(|_| "best".to_string());
+        let pref_h = match quality_str.as_str() {
+            "1080" => Some(1080),
+            "720" => Some(720),
+            "480" => Some(480),
+            _ => None,
+        };
+        (ep.url, ep.series_id, siblings, priority, pref_h)
     };
     let dir = app
         .path()
@@ -762,7 +824,7 @@ async fn run_download(app: &AppHandle, episode_id: i64, cancel: &Arc<AtomicBool>
             return Err(DlError::Cancelled);
         }
         let site = site_label(candidate_url);
-        match attempt(app, candidate_url, episode_id, &base, cancel).await {
+        match attempt(app, candidate_url, episode_id, &base, cancel, preferred_height).await {
             Ok(final_path) => {
                 if candidate_url != &episode_url {
                     crate::file_log::info(&format!(
@@ -795,6 +857,7 @@ async fn run_download(app: &AppHandle, episode_id: i64, cancel: &Arc<AtomicBool>
         cancel,
         &mut attempted,
         &mut errors,
+        preferred_height,
     )
     .await?
     {
@@ -809,6 +872,7 @@ async fn run_download(app: &AppHandle, episode_id: i64, cancel: &Arc<AtomicBool>
         cancel,
         &mut attempted,
         &mut errors,
+        preferred_height,
     )
     .await?
     {
@@ -1051,7 +1115,11 @@ async fn resolve_gogoanime(episode_html: &str, episode_url: &str) -> Result<Medi
 }
 
 /// Episode page -> list of mirrors -> first mirror that resolves to a plain file.
-async fn resolve_media(app: &AppHandle, episode_url: &str) -> Result<Media, DlError> {
+async fn resolve_media(
+    app: &AppHandle,
+    episode_url: &str,
+    preferred_height: Option<u32>,
+) -> Result<Media, DlError> {
     if !is_safe_external_url(episode_url) {
         return Err(DlError::Net("the episode link is not a public web address".into()));
     }
@@ -1083,7 +1151,7 @@ async fn resolve_media(app: &AppHandle, episode_url: &str) -> Result<Media, DlEr
                 .await
                 .map_err(|e| DlError::Net(format!("could not open the player container: {e}")))?;
             let tabs = parse_mytsumi_tabs(&runtime);
-            if let Some(media) = mytsumi_direct_media(&tabs) {
+            if let Some(media) = mytsumi_direct_media(&tabs, preferred_height) {
                 if is_safe_external_url(&media.url) {
                     return Ok(media);
                 }
@@ -1214,6 +1282,7 @@ pub async fn cancel_download(
 /// Delete a downloaded episode's file and clear its DB state.
 #[tauri::command]
 pub async fn delete_download(
+    app: AppHandle,
     state: State<'_, AppState>,
     episode_id: i64,
 ) -> Result<(), String> {
@@ -1223,12 +1292,30 @@ pub async fn delete_download(
         flag.store(true, Ordering::SeqCst);
         return Ok(());
     }
-    let db = state.db.lock().unwrap();
-    if let Ok(paths) = db.downloaded_paths(&[episode_id]) {
-        for (_, path) in &paths {
-            let _ = std::fs::remove_file(path);
+    let (paths, downloads_dir) = {
+        let db = state.db.lock().unwrap();
+        let paths = db.downloaded_paths(&[episode_id]).unwrap_or_default();
+        let dir = app.path().app_data_dir().ok().map(|d| d.join("downloads"));
+        (paths, dir)
+    };
+    for (_, path) in &paths {
+        let p = std::path::Path::new(path);
+        let can_delete = match &downloads_dir {
+            Some(base) => crate::commands::storage::is_safe_file_in_dir(base, p),
+            None => p.is_file(),
+        };
+        if can_delete {
+            let _ = std::fs::remove_file(p);
+            if let Some(parent) = p.parent() {
+                if let Some(base) = &downloads_dir {
+                    crate::commands::storage::remove_empty_dir_in_dir(base, parent);
+                } else {
+                    let _ = std::fs::remove_dir(parent);
+                }
+            }
         }
     }
+    let db = state.db.lock().unwrap();
     db.clear_download_columns(&[episode_id])
         .map_err(|e| e.to_string())
 }

@@ -88,6 +88,21 @@ export function AiringGrid({
   const t = useT();
   const [items, setItems] = useState<AiringItem[]>([]);
   const [query, setQuery] = useState("");
+  const [debouncedQuery, setDebouncedQuery] = useState("");
+
+  // Typing is debounced so each keystroke does not re-filter every card;
+  // clearing the search applies at once.
+  useEffect(() => {
+    if (!query) {
+      setDebouncedQuery("");
+      return;
+    }
+    const timer = setTimeout(() => {
+      setDebouncedQuery(query);
+    }, 150);
+    return () => clearTimeout(timer);
+  }, [query]);
+
   const [onlyFollowed, setOnlyFollowed] = useState(false);
   const [viewMode, setViewMode] = useState<AiringViewMode>("all");
 
@@ -106,7 +121,7 @@ export function AiringGrid({
   }
 
   const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
+    const q = debouncedQuery.trim().toLowerCase();
     let base = items.filter(
       (it) =>
         (!onlyFollowed || it.series.followed) &&
@@ -120,7 +135,7 @@ export function AiringGrid({
       base = base.filter((it) => it.series.next_episode_at != null);
     }
     return base;
-  }, [items, query, onlyFollowed, viewMode]);
+  }, [items, debouncedQuery, onlyFollowed, viewMode]);
 
   const followedCount = items.filter((it) => it.series.followed).length;
 

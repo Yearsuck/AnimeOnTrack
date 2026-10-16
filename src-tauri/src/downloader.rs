@@ -303,9 +303,10 @@ pub async fn fetch_hls_to_file(
     referer: &str,
     base: &Path,
     cancel: &AtomicBool,
+    preferred_height: Option<u32>,
     mut on_progress: impl FnMut(u64, Option<u64>),
 ) -> Result<PathBuf, DlError> {
-    use crate::hls::{best_variant, check_downloadable, parse_playlist, Playlist};
+    use crate::hls::{check_downloadable, parse_playlist, select_variant, Playlist};
     const SEGMENT_ATTEMPTS: u32 = 3;
 
     if let Some(parent) = base.parent() {
@@ -319,10 +320,10 @@ pub async fn fetch_hls_to_file(
         let text = get_text(&media_url, referer).await?;
         match parse_playlist(&text, &media_url) {
             Some(Playlist::Master { variants }) => {
-                let Some(best) = best_variant(&variants) else {
+                let Some(chosen) = select_variant(&variants, preferred_height) else {
                     return Err(DlError::Net("the playlist has no streams".into()));
                 };
-                media_url = best.url.clone();
+                media_url = chosen.url.clone();
             }
             Some(media @ Playlist::Media { .. }) => {
                 parsed = Some(media);
@@ -338,7 +339,7 @@ pub async fn fetch_hls_to_file(
         .map_err(|crate::hls::HlsError::NotPlayable(why)| DlError::Net(format!("this stream cannot be downloaded: {why}")))?;
 
     let part = part_path(base);
-    let mut file = tokio::fs::File::create(&part).await.map_err(|e| DlError::Io(e.to_string()))?;
+    let mut file = create_part_file(&part).await?;
     let total_segments = segments.len() as u64;
     let mut written = 0u64;
     on_progress(0, Some(total_segments));
@@ -430,6 +431,21 @@ pub fn sweep_partial_downloads(downloads_dir: &Path) -> usize {
     removed
 }
 
+/// Create the `.part` file. Deleting another episode of the same series removes
+/// the series folder once it is empty, which can happen between our
+/// `create_dir_all` and this call: recreate the folder and retry once.
+async fn create_part_file(part: &Path) -> Result<tokio::fs::File, DlError> {
+    match tokio::fs::File::create(part).await {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            if let Some(parent) = part.parent() {
+                tokio::fs::create_dir_all(parent).await.map_err(|e| DlError::Io(e.to_string()))?;
+            }
+            tokio::fs::File::create(part).await.map_err(|e| DlError::Io(e.to_string()))
+        }
+        r => r.map_err(|e| DlError::Io(e.to_string())),
+    }
+}
+
 async fn write_body(
     resp: &mut reqwest::Response,
     part: &Path,
@@ -437,7 +453,7 @@ async fn write_body(
     cancel: &AtomicBool,
     on_progress: &mut impl FnMut(u64, Option<u64>),
 ) -> Result<u64, DlError> {
-    let mut file = tokio::fs::File::create(part).await.map_err(|e| DlError::Io(e.to_string()))?;
+    let mut file = create_part_file(part).await?;
     let mut written = 0u64;
     loop {
         if cancel.load(Ordering::SeqCst) {
@@ -680,7 +696,7 @@ mod tests {
         .await;
         let base = temp_dest("hls");
         let mut progress = Vec::new();
-        let path = fetch_hls_to_file(&format!("{base_url}/master.m3u8"), "https://megaplay.su/", &base, &AtomicBool::new(false), |d, t| {
+        let path = fetch_hls_to_file(&format!("{base_url}/master.m3u8"), "https://megaplay.su/", &base, &AtomicBool::new(false), None, |d, t| {
             progress.push((d, t))
         })
         .await
@@ -708,7 +724,7 @@ mod tests {
         .await;
         for (name, expect) in [("enc", "encrypted stream"), ("live", "live stream")] {
             let base = temp_dest(name);
-            let err = fetch_hls_to_file(&format!("{base_url}/{name}.m3u8"), "https://x/", &base, &AtomicBool::new(false), |_, _| {})
+            let err = fetch_hls_to_file(&format!("{base_url}/{name}.m3u8"), "https://x/", &base, &AtomicBool::new(false), None, |_, _| {})
                 .await
                 .unwrap_err();
             assert!(matches!(&err, DlError::Net(m) if m.contains(expect)), "got {err:?}");
@@ -726,7 +742,7 @@ mod tests {
         ])
         .await;
         let base = temp_dest("hlsmiss");
-        let err = fetch_hls_to_file(&format!("{base_url}/p.m3u8"), "https://x/", &base, &AtomicBool::new(false), |_, _| {})
+        let err = fetch_hls_to_file(&format!("{base_url}/p.m3u8"), "https://x/", &base, &AtomicBool::new(false), None, |_, _| {})
             .await
             .unwrap_err();
         assert_eq!(err, DlError::Http(404));
@@ -744,7 +760,7 @@ mod tests {
         ])
         .await;
         let base = temp_dest("hlsexe");
-        let err = fetch_hls_to_file(&format!("{base_url}/p.m3u8"), "https://x/", &base, &AtomicBool::new(false), |_, _| {})
+        let err = fetch_hls_to_file(&format!("{base_url}/p.m3u8"), "https://x/", &base, &AtomicBool::new(false), None, |_, _| {})
             .await
             .unwrap_err();
         assert!(matches!(&err, DlError::Rejected(_)), "got {err:?}");
@@ -761,7 +777,7 @@ mod tests {
         ])
         .await;
         let base = temp_dest("hlscancel");
-        let err = fetch_hls_to_file(&format!("{base_url}/p.m3u8"), "https://x/", &base, &AtomicBool::new(true), |_, _| {})
+        let err = fetch_hls_to_file(&format!("{base_url}/p.m3u8"), "https://x/", &base, &AtomicBool::new(true), None, |_, _| {})
             .await
             .unwrap_err();
         assert_eq!(err, DlError::Cancelled);
@@ -810,7 +826,7 @@ mod tests {
         ])
         .await;
         let base = temp_dest("hlsimg");
-        let path = fetch_hls_to_file(&format!("{base_url}/p.m3u8"), "https://x/", &base, &AtomicBool::new(false), |_, _| {})
+        let path = fetch_hls_to_file(&format!("{base_url}/p.m3u8"), "https://x/", &base, &AtomicBool::new(false), None, |_, _| {})
             .await
             .unwrap();
         assert_eq!(path, final_path(&base, "ts"));
@@ -820,6 +836,36 @@ mod tests {
         assert_eq!(data[1], 1);
         assert_eq!(data[188 * 3 + 1], 2);
         cleanup(&base);
+    }
+
+    #[tokio::test]
+    async fn hls_master_playlist_obeys_preferred_height() {
+        let master = b"#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=900000,RESOLUTION=640x360\nlow.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=1280x720\nhi.m3u8\n".to_vec();
+        let base_url = serve_routes(vec![
+            ("/master.m3u8", "application/vnd.apple.mpegurl", master),
+            ("/low.m3u8", "application/vnd.apple.mpegurl", media_playlist(1)),
+            ("/hi.m3u8", "application/vnd.apple.mpegurl", media_playlist(3)),
+            ("/seg0.ts", "video/mp2t", ts_segment(1)),
+            ("/seg1.ts", "video/mp2t", ts_segment(2)),
+            ("/seg2.ts", "application/octet-stream", ts_segment(3)),
+        ])
+        .await;
+
+        // Preferred 360p picks low variant (1 segment)
+        let base_low = temp_dest("hls_360");
+        let path_low = fetch_hls_to_file(&format!("{base_url}/master.m3u8"), "https://x/", &base_low, &AtomicBool::new(false), Some(360), |_, _| {})
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(&path_low).unwrap().len(), 188 * 3);
+        cleanup(&base_low);
+
+        // Preferred None picks best variant (720p, 3 segments)
+        let base_best = temp_dest("hls_best");
+        let path_best = fetch_hls_to_file(&format!("{base_url}/master.m3u8"), "https://x/", &base_best, &AtomicBool::new(false), None, |_, _| {})
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(&path_best).unwrap().len(), 188 * 3 * 3);
+        cleanup(&base_best);
     }
 
     #[test]

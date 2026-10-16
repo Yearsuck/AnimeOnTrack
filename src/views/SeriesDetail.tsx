@@ -122,24 +122,70 @@ export function SeriesDetail({
     };
   }, [catalogInfo?.id]);
 
+  const lastDlUpdateRef = useRef<Map<number, number>>(new Map());
+  const trailingDlTimersRef = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
+
   useEffect(() => {
+    const THROTTLE_MS = 250; // ~4 per second per episode
+    // `unlisten` resolves asynchronously: an event delivered after cleanup
+    // must not schedule a timer that nothing would clear.
+    let cancelled = false;
     const unlisten = listen<{
       episode_id: number;
       status: "downloading" | "downloaded" | "failed" | "cancelled";
       percent: number | null;
       error: string | null;
     }>("download-progress", (e) => {
+      if (cancelled) return;
       const p = e.payload;
-      setDl((prev) => ({
-        ...prev,
-        [p.episode_id]: { percent: p.percent, error: p.error ?? undefined },
-      }));
-      if (p.status !== "downloading") {
+      const isTerminal = p.status !== "downloading";
+
+      const existingTimer = trailingDlTimersRef.current.get(p.episode_id);
+      if (existingTimer) {
+        clearTimeout(existingTimer);
+        trailingDlTimersRef.current.delete(p.episode_id);
+      }
+
+      if (isTerminal) {
+        lastDlUpdateRef.current.delete(p.episode_id);
+        setDl((prev) => ({
+          ...prev,
+          [p.episode_id]: { percent: p.percent, error: p.error ?? undefined },
+        }));
         load().catch(() => {});
+        return;
+      }
+
+      const now = Date.now();
+      const last = lastDlUpdateRef.current.get(p.episode_id) ?? 0;
+      const elapsed = now - last;
+
+      if (elapsed >= THROTTLE_MS) {
+        lastDlUpdateRef.current.set(p.episode_id, now);
+        setDl((prev) => ({
+          ...prev,
+          [p.episode_id]: { percent: p.percent, error: p.error ?? undefined },
+        }));
+      } else {
+        const timer = setTimeout(() => {
+          lastDlUpdateRef.current.set(p.episode_id, Date.now());
+          trailingDlTimersRef.current.delete(p.episode_id);
+          setDl((prev) => ({
+            ...prev,
+            [p.episode_id]: { percent: p.percent, error: p.error ?? undefined },
+          }));
+        }, THROTTLE_MS - elapsed);
+        trailingDlTimersRef.current.set(p.episode_id, timer);
       }
     });
     return () => {
+      cancelled = true;
       unlisten.then((f) => f()).catch(() => {});
+      for (const timer of trailingDlTimersRef.current.values()) {
+        clearTimeout(timer);
+      }
+      trailingDlTimersRef.current.clear();
+      lastDlUpdateRef.current.clear();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [series.id]);

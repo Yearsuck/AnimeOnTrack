@@ -1,5 +1,6 @@
 use super::*;
 use rusqlite::types::Value;
+use std::collections::HashMap;
 
 /// (franchise key, season) -> linked series (id, title, anilist_id).
 type SiblingIndex = std::collections::HashMap<(String, i64), Vec<(i64, String, i64)>>;
@@ -58,6 +59,79 @@ pub struct CatalogFilter {
     /// When true, exclude anime the user has already watched (watched_externally=1 or seen episodes).
     #[serde(default)]
     pub hide_watched: bool,
+}
+
+/// Per series id: (own-or-linked banner_url, linked average_score).
+pub type SeriesBannerScore = HashMap<i64, (Option<String>, Option<f64>)>;
+
+/// Raw row from `anilist_catalog` containing metadata fields for airing season resolution.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CatalogMetaRow {
+    pub title: String,
+    pub title_romaji: Option<String>,
+    pub title_english: Option<String>,
+    pub start_date: Option<i64>,
+    pub banner_url: Option<String>,
+    pub cover_url: Option<String>,
+    pub average_score: Option<f64>,
+}
+
+/// Normalized-title indexed maps for fast airing season metadata resolution.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CatalogAiringMeta {
+    pub start_dates: HashMap<String, i64>,
+    pub banners: HashMap<String, String>,
+    pub covers: HashMap<String, String>,
+    pub scores: HashMap<String, f64>,
+}
+
+/// Pure transform from raw catalog metadata rows to the normalized-title lookup maps.
+/// Normalizes each title variant once and inserts into each map with entry().or_insert
+/// only when that field passes the same filter the old functions used:
+/// - start_date not NULL
+/// - banner_url not NULL and not empty
+/// - cover_url not NULL and not empty
+/// - average_score not NULL
+///
+/// First variant encountered wins, per map.
+pub fn build_catalog_airing_meta(rows: Vec<CatalogMetaRow>) -> CatalogAiringMeta {
+    let mut meta = CatalogAiringMeta::default();
+
+    for row in rows {
+        let mut variants: Vec<String> = Vec::with_capacity(3);
+        for raw in [Some(&row.title), row.title_romaji.as_ref(), row.title_english.as_ref()]
+            .into_iter()
+            .flatten()
+        {
+            let norm = crate::matching::normalize_title(raw);
+            if !variants.iter().any(|v| v == &norm) {
+                variants.push(norm);
+            }
+        }
+
+        if let Some(start_date) = row.start_date {
+            for v in &variants {
+                meta.start_dates.entry(v.clone()).or_insert(start_date);
+            }
+        }
+        if let Some(banner_url) = row.banner_url.filter(|s| !s.is_empty()) {
+            for v in &variants {
+                meta.banners.entry(v.clone()).or_insert_with(|| banner_url.clone());
+            }
+        }
+        if let Some(cover_url) = row.cover_url.filter(|s| !s.is_empty()) {
+            for v in &variants {
+                meta.covers.entry(v.clone()).or_insert_with(|| cover_url.clone());
+            }
+        }
+        if let Some(score) = row.average_score {
+            for v in &variants {
+                meta.scores.entry(v.clone()).or_insert(score);
+            }
+        }
+    }
+
+    meta
 }
 
 /// The query behind `Db::stale_status_ids`, shared with its regression test so the
@@ -589,6 +663,7 @@ impl Db {
         Ok(changed)
     }
 
+    #[cfg(test)] // superseded in production; kept as a test oracle
     pub fn link_series_to_catalog(&self) -> Result<i64> {
         let rows = self.catalog_titles_for_index()?;
         let index = crate::matching::CatalogIndex::build(&rows);
@@ -919,6 +994,7 @@ impl Db {
     /// doesn't forbid it), the first one encountered wins — the same
     /// "good enough" trade-off `engaged_series_titles`-style matching
     /// already makes elsewhere.
+    #[cfg(test)] // superseded in production; kept as a test oracle
     pub fn catalog_start_dates_by_normalized_title(&self) -> Result<std::collections::HashMap<String, i64>> {
         let mut stmt = self.conn.prepare(
             "SELECT title, title_romaji, title_english, start_date FROM anilist_catalog WHERE start_date IS NOT NULL",
@@ -936,6 +1012,7 @@ impl Db {
     }
 
     /// Normalized-title -> banner_url map from every synced catalog row that has one.
+    #[cfg(test)] // superseded in production; kept as a test oracle
     pub fn catalog_banners_by_normalized_title(&self) -> Result<std::collections::HashMap<String, String>> {
         let mut stmt = self.conn.prepare(
             "SELECT title, title_romaji, title_english, banner_url FROM anilist_catalog WHERE banner_url IS NOT NULL AND banner_url != ''",
@@ -970,6 +1047,7 @@ impl Db {
     }
 
     /// Normalized-title -> average_score map from every synced catalog row that has one.
+    #[cfg(test)] // superseded in production; kept as a test oracle
     pub fn catalog_scores_by_normalized_title(&self) -> Result<std::collections::HashMap<String, f64>> {
         let mut stmt = self.conn.prepare(
             "SELECT title, title_romaji, title_english, average_score FROM anilist_catalog WHERE average_score IS NOT NULL",
@@ -987,6 +1065,7 @@ impl Db {
     }
 
     /// Normalized-title -> cover_url map from every synced catalog row that has one.
+    #[cfg(test)] // superseded in production; kept as a test oracle
     pub fn catalog_covers_by_normalized_title(&self) -> Result<std::collections::HashMap<String, String>> {
         let mut stmt = self.conn.prepare(
             "SELECT title, title_romaji, title_english, cover_url FROM anilist_catalog WHERE cover_url IS NOT NULL AND cover_url != ''",
@@ -1004,6 +1083,7 @@ impl Db {
     }
 
     /// Query the average score for a specific series row from linked anilist_catalog.
+    #[cfg(test)] // superseded in production; kept as a test oracle
     pub fn get_series_score(&self, series_id: i64) -> Result<Option<f64>> {
         let opt: Option<Option<f64>> = self
             .conn
@@ -1017,6 +1097,71 @@ impl Db {
             )
             .optional()?;
         Ok(opt.flatten())
+    }
+
+    /// ONE query returning all metadata columns used for airing season resolution.
+    /// Run under the DB lock; transform via `build_catalog_airing_meta` outside the lock.
+    pub fn catalog_airing_meta_rows(&self) -> Result<Vec<CatalogMetaRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT title, title_romaji, title_english, start_date, banner_url, cover_url, average_score FROM anilist_catalog",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(CatalogMetaRow {
+                    title: r.get(0)?,
+                    title_romaji: r.get(1)?,
+                    title_english: r.get(2)?,
+                    start_date: r.get(3)?,
+                    banner_url: r.get(4)?,
+                    cover_url: r.get(5)?,
+                    average_score: r.get(6)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Pure transform from raw catalog metadata rows to the normalized-title lookup maps.
+    /// Normalizes each title variant once, preserving first-variant-encountered semantics.
+    pub fn build_catalog_airing_meta(rows: Vec<CatalogMetaRow>) -> CatalogAiringMeta {
+        build_catalog_airing_meta(rows)
+    }
+
+    /// Query banner URLs and average scores for multiple series rows in batched queries,
+    /// returning COALESCE(s.banner_url, c.banner_url) and c.average_score per series id.
+    /// Missing series ids (not present in the `series` table) are absent from the returned map.
+    pub fn series_banners_and_scores(
+        &self,
+        series_ids: &[i64],
+    ) -> Result<SeriesBannerScore> {
+        let mut map = HashMap::new();
+        if series_ids.is_empty() {
+            return Ok(map);
+        }
+        for chunk in series_ids.chunks(500) {
+            let placeholders = vec!["?"; chunk.len()].join(",");
+            let sql = format!(
+                "SELECT s.id, COALESCE(s.banner_url, c.banner_url), c.average_score
+                 FROM series s
+                 LEFT JOIN anilist_catalog c ON c.id = s.anilist_id
+                 WHERE s.id IN ({placeholders})"
+            );
+            let mut stmt = self.conn.prepare(&sql)?;
+            let params = rusqlite::params_from_iter(chunk.iter());
+            let rows = stmt
+                .query_map(params, |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, Option<String>>(1)?,
+                        r.get::<_, Option<f64>>(2)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            for (id, banner, score) in rows {
+                map.insert(id, (banner, score));
+            }
+        }
+        Ok(map)
     }
 
     /// Persist a banner URL for a series row (and its linked anilist_catalog entry, if any).
@@ -4572,5 +4717,155 @@ mod tests {
                 crate::anilist::CatalogRelation { related_id: 101, relation_type: "SEQUEL".into() },
             ]
         );
+    }
+
+    #[test]
+    fn build_catalog_airing_meta_matches_old_functions_map_by_map() {
+        let db = Db::open(":memory:").unwrap();
+
+        // Row 1: has title, romaji, english, start_date, banner, cover, score.
+        let mut a1 = catalog_anime(1, "Shingeki no Kyojin", &[]);
+        a1.title_romaji = Some("Attack on Titan Romaji".into());
+        a1.title_english = Some("Attack on Titan".into());
+        a1.start_date = Some(1365292800);
+        a1.banner_url = Some("https://cdn/banner1.jpg".into());
+        a1.cover_url = Some("https://cdn/cover1.jpg".into());
+        a1.average_score = Some(85);
+        db.upsert_catalog_anime(&a1, 0).unwrap();
+
+        // Row 2: shares normalized variant "attack on titan" with a1.
+        // First variant encountered wins, so a1's values must win for that key.
+        let mut a2 = catalog_anime(2, "Attack on Titan", &[]);
+        a2.title_romaji = None;
+        a2.title_english = Some("AoT Alternative".into());
+        a2.start_date = Some(1400000000);
+        a2.banner_url = Some("https://cdn/banner2.jpg".into());
+        a2.cover_url = Some("https://cdn/cover2.jpg".into());
+        a2.average_score = Some(90);
+        db.upsert_catalog_anime(&a2, 1).unwrap();
+
+        // Row 3: empty banner_url and empty cover_url (""), NULL start_date, has score.
+        let mut a3 = catalog_anime(3, "Empty Banner Show", &[]);
+        a3.title_romaji = Some("Romaji Variant".into());
+        a3.title_english = None;
+        a3.start_date = None;
+        a3.banner_url = Some("".into());
+        a3.cover_url = Some("".into());
+        a3.average_score = Some(70);
+        db.upsert_catalog_anime(&a3, 2).unwrap();
+
+        // Row 4: NULL score, NULL banner_url, has start_date and cover_url.
+        let mut a4 = catalog_anime(4, "No Score Show", &[]);
+        a4.title_romaji = None;
+        a4.title_english = Some("No Score English".into());
+        a4.start_date = Some(1500000000);
+        a4.banner_url = None;
+        a4.cover_url = Some("https://cdn/cover4.jpg".into());
+        a4.average_score = None;
+        db.upsert_catalog_anime(&a4, 3).unwrap();
+
+        let old_dates = db.catalog_start_dates_by_normalized_title().unwrap();
+        let old_banners = db.catalog_banners_by_normalized_title().unwrap();
+        let old_covers = db.catalog_covers_by_normalized_title().unwrap();
+        let old_scores = db.catalog_scores_by_normalized_title().unwrap();
+
+        let rows = db.catalog_airing_meta_rows().unwrap();
+        assert_eq!(rows.len(), 4);
+        let meta = build_catalog_airing_meta(rows);
+
+        assert_eq!(meta.start_dates, old_dates);
+        assert_eq!(meta.banners, old_banners);
+        assert_eq!(meta.covers, old_covers);
+        assert_eq!(meta.scores, old_scores);
+
+        let norm_shared = crate::matching::normalize_title("Attack on Titan");
+        assert_eq!(meta.start_dates.get(&norm_shared), Some(&1365292800));
+        assert_eq!(meta.banners.get(&norm_shared).map(String::as_str), Some("https://cdn/banner1.jpg"));
+        assert_eq!(meta.covers.get(&norm_shared).map(String::as_str), Some("https://cdn/cover1.jpg"));
+        assert_eq!(meta.scores.get(&norm_shared), Some(&85.0));
+
+        let norm_empty = crate::matching::normalize_title("Empty Banner Show");
+        assert!(!meta.banners.contains_key(&norm_empty));
+        assert!(!meta.covers.contains_key(&norm_empty));
+        assert!(!meta.start_dates.contains_key(&norm_empty));
+        assert_eq!(meta.scores.get(&norm_empty), Some(&70.0));
+    }
+
+    #[test]
+    fn series_banners_and_scores_matches_individual_queries() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("TestSite", "https://site.example", "testsite").unwrap();
+
+        let mut c_a = catalog_anime(10, "Series A Catalog", &[]);
+        c_a.banner_url = Some("https://cat/banner_a.jpg".into());
+        c_a.average_score = Some(82);
+        db.upsert_catalog_anime(&c_a, 0).unwrap();
+
+        let sid_a = db.upsert_series(src, &mk_airing("series-a", "Series A", None)).unwrap();
+        db.set_anilist_id(sid_a, 10).unwrap();
+        db.conn.execute(
+            "UPDATE series SET banner_url = ?1 WHERE id = ?2",
+            rusqlite::params!["https://custom/banner_a.jpg", sid_a],
+        ).unwrap();
+
+        let mut c_b = catalog_anime(20, "Series B Catalog", &[]);
+        c_b.banner_url = Some("https://cat/banner_b.jpg".into());
+        c_b.average_score = Some(75);
+        db.upsert_catalog_anime(&c_b, 1).unwrap();
+
+        let sid_b = db.upsert_series(src, &mk_airing("series-b", "Series B", None)).unwrap();
+        db.set_anilist_id(sid_b, 20).unwrap();
+
+        let sid_c = db.upsert_series(src, &mk_airing("series-c", "Series C", None)).unwrap();
+
+        let missing_id = 999_999i64;
+
+        let series_ids = vec![sid_a, sid_b, sid_c, missing_id];
+        let batch = db.series_banners_and_scores(&series_ids).unwrap();
+
+        assert_eq!(
+            batch.get(&sid_a),
+            Some(&(db.get_series_banner(sid_a).unwrap(), db.get_series_score(sid_a).unwrap()))
+        );
+        assert_eq!(
+            batch.get(&sid_a),
+            Some(&(Some("https://custom/banner_a.jpg".to_string()), Some(82.0)))
+        );
+
+        assert_eq!(
+            batch.get(&sid_b),
+            Some(&(db.get_series_banner(sid_b).unwrap(), db.get_series_score(sid_b).unwrap()))
+        );
+        assert_eq!(
+            batch.get(&sid_b),
+            Some(&(Some("https://cat/banner_b.jpg".to_string()), Some(75.0)))
+        );
+
+        assert_eq!(
+            batch.get(&sid_c),
+            Some(&(db.get_series_banner(sid_c).unwrap(), db.get_series_score(sid_c).unwrap()))
+        );
+        assert_eq!(batch.get(&sid_c), Some(&(None, None)));
+
+        assert_eq!(batch.get(&missing_id), None);
+    }
+
+    #[test]
+    fn series_banners_and_scores_chunking_large_id_list() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("TestSite", "https://site.example", "testsite").unwrap();
+        let sid = db.upsert_series(src, &mk_airing("s-one", "Series One", None)).unwrap();
+        db.conn.execute(
+            "UPDATE series SET banner_url = 'https://banner.jpg' WHERE id = ?1",
+            [sid],
+        ).unwrap();
+
+        let mut ids = vec![sid];
+        for i in 1..=600 {
+            ids.push(1000 + i);
+        }
+        let batch = db.series_banners_and_scores(&ids).unwrap();
+        assert_eq!(batch.len(), 1);
+        assert_eq!(batch.get(&sid), Some(&(Some("https://banner.jpg".to_string()), None)));
     }
 }

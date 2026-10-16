@@ -333,6 +333,20 @@ export function Library({
   const t = useT();
   const [items, setItems] = useState<LibraryItem[]>([]);
   const [query, setQuery] = useState(() => libraryFilterCache.current?.query ?? "");
+  const [debouncedQuery, setDebouncedQuery] = useState(query);
+
+  // Typing is debounced so each keystroke does not re-filter every card;
+  // clearing the search applies at once.
+  useEffect(() => {
+    if (!query) {
+      setDebouncedQuery("");
+      return;
+    }
+    const timer = setTimeout(() => {
+      setDebouncedQuery(query);
+    }, 150);
+    return () => clearTimeout(timer);
+  }, [query]);
   const [airingFilter, setAiringFilter] = useState<AiringFilter>(() => libraryFilterCache.current?.airingFilter ?? "all");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>(() => libraryFilterCache.current?.statusFilter ?? "all");
   const [typeFilter, setTypeFilter] = useState<string>(() => libraryFilterCache.current?.typeFilter ?? "all");
@@ -474,7 +488,7 @@ export function Library({
   }, [items]);
 
   const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
+    const q = debouncedQuery.trim().toLowerCase();
     return items.filter((it) => {
       if (q && !it.series.title.toLowerCase().includes(q)) return false;
       if (typeFilter !== "all" && normalizeKind(it.kind) !== typeFilter) return false;
@@ -485,7 +499,7 @@ export function Library({
       if (studioFilter !== "all" && it.studio !== studioFilter) return false;
       return true;
     });
-  }, [items, query, typeFilter, includedGenres, excludedGenres, studioFilter]);
+  }, [items, debouncedQuery, typeFilter, includedGenres, excludedGenres, studioFilter]);
 
   // All "watching" items (before the airing filter) — drives whether the
   // filter control is shown at all.
