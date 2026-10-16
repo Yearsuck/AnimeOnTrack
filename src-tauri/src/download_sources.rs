@@ -371,13 +371,12 @@ pub fn parse_mytsumi_tabs(html: &str) -> Vec<MytsumiTab> {
     tabs
 }
 
-/// Selects the best direct video media from a list of Mytsumi tabs.
+/// Selects the highest quality direct video media from a list of Mytsumi tabs.
 ///
 /// Prefers direct video tabs whose URL path ends in `.mp4` (case-insensitive, ignoring
 /// query/fragment), choosing the highest quality (`None` counts as 0). Ties preserve page
 /// order. Returns `None` if no qualifying direct tab exists.
-#[allow(dead_code)] // Consumed by download supervisor in later stages
-pub fn mytsumi_direct_media(tabs: &[MytsumiTab]) -> Option<Media> {
+fn best_direct_media_unpreferred(tabs: &[MytsumiTab]) -> Option<Media> {
     let mut best: Option<&MytsumiTab> = None;
     let mut best_quality: u32 = 0;
 
@@ -404,6 +403,89 @@ pub fn mytsumi_direct_media(tabs: &[MytsumiTab]) -> Option<Media> {
         referer: "https://mytsumi.com/".to_string(),
         host: "direct",
     })
+}
+
+/// Selects direct video media from a list of Mytsumi tabs according to user preference.
+///
+/// Prefers direct video tabs whose URL path ends in `.mp4` (case-insensitive, ignoring
+/// query/fragment).
+///
+/// When `preferred_height` is `None`, chooses the highest quality (`None` counts as 0).
+/// When `Some(p)`, among direct `.mp4` tabs whose quality is known, picks the highest <= `p`;
+/// if none exist <= `p`, picks the lowest above `p`. Tabs with unknown quality are used only
+/// when no tab has a known quality (falling back to the `None` rule).
+///
+/// Ties preserve page order. Returns `None` if no qualifying direct tab exists.
+pub fn mytsumi_direct_media(tabs: &[MytsumiTab], preferred_height: Option<u32>) -> Option<Media> {
+    let pref = match preferred_height {
+        None => return best_direct_media_unpreferred(tabs),
+        Some(p) => p,
+    };
+
+    // Among direct .mp4 tabs whose quality is known, pick highest <= pref
+    let mut under_or_eq: Option<&MytsumiTab> = None;
+    let mut best_under_q: u32 = 0;
+    for tab in tabs {
+        if tab.direct_video && ends_with_mp4(&tab.url) {
+            if let Some(q) = tab.quality {
+                if q <= pref {
+                    match under_or_eq {
+                        None => {
+                            under_or_eq = Some(tab);
+                            best_under_q = q;
+                        }
+                        Some(_) => {
+                            if q > best_under_q {
+                                under_or_eq = Some(tab);
+                                best_under_q = q;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if let Some(tab) = under_or_eq {
+        return Some(Media {
+            url: tab.url.clone(),
+            referer: "https://mytsumi.com/".to_string(),
+            host: "direct",
+        });
+    }
+
+    // If none, pick lowest above pref
+    let mut above: Option<&MytsumiTab> = None;
+    let mut best_above_q: u32 = u32::MAX;
+    for tab in tabs {
+        if tab.direct_video && ends_with_mp4(&tab.url) {
+            if let Some(q) = tab.quality {
+                if q > pref {
+                    match above {
+                        None => {
+                            above = Some(tab);
+                            best_above_q = q;
+                        }
+                        Some(_) => {
+                            if q < best_above_q {
+                                above = Some(tab);
+                                best_above_q = q;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if let Some(tab) = above {
+        return Some(Media {
+            url: tab.url.clone(),
+            referer: "https://mytsumi.com/".to_string(),
+            host: "direct",
+        });
+    }
+
+    // Tabs with unknown quality are used only when no tab has a known quality (then today's rule)
+    best_direct_media_unpreferred(tabs)
 }
 
 /// Helper that checks whether a URL path ends with `.mp4` (case-insensitive, ignoring query/hash).
@@ -1856,7 +1938,7 @@ mod tests {
             }
         );
 
-        let media = mytsumi_direct_media(&tabs).expect("direct media should resolve");
+        let media = mytsumi_direct_media(&tabs, None).expect("direct media should resolve");
         assert_eq!(
             media,
             Media {
@@ -1875,7 +1957,7 @@ mod tests {
                 quality: Some(720),
             },
         ];
-        assert_eq!(mytsumi_direct_media(&iframe_only), None);
+        assert_eq!(mytsumi_direct_media(&iframe_only, None), None);
 
         // Two direct tabs 720 and 1080 -> 1080 wins
         let two_direct = vec![
@@ -1892,8 +1974,123 @@ mod tests {
                 quality: Some(1080),
             },
         ];
-        let best = mytsumi_direct_media(&two_direct).expect("best direct media");
+        let best = mytsumi_direct_media(&two_direct, None).expect("best direct media");
         assert_eq!(best.url, "https://example.com/1080.mp4");
+    }
+
+    #[test]
+    fn mytsumi_direct_media_quality_preferences() {
+        let tabs_four = vec![
+            MytsumiTab {
+                label: "Low1".to_string(),
+                url: "https://example.com/720_1.mp4".to_string(),
+                direct_video: true,
+                quality: Some(720),
+            },
+            MytsumiTab {
+                label: "Low2".to_string(),
+                url: "https://example.com/720_2.mp4".to_string(),
+                direct_video: true,
+                quality: Some(720),
+            },
+            MytsumiTab {
+                label: "High1".to_string(),
+                url: "https://example.com/1080_1.mp4".to_string(),
+                direct_video: true,
+                quality: Some(1080),
+            },
+            MytsumiTab {
+                label: "High2".to_string(),
+                url: "https://example.com/1080_2.mp4".to_string(),
+                direct_video: true,
+                quality: Some(1080),
+            },
+        ];
+
+        // None picks 1080 from {720,720,1080,1080} (first 1080 in page order)
+        let res_none = mytsumi_direct_media(&tabs_four, None).expect("direct media should resolve");
+        assert_eq!(res_none.url, "https://example.com/1080_1.mp4");
+
+        // Some(720) picks the first 720
+        let res_720 = mytsumi_direct_media(&tabs_four, Some(720)).expect("direct media should resolve");
+        assert_eq!(res_720.url, "https://example.com/720_1.mp4");
+
+        let tabs_720_1080 = vec![
+            MytsumiTab {
+                label: "Low".to_string(),
+                url: "https://example.com/720.mp4".to_string(),
+                direct_video: true,
+                quality: Some(720),
+            },
+            MytsumiTab {
+                label: "High".to_string(),
+                url: "https://example.com/1080.mp4".to_string(),
+                direct_video: true,
+                quality: Some(1080),
+            },
+        ];
+
+        // Some(480) with {720,1080} picks 720
+        let res_480 = mytsumi_direct_media(&tabs_720_1080, Some(480)).expect("direct media should resolve");
+        assert_eq!(res_480.url, "https://example.com/720.mp4");
+
+        let tabs_only_720 = vec![
+            MytsumiTab {
+                label: "Low".to_string(),
+                url: "https://example.com/720.mp4".to_string(),
+                direct_video: true,
+                quality: Some(720),
+            },
+        ];
+
+        // Some(1080) with {720} picks 720
+        let res_1080 = mytsumi_direct_media(&tabs_only_720, Some(1080)).expect("direct media should resolve");
+        assert_eq!(res_1080.url, "https://example.com/720.mp4");
+
+        // unknown-quality tab ignored when a known one exists
+        let tabs_unknown_and_known = vec![
+            MytsumiTab {
+                label: "UnknownFirst".to_string(),
+                url: "https://example.com/unknown.mp4".to_string(),
+                direct_video: true,
+                quality: None,
+            },
+            MytsumiTab {
+                label: "Known".to_string(),
+                url: "https://example.com/720.mp4".to_string(),
+                direct_video: true,
+                quality: Some(720),
+            },
+        ];
+        let res_unk_ignored_pref = mytsumi_direct_media(&tabs_unknown_and_known, Some(720)).expect("direct media should resolve");
+        assert_eq!(res_unk_ignored_pref.url, "https://example.com/720.mp4");
+
+        let res_unk_ignored_above = mytsumi_direct_media(&tabs_unknown_and_known, Some(480)).expect("direct media should resolve");
+        assert_eq!(res_unk_ignored_above.url, "https://example.com/720.mp4");
+
+        let res_unk_ignored_none = mytsumi_direct_media(&tabs_unknown_and_known, None).expect("direct media should resolve");
+        assert_eq!(res_unk_ignored_none.url, "https://example.com/720.mp4");
+
+        // only unknown tabs -> first one
+        let tabs_only_unknown = vec![
+            MytsumiTab {
+                label: "Unknown1".to_string(),
+                url: "https://example.com/unknown1.mp4".to_string(),
+                direct_video: true,
+                quality: None,
+            },
+            MytsumiTab {
+                label: "Unknown2".to_string(),
+                url: "https://example.com/unknown2.mp4".to_string(),
+                direct_video: true,
+                quality: None,
+            },
+        ];
+        let res_only_unk_pref = mytsumi_direct_media(&tabs_only_unknown, Some(720)).expect("direct media should resolve");
+        assert_eq!(res_only_unk_pref.url, "https://example.com/unknown1.mp4");
+
+        let res_only_unk_none = mytsumi_direct_media(&tabs_only_unknown, None).expect("direct media should resolve");
+        assert_eq!(res_only_unk_none.url, "https://example.com/unknown1.mp4");
     }
 
     #[test]
