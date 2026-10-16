@@ -483,10 +483,16 @@ impl Db {
         // with this set.
         ensure_column(&self.conn, "series", "follow_declined_at", "TEXT")?;
 
-        // Remembered failure, so a dead page is not re-fetched on every
-        // refresh: the episode-list fetch failed (every mirror errored or
-        // parsed empty, e.g. a 404); cleared by the next successful fetch.
+        // Remembered failures, so a dead page or image is not retried on
+        // every refresh (each costs seconds of WebView2/network timeouts).
+        // `last_fetch_failed_at`: the episode-list fetch failed (every
+        // mirror errored or parsed empty, e.g. a 404); cleared by the next
+        // successful fetch. `cover_failed_*`: the cover URL that failed, when,
+        // and how many times in a row — a new URL from the site resets it.
         ensure_column(&self.conn, "series", "last_fetch_failed_at", "TEXT")?;
+        ensure_column(&self.conn, "series", "cover_failed_url", "TEXT")?;
+        ensure_column(&self.conn, "series", "cover_failed_at", "TEXT")?;
+        ensure_column(&self.conn, "series", "cover_fail_count", "INTEGER NOT NULL DEFAULT 0")?;
 
         // One-shot: `sync_seen_progress_across_sites` used to stamp
         // `sync_watermark_applied` with the requested cross-site ceiling

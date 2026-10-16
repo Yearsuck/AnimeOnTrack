@@ -1213,6 +1213,7 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
                     }
                     Err(err) => {
                         eprintln!("[cover] airing series {id} ({title}): direct download failed: {err}");
+                        let _ = state.db.lock().unwrap().record_cover_failure(id, &remote);
                     }
                 }
             }
@@ -1233,6 +1234,7 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
             Ok(data_uri) => {
                 if crate::cover_cache::is_placeholder_data_uri(&data_uri) {
                     eprintln!("[cover] airing series {id} ({title}): webview fallback returned a placeholder");
+                    let _ = state.db.lock().unwrap().record_cover_failure(id, &remote);
                 } else {
                     let db = state.db.lock().unwrap();
                     let _ = db.update_series_cover(id, &data_uri);
@@ -1240,6 +1242,7 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
             }
             Err(e) => {
                 eprintln!("[cover] airing series {id} ({title}): webview fallback failed: {e}");
+                let _ = state.db.lock().unwrap().record_cover_failure(id, &remote);
             }
         }
     }
