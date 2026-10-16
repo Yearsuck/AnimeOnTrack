@@ -756,6 +756,36 @@ pub fn season_consistent(series_title: &str, catalog_titles: &[&str]) -> bool {
     }
 }
 
+/// Stricter companion of `season_consistent` for a match whose title came from
+/// another site and will be used to fetch a specific episode: when the site's
+/// own title carries a season/stage marker, the AniList title must name the
+/// SAME one. `season_consistent` lets any unmarked or ambiguous site title
+/// through, so "Steel Ball Run ... 2nd & 3rd STAGE" (ambiguous range) would be
+/// accepted for the "1st STAGE" entry and its episode 1 stored as ours. A
+/// reject here only costs a missed fallback; a wrong accept stores the wrong
+/// episode.
+pub fn season_markers_compatible(site_title: &str, catalog_titles: &[&str]) -> bool {
+    if !season_consistent(site_title, catalog_titles) {
+        return false;
+    }
+    let site_norm = normalize_title(site_title);
+    let tokens: Vec<&str> = site_norm.split_whitespace().collect();
+    if strip_season_markers(tokens.clone(), normalize_title).len() == tokens.len() {
+        return true; // no marker of its own: season_consistent already decided
+    }
+    let catalog_numbers: Vec<Option<u32>> = catalog_titles
+        .iter()
+        .map(|ct| extract_season_number(&normalize_title(ct)))
+        .collect();
+    match extract_season_number(&site_norm) {
+        // Season 1 may be unmarked on the catalog side.
+        Some(1) => catalog_numbers.iter().any(|c| c.is_none_or(|n| n == 1)),
+        Some(n) => catalog_numbers.contains(&Some(n)),
+        // Ambiguous marker (a range, "Final"): the catalog title must be ambiguous too.
+        None => catalog_numbers.iter().all(|c| c.is_none()),
+    }
+}
+
 /// Checks if the title contains the words "live" and "action" as consecutive tokens.
 pub fn is_live_action(title: &str) -> bool {
     let norm = normalize_title(title);
@@ -1820,5 +1850,28 @@ mod tests {
             url: "u1",
         }];
         assert_eq!(best_match(&["Steins;Gate"], &sg0), None);
+    }
+
+    #[test]
+    fn season_markers_compatible_rejects_a_different_stage_or_season() {
+        let first = ["JoJo no Kimyou na Bouken: Steel Ball Run - 1st STAGE"];
+        // the 2nd & 3rd stage entry of the same franchise is NOT the 1st stage
+        assert!(!season_markers_compatible(
+            "Steel Ball Run: JoJo no Kimyou na Bouken - 2nd & 3rd STAGE",
+            &first
+        ));
+        // an unmarked site title for the 1st stage is fine
+        assert!(season_markers_compatible("Steel Ball Run: JoJo no Kimyou na Bouken", &first));
+        // same numbered season on both sides
+        assert!(season_markers_compatible("Some Show 2nd Season", &["Some Show 2nd Season"]));
+        // a marked later season never matches the plain/first entry
+        assert!(!season_markers_compatible("Some Show 2nd Season", &["Some Show"]));
+        // season 1 spelled out on the site, unmarked in the catalog
+        assert!(season_markers_compatible("Some Show Season 1", &["Some Show"]));
+        // the range entry matches its own range entry
+        assert!(season_markers_compatible(
+            "Steel Ball Run 2nd & 3rd STAGE",
+            &["JoJo: Steel Ball Run - 2nd & 3rd STAGE"]
+        ));
     }
 }

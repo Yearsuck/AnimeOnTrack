@@ -5,6 +5,7 @@ use crate::download_sources::{
 };
 use crate::hls::{parse_gogoanime_player_url, parse_megaplay_playlist_url, parse_wrapper_iframe};
 use crate::downloader::{self, DlError};
+use scraper::{Html, Selector};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock};
@@ -137,6 +138,19 @@ pub(crate) fn plan_download_urls(
     result
 }
 
+/// Picks the episode URL from a list of `(number, url)` pairs whose parsed episode number
+/// matches the `canonical` target within a tolerance of 1e-6.
+pub(crate) fn pick_episode_url(episodes: &[(String, String)], canonical: f64) -> Option<String> {
+    for (num_str, url) in episodes {
+        if let Some(parsed) = crate::db::parse_ep_number(num_str) {
+            if (parsed - canonical).abs() < 1e-6 {
+                return Some(url.clone());
+            }
+        }
+    }
+    None
+}
+
 #[derive(Serialize)]
 pub struct DownloadBatch {
     /// Episodes put in the queue just now.
@@ -260,9 +274,10 @@ async fn attempt(
             emit(&app_for_progress, episode_id, "downloading", Some(pct as u8), None);
         }
     };
-    let is_hls = url::Url::parse(&media.url)
-        .map(|u| u.path().to_ascii_lowercase().ends_with(".m3u8"))
-        .unwrap_or(false);
+    let is_hls = media.host == "hls"
+        || url::Url::parse(&media.url)
+            .map(|u| u.path().to_ascii_lowercase().ends_with(".m3u8"))
+            .unwrap_or(false);
     let final_file = if is_hls {
         downloader::fetch_hls_to_file(&media.url, &media.referer, base, cancel, progress).await?
     } else {
@@ -492,6 +507,219 @@ async fn scrape_and_try_siblings(
     Ok(None)
 }
 
+/// Third phase of download fallback: searches other supported sites with no existing
+/// `series` row for the anime, locates the canonical episode, and attempts to download it.
+/// Does not write anything to the database (transient search only).
+#[allow(clippy::too_many_arguments)]
+async fn search_other_sites_and_try(
+    app: &AppHandle,
+    episode_id: i64,
+    priority: &[String],
+    base: &std::path::Path,
+    cancel: &Arc<AtomicBool>,
+    attempted: &mut std::collections::HashSet<String>,
+    errors: &mut Vec<(String, DlError)>,
+) -> Result<Option<String>, DlError> {
+    if cancel.load(Ordering::SeqCst) {
+        return Err(DlError::Cancelled);
+    }
+
+    let context = {
+        let state = app.state::<AppState>();
+        let db = state.db.lock().unwrap();
+        db.download_search_context(episode_id)
+            .map_err(|e| DlError::Io(e.to_string()))?
+    };
+
+    let Some(context) = context else {
+        return Ok(None);
+    };
+
+    let (primary_title, english_title) = &context.titles;
+
+    let mut eligible = Vec::new();
+    for (idx, site) in crate::adapter::all_sites().iter().enumerate() {
+        if context.group_site_ids.iter().any(|gid| gid == site.id) {
+            continue;
+        }
+        if !is_supported_episode_url(site.default_base_url) {
+            continue;
+        }
+        let rank = priority
+            .iter()
+            .position(|p| p == site.id)
+            .unwrap_or(usize::MAX);
+        eligible.push((rank, idx, site));
+    }
+    eligible.sort_by_key(|&(rank, idx, _)| (rank, idx));
+
+    let sites_to_try: Vec<&crate::adapter::SiteInfo> =
+        eligible.into_iter().map(|(_, _, s)| s).take(3).collect();
+
+    for site in sites_to_try {
+        if cancel.load(Ordering::SeqCst) {
+            return Err(DlError::Cancelled);
+        }
+
+        let a = match crate::adapter::adapter_for(site.id) {
+            Some(adapter) => adapter,
+            None => continue,
+        };
+
+        let mirrors = {
+            let state = app.state::<AppState>();
+            let db = state.db.lock().unwrap();
+            crate::commands::mirrors::load_mirrors(&db, site.id)
+                .ok()
+                .filter(|v| !v.is_empty())
+                .unwrap_or_else(|| vec![site.default_base_url.to_string()])
+        };
+
+        crate::file_log::info(&format!(
+            "download fallback: searching {} for \"{}\"",
+            site.id, primary_title
+        ));
+
+        let mut cards = match crate::commands::follow::search_site(app, &mirrors, primary_title, a.as_ref()).await {
+            Ok(c) => c,
+            Err(e) => {
+                crate::file_log::info(&format!(
+                    "download fallback: search on {} failed: {e}",
+                    site.id
+                ));
+                errors.push((site.id.to_string(), DlError::Net(format!("search failed: {e}"))));
+                continue;
+            }
+        };
+
+        let mut best = crate::matching::best_match(
+            &[primary_title],
+            &crate::commands::discover::to_candidates(&cards),
+        );
+
+        if best.is_none() {
+            if let Some(english) = english_title {
+                if !english.eq_ignore_ascii_case(primary_title) {
+                    if cancel.load(Ordering::SeqCst) {
+                        return Err(DlError::Cancelled);
+                    }
+                    crate::file_log::info(&format!(
+                        "download fallback: searching {} for \"{}\"",
+                        site.id, english
+                    ));
+                    match crate::commands::follow::search_site(app, &mirrors, english, a.as_ref()).await {
+                        Ok(eng_cards) => {
+                            cards = eng_cards;
+                            best = crate::matching::best_match(
+                                &[primary_title],
+                                &crate::commands::discover::to_candidates(&cards),
+                            );
+                        }
+                        Err(e) => {
+                            crate::file_log::info(&format!(
+                                "download fallback: search on {} failed: {e}",
+                                site.id
+                            ));
+                            errors.push((site.id.to_string(), DlError::Net(format!("search failed: {e}"))));
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
+
+        let Some(m) = best else {
+            crate::file_log::info(&format!(
+                "download fallback: search on {} yielded no match",
+                site.id
+            ));
+            errors.push((site.id.to_string(), DlError::Net("show not found".into())));
+            continue;
+        };
+
+        let matched = &cards[m.index];
+        let catalog_refs: Vec<&str> = std::iter::once(primary_title.as_str())
+            .chain(english_title.as_deref())
+            .collect();
+        if !crate::matching::season_markers_compatible(&matched.title, &catalog_refs) {
+            crate::file_log::info(&format!(
+                "download fallback: {} match \"{}\" is another season, skipped",
+                site.id, matched.title
+            ));
+            errors.push((site.id.to_string(), DlError::Net("show not found".into())));
+            continue;
+        }
+        crate::file_log::info(&format!(
+            "download fallback: {} search matched {}",
+            site.id, matched.url
+        ));
+
+        if cancel.load(Ordering::SeqCst) {
+            return Err(DlError::Cancelled);
+        }
+
+        let eps = match crate::commands::scan::fetch_episode_list_for(app, &mirrors, &matched.url, a.as_ref()).await {
+            Ok(eps) => {
+                crate::domain_breaker::record_success(&matched.url);
+                eps
+            }
+            Err(e) => {
+                crate::domain_breaker::record_failure(&matched.url);
+                crate::file_log::info(&format!(
+                    "download fallback: episode list failed for {} on {}: {e}",
+                    matched.url, site.id
+                ));
+                errors.push((site.id.to_string(), DlError::Net(format!("search failed: {e}"))));
+                continue;
+            }
+        };
+
+        let ep_tuples: Vec<(String, String)> = eps.into_iter().map(|e| (e.number, e.url)).collect();
+        let candidate_url = match pick_episode_url(&ep_tuples, context.canonical_number) {
+            Some(url) => url,
+            None => {
+                crate::file_log::info(&format!(
+                    "download fallback: episode {} not listed on {}",
+                    context.canonical_number, site.id
+                ));
+                errors.push((site.id.to_string(), DlError::Net("episode not listed".into())));
+                continue;
+            }
+        };
+
+        if attempted.contains(&candidate_url) {
+            continue;
+        }
+        attempted.insert(candidate_url.clone());
+
+        if cancel.load(Ordering::SeqCst) {
+            return Err(DlError::Cancelled);
+        }
+
+        let cand_site = site_label(&candidate_url);
+        match attempt(app, &candidate_url, episode_id, base, cancel).await {
+            Ok(final_path) => {
+                crate::file_log::info(&format!(
+                    "download finished: episode {episode_id} via {cand_site}"
+                ));
+                return Ok(Some(final_path));
+            }
+            Err(DlError::Cancelled) => {
+                return Err(DlError::Cancelled);
+            }
+            Err(err) => {
+                crate::file_log::info(&format!(
+                    "download fallback: episode {episode_id} failed on {cand_site} ({err}), trying next"
+                ));
+                emit(app, episode_id, "downloading", None, None);
+                errors.push((cand_site, err));
+            }
+        }
+    }
+
+    Ok(None)
+}
+
 async fn run_download(app: &AppHandle, episode_id: i64, cancel: &Arc<AtomicBool>) -> Result<String, DlError> {
     let _slot = SLOT.acquire().await.map_err(|e| DlError::Net(e.to_string()))?;
     if cancel.load(Ordering::SeqCst) {
@@ -562,6 +790,20 @@ async fn run_download(app: &AppHandle, episode_id: i64, cancel: &Arc<AtomicBool>
         app,
         episode_id,
         &episode_url,
+        &priority,
+        &base,
+        cancel,
+        &mut attempted,
+        &mut errors,
+    )
+    .await?
+    {
+        return Ok(final_path);
+    }
+
+    if let Some(final_path) = search_other_sites_and_try(
+        app,
+        episode_id,
         &priority,
         &base,
         cancel,
@@ -685,7 +927,95 @@ async fn fetch_text(url: &str, referer: &str) -> Result<(String, String), String
     Ok((final_url, body))
 }
 
-/// GogoAnime: episode page -> its player wrapper -> the megaplay embed -> an
+/// Plain HTTP GET of a JSON endpoint: browser UA, the previous page as Referer,
+/// Accept: application/json, 20 s timeout, size-capped. Returns body text.
+async fn fetch_json_text(url: &str, referer: &str) -> Result<String, String> {
+    const MAX_JSON_BYTES: u64 = 1024 * 1024;
+    if !is_safe_external_url(url) {
+        return Err("not a public web address".into());
+    }
+    let resp = downloader::client()
+        .get(url)
+        .header(reqwest::header::USER_AGENT, downloader::browser_user_agent())
+        .header(reqwest::header::REFERER, referer)
+        .header(reqwest::header::ACCEPT, "application/json")
+        .timeout(std::time::Duration::from_secs(20))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    if resp.content_length().is_some_and(|n| n > MAX_JSON_BYTES) {
+        return Err("response too large".into());
+    }
+    let body = resp.text().await.map_err(|e| e.to_string())?;
+    if body.len() as u64 > MAX_JSON_BYTES {
+        return Err("response too large".into());
+    }
+    Ok(body)
+}
+
+/// Parses the video source endpoint URL from a megavid.buzz player embed.
+///
+/// Returns `None` if the embed URL does not belong to `megavid.buzz` (or a subdomain),
+/// or if `#player-payload` JSON with a non-empty `sourceUrl` is absent.
+pub(crate) fn parse_megavid_source_url(embed_url: &str, embed_html: &str) -> Option<String> {
+    let base = url::Url::parse(embed_url).ok()?;
+    let host = base.host_str()?.to_ascii_lowercase();
+    if !(host == "megavid.buzz" || host.ends_with(".megavid.buzz")) {
+        return None;
+    }
+
+    let doc = Html::parse_document(embed_html);
+    let sel = Selector::parse("#player-payload").ok()?;
+    let el = doc.select(&sel).next()?;
+    let text = el.text().collect::<String>();
+    let val: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let source_url = val.get("sourceUrl").and_then(|v| v.as_str())?.trim();
+    if source_url.is_empty() {
+        return None;
+    }
+
+    let joined = base.join(source_url).ok()?;
+    if joined.scheme() != "http" && joined.scheme() != "https" {
+        return None;
+    }
+    Some(joined.to_string())
+}
+
+/// Parses the JSON response from megavid's source endpoint.
+///
+/// Returns the master playlist URL on `status == "ok"` with a non-empty `source`,
+/// or an error description otherwise (including server `message` if present).
+pub(crate) fn parse_megavid_source_response(json: &str) -> Result<String, String> {
+    let val: serde_json::Value = serde_json::from_str(json)
+        .map_err(|e| format!("invalid JSON response from video source: {e}"))?;
+
+    let status = val.get("status").and_then(|v| v.as_str()).unwrap_or("");
+    if status == "ok" {
+        let source = val
+            .get("source")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .unwrap_or("");
+        if source.is_empty() {
+            return Err("video source returned status 'ok' with empty source URL".into());
+        }
+        Ok(source.to_string())
+    } else {
+        let msg = val.get("message").and_then(|v| v.as_str()).unwrap_or("").trim();
+        if !msg.is_empty() {
+            Err(format!("video source error ({status}): {msg}"))
+        } else if !status.is_empty() {
+            Err(format!("video source returned status '{status}'"))
+        } else {
+            Err("video source returned unrecognized response".into())
+        }
+    }
+}
+
+/// GogoAnime: episode page -> its player wrapper -> the megaplay or megavid embed -> an
 /// HLS playlist. Every hop is plain HTTP; the result is a `.m3u8` for the HLS downloader.
 async fn resolve_gogoanime(episode_html: &str, episode_url: &str) -> Result<Media, DlError> {
     let player_url = parse_gogoanime_player_url(episode_html)
@@ -698,12 +1028,26 @@ async fn resolve_gogoanime(episode_html: &str, episode_url: &str) -> Result<Medi
     let (_, embed) = fetch_text(&embed_url, &player_url)
         .await
         .map_err(|e| DlError::Net(format!("could not open the video frame: {e}")))?;
-    let playlist = parse_megaplay_playlist_url(&embed)
-        .ok_or_else(|| DlError::Net("the video frame has no stream".into()))?;
-    if !is_safe_external_url(&playlist) {
-        return Err(DlError::Net("the stream is not a public web address".into()));
+
+    if let Some(playlist) = parse_megaplay_playlist_url(&embed) {
+        if !is_safe_external_url(&playlist) {
+            return Err(DlError::Net("the stream is not a public web address".into()));
+        }
+        return Ok(Media { url: playlist, referer: "https://megaplay.su/".to_string(), host: "hls" });
     }
-    Ok(Media { url: playlist, referer: "https://megaplay.su/".to_string(), host: "hls" })
+
+    if let Some(endpoint) = parse_megavid_source_url(&embed_url, &embed) {
+        let json = fetch_json_text(&endpoint, &embed_url)
+            .await
+            .map_err(|e| DlError::Net(format!("could not retrieve the video source: {e}")))?;
+        let source = parse_megavid_source_response(&json).map_err(DlError::Net)?;
+        if !is_safe_external_url(&source) {
+            return Err(DlError::Net("the stream is not a public web address".into()));
+        }
+        return Ok(Media { url: source, referer: "https://megavid.buzz/".to_string(), host: "hls" });
+    }
+
+    Err(DlError::Net("the video frame has no stream".into()))
 }
 
 /// Episode page -> list of mirrors -> first mirror that resolves to a plain file.
@@ -1084,5 +1428,134 @@ mod tests {
     fn format_server_errors_does_not_truncate_short_reason() {
         let errors = vec![("Server1", "Short reason")];
         assert_eq!(format_server_errors(&errors), "Server1: Short reason");
+    }
+
+    #[test]
+    fn parse_megavid_source_url_resolves_payload_present() {
+        let embed_url = "https://megavid.buzz/mal/61469/1/sub";
+        let html = r#"<!DOCTYPE html>
+<html>
+<head>
+    <script type="application/json" id="player-payload">{"sourceUrl":"/mal/61469/1/sub/source","subtitles":[]}</script>
+</head>
+<body></body>
+</html>"#;
+        assert_eq!(
+            parse_megavid_source_url(embed_url, html),
+            Some("https://megavid.buzz/mal/61469/1/sub/source".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_megavid_source_url_returns_none_when_payload_absent() {
+        let embed_url = "https://megavid.buzz/mal/61469/1/sub";
+        let html = "<html><body><div>no player payload</div></body></html>";
+        assert_eq!(parse_megavid_source_url(embed_url, html), None);
+    }
+
+    #[test]
+    fn parse_megavid_source_url_returns_none_for_non_megavid_host() {
+        let embed_url = "https://evil.example.com/mal/61469/1/sub";
+        let html = r#"<script type="application/json" id="player-payload">{"sourceUrl":"/mal/61469/1/sub/source"}</script>"#;
+        assert_eq!(parse_megavid_source_url(embed_url, html), None);
+    }
+
+    #[test]
+    fn parse_megavid_source_response_extracts_source_on_ok() {
+        let json = r#"{"status":"ok","source":"https://cdnx.aniwatchtv.site/uwu/master.m3u8","tracks":[]}"#;
+        assert_eq!(
+            parse_megavid_source_response(json).unwrap(),
+            "https://cdnx.aniwatchtv.site/uwu/master.m3u8"
+        );
+    }
+
+    #[test]
+    fn parse_megavid_source_response_returns_err_on_missing_with_message() {
+        let json = r#"{"status":"missing","message":"x"}"#;
+        let err = parse_megavid_source_response(json).unwrap_err();
+        assert!(err.contains('x'), "expected error to contain 'x', got: {err}");
+    }
+
+    #[test]
+    fn parse_megavid_source_response_returns_err_on_countdown() {
+        let json = r#"{"status":"countdown","iframeUrl":"https://megavid.buzz/countdown"}"#;
+        let err = parse_megavid_source_response(json).unwrap_err();
+        assert!(err.contains("countdown"), "expected error to contain countdown, got: {err}");
+    }
+
+    #[test]
+    fn parse_megavid_source_response_returns_err_on_garbage() {
+        let err = parse_megavid_source_response("not valid json at all").unwrap_err();
+        assert!(!err.is_empty());
+    }
+
+    #[test]
+    fn parse_megavid_source_response_returns_err_on_ok_with_empty_source() {
+        let json = r#"{"status":"ok","source":""}"#;
+        let err = parse_megavid_source_response(json).unwrap_err();
+        assert!(err.contains("empty source"), "expected error to mention empty source, got: {err}");
+
+        let json_spaces = r#"{"status":"ok","source":"   "}"#;
+        assert!(parse_megavid_source_response(json_spaces).is_err());
+
+        let json_missing_source = r#"{"status":"ok"}"#;
+        assert!(parse_megavid_source_response(json_missing_source).is_err());
+    }
+
+    #[test]
+    fn pick_episode_url_exact_match() {
+        let episodes = vec![
+            ("1".to_string(), "https://site/ep1".to_string()),
+            ("2".to_string(), "https://site/ep2".to_string()),
+        ];
+        assert_eq!(
+            pick_episode_url(&episodes, 1.0),
+            Some("https://site/ep1".to_string())
+        );
+        assert_eq!(
+            pick_episode_url(&episodes, 2.0),
+            Some("https://site/ep2".to_string())
+        );
+    }
+
+    #[test]
+    fn pick_episode_url_leading_zero_style() {
+        let episodes = vec![
+            ("01".to_string(), "https://site/ep01".to_string()),
+            ("02".to_string(), "https://site/ep02".to_string()),
+        ];
+        assert_eq!(
+            pick_episode_url(&episodes, 1.0),
+            Some("https://site/ep01".to_string())
+        );
+    }
+
+    #[test]
+    fn pick_episode_url_decimal_episodes() {
+        let episodes = vec![
+            ("12".to_string(), "https://site/ep12".to_string()),
+            ("12.5".to_string(), "https://site/ep12_5".to_string()),
+            ("13".to_string(), "https://site/ep13".to_string()),
+        ];
+        assert_eq!(
+            pick_episode_url(&episodes, 12.5),
+            Some("https://site/ep12_5".to_string())
+        );
+    }
+
+    #[test]
+    fn pick_episode_url_no_match() {
+        let episodes = vec![
+            ("1".to_string(), "https://site/ep1".to_string()),
+            ("2".to_string(), "https://site/ep2".to_string()),
+            ("OVA".to_string(), "https://site/ova".to_string()),
+        ];
+        assert_eq!(pick_episode_url(&episodes, 3.0), None);
+    }
+
+    #[test]
+    fn pick_episode_url_empty_list() {
+        let episodes: &[(String, String)] = &[];
+        assert_eq!(pick_episode_url(episodes, 1.0), None);
     }
 }
