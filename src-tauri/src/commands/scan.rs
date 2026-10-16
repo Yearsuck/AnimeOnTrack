@@ -404,22 +404,32 @@ pub async fn list_airing(state: State<'_, AppState>) -> Result<Vec<Series>, Stri
 /// 2026-07 addendum: a scraped first episode (`db::first_episode_dates`) is
 /// preferred when present — day-accurate, from the actual episode — with a
 /// fallback to the locally-synced AniList catalog's `start_date`
-/// (`db::catalog_start_dates_by_normalized_title`) so unfollowed/unopened
+/// (`db::catalog::build_catalog_airing_meta`) so unfollowed/unopened
 /// airing series (which have no scraped episode data at all) still resolve a
 /// verdict instead of being silently excluded. The catalog fallback requires
 /// a Catálogo sync to have populated `start_date`; still `None` when neither
 /// source has a date (title not found in the synced catalog, or synced
 /// before this field existed).
+///
+/// The lock covers only the reads: normalising ~22k catalog titles into the
+/// lookup maps runs after it is released, off the async runtime.
 #[tauri::command]
 pub async fn list_airing_season(state: State<'_, AppState>) -> Result<Vec<AiringItem>, String> {
     let src = get_source_id(&state)?;
-    let db = state.db.lock().unwrap();
-    let series = db.list_airing(src).map_err(|e| e.to_string())?;
-    let first_dates = db.first_episode_dates(src).map_err(|e| e.to_string())?;
-    let catalog_dates = db.catalog_start_dates_by_normalized_title().map_err(|e| e.to_string())?;
-    let catalog_banners = db.catalog_banners_by_normalized_title().map_err(|e| e.to_string())?;
-    let catalog_covers = db.catalog_covers_by_normalized_title().map_err(|e| e.to_string())?;
-    let catalog_scores = db.catalog_scores_by_normalized_title().map_err(|e| e.to_string())?;
+    let (series, first_dates, meta_rows, banners_and_scores) = {
+        let db = state.db.lock().unwrap();
+        let series = db.list_airing(src).map_err(|e| e.to_string())?;
+        let first_dates = db.first_episode_dates(src).map_err(|e| e.to_string())?;
+        let meta_rows = db.catalog_airing_meta_rows().map_err(|e| e.to_string())?;
+        let airing_ids: Vec<i64> = series.iter().map(|s| s.id).collect();
+        let banners_and_scores = db.series_banners_and_scores(&airing_ids).map_err(|e| e.to_string())?;
+        (series, first_dates, meta_rows, banners_and_scores)
+    };
+    let meta = tauri::async_runtime::spawn_blocking(move || {
+        Db::build_catalog_airing_meta(meta_rows)
+    })
+    .await
+    .map_err(|e| e.to_string())?;
     Ok(series
         .into_iter()
         .map(|mut s| {
@@ -430,17 +440,21 @@ pub async fn list_airing_season(state: State<'_, AppState>) -> Result<Vec<Airing
                 .map(|dt| dt.and_utc().timestamp());
             let norm = crate::matching::normalize_title(&s.title);
             let first_episode_at = scraped
-                .or_else(|| catalog_dates.get(&norm).copied());
+                .or_else(|| meta.start_dates.get(&norm).copied());
             // If series cover is not CSP-displayable, fall back to AniList catalog cover
             if !crate::db::is_csp_displayable_cover(s.cover_url.as_deref()) {
-                if let Some(cat_cover) = catalog_covers.get(&norm) {
+                if let Some(cat_cover) = meta.covers.get(&norm) {
                     s.cover_url = Some(cat_cover.clone());
                 }
             }
-            let banner_url = db.get_series_banner(s.id).ok().flatten()
-                .or_else(|| catalog_banners.get(&norm).cloned());
-            let score = db.get_series_score(s.id).ok().flatten()
-                .or_else(|| catalog_scores.get(&norm).copied());
+            let (series_banner, series_score) = banners_and_scores
+                .get(&s.id)
+                .cloned()
+                .unwrap_or((None, None));
+            let banner_url = series_banner
+                .or_else(|| meta.banners.get(&norm).cloned());
+            let score = series_score
+                .or_else(|| meta.scores.get(&norm).copied());
             AiringItem { series: s, first_episode_at, banner_url, score }
         })
         .collect())
