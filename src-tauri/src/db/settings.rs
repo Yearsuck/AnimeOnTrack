@@ -131,10 +131,36 @@ impl Db {
     /// the airing listing (see `commands::should_fetch_series`).
     pub fn set_last_checked_at(&self, series_id: i64) -> Result<()> {
         self.conn.execute(
-            "UPDATE series SET last_checked_at=datetime('now') WHERE id=?1",
+            "UPDATE series SET last_checked_at=datetime('now'), last_fetch_failed_at=NULL WHERE id=?1",
             [series_id],
         )?;
         Ok(())
+    }
+
+    /// Record that this series' episode-list fetch failed on every mirror
+    /// (see `commands::effective_check_age`).
+    pub fn set_last_fetch_failed_at(&self, series_id: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE series SET last_fetch_failed_at=datetime('now') WHERE id=?1",
+            [series_id],
+        )?;
+        Ok(())
+    }
+
+    /// Seconds since the last failed fetch, for the followed series of
+    /// `source_id` that have one (absent = no failure since the last success).
+    pub fn fetch_failure_ages_for_source(
+        &self,
+        source_id: i64,
+    ) -> Result<std::collections::HashMap<i64, i64>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, strftime('%s','now') - strftime('%s', last_fetch_failed_at)
+             FROM series WHERE source_id=?1 AND followed=1 AND last_fetch_failed_at IS NOT NULL",
+        )?;
+        let rows = stmt
+            .query_map([source_id], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?
+            .collect::<rusqlite::Result<std::collections::HashMap<i64, i64>>>()?;
+        Ok(rows)
     }
 
     /// Seconds since the last recorded episode-list fetch, or `None` if the
@@ -337,6 +363,27 @@ mod tests {
         db.set_last_checked_at(sid).unwrap();
         let age = db.last_checked_age_secs(sid).unwrap().expect("age after set");
         assert!((0..60).contains(&age), "freshly-set age should be ~0s, got {age}");
+    }
+
+    #[test]
+    fn fetch_failure_is_stamped_and_cleared_by_a_successful_check() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let sid = db.upsert_series(src, &mk_airing("a", "A", None)).unwrap();
+        db.set_followed(sid, true).unwrap();
+        let other = db.upsert_series(src, &mk_airing("b", "B", None)).unwrap();
+        db.set_followed(other, true).unwrap();
+
+        assert!(db.fetch_failure_ages_for_source(src).unwrap().is_empty());
+        db.set_last_fetch_failed_at(sid).unwrap();
+        let ages = db.fetch_failure_ages_for_source(src).unwrap();
+        let age = *ages.get(&sid).expect("stamped series is in the map");
+        assert!((0..60).contains(&age), "fresh failure age ~0s, got {age}");
+        assert!(!ages.contains_key(&other), "never-failed series is absent");
+
+        // A later successful fetch forgets the failure.
+        db.set_last_checked_at(sid).unwrap();
+        assert!(db.fetch_failure_ages_for_source(src).unwrap().is_empty());
     }
 
     #[test]

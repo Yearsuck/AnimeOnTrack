@@ -483,6 +483,11 @@ impl Db {
         // with this set.
         ensure_column(&self.conn, "series", "follow_declined_at", "TEXT")?;
 
+        // Remembered failure, so a dead page is not re-fetched on every
+        // refresh: the episode-list fetch failed (every mirror errored or
+        // parsed empty, e.g. a 404); cleared by the next successful fetch.
+        ensure_column(&self.conn, "series", "last_fetch_failed_at", "TEXT")?;
+
         // One-shot: `sync_seen_progress_across_sites` used to stamp
         // `sync_watermark_applied` with the requested cross-site ceiling
         // instead of what a cascade could actually reach on a row whose own
