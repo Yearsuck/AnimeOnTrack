@@ -91,13 +91,25 @@ pub async fn set_player_settings(
 
 
 /// Mark an episode seen or unseen (persisted). When marking seen, any
-/// downloaded video file for the episode is automatically deleted from disk.
+/// downloaded video file for the episode is automatically deleted from disk
+/// if auto-delete is enabled in settings.
 #[tauri::command]
-pub async fn set_seen(state: State<'_, AppState>, episode_id: i64, seen: bool) -> Result<(), String> {
-    let db = state.db.lock().unwrap();
-    db.set_seen(episode_id, seen).map_err(|e| e.to_string())?;
-    if seen {
-        cleanup_downloads(&db, &[episode_id]);
+pub async fn set_seen(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    episode_id: i64,
+    seen: bool,
+) -> Result<(), String> {
+    let (should_cleanup, downloads_dir) = {
+        let db = state.db.lock().unwrap();
+        db.set_seen(episode_id, seen).map_err(|e| e.to_string())?;
+        let auto_delete = db.get_auto_delete_seen_downloads().unwrap_or(true);
+        let dir = app.path().app_data_dir().ok().map(|d| d.join("downloads"));
+        (seen && auto_delete, dir)
+    };
+    if should_cleanup {
+        let db = state.db.lock().unwrap();
+        cleanup_downloads(&db, &[episode_id], downloads_dir.as_deref());
     }
     Ok(())
 }
@@ -105,9 +117,11 @@ pub async fn set_seen(state: State<'_, AppState>, episode_id: i64, seen: bool) -
 /// Mark an episode seen/unseen, cascading to keep watching gap-free: marking
 /// seen also marks every earlier episode of the series seen; marking unseen
 /// also marks every later one unseen. When marking seen, downloaded video
-/// files for all affected episodes are automatically deleted from disk.
+/// files for all affected episodes are automatically deleted from disk
+/// if auto-delete is enabled in settings.
 #[tauri::command]
 pub async fn set_seen_cascade(
+    app: AppHandle,
     state: State<'_, AppState>,
     series_id: i64,
     number: String,
@@ -146,37 +160,88 @@ pub async fn set_seen_cascade(
     };
     db.set_seen_cascade_in(series_id, &sids, &number, seen)
         .map_err(|e| e.to_string())?;
-    if seen && !affected_ids.is_empty() {
-        cleanup_downloads(&db, &affected_ids);
+    let auto_delete = db.get_auto_delete_seen_downloads().unwrap_or(true);
+    let downloads_dir = app.path().app_data_dir().ok().map(|d| d.join("downloads"));
+    drop(db);
+
+    if seen && auto_delete && !affected_ids.is_empty() {
+        let db = state.db.lock().unwrap();
+        cleanup_downloads(&db, &affected_ids, downloads_dir.as_deref());
     }
     Ok(())
 }
 
 /// Hard-delete a series row outright — used for "Eliminar del todo" on
 /// discarded backlog rows, which never have episodes so this is always
-/// safe there.
+/// safe there. Also cleans up any downloaded files and the series directory.
 #[tauri::command]
-pub async fn delete_series(state: State<'_, AppState>, series_id: i64) -> Result<(), String> {
-    let db = state.db.lock().unwrap();
-    db.delete_series(series_id).map_err(|e| e.to_string())
+pub async fn delete_series(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    series_id: i64,
+) -> Result<(), String> {
+    let running: Vec<i64> = {
+        let db = state.db.lock().unwrap();
+        db.list_series_episodes(series_id)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .filter(|e| e.download_status.as_deref() == Some("downloading"))
+            .map(|e| e.id)
+            .collect()
+    };
+    // A running download would otherwise finish into a folder of a series
+    // that no longer exists, leaving an orphan behind.
+    crate::commands::download::cancel_active(&running);
+    let (paths, downloads_dir) = {
+        let db = state.db.lock().unwrap();
+        let paths = db.series_downloaded_paths(series_id).unwrap_or_default();
+        db.delete_series(series_id).map_err(|e| e.to_string())?;
+        let dir = app.path().app_data_dir().ok().map(|d| d.join("downloads"));
+        (paths, dir)
+    };
+    if let Some(ref dir) = downloads_dir {
+        crate::commands::storage::delete_series_files_and_dir(dir, series_id, &paths);
+    }
+    Ok(())
 }
 
 /// Delete downloaded video files from disk and clear their DB columns.
 /// Best-effort: a missing file is not an error (the column is still cleared
-/// to avoid an orphaned "downloaded" state forever).
-fn cleanup_downloads(db: &crate::db::Db, episode_ids: &[i64]) {
+/// to avoid an orphaned "downloaded" state forever). Also removes parent
+/// series folder if it becomes empty.
+pub(crate) fn cleanup_downloads(
+    db: &crate::db::Db,
+    episode_ids: &[i64],
+    downloads_dir: Option<&std::path::Path>,
+) {
     match db.downloaded_paths(episode_ids) {
         Ok(paths) => {
             let mut cleaned = Vec::new();
             for (id, path) in &paths {
-                match std::fs::remove_file(path) {
-                    Ok(()) => cleaned.push(*id),
-                    Err(e) => {
-                        eprintln!("[download] failed to delete {path}: {e}");
-                        // Clear DB anyway — a missing file is better than a
-                        // perpetually-stuck "downloaded" badge.
-                        cleaned.push(*id);
+                let p = std::path::Path::new(path);
+                let can_delete = match downloads_dir {
+                    Some(dir) => crate::commands::storage::is_safe_file_in_dir(dir, p),
+                    None => p.is_file(),
+                };
+                if can_delete {
+                    match std::fs::remove_file(p) {
+                        Ok(()) => {
+                            cleaned.push(*id);
+                            if let Some(parent) = p.parent() {
+                                if let Some(dir) = downloads_dir {
+                                    crate::commands::storage::remove_empty_dir_in_dir(dir, parent);
+                                } else {
+                                    let _ = std::fs::remove_dir(parent);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("[download] failed to delete {path}: {e}");
+                            cleaned.push(*id);
+                        }
                     }
+                } else {
+                    cleaned.push(*id);
                 }
             }
             if !cleaned.is_empty() {
@@ -217,7 +282,7 @@ mod tests {
         db.set_download_status(ep_id, "downloaded", Some(temp_file.to_str().unwrap())).unwrap();
 
         // Call cleanup_downloads
-        cleanup_downloads(&db, &[ep_id]);
+        cleanup_downloads(&db, &[ep_id], None);
 
         // Verify the file was removed from disk
         assert!(!temp_file.exists(), "Downloaded file should be deleted upon cleanup");
@@ -260,7 +325,7 @@ mod tests {
         let affected_ids = db.episode_ids_in_cascade(sid, "3", true).unwrap();
         assert_eq!(affected_ids.len(), 3);
         db.set_seen_cascade(sid, "3", true).unwrap();
-        cleanup_downloads(&db, &affected_ids);
+        cleanup_downloads(&db, &affected_ids, None);
 
         // All 3 files should be deleted from disk
         for file in &temp_files {
@@ -274,6 +339,76 @@ mod tests {
             assert!(ep.download_path.is_none());
             assert!(ep.download_status.is_none());
         }
+    }
+
+    #[test]
+    fn cleanup_downloads_removes_series_dir_when_it_becomes_empty() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let sid = db.upsert_series(src, &crate::models::Series {
+            id: 0, slug: "test-dir-clean".into(), title: "Test Dir Clean".into(),
+            url: "https://site/tv/test-dir-clean/".into(), cover_url: None, is_airing: false, followed: true, next_episode_at: None, site_episode_count: None,
+        }).unwrap();
+
+        let (ep_id, _) = db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: sid, number: "1".into(), title: None,
+            url: "https://site/test-1".into(), released_at: None, seen: false,
+            download_path: None, download_status: None,
+        }).unwrap();
+
+        let temp_root = std::env::temp_dir().join(format!("aot_dl_dir_test_{}", sid));
+        let series_dir = temp_root.join(sid.to_string());
+        std::fs::create_dir_all(&series_dir).unwrap();
+        let ep_file = series_dir.join(format!("{}.mp4", ep_id));
+        std::fs::write(&ep_file, b"video").unwrap();
+
+        db.set_download_status(ep_id, "downloaded", Some(ep_file.to_str().unwrap())).unwrap();
+
+        cleanup_downloads(&db, &[ep_id], Some(&temp_root));
+
+        assert!(!ep_file.exists());
+        assert!(!series_dir.exists(), "Series folder should be removed when empty");
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    fn cleanup_downloads_preserves_series_dir_when_other_episodes_remain() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let sid = db.upsert_series(src, &crate::models::Series {
+            id: 0, slug: "test-dir-keep".into(), title: "Test Dir Keep".into(),
+            url: "https://site/tv/test-dir-keep/".into(), cover_url: None, is_airing: false, followed: true, next_episode_at: None, site_episode_count: None,
+        }).unwrap();
+
+        let (ep1, _) = db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: sid, number: "1".into(), title: None,
+            url: "https://site/test-1".into(), released_at: None, seen: false,
+            download_path: None, download_status: None,
+        }).unwrap();
+        let (ep2, _) = db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: sid, number: "2".into(), title: None,
+            url: "https://site/test-2".into(), released_at: None, seen: false,
+            download_path: None, download_status: None,
+        }).unwrap();
+
+        let temp_root = std::env::temp_dir().join(format!("aot_dl_dir_keep_{}", sid));
+        let series_dir = temp_root.join(sid.to_string());
+        std::fs::create_dir_all(&series_dir).unwrap();
+        let file1 = series_dir.join(format!("{}.mp4", ep1));
+        let file2 = series_dir.join(format!("{}.mp4", ep2));
+        std::fs::write(&file1, b"vid1").unwrap();
+        std::fs::write(&file2, b"vid2").unwrap();
+
+        db.set_download_status(ep1, "downloaded", Some(file1.to_str().unwrap())).unwrap();
+        db.set_download_status(ep2, "downloaded", Some(file2.to_str().unwrap())).unwrap();
+
+        // Cleanup only ep1
+        cleanup_downloads(&db, &[ep1], Some(&temp_root));
+
+        assert!(!file1.exists());
+        assert!(file2.exists());
+        assert!(series_dir.exists(), "Series folder should remain when other files are present");
+        let _ = std::fs::remove_dir_all(&temp_root);
     }
 }
 

@@ -1059,6 +1059,49 @@ impl Db {
         }
         Ok(cleaned)
     }
+
+    /// Returns all non-NULL `download_path` values for episodes of the given series.
+    pub fn series_downloaded_paths(&self, series_id: i64) -> Result<Vec<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT download_path FROM episodes WHERE series_id=?1 AND download_path IS NOT NULL")?;
+        let paths: Vec<String> = stmt
+            .query_map([series_id], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(paths)
+    }
+
+    /// Episode ids whose download is in flight or finished. Their files are
+    /// never orphans, even before the row's `download_path` is written.
+    pub fn download_tracked_episode_ids(&self) -> Result<std::collections::HashSet<i64>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id FROM episodes WHERE download_status IN ('downloading', 'downloaded')",
+        )?;
+        let ids = stmt
+            .query_map([], |r| r.get::<_, i64>(0))?
+            .collect::<rusqlite::Result<std::collections::HashSet<_>>>()?;
+        Ok(ids)
+    }
+
+    /// Returns canonicalized `PathBuf`s for all episodes with `download_status = 'downloaded'`.
+    pub fn downloaded_episode_canonical_paths(&self) -> Result<std::collections::HashSet<std::path::PathBuf>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT download_path FROM episodes WHERE download_status = 'downloaded' AND download_path IS NOT NULL",
+        )?;
+        let paths: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut set = std::collections::HashSet::new();
+        for p in paths {
+            let path = std::path::PathBuf::from(&p);
+            if let Ok(canon) = path.canonicalize() {
+                set.insert(canon);
+            } else {
+                set.insert(path);
+            }
+        }
+        Ok(set)
+    }
 }
 
 #[cfg(test)]
@@ -2665,5 +2708,47 @@ mod tests {
 
         let ctx_earlier = db.download_search_context(ep_cumul_20).unwrap();
         assert!(ctx_earlier.is_none());
+    }
+
+    #[test]
+    fn series_downloaded_paths_and_canonical_paths() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("TioAnime", "https://tioanime.com", "tioanime").unwrap();
+        let sid = db.upsert_series(src, &crate::models::Series {
+            id: 0,
+            slug: "test-dl".into(),
+            title: "Test DL".into(),
+            url: "https://tioanime.com/anime/test-dl".into(),
+            cover_url: None,
+            is_airing: false,
+            followed: true,
+            next_episode_at: None,
+            site_episode_count: None,
+        }).unwrap();
+
+        let (ep1, _) = db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: sid, number: "1".into(), title: None,
+            url: "https://tioanime.com/ver/test-1".into(), released_at: None, seen: false,
+            download_path: None, download_status: None,
+        }).unwrap();
+        let (ep2, _) = db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: sid, number: "2".into(), title: None,
+            url: "https://tioanime.com/ver/test-2".into(), released_at: None, seen: false,
+            download_path: None, download_status: None,
+        }).unwrap();
+
+        let path1 = "/tmp/fake_dl_1.mp4";
+        let path2 = "/tmp/fake_dl_2.mp4";
+        db.set_download_status(ep1, "downloaded", Some(path1)).unwrap();
+        db.set_download_status(ep2, "downloading", Some(path2)).unwrap();
+
+        let paths = db.series_downloaded_paths(sid).unwrap();
+        assert_eq!(paths.len(), 2);
+        assert!(paths.contains(&path1.to_string()));
+        assert!(paths.contains(&path2.to_string()));
+
+        let canon_set = db.downloaded_episode_canonical_paths().unwrap();
+        assert_eq!(canon_set.len(), 1);
+        assert!(canon_set.contains(std::path::Path::new(path1)));
     }
 }

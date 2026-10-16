@@ -309,6 +309,7 @@ fn record_relaunch(path: &std::path::Path, now_secs: u64) -> std::io::Result<()>
 /// I/O errors so the watchdog never panics over a log-write failure.
 fn append_to_log(path: &std::path::Path, line: &str) {
     use std::io::Write;
+    let _ = crate::commands::rotate_log_if_exceeds(path, 512 * 1024);
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
