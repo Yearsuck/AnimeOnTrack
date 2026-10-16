@@ -636,6 +636,27 @@ fn should_fetch_series(
     }
 }
 
+/// How long a failed episode-list fetch holds off the time-based rechecks.
+/// Short on purpose: one bad cycle (a Cloudflare 503, a timeout) must not
+/// push the next real check a whole `OFF_LISTING_RECHECK_SECS` away; a page
+/// that is gone for good is then retried every couple of hours instead of
+/// on every refresh.
+const FAILED_FETCH_RETRY_SECS: i64 = 2 * 3600;
+
+/// Age fed to `should_fetch_series`'s time-based rechecks. A failed fetch
+/// (every mirror errored or parsed empty, e.g. a page that now 404s) used to
+/// leave no trace, so a series off the listing that had never been fetched
+/// OK was fetched again on every refresh. A failure younger than
+/// `FAILED_FETCH_RETRY_SECS` now counts as a recent attempt; an older one is
+/// ignored and the last successful check decides, as before. Signals of a
+/// new episode (badge ahead, past countdown) do not look at this age.
+fn effective_check_age(checked: Option<i64>, failed: Option<i64>) -> Option<i64> {
+    match failed {
+        Some(f) if f < FAILED_FETCH_RETRY_SECS => Some(checked.map_or(f, |c| c.min(f))),
+        _ => checked,
+    }
+}
+
 /// Fetch one series' episode list across mirrors. `None` means "skip, keep
 /// cached data" (malformed stored URL, or every mirror failed/mismatched) —
 /// same not-an-error semantics `refresh()`'s loop always had here.
@@ -902,11 +923,12 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
     // from either map (no episode rows yet / theoretically impossible for
     // `last_checked_ages`) falls back to the same defaults the old
     // per-series calls used (0, and `None`).
-    let (max_numbers, checked_ages, linked_ids) = {
+    let (max_numbers, checked_ages, failed_ages, linked_ids) = {
         let db = state.db.lock().unwrap();
         (
             db.max_episode_numbers_for_source(src).map_err(|e| e.to_string())?,
             db.last_checked_ages_for_source(src).map_err(|e| e.to_string())?,
+            db.fetch_failure_ages_for_source(src).map_err(|e| e.to_string())?,
             db.followed_linked_series_ids(src).map_err(|e| e.to_string())?,
         )
     };
@@ -932,7 +954,10 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
     let mut idx = 0usize;
     for s in followed {
         let db_max_number = max_numbers.get(&s.id).copied().unwrap_or(0);
-        let checked_age = checked_ages.get(&s.id).copied().flatten();
+        let checked_age = effective_check_age(
+            checked_ages.get(&s.id).copied().flatten(),
+            failed_ages.get(&s.id).copied(),
+        );
         let on_listing = listing_slugs.as_ref().is_some_and(|set| set.contains(&s.slug));
         if should_fetch_series(
             force,
@@ -1012,7 +1037,10 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
         };
 
         for (s, result) in chunk.iter().zip(fetched) {
-            let Some((eps, working_mirror, path)) = result else { continue };
+            let Some((eps, working_mirror, path)) = result else {
+                let _ = state.db.lock().unwrap().set_last_fetch_failed_at(s.id);
+                continue;
+            };
             // A per-series DB error (a data-integrity problem this
             // particular series' scraped page happens to trip, a locked
             // file, whatever) must never abort the whole cycle — the other
@@ -1185,6 +1213,7 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
                     }
                     Err(err) => {
                         eprintln!("[cover] airing series {id} ({title}): direct download failed: {err}");
+                        let _ = state.db.lock().unwrap().record_cover_failure(id, &remote);
                     }
                 }
             }
@@ -1205,6 +1234,7 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
             Ok(data_uri) => {
                 if crate::cover_cache::is_placeholder_data_uri(&data_uri) {
                     eprintln!("[cover] airing series {id} ({title}): webview fallback returned a placeholder");
+                    let _ = state.db.lock().unwrap().record_cover_failure(id, &remote);
                 } else {
                     let db = state.db.lock().unwrap();
                     let _ = db.update_series_cover(id, &data_uri);
@@ -1212,6 +1242,7 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
             }
             Err(e) => {
                 eprintln!("[cover] airing series {id} ({title}): webview fallback failed: {e}");
+                let _ = state.db.lock().unwrap().record_cover_failure(id, &remote);
             }
         }
     }
@@ -1258,6 +1289,42 @@ mod tests {
     /// but Bug A (2026-07-12 airing-refresh fix) showed a future countdown
     /// alone can't justify skipping when the badge gives no signal at all —
     /// see `unknown_badge_with_future_countdown_uses_bounded_recheck` below.
+    /// A failed fetch counts as an attempt: the age-based rechecks wait from
+    /// whichever happened last, so a dead URL is not re-fetched every cycle.
+    #[test]
+    fn effective_check_age_takes_the_most_recent_attempt() {
+        assert_eq!(effective_check_age(None, None), None);
+        assert_eq!(effective_check_age(Some(100), None), Some(100));
+        assert_eq!(effective_check_age(None, Some(50)), Some(50));
+        assert_eq!(effective_check_age(Some(100), Some(50)), Some(50));
+        assert_eq!(effective_check_age(Some(10), Some(5000)), Some(10));
+        // An old failure no longer counts: the last success decides, so one
+        // transient failure cannot delay the next real check by a full window.
+        assert_eq!(effective_check_age(None, Some(FAILED_FETCH_RETRY_SECS)), None);
+        assert_eq!(
+            effective_check_age(Some(25 * 3600), Some(FAILED_FETCH_RETRY_SECS + 1)),
+            Some(25 * 3600)
+        );
+    }
+
+    /// The real case from the sandbox: an off-listing series whose page 404s
+    /// was never stamped as checked, so it was re-fetched on every refresh.
+    #[test]
+    fn off_listing_series_that_just_failed_is_not_refetched_until_the_recheck() {
+        let failed_an_hour_ago = effective_check_age(None, Some(3600));
+        assert!(!should_fetch_series(false, true, false, None, None, 0, failed_an_hour_ago, NOW));
+        let failed_hours_ago = effective_check_age(None, Some(FAILED_FETCH_RETRY_SECS));
+        assert!(should_fetch_series(false, true, false, None, None, 0, failed_hours_ago, NOW));
+        // Last good check 25 h ago, one failure 1 h ago: waits only for the
+        // short retry window, not another 24 h.
+        let transient = effective_check_age(Some(25 * 3600), Some(3600));
+        assert!(!should_fetch_series(false, true, false, None, None, 0, transient, NOW));
+        let transient_later = effective_check_age(Some(27 * 3600), Some(FAILED_FETCH_RETRY_SECS + 60));
+        assert!(should_fetch_series(false, true, false, None, None, 0, transient_later, NOW));
+        // A new-episode signal still wins over a recent failure.
+        assert!(should_fetch_series(false, true, true, None, Some(9), 5, failed_an_hour_ago, NOW));
+    }
+
     #[test]
     fn skip_when_next_episode_in_future_and_no_count_conflict() {
         // .sb = db_max+1: up to date under the verified next-episode-number

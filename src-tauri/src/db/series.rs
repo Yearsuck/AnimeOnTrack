@@ -649,6 +649,14 @@ impl Db {
                AND cover_url NOT LIKE 'data:%'
                AND cover_url NOT LIKE 'file:%'
                AND cover_url NOT LIKE 'asset:%'
+               -- Back off a URL that already failed: 6 h, doubling per
+               -- consecutive failure, capped at 7 days (`record_cover_failure`).
+               AND (
+                 cover_failed_url IS NULL OR cover_failed_at IS NULL
+                 OR cover_failed_url <> cover_url
+                 OR strftime('%s','now') - strftime('%s', cover_failed_at)
+                     >= MIN(21600 * (1 << MIN(MAX(cover_fail_count, 1) - 1, 5)), 604800)
+               )
              ORDER BY RANDOM()
              LIMIT ?1",
         )?;
@@ -656,6 +664,22 @@ impl Db {
             .query_map([limit], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
+    }
+
+    /// Remember that fetching `url` as this series' cover failed (direct
+    /// download and, where tried, the WebView2 fallback). Consecutive
+    /// failures of the same URL grow the backoff applied by
+    /// `airing_series_needing_cover_fetch`; a different URL starts over.
+    pub fn record_cover_failure(&self, series_id: i64, url: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE series SET
+                cover_fail_count = CASE WHEN cover_failed_url = ?2 THEN cover_fail_count + 1 ELSE 1 END,
+                cover_failed_url = ?2,
+                cover_failed_at = datetime('now')
+             WHERE id = ?1",
+            rusqlite::params![series_id, url],
+        )?;
+        Ok(())
     }
 
     /// Clear `file:` covers of `source_id` whose cached file no longer exists (the user
@@ -1608,6 +1632,40 @@ mod tests {
         db.update_series_cover(sid, "https://plain.site/x.jpg").unwrap();
         db.upsert_series(src, &mk_airing("x", "X", None)).unwrap();
         assert_eq!(stored_cover(&db, sid), None);
+    }
+
+    #[test]
+    fn a_failed_airing_cover_backs_off_until_its_url_changes_or_time_passes() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let mut dead = mk_airing("dead", "Dead Cover", None);
+        dead.cover_url = Some("https://dead.example/a.jpg".into());
+        let sid = db.upsert_series(src, &dead).unwrap();
+        assert_eq!(db.airing_series_needing_cover_fetch(20).unwrap().len(), 1);
+
+        db.record_cover_failure(sid, "https://dead.example/a.jpg").unwrap();
+        assert!(db.airing_series_needing_cover_fetch(20).unwrap().is_empty(), "just failed -> skipped");
+
+        // First backoff is 6 h.
+        db.conn.execute("UPDATE series SET cover_failed_at=datetime('now','-7 hours') WHERE id=?1", [sid]).unwrap();
+        assert_eq!(db.airing_series_needing_cover_fetch(20).unwrap().len(), 1, "6 h passed -> retried");
+
+        // Second failure of the same URL doubles it to 12 h.
+        db.record_cover_failure(sid, "https://dead.example/a.jpg").unwrap();
+        db.conn.execute("UPDATE series SET cover_failed_at=datetime('now','-7 hours') WHERE id=?1", [sid]).unwrap();
+        assert!(db.airing_series_needing_cover_fetch(20).unwrap().is_empty(), "12 h backoff after 2 failures");
+
+        // Capped at 7 days however many failures.
+        for _ in 0..20 {
+            db.record_cover_failure(sid, "https://dead.example/a.jpg").unwrap();
+        }
+        db.conn.execute("UPDATE series SET cover_failed_at=datetime('now','-8 days') WHERE id=?1", [sid]).unwrap();
+        assert_eq!(db.airing_series_needing_cover_fetch(20).unwrap().len(), 1, "cap is 7 days");
+
+        // A new URL from the site is tried at once.
+        db.record_cover_failure(sid, "https://dead.example/a.jpg").unwrap();
+        db.conn.execute("UPDATE series SET cover_url='https://cdn.example/new.jpg' WHERE id=?1", [sid]).unwrap();
+        assert_eq!(db.airing_series_needing_cover_fetch(20).unwrap().len(), 1, "different url -> no backoff");
     }
 
     #[test]
