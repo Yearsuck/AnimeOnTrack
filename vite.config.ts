@@ -34,6 +34,7 @@ export default defineConfig(async () => ({
   // react-force-graph-3d, d3-*) and React vendor into dedicated chunks so app
   // startup does not parse them until Stats is first visited.
   build: {
+    target: "chrome110",
     rollupOptions: {
       output: {
         manualChunks(id) {
