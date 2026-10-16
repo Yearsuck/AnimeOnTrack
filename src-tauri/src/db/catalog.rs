@@ -1,4 +1,5 @@
 use super::*;
+use crate::anilist::CatalogTag;
 use rusqlite::types::Value;
 use std::collections::HashMap;
 
@@ -1313,6 +1314,73 @@ impl Db {
         Ok(tags)
     }
 
+    pub fn list_catalog_genres_for(&self, ids: &[i64]) -> Result<HashMap<i64, Vec<String>>> {
+        let mut map: HashMap<i64, Vec<String>> = HashMap::with_capacity(ids.len());
+        if ids.is_empty() {
+            return Ok(map);
+        }
+        for &id in ids {
+            map.entry(id).or_default();
+        }
+
+        let mut unique_ids: Vec<i64> = ids.to_vec();
+        unique_ids.sort_unstable();
+        unique_ids.dedup();
+
+        for chunk in unique_ids.chunks(500) {
+            let placeholders = vec!["?"; chunk.len()].join(",");
+            let sql = format!(
+                "SELECT anilist_id, genre FROM anilist_catalog_genres \
+                 WHERE anilist_id IN ({placeholders}) \
+                 ORDER BY genre"
+            );
+            let mut stmt = self.conn.prepare(&sql)?;
+            let mut rows = stmt.query(rusqlite::params_from_iter(chunk.iter()))?;
+            while let Some(row) = rows.next()? {
+                let anilist_id: i64 = row.get(0)?;
+                let genre: String = row.get(1)?;
+                if let Some(list) = map.get_mut(&anilist_id) {
+                    list.push(genre);
+                }
+            }
+        }
+        Ok(map)
+    }
+
+    pub fn list_catalog_tags_for(&self, ids: &[i64]) -> Result<HashMap<i64, Vec<CatalogTag>>> {
+        let mut map: HashMap<i64, Vec<CatalogTag>> = HashMap::with_capacity(ids.len());
+        if ids.is_empty() {
+            return Ok(map);
+        }
+        for &id in ids {
+            map.entry(id).or_default();
+        }
+
+        let mut unique_ids: Vec<i64> = ids.to_vec();
+        unique_ids.sort_unstable();
+        unique_ids.dedup();
+
+        for chunk in unique_ids.chunks(500) {
+            let placeholders = vec!["?"; chunk.len()].join(",");
+            let sql = format!(
+                "SELECT anilist_id, tag, rank FROM anilist_catalog_tags \
+                 WHERE anilist_id IN ({placeholders}) \
+                 ORDER BY rank DESC, tag"
+            );
+            let mut stmt = self.conn.prepare(&sql)?;
+            let mut rows = stmt.query(rusqlite::params_from_iter(chunk.iter()))?;
+            while let Some(row) = rows.next()? {
+                let anilist_id: i64 = row.get(0)?;
+                let tag: String = row.get(1)?;
+                let rank: i64 = row.get(2)?;
+                if let Some(list) = map.get_mut(&anilist_id) {
+                    list.push(CatalogTag { name: tag, rank });
+                }
+            }
+        }
+        Ok(map)
+    }
+
     /// Stored PREQUEL/SEQUEL edges of one entry as (related id, relation type). Only read by tests today:
     /// `releasing_sequel_id` walks the table with its own prepared statements.
     #[cfg(test)]
@@ -1430,13 +1498,17 @@ impl Db {
     /// uniform — see docs/superpowers/specs/2026-07-13-discover-recommendation-toggle-design.md.
     // The knobs are all independent recommendation inputs; bundling them into
     // a struct would just move the same nine fields elsewhere.
+    /// Core implementation of `random_catalog_anime_in_genre_with_signals`, also accepting
+    /// `excluded_ids` so batches can exclude cards already picked in the same refill without
+    /// waiting for them to be saved to `series`.
     #[allow(clippy::too_many_arguments)]
-    pub fn random_catalog_anime_in_genre_with_signals(
+    pub fn random_catalog_anime_in_genre_with_signals_and_excluded_ids(
         &self,
         genre: &str,
         banned_formats: &[String],
         banned_genres: &[String],
         excluded_norm_titles: &std::collections::HashSet<String>,
+        excluded_ids: &std::collections::HashSet<i64>,
         genre_affinity: &std::collections::HashMap<String, f64>,
         format_affinity: &std::collections::HashMap<String, f64>,
         taste_signals: &crate::recommend::TasteSignals,
@@ -1504,6 +1576,14 @@ impl Db {
                  WHERE genre COLLATE NOCASE IN ({ph}))"
             )
         };
+        let mut sorted_excluded_ids: Vec<i64> = excluded_ids.iter().copied().collect();
+        sorted_excluded_ids.sort_unstable();
+        let excluded_id_clause = if sorted_excluded_ids.is_empty() {
+            String::new()
+        } else {
+            let ph = sorted_excluded_ids.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+            format!("AND c.id NOT IN ({ph})")
+        };
         let sql = format!(
             "SELECT c.id, c.title, c.title_romaji, c.title_english, c.cover_url, c.banner_url, c.format, c.episodes, c.average_score, c.popularity, c.url, c.status, c.duration, c.studio, c.start_date, c.next_airing_at, c.next_episode
              FROM anilist_catalog c
@@ -1512,6 +1592,7 @@ impl Db {
                AND c.format IN ({placeholders})
                AND c.popularity >= ?
                AND c.id NOT IN (SELECT anilist_id FROM series WHERE anilist_id IS NOT NULL)
+               {excluded_id_clause}
                {banned_genre_clause}
                {upcoming_clause}
                {date_clause}
@@ -1523,8 +1604,11 @@ impl Db {
             params.push(Value::Text((*f).to_string()));
         }
         params.push(Value::Integer(MIN_POPULARITY));
+        for id in &sorted_excluded_ids {
+            params.push(Value::Integer(*id));
+        }
         // Bound in the same order the clauses appear in the SQL above: genre,
-        // formats, popularity, banned genres, date bounds, then score floor.
+        // formats, popularity, excluded ids, banned genres, date bounds, then score floor.
         for g in &banned_genres {
             params.push(Value::Text((*g).to_string()));
         }
@@ -1548,13 +1632,17 @@ impl Db {
                 .flatten()
                 .any(|t| excluded_norm_titles.contains(&crate::matching::normalize_title(t)))
         };
-        let mut survivors: Vec<crate::anilist::CatalogAnime> =
-            batch.into_iter().filter(|a| !is_engaged_by_title(a)).collect();
-        // A per-id list_catalog_tags loop is acceptable when survivors <= 50.
+        let mut survivors: Vec<crate::anilist::CatalogAnime> = batch
+            .into_iter()
+            .filter(|a| !excluded_ids.contains(&a.id) && !is_engaged_by_title(a))
+            .collect();
+        let survivor_ids: Vec<i64> = survivors.iter().map(|a| a.id).collect();
+        let mut genres_map = self.list_catalog_genres_for(&survivor_ids)?;
+        let mut tags_map = self.list_catalog_tags_for(&survivor_ids)?;
         for anime in &mut survivors {
-            anime.genres = self.list_catalog_genres(anime.id)?;
+            anime.genres = genres_map.remove(&anime.id).unwrap_or_default();
             if anime.tags.is_empty() {
-                anime.tags = self.list_catalog_tags(anime.id)?;
+                anime.tags = tags_map.remove(&anime.id).unwrap_or_default();
             }
         }
 
@@ -1571,6 +1659,42 @@ impl Db {
         } else {
             Ok(survivors.into_iter().next())
         }
+    }
+
+    /// Same pick with nothing excluded by id. The app calls the `_and_excluded_ids` form
+    /// (a deck batch excludes the cards it already picked); tests keep this shape.
+    #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn random_catalog_anime_in_genre_with_signals(
+        &self,
+        genre: &str,
+        banned_formats: &[String],
+        banned_genres: &[String],
+        excluded_norm_titles: &std::collections::HashSet<String>,
+        genre_affinity: &std::collections::HashMap<String, f64>,
+        format_affinity: &std::collections::HashMap<String, f64>,
+        taste_signals: &crate::recommend::TasteSignals,
+        recommended: bool,
+        hide_upcoming: bool,
+        min_start_date: Option<i64>,
+        max_start_date: Option<i64>,
+        min_score: Option<i64>,
+    ) -> Result<Option<crate::anilist::CatalogAnime>> {
+        self.random_catalog_anime_in_genre_with_signals_and_excluded_ids(
+            genre,
+            banned_formats,
+            banned_genres,
+            excluded_norm_titles,
+            &std::collections::HashSet::new(),
+            genre_affinity,
+            format_affinity,
+            taste_signals,
+            recommended,
+            hide_upcoming,
+            min_start_date,
+            max_start_date,
+            min_score,
+        )
     }
 
     /// Same pick without taste signals (tags/studios); the app calls `_with_signals`, tests keep this shape.
@@ -2131,6 +2255,37 @@ mod tests {
         let picked = db.random_catalog_anime_in_genre("Drama", &[], &[], &std::collections::HashSet::new(), &std::collections::HashMap::new(), &std::collections::HashMap::new(), true, false, None, None, None).unwrap().unwrap();
         assert_eq!(picked.id, 1);
         assert_eq!(picked.genres, vec!["Drama".to_string()]);
+    }
+
+    #[test]
+    fn random_catalog_pick_never_returns_an_excluded_id() {
+        let db = Db::open(":memory:").unwrap();
+        for id in 1..=3 {
+            db.upsert_catalog_anime(&catalog_anime_with_popularity(id, &format!("Show {id}"), &["Drama"], Some(1000)), id).unwrap();
+        }
+        let no_titles = std::collections::HashSet::new();
+        let none = std::collections::HashMap::new();
+        let signals = crate::recommend::TasteSignals::default();
+        let pick = |excluded: &std::collections::HashSet<i64>| {
+            db.random_catalog_anime_in_genre_with_signals_and_excluded_ids(
+                "Drama", &[], &[], &no_titles, excluded, &none, &none, &signals, false, false, None, None, None,
+            )
+            .unwrap()
+        };
+        // Whatever the random order, ids 1 and 2 excluded leaves exactly id 3.
+        let excluded: std::collections::HashSet<i64> = [1, 2].into_iter().collect();
+        for _ in 0..20 {
+            assert_eq!(pick(&excluded).unwrap().id, 3);
+        }
+        // All three excluded: nothing left.
+        let all: std::collections::HashSet<i64> = [1, 2, 3].into_iter().collect();
+        assert!(pick(&all).is_none());
+        // Repeated picks while excluding each result give three distinct cards, then none.
+        let mut seen = std::collections::HashSet::new();
+        while let Some(a) = pick(&seen) {
+            assert!(seen.insert(a.id), "id {} offered twice", a.id);
+        }
+        assert_eq!(seen.len(), 3);
     }
 
     #[test]
@@ -4867,5 +5022,128 @@ mod tests {
         let batch = db.series_banners_and_scores(&ids).unwrap();
         assert_eq!(batch.len(), 1);
         assert_eq!(batch.get(&sid), Some(&(Some("https://banner.jpg".to_string()), None)));
+    }
+
+    #[test]
+    fn list_catalog_genres_and_tags_for_matches_single_id_functions() {
+        let db = Db::open(":memory:").unwrap();
+
+        // Id 1: multiple genres, multiple tags with different and tied ranks
+        let mut a1 = catalog_anime(1, "Anime One", &["Drama", "Action", "Comedy"]);
+        a1.tags = vec![
+            CatalogTag { name: "Magic".into(), rank: 70 },
+            CatalogTag { name: "Isekai".into(), rank: 50 },
+            CatalogTag { name: "Adventure".into(), rank: 50 },
+            CatalogTag { name: "High Stakes".into(), rank: 90 },
+        ];
+        db.upsert_catalog_anime(&a1, 0).unwrap();
+
+        // Id 2: single genre, single tag
+        let mut a2 = catalog_anime(2, "Anime Two", &["Sci-Fi"]);
+        a2.tags = vec![CatalogTag { name: "Cyberpunk".into(), rank: 80 }];
+        db.upsert_catalog_anime(&a2, 1).unwrap();
+
+        // Id 3: no genres, no tags
+        let a3 = catalog_anime(3, "Anime Three", &[]);
+        db.upsert_catalog_anime(&a3, 2).unwrap();
+
+        // Id 4: not even in catalog
+        let id4 = 9999i64;
+
+        let ids = vec![1, 2, 3, id4];
+
+        let genres_batch = db.list_catalog_genres_for(&ids).unwrap();
+        let tags_batch = db.list_catalog_tags_for(&ids).unwrap();
+
+        for &id in &ids {
+            let single_genres = db.list_catalog_genres(id).unwrap();
+            let single_tags = db.list_catalog_tags(id).unwrap();
+
+            assert_eq!(
+                genres_batch.get(&id),
+                Some(&single_genres),
+                "batch genres for {id} must match single-id"
+            );
+            assert_eq!(
+                tags_batch.get(&id),
+                Some(&single_tags),
+                "batch tags for {id} must match single-id"
+            );
+        }
+
+        // Specifically check that empty / nonexistent ids have empty vecs
+        assert_eq!(genres_batch.get(&3), Some(&vec![]));
+        assert_eq!(tags_batch.get(&3), Some(&vec![]));
+        assert_eq!(genres_batch.get(&id4), Some(&vec![]));
+        assert_eq!(tags_batch.get(&id4), Some(&vec![]));
+
+        // Test chunking with > 500 ids
+        let mut large_ids = vec![1, 2];
+        for i in 1000..=1600 {
+            large_ids.push(i);
+        }
+        let large_genres = db.list_catalog_genres_for(&large_ids).unwrap();
+        let large_tags = db.list_catalog_tags_for(&large_ids).unwrap();
+        assert_eq!(large_genres.len(), large_ids.len());
+        assert_eq!(large_tags.len(), large_ids.len());
+        assert_eq!(large_genres.get(&1), Some(&db.list_catalog_genres(1).unwrap()));
+        assert_eq!(large_tags.get(&1), Some(&db.list_catalog_tags(1).unwrap()));
+    }
+
+    #[test]
+    fn batch_of_5_from_catalog_with_8_titles_returns_5_distinct_titles() {
+        let db = Db::open(":memory:").unwrap();
+        for i in 1..=8 {
+            let mut a = catalog_anime_with_popularity(i, &format!("Show {i}"), &["Drama"], Some(1000));
+            a.format = Some("TV".into());
+            db.upsert_catalog_anime(&a, i).unwrap();
+        }
+
+        let mut picked_titles = std::collections::HashSet::new();
+        let mut picked_ids = std::collections::HashSet::new();
+        let mut excluded_norm_titles = std::collections::HashSet::new();
+        let mut excluded_ids = std::collections::HashSet::new();
+
+        for _ in 0..5 {
+            let picked = db
+                .random_catalog_anime_in_genre_with_signals_and_excluded_ids(
+                    "Drama",
+                    &[],
+                    &[],
+                    &excluded_norm_titles,
+                    &excluded_ids,
+                    &std::collections::HashMap::new(),
+                    &std::collections::HashMap::new(),
+                    &crate::recommend::TasteSignals::default(),
+                    false, // random pick
+                    false,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap()
+                .expect("should pick an anime from eligible pool");
+
+            assert!(picked.id >= 1 && picked.id <= 8, "membership check");
+            assert!(!picked_ids.contains(&picked.id), "must be distinct id");
+            assert!(!picked_titles.contains(&picked.title), "must be distinct title");
+
+            picked_ids.insert(picked.id);
+            picked_titles.insert(picked.title.clone());
+            excluded_ids.insert(picked.id);
+            excluded_norm_titles.insert(crate::matching::normalize_title(&picked.title));
+        }
+
+        assert_eq!(picked_titles.len(), 5);
+        assert_eq!(picked_ids.len(), 5);
+    }
+
+    #[test]
+    fn catalog_batch_count_clamping() {
+        assert_eq!(0u32.clamp(1, 20), 1);
+        assert_eq!(100u32.clamp(1, 20), 20);
+        assert_eq!(5u32.clamp(1, 20), 5);
+        assert_eq!(1u32.clamp(1, 20), 1);
+        assert_eq!(20u32.clamp(1, 20), 20);
     }
 }

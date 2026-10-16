@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   decideCatalogCard,
   discoverCatalogCard,
+  discoverCatalogCards,
   listSwipeHistory,
   openEpisode,
   reclassifySeries,
@@ -103,9 +104,10 @@ export function SwipeView() {
         for (let round = 0; round < MAX_FILL_ROUNDS && queueRef.current.length < PREFETCH_TARGET; round++) {
           const need = PREFETCH_TARGET - queueRef.current.length;
           const recommended = discoverModeRef.current === "recommended";
-          const results = await Promise.all(
-            Array.from({ length: need }, () => discoverCatalogCard(recommended))
-          );
+          // One call for the whole round: the backend does the per-refill setup once
+          // and returns distinct cards, instead of `need` calls repeating it (and each
+          // holding the db lock for the whole of it).
+          const results = await discoverCatalogCards(recommended, need);
           // resetQueue fired while this round was in flight (e.g. the deck
           // panel just saved new filters) — these results were requested
           // before that, discard them rather than refilling the just-cleared
@@ -119,7 +121,7 @@ export function SwipeView() {
           // SAME round returning the same not-yet-persisted card.
           const fresh: SwipeCard[] = [];
           for (const c of results) {
-            if (c !== null && !seen.has(c.url)) {
+            if (!seen.has(c.url)) {
               seen.add(c.url);
               fresh.push(c);
             }
