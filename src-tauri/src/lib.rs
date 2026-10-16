@@ -96,6 +96,7 @@ fn install_panic_log(dir: &std::path::Path) {
             .location()
             .map(|l| format!("{}:{}", l.file(), l.line()))
             .unwrap_or_else(|| "unknown location".to_string());
+        let _ = crate::commands::rotate_log_if_exceeds(&log_path, 512 * 1024);
         if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&log_path) {
             let _ = writeln!(f, "[{when}] panic at {location}: {info}");
         }
@@ -277,6 +278,13 @@ pub fn run() {
             commands::clear_all_downloads,
             commands::export_diagnostics,
             commands::reveal_in_folder,
+            commands::scan_download_orphans,
+            commands::delete_download_orphans,
+            commands::get_storage_report,
+            commands::get_auto_delete_seen_downloads,
+            commands::set_auto_delete_seen_downloads,
+            commands::get_download_quality,
+            commands::set_download_quality,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

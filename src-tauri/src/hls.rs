@@ -282,7 +282,6 @@ pub fn best_variant(variants: &[Variant]) -> Option<&Variant> {
 /// variant with height <= preferred. If none exist with height <= preferred, returns
 /// the lowest variant above preferred (breaking ties by highest bandwidth).
 /// Returns `None` for an empty slice.
-#[allow(dead_code)] // Consumed by the downloader in the next commit.
 pub fn select_variant(variants: &[Variant], preferred_height: Option<u32>) -> Option<&Variant> {
     let pref = match preferred_height {
         Some(h) => h,

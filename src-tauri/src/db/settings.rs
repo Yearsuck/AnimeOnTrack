@@ -267,6 +267,37 @@ impl Db {
         let clamped = if v.is_nan() { 0.0 } else { v.clamp(-1.0, 1.0) };
         self.set_setting("discover_niche_bias", &format!("{:.2}", clamped))
     }
+
+    /// Quality preference for offline downloads: "best" (default), "1080", "720", "480".
+    pub fn get_download_quality(&self) -> Result<String> {
+        Ok(self.get_setting("download_quality")?.unwrap_or_else(|| "best".to_string()))
+    }
+
+    pub fn set_download_quality(&self, quality: &str) -> Result<()> {
+        let val = match quality {
+            "1080" => "1080",
+            "720" => "720",
+            "480" => "480",
+            _ => "best",
+        };
+        self.set_setting("download_quality", val)
+    }
+
+    /// Whether downloaded episodes are automatically deleted when marked as seen.
+    /// Default: true (preserves existing behavior).
+    pub fn get_auto_delete_seen_downloads(&self) -> Result<bool> {
+        Ok(self
+            .get_setting("auto_delete_seen_downloads")?
+            .map(|v| v == "true")
+            .unwrap_or(true))
+    }
+
+    pub fn set_auto_delete_seen_downloads(&self, enabled: bool) -> Result<()> {
+        self.set_setting(
+            "auto_delete_seen_downloads",
+            if enabled { "true" } else { "false" },
+        )
+    }
 }
 
 #[cfg(test)]
@@ -444,6 +475,39 @@ mod tests {
         // garbage string stored under the key -> 0.0
         db.set_setting("discover_niche_bias", "not-a-number").unwrap();
         assert_eq!(db.get_discover_niche().unwrap(), 0.0);
+    }
+
+    #[test]
+    fn download_quality_defaults_and_roundtrips() {
+        let db = Db::open(":memory:").unwrap();
+        // Default is "best"
+        assert_eq!(db.get_download_quality().unwrap(), "best");
+
+        db.set_download_quality("720").unwrap();
+        assert_eq!(db.get_download_quality().unwrap(), "720");
+
+        db.set_download_quality("1080").unwrap();
+        assert_eq!(db.get_download_quality().unwrap(), "1080");
+
+        db.set_download_quality("480").unwrap();
+        assert_eq!(db.get_download_quality().unwrap(), "480");
+
+        // Invalid value normalizes to "best"
+        db.set_download_quality("invalid_quality").unwrap();
+        assert_eq!(db.get_download_quality().unwrap(), "best");
+    }
+
+    #[test]
+    fn auto_delete_seen_downloads_defaults_and_roundtrips() {
+        let db = Db::open(":memory:").unwrap();
+        // Default is true
+        assert!(db.get_auto_delete_seen_downloads().unwrap());
+
+        db.set_auto_delete_seen_downloads(false).unwrap();
+        assert!(!db.get_auto_delete_seen_downloads().unwrap());
+
+        db.set_auto_delete_seen_downloads(true).unwrap();
+        assert!(db.get_auto_delete_seen_downloads().unwrap());
     }
 }
 

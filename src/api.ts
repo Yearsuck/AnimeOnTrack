@@ -320,3 +320,38 @@ export const getSeriesBanner = (seriesId: number) =>
 export const exportDiagnostics = () => invoke<string>("export_diagnostics");
 export const revealInFolder = (path: string) =>
   invoke<void>("reveal_in_folder", { path });
+
+export interface OrphanFile {
+  path: string;
+  size_bytes: number;
+}
+
+export interface StorageReport {
+  downloads_bytes: number;
+  sqlite_bytes: number;
+  covers_bytes: number;
+  logs_bytes: number;
+  orphan_bytes: number;
+}
+
+export const scanDownloadOrphans = () =>
+  invoke<OrphanFile[]>("scan_download_orphans");
+
+export const deleteDownloadOrphans = (paths: string[]) =>
+  invoke<number>("delete_download_orphans", { paths });
+
+export const getStorageReport = () =>
+  invoke<StorageReport>("get_storage_report");
+
+export const getAutoDeleteSeenDownloads = () =>
+  invoke<boolean>("get_auto_delete_seen_downloads");
+
+export const setAutoDeleteSeenDownloads = (enabled: boolean) =>
+  invoke<void>("set_auto_delete_seen_downloads", { enabled });
+
+export const getDownloadQuality = () =>
+  invoke<string>("get_download_quality");
+
+export const setDownloadQuality = (quality: string) =>
+  invoke<void>("set_download_quality", { quality });
+
