@@ -619,6 +619,20 @@ export function StatsGraph({
     setWidth(el.clientWidth);
   }, [active]);
 
+  // Stats stays mounted while hidden; without this the force graph keeps its
+  // requestAnimationFrame loop running. `hasGraph` re-runs the effect when the
+  // ForceGraph3D instance first appears (or is remounted) while hidden.
+  const hasGraph = seriesList.length > 0;
+  useEffect(() => {
+    const fg = graphRef.current;
+    if (!fg) return;
+    if (active) {
+      fg.resumeAnimation();
+    } else {
+      fg.pauseAnimation();
+    }
+  }, [active, hasGraph]);
+
   useEffect(() => {
     const fg = graphRef.current as unknown as
       | { width?: (v: number) => void; height?: (v: number) => void }
