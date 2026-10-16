@@ -250,6 +250,7 @@ pub fn run() {
             commands::import_library_to_active_site,
             commands::get_catalog_info_for_series,
             commands::discover_catalog_card,
+            commands::discover_catalog_cards,
             commands::decide_catalog_card,
             commands::link_catalog_series,
             commands::list_swipe_history,
