@@ -2,11 +2,6 @@ import { Suspense, lazy, useCallback, useEffect, useRef, useState } from "react"
 import { Onboarding } from "./views/Onboarding";
 import { AiringGrid } from "./views/AiringGrid";
 import { Pending } from "./views/Pending";
-import { SeriesDetail } from "./views/SeriesDetail";
-import { Settings } from "./views/Settings";
-import { Library } from "./views/Library";
-import { Descubrir } from "./views/Descubrir";
-import { Catalog } from "./views/Catalog";
 import { ProgressBar } from "./views/ProgressBar";
 import { WindowControls } from "./views/WindowControls";
 import { ShortcutsOverlay } from "./views/ShortcutsOverlay";
@@ -28,10 +23,25 @@ import { notifyNewEpisodes, readNotifyPref, shouldNotify } from "./lib/notify";
 import { useT } from "./i18n";
 import type { Series } from "./types";
 
+const loadLibrary = () => import("./views/Library");
+const Library = lazy(() => loadLibrary().then((m) => ({ default: m.Library })));
+
+const loadDescubrir = () => import("./views/Descubrir");
+const Descubrir = lazy(() => loadDescubrir().then((m) => ({ default: m.Descubrir })));
+
+const loadCatalog = () => import("./views/Catalog");
+const Catalog = lazy(() => loadCatalog().then((m) => ({ default: m.Catalog })));
+
 // Lazy-loaded to defer heavy 3D graph dependencies (three, react-force-graph-3d)
 // until Estadísticas is first visited.
 const loadStats = () => import("./views/Stats");
 const Stats = lazy(() => loadStats().then((m) => ({ default: m.Stats })));
+
+const loadSettings = () => import("./views/Settings");
+const Settings = lazy(() => loadSettings().then((m) => ({ default: m.Settings })));
+
+const loadSeriesDetail = () => import("./views/SeriesDetail");
+const SeriesDetail = lazy(() => loadSeriesDetail().then((m) => ({ default: m.SeriesDetail })));
 
 type View =
   | "loading"
@@ -328,12 +338,20 @@ export default function App() {
       </>
     );
 
+  const preloadTab = (id: View) => {
+    if (id === "library") void loadLibrary();
+    else if (id === "descubrir") void loadDescubrir();
+    else if (id === "catalog") void loadCatalog();
+    else if (id === "stats") void loadStats();
+    else if (id === "settings") void loadSettings();
+  };
+
   const Tab = ({ id, label }: { id: View; label: string }) => (
     <button
       className={`tab ${view === id ? "active" : ""}`}
       onClick={() => navigate(id)}
-      onMouseEnter={id === "stats" ? () => void loadStats() : undefined}
-      onFocus={id === "stats" ? () => void loadStats() : undefined}
+      onMouseEnter={() => preloadTab(id)}
+      onFocus={() => preloadTab(id)}
     >
       {label}
       {id === "pending" && pending > 0 && <span className="badge">{pending}</span>}
@@ -387,27 +405,33 @@ export default function App() {
         )}
         {view === "library" && (
           <div className="view-panel" ref={panelRef}>
-            <Library
-              onOpenSeries={setSelected}
-              onGoToListas={() => {
-                setDescubrirSubView("listas");
-                navigate("descubrir");
-              }}
-            />
+            <Suspense fallback={<div className="empty">{t("common.loading")}</div>}>
+              <Library
+                onOpenSeries={setSelected}
+                onGoToListas={() => {
+                  setDescubrirSubView("listas");
+                  navigate("descubrir");
+                }}
+              />
+            </Suspense>
           </div>
         )}
         {view === "descubrir" && (
           <div className="view-panel" ref={panelRef}>
-            <Descubrir
-              onOpenSeries={setSelected}
-              initialSubView={descubrirSubView}
-              onSubViewChange={setDescubrirSubView}
-            />
+            <Suspense fallback={<div className="empty">{t("common.loading")}</div>}>
+              <Descubrir
+                onOpenSeries={setSelected}
+                initialSubView={descubrirSubView}
+                onSubViewChange={setDescubrirSubView}
+              />
+            </Suspense>
           </div>
         )}
         {view === "catalog" && (
           <div className="view-panel" ref={panelRef}>
-            <Catalog onChanged={onPendingDataChanged} />
+            <Suspense fallback={<div className="empty">{t("common.loading")}</div>}>
+              <Catalog onChanged={onPendingDataChanged} />
+            </Suspense>
           </div>
         )}
         {statsVisited && (
@@ -430,7 +454,9 @@ export default function App() {
         )}
         {view === "settings" && (
           <div className="view-panel" ref={panelRef}>
-            <Settings onSiteChanged={onSiteChanged} />
+            <Suspense fallback={<div className="empty">{t("common.loading")}</div>}>
+              <Settings onSiteChanged={onSiteChanged} />
+            </Suspense>
           </div>
         )}
 
@@ -441,11 +467,13 @@ export default function App() {
                 episodes seen. `onPendingDataChanged` reloads that list
                 underneath, so closing the overlay reveals the real state
                 instead of the rows it just cleared. */}
-            <SeriesDetail
-              series={selected}
-              onBack={() => setSelected(null)}
-              onChanged={onPendingDataChanged}
-            />
+            <Suspense fallback={<div className="empty">{t("common.loading")}</div>}>
+              <SeriesDetail
+                series={selected}
+                onBack={() => setSelected(null)}
+                onChanged={onPendingDataChanged}
+              />
+            </Suspense>
           </div>
         )}
       </div>

@@ -37,9 +37,14 @@ function saveTab(tab: SettingsTab) {
 export function Settings({ onSiteChanged }: { onSiteChanged?: (site: SiteSummary) => void }) {
   const t = useT();
   const [activeTab, setActiveTab] = useState<SettingsTab>(getInitialTab);
+  // A panel mounts on its first visit (so tabs never opened fire no IPC) and
+  // then stays mounted, hidden: unsaved mirrors/credentials and a running
+  // library import must survive switching tabs.
+  const [visited, setVisited] = useState<ReadonlySet<SettingsTab>>(() => new Set([activeTab]));
 
   const selectTab = (tab: SettingsTab) => {
     setActiveTab(tab);
+    setVisited((prev) => (prev.has(tab) ? prev : new Set(prev).add(tab)));
     saveTab(tab);
   };
 
@@ -98,48 +103,64 @@ export function Settings({ onSiteChanged }: { onSiteChanged?: (site: SiteSummary
         </nav>
 
         <div className="settings-panels">
-                      <section
-              hidden={activeTab !== "general"}
-              id="panel-general"
-              role="tabpanel"
-              aria-labelledby="tab-general"
-              className="settings-panel"
-            >
-              <AppearanceSection />
-              <PlayerSettingsCard />
-            </section>
+          <section
+            hidden={activeTab !== "general"}
+            id="panel-general"
+            role="tabpanel"
+            aria-labelledby="tab-general"
+            className="settings-panel"
+          >
+            {visited.has("general") && (
+              <>
+                <AppearanceSection />
+                <PlayerSettingsCard />
+              </>
+            )}
+          </section>
 
-                      <section
-              hidden={activeTab !== "sources"}
-              id="panel-sources"
-              role="tabpanel"
-              aria-labelledby="tab-sources"
-              className="settings-panel"
-            >
-              <SourcesSection onSiteChanged={onSiteChanged} />
-            </section>
+          <section
+            hidden={activeTab !== "sources"}
+            id="panel-sources"
+            role="tabpanel"
+            aria-labelledby="tab-sources"
+            className="settings-panel"
+          >
+            {visited.has("sources") && (
+              <>
+                <SourcesSection onSiteChanged={onSiteChanged} />
+              </>
+            )}
+          </section>
 
-                      <section
-              hidden={activeTab !== "data"}
-              id="panel-data"
-              role="tabpanel"
-              aria-labelledby="tab-data"
-              className="settings-panel"
-            >
-              <LibraryImportCard />
-              <BackupCard />
-            </section>
+          <section
+            hidden={activeTab !== "data"}
+            id="panel-data"
+            role="tabpanel"
+            aria-labelledby="tab-data"
+            className="settings-panel"
+          >
+            {visited.has("data") && (
+              <>
+                <LibraryImportCard />
+                <BackupCard />
+              </>
+            )}
+          </section>
 
-                      <section
-              hidden={activeTab !== "maintenance"}
-              id="panel-maintenance"
-              role="tabpanel"
-              aria-labelledby="tab-maintenance"
-              className="settings-panel"
-            >
-              <MaintenanceSection />
-              <UninstallCard />
-            </section>
+          <section
+            hidden={activeTab !== "maintenance"}
+            id="panel-maintenance"
+            role="tabpanel"
+            aria-labelledby="tab-maintenance"
+            className="settings-panel"
+          >
+            {visited.has("maintenance") && (
+              <>
+                <MaintenanceSection />
+                <UninstallCard />
+              </>
+            )}
+          </section>
         </div>
       </div>
     </div>
