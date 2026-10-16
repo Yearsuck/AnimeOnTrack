@@ -212,6 +212,20 @@ pub fn apply_pending_restore(dir: &std::path::Path) {
         if live.exists() && std::fs::copy(&live, dir.join(PRE_RESTORE_BACKUP)).is_err() {
             return;
         }
+        // Under WAL, commits not yet checkpointed (an unclean exit) live only
+        // in `-wal`; keep it beside the copy so SQLite replays it if the user
+        // ever renames the pre-restore file back.
+        // A `-wal` left from an earlier restore must not sit beside this new
+        // copy: SQLite would replay its foreign frames into it.
+        let live_wal = dir.join(format!("{BACKUP_FILE_NAME}-wal"));
+        let pre_restore_wal = dir.join(format!("{PRE_RESTORE_BACKUP}-wal"));
+        if live_wal.exists() {
+            if std::fs::copy(&live_wal, &pre_restore_wal).is_err() {
+                return;
+            }
+        } else {
+            let _ = std::fs::remove_file(&pre_restore_wal);
+        }
         if std::fs::rename(&staged, &live).is_err() {
             return;
         }
@@ -237,6 +251,7 @@ mod tests {
         assert!(validate_restore_bytes(&bytes).is_ok());
         std::fs::remove_file(&tmp).ok();
     }
+
 
     #[test]
     fn validate_rejects_random_bytes() {
