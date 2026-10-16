@@ -700,6 +700,17 @@ async fn run_episode_backfill(app: AppHandle) -> Result<(), String> {
     }
     let _clear = crate::commands::follow::RunningGuard(&state.episode_backfill_running);
 
+    let rows = {
+        let db = state.db.lock().unwrap();
+        db.catalog_titles_for_index().map_err(|e| e.to_string())?
+    };
+    let (index, rows) = tauri::async_runtime::spawn_blocking(move || {
+        let index = crate::matching::CatalogIndex::build(&rows);
+        (index, rows)
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+
     let (a, mirrors, needing) = {
         let db = state.db.lock().unwrap();
         let src = get_source_id(&state)?;
@@ -717,7 +728,7 @@ async fn run_episode_backfill(app: AppHandle) -> Result<(), String> {
         // runtime long enough to crash the app — confirmed live 2026-08-14.
         // Local-only (no network) so it's safe to run before the paced
         // network loop below, not after.
-        db.link_series_to_catalog().map_err(|e| e.to_string())?;
+        db.link_series_to_catalog_with(&index, rows).map_err(|e| e.to_string())?;
         db.sync_status_from_catalog().map_err(|e| e.to_string())?;
         let needing = db.followed_series_without_episodes(src).map_err(|e| e.to_string())?;
         (a, mirrors, needing)

@@ -663,6 +663,7 @@ impl Db {
         Ok(changed)
     }
 
+    #[cfg(test)] // superseded in production; kept as a test oracle
     pub fn link_series_to_catalog(&self) -> Result<i64> {
         let rows = self.catalog_titles_for_index()?;
         let index = crate::matching::CatalogIndex::build(&rows);
