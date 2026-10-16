@@ -5,6 +5,7 @@ use crate::download_sources::{
 };
 use crate::hls::{parse_gogoanime_player_url, parse_megaplay_playlist_url, parse_wrapper_iframe};
 use crate::downloader::{self, DlError};
+use scraper::{Html, Selector};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock};
@@ -260,9 +261,10 @@ async fn attempt(
             emit(&app_for_progress, episode_id, "downloading", Some(pct as u8), None);
         }
     };
-    let is_hls = url::Url::parse(&media.url)
-        .map(|u| u.path().to_ascii_lowercase().ends_with(".m3u8"))
-        .unwrap_or(false);
+    let is_hls = media.host == "hls"
+        || url::Url::parse(&media.url)
+            .map(|u| u.path().to_ascii_lowercase().ends_with(".m3u8"))
+            .unwrap_or(false);
     let final_file = if is_hls {
         downloader::fetch_hls_to_file(&media.url, &media.referer, base, cancel, progress).await?
     } else {
@@ -685,7 +687,95 @@ async fn fetch_text(url: &str, referer: &str) -> Result<(String, String), String
     Ok((final_url, body))
 }
 
-/// GogoAnime: episode page -> its player wrapper -> the megaplay embed -> an
+/// Plain HTTP GET of a JSON endpoint: browser UA, the previous page as Referer,
+/// Accept: application/json, 20 s timeout, size-capped. Returns body text.
+async fn fetch_json_text(url: &str, referer: &str) -> Result<String, String> {
+    const MAX_JSON_BYTES: u64 = 1024 * 1024;
+    if !is_safe_external_url(url) {
+        return Err("not a public web address".into());
+    }
+    let resp = downloader::client()
+        .get(url)
+        .header(reqwest::header::USER_AGENT, downloader::browser_user_agent())
+        .header(reqwest::header::REFERER, referer)
+        .header(reqwest::header::ACCEPT, "application/json")
+        .timeout(std::time::Duration::from_secs(20))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    if resp.content_length().is_some_and(|n| n > MAX_JSON_BYTES) {
+        return Err("response too large".into());
+    }
+    let body = resp.text().await.map_err(|e| e.to_string())?;
+    if body.len() as u64 > MAX_JSON_BYTES {
+        return Err("response too large".into());
+    }
+    Ok(body)
+}
+
+/// Parses the video source endpoint URL from a megavid.buzz player embed.
+///
+/// Returns `None` if the embed URL does not belong to `megavid.buzz` (or a subdomain),
+/// or if `#player-payload` JSON with a non-empty `sourceUrl` is absent.
+pub(crate) fn parse_megavid_source_url(embed_url: &str, embed_html: &str) -> Option<String> {
+    let base = url::Url::parse(embed_url).ok()?;
+    let host = base.host_str()?.to_ascii_lowercase();
+    if !(host == "megavid.buzz" || host.ends_with(".megavid.buzz")) {
+        return None;
+    }
+
+    let doc = Html::parse_document(embed_html);
+    let sel = Selector::parse("#player-payload").ok()?;
+    let el = doc.select(&sel).next()?;
+    let text = el.text().collect::<String>();
+    let val: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let source_url = val.get("sourceUrl").and_then(|v| v.as_str())?.trim();
+    if source_url.is_empty() {
+        return None;
+    }
+
+    let joined = base.join(source_url).ok()?;
+    if joined.scheme() != "http" && joined.scheme() != "https" {
+        return None;
+    }
+    Some(joined.to_string())
+}
+
+/// Parses the JSON response from megavid's source endpoint.
+///
+/// Returns the master playlist URL on `status == "ok"` with a non-empty `source`,
+/// or an error description otherwise (including server `message` if present).
+pub(crate) fn parse_megavid_source_response(json: &str) -> Result<String, String> {
+    let val: serde_json::Value = serde_json::from_str(json)
+        .map_err(|e| format!("invalid JSON response from video source: {e}"))?;
+
+    let status = val.get("status").and_then(|v| v.as_str()).unwrap_or("");
+    if status == "ok" {
+        let source = val
+            .get("source")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .unwrap_or("");
+        if source.is_empty() {
+            return Err("video source returned status 'ok' with empty source URL".into());
+        }
+        Ok(source.to_string())
+    } else {
+        let msg = val.get("message").and_then(|v| v.as_str()).unwrap_or("").trim();
+        if !msg.is_empty() {
+            Err(format!("video source error ({status}): {msg}"))
+        } else if !status.is_empty() {
+            Err(format!("video source returned status '{status}'"))
+        } else {
+            Err("video source returned unrecognized response".into())
+        }
+    }
+}
+
+/// GogoAnime: episode page -> its player wrapper -> the megaplay or megavid embed -> an
 /// HLS playlist. Every hop is plain HTTP; the result is a `.m3u8` for the HLS downloader.
 async fn resolve_gogoanime(episode_html: &str, episode_url: &str) -> Result<Media, DlError> {
     let player_url = parse_gogoanime_player_url(episode_html)
@@ -698,12 +788,26 @@ async fn resolve_gogoanime(episode_html: &str, episode_url: &str) -> Result<Medi
     let (_, embed) = fetch_text(&embed_url, &player_url)
         .await
         .map_err(|e| DlError::Net(format!("could not open the video frame: {e}")))?;
-    let playlist = parse_megaplay_playlist_url(&embed)
-        .ok_or_else(|| DlError::Net("the video frame has no stream".into()))?;
-    if !is_safe_external_url(&playlist) {
-        return Err(DlError::Net("the stream is not a public web address".into()));
+
+    if let Some(playlist) = parse_megaplay_playlist_url(&embed) {
+        if !is_safe_external_url(&playlist) {
+            return Err(DlError::Net("the stream is not a public web address".into()));
+        }
+        return Ok(Media { url: playlist, referer: "https://megaplay.su/".to_string(), host: "hls" });
     }
-    Ok(Media { url: playlist, referer: "https://megaplay.su/".to_string(), host: "hls" })
+
+    if let Some(endpoint) = parse_megavid_source_url(&embed_url, &embed) {
+        let json = fetch_json_text(&endpoint, &embed_url)
+            .await
+            .map_err(|e| DlError::Net(format!("could not retrieve the video source: {e}")))?;
+        let source = parse_megavid_source_response(&json).map_err(DlError::Net)?;
+        if !is_safe_external_url(&source) {
+            return Err(DlError::Net("the stream is not a public web address".into()));
+        }
+        return Ok(Media { url: source, referer: "https://megavid.buzz/".to_string(), host: "hls" });
+    }
+
+    Err(DlError::Net("the video frame has no stream".into()))
 }
 
 /// Episode page -> list of mirrors -> first mirror that resolves to a plain file.
@@ -1084,5 +1188,77 @@ mod tests {
     fn format_server_errors_does_not_truncate_short_reason() {
         let errors = vec![("Server1", "Short reason")];
         assert_eq!(format_server_errors(&errors), "Server1: Short reason");
+    }
+
+    #[test]
+    fn parse_megavid_source_url_resolves_payload_present() {
+        let embed_url = "https://megavid.buzz/mal/61469/1/sub";
+        let html = r#"<!DOCTYPE html>
+<html>
+<head>
+    <script type="application/json" id="player-payload">{"sourceUrl":"/mal/61469/1/sub/source","subtitles":[]}</script>
+</head>
+<body></body>
+</html>"#;
+        assert_eq!(
+            parse_megavid_source_url(embed_url, html),
+            Some("https://megavid.buzz/mal/61469/1/sub/source".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_megavid_source_url_returns_none_when_payload_absent() {
+        let embed_url = "https://megavid.buzz/mal/61469/1/sub";
+        let html = "<html><body><div>no player payload</div></body></html>";
+        assert_eq!(parse_megavid_source_url(embed_url, html), None);
+    }
+
+    #[test]
+    fn parse_megavid_source_url_returns_none_for_non_megavid_host() {
+        let embed_url = "https://evil.example.com/mal/61469/1/sub";
+        let html = r#"<script type="application/json" id="player-payload">{"sourceUrl":"/mal/61469/1/sub/source"}</script>"#;
+        assert_eq!(parse_megavid_source_url(embed_url, html), None);
+    }
+
+    #[test]
+    fn parse_megavid_source_response_extracts_source_on_ok() {
+        let json = r#"{"status":"ok","source":"https://cdnx.aniwatchtv.site/uwu/master.m3u8","tracks":[]}"#;
+        assert_eq!(
+            parse_megavid_source_response(json).unwrap(),
+            "https://cdnx.aniwatchtv.site/uwu/master.m3u8"
+        );
+    }
+
+    #[test]
+    fn parse_megavid_source_response_returns_err_on_missing_with_message() {
+        let json = r#"{"status":"missing","message":"x"}"#;
+        let err = parse_megavid_source_response(json).unwrap_err();
+        assert!(err.contains('x'), "expected error to contain 'x', got: {err}");
+    }
+
+    #[test]
+    fn parse_megavid_source_response_returns_err_on_countdown() {
+        let json = r#"{"status":"countdown","iframeUrl":"https://megavid.buzz/countdown"}"#;
+        let err = parse_megavid_source_response(json).unwrap_err();
+        assert!(err.contains("countdown"), "expected error to contain countdown, got: {err}");
+    }
+
+    #[test]
+    fn parse_megavid_source_response_returns_err_on_garbage() {
+        let err = parse_megavid_source_response("not valid json at all").unwrap_err();
+        assert!(!err.is_empty());
+    }
+
+    #[test]
+    fn parse_megavid_source_response_returns_err_on_ok_with_empty_source() {
+        let json = r#"{"status":"ok","source":""}"#;
+        let err = parse_megavid_source_response(json).unwrap_err();
+        assert!(err.contains("empty source"), "expected error to mention empty source, got: {err}");
+
+        let json_spaces = r#"{"status":"ok","source":"   "}"#;
+        assert!(parse_megavid_source_response(json_spaces).is_err());
+
+        let json_missing_source = r#"{"status":"ok"}"#;
+        assert!(parse_megavid_source_response(json_missing_source).is_err());
     }
 }
