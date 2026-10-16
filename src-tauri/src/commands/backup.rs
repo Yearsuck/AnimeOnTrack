@@ -134,15 +134,15 @@ pub async fn disconnect_drive(state: State<'_, AppState>) -> Result<BackupStatus
 #[tauri::command]
 pub async fn backup_now(app: AppHandle, state: State<'_, AppState>) -> Result<BackupStatus, String> {
     let dir = backup_dir(&app)?;
-    let (client, refresh, bytes, sig) = {
+    let (client, refresh, sig) = {
         let db = state.db.lock().unwrap();
         let client = backup::configured_client(&db)
             .ok_or("Google credentials not configured")?;
         let refresh = connected_token(&db).ok_or("Not connected to Google Drive")?;
-        let bytes = backup::snapshot_bytes(&db, &dir)?;
         let sig = backup::signature_string(db.signature_counts().map_err(|e| e.to_string())?);
-        (client, refresh, bytes, sig)
+        (client, refresh, sig)
     };
+    let bytes = backup::snapshot_bytes(&state.db, &dir)?;
     let token = access_token_or_disconnect(&state, &client, &refresh).await?;
     let existing = {
         let db = state.db.lock().unwrap();

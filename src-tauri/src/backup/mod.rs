@@ -91,9 +91,18 @@ const RESTORE_MARKER: &str = ".restore_pending";
 
 /// Produce the consistent snapshot bytes for upload. `db_path` is the live DB
 /// file's directory-mate: we snapshot next to it then read+delete.
-pub fn snapshot_bytes(db: &Db, dir: &std::path::Path) -> Result<Vec<u8>, String> {
-    let tmp = dir.join(format!("animeontrack.snapshot.{}.sqlite", std::process::id()));
-    db.snapshot_to(tmp.to_str().ok_or("bad path")?).map_err(|e| format!("snapshot: {e}"))?;
+/// Holds the DB lock only for SQLite's `VACUUM INTO`, releasing it before
+/// reading the snapshot from disk.
+pub fn snapshot_bytes(db: &std::sync::Mutex<Db>, dir: &std::path::Path) -> Result<Vec<u8>, String> {
+    // Unique per call: the lock no longer covers the read+delete below, so a
+    // manual backup overlapping an automatic one must not share the file.
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = dir.join(format!("animeontrack.snapshot.{}.{seq}.sqlite", std::process::id()));
+    {
+        let db = db.lock().unwrap();
+        db.snapshot_to(tmp.to_str().ok_or("bad path")?).map_err(|e| format!("snapshot: {e}"))?;
+    }
     let bytes = std::fs::read(&tmp).map_err(|e| format!("read snapshot: {e}"))?;
     std::fs::remove_file(&tmp).ok();
     Ok(bytes)
@@ -252,6 +261,13 @@ mod tests {
         std::fs::remove_file(&tmp).ok();
     }
 
+    #[test]
+    fn snapshot_bytes_releases_lock_and_reads_temp_file() {
+        let db = std::sync::Mutex::new(crate::db::Db::open(":memory:").unwrap());
+        let dir = std::env::temp_dir();
+        let bytes = snapshot_bytes(&db, &dir).unwrap();
+        assert!(validate_restore_bytes(&bytes).is_ok());
+    }
 
     #[test]
     fn validate_rejects_random_bytes() {
