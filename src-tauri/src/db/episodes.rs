@@ -89,6 +89,14 @@ pub struct SiblingToScrape {
     pub url: String,
 }
 
+/// Context for searching other sites for an episode that has no local series row.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SearchContext {
+    pub titles: (String, Option<String>),
+    pub canonical_number: f64,
+    pub group_site_ids: Vec<String>,
+}
+
 /// Sibling series acceptance guard: same non-null anilist_id OR equal normalized title.
 /// Shared by `sibling_episodes_in` and `siblings_to_scrape_in` to prevent drift.
 fn matches_sibling_guard(
@@ -667,6 +675,77 @@ impl Db {
             }
         }
         Ok(out)
+    }
+
+    /// Search context for finding an episode across other sites when local rows failed.
+    /// Returns the primary/english search titles, canonical episode number, and all site IDs
+    /// currently present in the episode's canonical series group.
+    pub fn download_search_context(&self, episode_id: i64) -> Result<Option<SearchContext>> {
+        let clicked: Option<(i64, String, Option<i64>, String)> = self
+            .conn
+            .query_row(
+                "SELECT e.series_id, e.number, s.anilist_id, s.title
+                 FROM episodes e
+                 JOIN series s ON s.id = e.series_id
+                 WHERE e.id = ?1",
+                [episode_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .optional()?;
+
+        let (series_id, number, anilist_id, series_title) = match clicked {
+            Some(v) => v,
+            None => return Ok(None),
+        };
+
+        let now = chrono::Utc::now().timestamp();
+        let clicked_align = self.row_align(series_id, now)?;
+        let canonical_number = match parse_ep_number(&number).and_then(|n| clicked_align.to_canonical(n)) {
+            Some(c) => c,
+            None => return Ok(None),
+        };
+
+        let titles = if let Some(al_id) = anilist_id {
+            match self.get_catalog_titles(al_id)? {
+                Some((cat_title, romaji, english)) => {
+                    let primary = romaji.filter(|s| !s.trim().is_empty()).unwrap_or(cat_title);
+                    let eng = english.filter(|s| !s.trim().is_empty());
+                    (primary, eng)
+                }
+                None => (series_title, None),
+            }
+        } else {
+            (series_title, None)
+        };
+
+        let sids = self.canonical_series_ids(series_id)?;
+        let mut group_site_ids = Vec::new();
+        if !sids.is_empty() {
+            let placeholders = vec!["?"; sids.len()].join(",");
+            let sql = format!(
+                "SELECT DISTINCT COALESCE(so.site_id, '')
+                 FROM series s
+                 LEFT JOIN sources so ON so.id = s.source_id
+                 WHERE s.id IN ({placeholders})"
+            );
+            let mut stmt = self.conn.prepare(&sql)?;
+            let params = rusqlite::params_from_iter(sids.iter());
+            let rows = stmt.query_map(params, |r| r.get::<_, String>(0))?;
+            for row in rows {
+                let site_id = row?;
+                if !site_id.trim().is_empty() {
+                    group_site_ids.push(site_id);
+                }
+            }
+            group_site_ids.sort();
+            group_site_ids.dedup();
+        }
+
+        Ok(Some(SearchContext {
+            titles,
+            canonical_number,
+            group_site_ids,
+        }))
     }
 
     /// All episodes of a series (seen or not), oldest number first — the
@@ -2496,5 +2575,95 @@ mod tests {
         assert_eq!(to_scrape_in[0].series_id, row_b);
         assert_eq!(to_scrape_in[0].site_id, "tioanime");
         assert_eq!(to_scrape_in[0].url, "https://tioanime.com/anime/show-b");
+    }
+
+    #[test]
+    fn download_search_context_resolves_titles_and_group_and_cumulative_none() {
+        let db = Db::open(":memory:").unwrap();
+        let src_a = db.upsert_source("AnimeYT", "https://animeyt.cc", "animeytx").unwrap();
+        let src_b = db.upsert_source("TioAnime", "https://tioanime.com", "tioanime").unwrap();
+        let src_c = db.upsert_source("GogoAnime", "https://anitaku.to", "gogoanime").unwrap();
+
+        let now = chrono::Utc::now().timestamp();
+        let aid = 12345;
+        db.conn.execute(
+            "INSERT INTO anilist_catalog (id, title, title_romaji, title_english, url, sort_order)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![
+                aid,
+                "JoJo English Title",
+                "JoJo no Kimyou na Bouken",
+                "JoJo's Bizarre Adventure",
+                "https://anilist.co/anime/12345",
+                1
+            ],
+        ).unwrap();
+
+        let mk = |slug: &str, title: &str| crate::models::Series {
+            id: 0,
+            slug: slug.into(),
+            title: title.into(),
+            url: format!("https://site/{slug}"),
+            cover_url: None,
+            is_airing: true,
+            followed: true,
+            next_episode_at: None,
+            site_episode_count: None,
+        };
+
+        let row_a = db.upsert_series(src_a, &mk("jojo-a", "JoJo AnimeYT")).unwrap();
+        let row_b = db.upsert_series(src_b, &mk("jojo-b", "JoJo TioAnime")).unwrap();
+        let row_c = db.upsert_series(src_c, &mk("jojo-c", "JoJo GogoAnime")).unwrap();
+
+        db.set_anilist_id(row_a, aid).unwrap();
+        db.set_anilist_id(row_b, aid).unwrap();
+        db.set_anilist_id(row_c, aid).unwrap();
+
+        let (ep_a1, _) = db.insert_episode(&crate::models::Episode {
+            id: 0,
+            series_id: row_a,
+            number: "1".into(),
+            title: None,
+            url: "https://animeyt.cc/tv/jojo/1".into(),
+            released_at: None,
+            seen: false,
+            download_path: None,
+            download_status: None,
+        }).unwrap();
+
+        let ctx = db.download_search_context(ep_a1).unwrap().expect("context found");
+        assert_eq!(ctx.canonical_number, 1.0);
+        assert_eq!(
+            ctx.titles,
+            ("JoJo no Kimyou na Bouken".to_string(), Some("JoJo's Bizarre Adventure".to_string()))
+        );
+        let mut expected_sites = vec!["animeytx".to_string(), "tioanime".to_string(), "gogoanime".to_string()];
+        expected_sites.sort();
+        assert_eq!(ctx.group_site_ids, expected_sites);
+
+        // Cumulative earlier-season number -> None
+        let entries = vec![
+            crate::anizip::MapEntry { episode: 1, season: 3, absolute: Some(25), air_at: Some(now - 14 * 86400) },
+            crate::anizip::MapEntry { episode: 2, season: 3, absolute: Some(26), air_at: Some(now - 7 * 86400) },
+        ];
+        let tensei_aid = 185756;
+        db.replace_episode_map(tensei_aid, &entries, now).unwrap();
+
+        let row_tensei = db.upsert_series(src_b, &mk("tensei-cumul", "Tensei")).unwrap();
+        db.set_anilist_id(row_tensei, tensei_aid).unwrap();
+        let (ep_cumul_20, _) = db.insert_episode(&crate::models::Episode {
+            id: 0,
+            series_id: row_tensei,
+            number: "20".into(),
+            title: None,
+            url: "https://tioanime.com/ver/tensei-20".into(),
+            released_at: None,
+            seen: false,
+            download_path: None,
+            download_status: None,
+        }).unwrap();
+
+        let ctx_earlier = db.download_search_context(ep_cumul_20).unwrap();
+        assert!(ctx_earlier.is_none());
     }
 }

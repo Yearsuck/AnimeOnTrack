@@ -20,7 +20,9 @@ pub struct GogoanimeAdapter;
 //   `next_episode_at`/`site_episode_count` read from `.epx.cndwn[data-rlsdt]`
 //   and `.sb` exactly like `animeytx` (absolute unix timestamp, empty string
 //   when the episode already released; `.sb` not always numeric).
-// - Episode list is `.episodes-container .ep-list .episode-item`, not
+// - Episode list is `.episodes-container .episode-item` (matching both
+//   the older layout with an intermediate `.ep-list` wrapper and the newer
+//   flat layout where items sit directly in `.episodes-container`), not
 //   `.eplister` — each item carries a `data-episode-number` attribute
 //   (cleaner than parsing "Episode N" text) and a single `<a href>`. No
 //   per-episode title or release date exist on this site at all — `title`
@@ -31,7 +33,7 @@ pub struct GogoanimeAdapter;
 //   genre-archive trait methods are left at their default (no-op)
 //   implementations, same as tioanime/jkanime.
 const AIRING_CARD: &str = ".bsx";
-const EPISODE_ITEM: &str = ".episodes-container .ep-list .episode-item";
+const EPISODE_ITEM: &str = ".episodes-container .episode-item";
 
 
 /// The next-release timestamp for one `.epx.cndwn` countdown span, or `None`
@@ -351,6 +353,20 @@ mod tests {
         );
         assert_eq!(out[0].title, None, "this site has no per-episode title");
         assert_eq!(out[0].released_at, None, "this site shows no release date on the episode list");
+        assert_eq!(out.last().unwrap().number, "1");
+    }
+
+    #[test]
+    fn parses_series_flat_layout_fixture() {
+        let html = include_str!("../../tests/fixtures/gogoanime_series_flat.html");
+        let out = GogoanimeAdapter.parse_series(html).unwrap();
+        assert_eq!(out.len(), 4);
+        let numbers: Vec<&str> = out.iter().map(|e| e.number.as_str()).collect();
+        assert_eq!(numbers, vec!["4", "3", "2", "1"]);
+        assert_eq!(
+            out.last().unwrap().url,
+            "https://gogoanime.by/steel-ball-run-jojo-no-kimyou-na-bouken-episode-1-english-subbed/"
+        );
         assert_eq!(out.last().unwrap().number, "1");
     }
 
