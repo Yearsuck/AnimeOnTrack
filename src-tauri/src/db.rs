@@ -36,6 +36,27 @@ impl Db {
         // watchdog relaunches the app: the new process opens the database
         // while the dying one may still hold it for a moment.
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        if path != ":memory:" {
+            // WAL lets readers proceed while a write commits and makes commits
+            // cheaper (synchronous=NORMAL is durable under WAL except on power
+            // loss). Never fatal: the first switch needs an exclusive lock,
+            // which a dying process (watchdog relaunch) may still hold, and the
+            // app must open regardless — it just stays in its old mode.
+            // No mmap_size: on Windows an I/O error on a mapped page is an
+            // access violation that kills the process without a panic.log.
+            match conn.query_row("PRAGMA journal_mode = WAL", [], |r| r.get::<_, String>(0)) {
+                Ok(mode) if mode.eq_ignore_ascii_case("wal") => {}
+                Ok(mode) => eprintln!("[db] journal_mode stayed {mode}"),
+                Err(e) => eprintln!("[db] could not enable WAL: {e}"),
+            }
+            if let Err(e) = conn.execute_batch(
+                "PRAGMA synchronous = NORMAL;
+                 PRAGMA cache_size = -32000;
+                 PRAGMA temp_store = MEMORY;",
+            ) {
+                eprintln!("[db] pragma tuning failed: {e}");
+            }
+        }
         let db = Db { conn };
         db.init_schema()?;
         db.migrate_animeytx_domain()?;
@@ -937,5 +958,27 @@ https://other.example")
         );
         db.migrate_animeflv_domain().unwrap();
         assert_eq!(db.get_series_url(sid).unwrap().as_deref(), Some("https://animeflv.or.at/anime/dungeon-meshi"));
+    }
+
+    #[test]
+    fn file_database_enables_wal_and_tuned_pragmas() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("aot_wal_test_{}.sqlite", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let db = Db::open(path.to_str().unwrap()).unwrap();
+        let journal_mode: String = db
+            .conn
+            .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(journal_mode.to_lowercase(), "wal");
+        let synchronous: i64 = db
+            .conn
+            .query_row("PRAGMA synchronous", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(synchronous, 1);
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(dir.join(format!("aot_wal_test_{}.sqlite-wal", std::process::id())));
+        let _ = std::fs::remove_file(dir.join(format!("aot_wal_test_{}.sqlite-shm", std::process::id())));
     }
 }
