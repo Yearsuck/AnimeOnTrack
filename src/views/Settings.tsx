@@ -7,6 +7,7 @@ import { PlayerSettingsCard } from "./settings/PlayerSettingsCard";
 import { SourcesSection } from "./settings/SourcesSection";
 import { LibraryImportCard } from "./settings/LibraryImportCard";
 import { BackupCard } from "./settings/BackupCard";
+import { StorageCard } from "./settings/StorageCard";
 import { MaintenanceSection } from "./settings/MaintenanceSection";
 import { UninstallCard } from "./settings/UninstallCard";
 
@@ -143,6 +144,7 @@ export function Settings({ onSiteChanged }: { onSiteChanged?: (site: SiteSummary
               <>
                 <LibraryImportCard />
                 <BackupCard />
+                <StorageCard />
               </>
             )}
           </section>
