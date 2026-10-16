@@ -138,6 +138,19 @@ pub(crate) fn plan_download_urls(
     result
 }
 
+/// Picks the episode URL from a list of `(number, url)` pairs whose parsed episode number
+/// matches the `canonical` target within a tolerance of 1e-6.
+pub(crate) fn pick_episode_url(episodes: &[(String, String)], canonical: f64) -> Option<String> {
+    for (num_str, url) in episodes {
+        if let Some(parsed) = crate::db::parse_ep_number(num_str) {
+            if (parsed - canonical).abs() < 1e-6 {
+                return Some(url.clone());
+            }
+        }
+    }
+    None
+}
+
 #[derive(Serialize)]
 pub struct DownloadBatch {
     /// Episodes put in the queue just now.
@@ -494,6 +507,219 @@ async fn scrape_and_try_siblings(
     Ok(None)
 }
 
+/// Third phase of download fallback: searches other supported sites with no existing
+/// `series` row for the anime, locates the canonical episode, and attempts to download it.
+/// Does not write anything to the database (transient search only).
+#[allow(clippy::too_many_arguments)]
+async fn search_other_sites_and_try(
+    app: &AppHandle,
+    episode_id: i64,
+    priority: &[String],
+    base: &std::path::Path,
+    cancel: &Arc<AtomicBool>,
+    attempted: &mut std::collections::HashSet<String>,
+    errors: &mut Vec<(String, DlError)>,
+) -> Result<Option<String>, DlError> {
+    if cancel.load(Ordering::SeqCst) {
+        return Err(DlError::Cancelled);
+    }
+
+    let context = {
+        let state = app.state::<AppState>();
+        let db = state.db.lock().unwrap();
+        db.download_search_context(episode_id)
+            .map_err(|e| DlError::Io(e.to_string()))?
+    };
+
+    let Some(context) = context else {
+        return Ok(None);
+    };
+
+    let (primary_title, english_title) = &context.titles;
+
+    let mut eligible = Vec::new();
+    for (idx, site) in crate::adapter::all_sites().iter().enumerate() {
+        if context.group_site_ids.iter().any(|gid| gid == site.id) {
+            continue;
+        }
+        if !is_supported_episode_url(site.default_base_url) {
+            continue;
+        }
+        let rank = priority
+            .iter()
+            .position(|p| p == site.id)
+            .unwrap_or(usize::MAX);
+        eligible.push((rank, idx, site));
+    }
+    eligible.sort_by_key(|&(rank, idx, _)| (rank, idx));
+
+    let sites_to_try: Vec<&crate::adapter::SiteInfo> =
+        eligible.into_iter().map(|(_, _, s)| s).take(3).collect();
+
+    for site in sites_to_try {
+        if cancel.load(Ordering::SeqCst) {
+            return Err(DlError::Cancelled);
+        }
+
+        let a = match crate::adapter::adapter_for(site.id) {
+            Some(adapter) => adapter,
+            None => continue,
+        };
+
+        let mirrors = {
+            let state = app.state::<AppState>();
+            let db = state.db.lock().unwrap();
+            crate::commands::mirrors::load_mirrors(&db, site.id)
+                .ok()
+                .filter(|v| !v.is_empty())
+                .unwrap_or_else(|| vec![site.default_base_url.to_string()])
+        };
+
+        crate::file_log::info(&format!(
+            "download fallback: searching {} for \"{}\"",
+            site.id, primary_title
+        ));
+
+        let mut cards = match crate::commands::follow::search_site(app, &mirrors, primary_title, a.as_ref()).await {
+            Ok(c) => c,
+            Err(e) => {
+                crate::file_log::info(&format!(
+                    "download fallback: search on {} failed: {e}",
+                    site.id
+                ));
+                errors.push((site.id.to_string(), DlError::Net(format!("search failed: {e}"))));
+                continue;
+            }
+        };
+
+        let mut best = crate::matching::best_match(
+            &[primary_title],
+            &crate::commands::discover::to_candidates(&cards),
+        );
+
+        if best.is_none() {
+            if let Some(english) = english_title {
+                if !english.eq_ignore_ascii_case(primary_title) {
+                    if cancel.load(Ordering::SeqCst) {
+                        return Err(DlError::Cancelled);
+                    }
+                    crate::file_log::info(&format!(
+                        "download fallback: searching {} for \"{}\"",
+                        site.id, english
+                    ));
+                    match crate::commands::follow::search_site(app, &mirrors, english, a.as_ref()).await {
+                        Ok(eng_cards) => {
+                            cards = eng_cards;
+                            best = crate::matching::best_match(
+                                &[primary_title],
+                                &crate::commands::discover::to_candidates(&cards),
+                            );
+                        }
+                        Err(e) => {
+                            crate::file_log::info(&format!(
+                                "download fallback: search on {} failed: {e}",
+                                site.id
+                            ));
+                            errors.push((site.id.to_string(), DlError::Net(format!("search failed: {e}"))));
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
+
+        let Some(m) = best else {
+            crate::file_log::info(&format!(
+                "download fallback: search on {} yielded no match",
+                site.id
+            ));
+            errors.push((site.id.to_string(), DlError::Net("show not found".into())));
+            continue;
+        };
+
+        let matched = &cards[m.index];
+        let catalog_refs: Vec<&str> = std::iter::once(primary_title.as_str())
+            .chain(english_title.as_deref())
+            .collect();
+        if !crate::matching::season_markers_compatible(&matched.title, &catalog_refs) {
+            crate::file_log::info(&format!(
+                "download fallback: {} match \"{}\" is another season, skipped",
+                site.id, matched.title
+            ));
+            errors.push((site.id.to_string(), DlError::Net("show not found".into())));
+            continue;
+        }
+        crate::file_log::info(&format!(
+            "download fallback: {} search matched {}",
+            site.id, matched.url
+        ));
+
+        if cancel.load(Ordering::SeqCst) {
+            return Err(DlError::Cancelled);
+        }
+
+        let eps = match crate::commands::scan::fetch_episode_list_for(app, &mirrors, &matched.url, a.as_ref()).await {
+            Ok(eps) => {
+                crate::domain_breaker::record_success(&matched.url);
+                eps
+            }
+            Err(e) => {
+                crate::domain_breaker::record_failure(&matched.url);
+                crate::file_log::info(&format!(
+                    "download fallback: episode list failed for {} on {}: {e}",
+                    matched.url, site.id
+                ));
+                errors.push((site.id.to_string(), DlError::Net(format!("search failed: {e}"))));
+                continue;
+            }
+        };
+
+        let ep_tuples: Vec<(String, String)> = eps.into_iter().map(|e| (e.number, e.url)).collect();
+        let candidate_url = match pick_episode_url(&ep_tuples, context.canonical_number) {
+            Some(url) => url,
+            None => {
+                crate::file_log::info(&format!(
+                    "download fallback: episode {} not listed on {}",
+                    context.canonical_number, site.id
+                ));
+                errors.push((site.id.to_string(), DlError::Net("episode not listed".into())));
+                continue;
+            }
+        };
+
+        if attempted.contains(&candidate_url) {
+            continue;
+        }
+        attempted.insert(candidate_url.clone());
+
+        if cancel.load(Ordering::SeqCst) {
+            return Err(DlError::Cancelled);
+        }
+
+        let cand_site = site_label(&candidate_url);
+        match attempt(app, &candidate_url, episode_id, base, cancel).await {
+            Ok(final_path) => {
+                crate::file_log::info(&format!(
+                    "download finished: episode {episode_id} via {cand_site}"
+                ));
+                return Ok(Some(final_path));
+            }
+            Err(DlError::Cancelled) => {
+                return Err(DlError::Cancelled);
+            }
+            Err(err) => {
+                crate::file_log::info(&format!(
+                    "download fallback: episode {episode_id} failed on {cand_site} ({err}), trying next"
+                ));
+                emit(app, episode_id, "downloading", None, None);
+                errors.push((cand_site, err));
+            }
+        }
+    }
+
+    Ok(None)
+}
+
 async fn run_download(app: &AppHandle, episode_id: i64, cancel: &Arc<AtomicBool>) -> Result<String, DlError> {
     let _slot = SLOT.acquire().await.map_err(|e| DlError::Net(e.to_string()))?;
     if cancel.load(Ordering::SeqCst) {
@@ -564,6 +790,20 @@ async fn run_download(app: &AppHandle, episode_id: i64, cancel: &Arc<AtomicBool>
         app,
         episode_id,
         &episode_url,
+        &priority,
+        &base,
+        cancel,
+        &mut attempted,
+        &mut errors,
+    )
+    .await?
+    {
+        return Ok(final_path);
+    }
+
+    if let Some(final_path) = search_other_sites_and_try(
+        app,
+        episode_id,
         &priority,
         &base,
         cancel,
@@ -1260,5 +1500,62 @@ mod tests {
 
         let json_missing_source = r#"{"status":"ok"}"#;
         assert!(parse_megavid_source_response(json_missing_source).is_err());
+    }
+
+    #[test]
+    fn pick_episode_url_exact_match() {
+        let episodes = vec![
+            ("1".to_string(), "https://site/ep1".to_string()),
+            ("2".to_string(), "https://site/ep2".to_string()),
+        ];
+        assert_eq!(
+            pick_episode_url(&episodes, 1.0),
+            Some("https://site/ep1".to_string())
+        );
+        assert_eq!(
+            pick_episode_url(&episodes, 2.0),
+            Some("https://site/ep2".to_string())
+        );
+    }
+
+    #[test]
+    fn pick_episode_url_leading_zero_style() {
+        let episodes = vec![
+            ("01".to_string(), "https://site/ep01".to_string()),
+            ("02".to_string(), "https://site/ep02".to_string()),
+        ];
+        assert_eq!(
+            pick_episode_url(&episodes, 1.0),
+            Some("https://site/ep01".to_string())
+        );
+    }
+
+    #[test]
+    fn pick_episode_url_decimal_episodes() {
+        let episodes = vec![
+            ("12".to_string(), "https://site/ep12".to_string()),
+            ("12.5".to_string(), "https://site/ep12_5".to_string()),
+            ("13".to_string(), "https://site/ep13".to_string()),
+        ];
+        assert_eq!(
+            pick_episode_url(&episodes, 12.5),
+            Some("https://site/ep12_5".to_string())
+        );
+    }
+
+    #[test]
+    fn pick_episode_url_no_match() {
+        let episodes = vec![
+            ("1".to_string(), "https://site/ep1".to_string()),
+            ("2".to_string(), "https://site/ep2".to_string()),
+            ("OVA".to_string(), "https://site/ova".to_string()),
+        ];
+        assert_eq!(pick_episode_url(&episodes, 3.0), None);
+    }
+
+    #[test]
+    fn pick_episode_url_empty_list() {
+        let episodes: &[(String, String)] = &[];
+        assert_eq!(pick_episode_url(episodes, 1.0), None);
     }
 }
