@@ -358,6 +358,161 @@ fn filter_candidate_genres(all_genres: Vec<String>, banned_genres: &[String]) ->
         .collect()
 }
 
+/// Everything a deck refill needs that does not change from one card to the next.
+/// `discover_catalog_cards` builds it once per batch; computing it per card (affinity,
+/// type stats, taste signals, then normalising every engaged title) cost ~250 ms a
+/// card in recommended mode, and the deck asks for ten at a time.
+struct CatalogDeckSetup {
+    affinity: HashMap<String, f64>,
+    format_affinity: HashMap<String, f64>,
+    taste_signals: crate::recommend::TasteSignals,
+    banned_genres: Vec<String>,
+    banned_formats: Vec<String>,
+    hide_upcoming: bool,
+    min_start_date: Option<i64>,
+    max_start_date: Option<i64>,
+    min_score: Option<i64>,
+    candidates: Vec<String>,
+    excluded_norm_titles: HashSet<String>,
+}
+
+fn prepare_catalog_deck_setup(
+    db: &Db,
+    recommended: bool,
+) -> Result<Option<CatalogDeckSetup>, String> {
+    let affinity = if recommended {
+        // Cross-site, unlike `discover_swipe_card`'s per-site pick: the AniList
+        // catalog itself is site-agnostic (candidates are excluded globally via
+        // `engaged_series_titles`/`anilist_id NOT IN series`), so scoring which genre
+        // to recommend from it with only the active site's follow/want/discard signal
+        // reset the user's whole taste profile on every site switch.
+        db.get_genre_affinity_across_sites().map_err(|e| e.to_string())?
+    } else {
+        HashMap::new()
+    };
+    // Format-affinity map for the per-candidate score: empty for a brand-new user
+    // (the format term is then 0 for everyone) and in "Aleatorio" mode.
+    let format_affinity = if recommended {
+        crate::recommend::format_affinity_from_type_stats(&db.get_type_stats().map_err(|e| e.to_string())?)
+    } else {
+        HashMap::new()
+    };
+    // Taste signals (tags and studios) for the per-candidate score; empty in "Aleatorio".
+    let taste_signals = if recommended {
+        let mut signals = db.get_taste_signals_across_sites().map_err(|e| e.to_string())?;
+        signals.niche_bias = db.get_discover_niche().map_err(|e| e.to_string())?;
+        signals
+    } else {
+        crate::recommend::TasteSignals::default()
+    };
+    // Candidate-genre filter: only the user's own banned-genre list. Filtering is purely
+    // user-driven; there is no hardcoded baseline exclusion.
+    let banned_genres = db.get_banned_genres().map_err(|e| e.to_string())?;
+    let banned_formats = db.get_banned_formats().map_err(|e| e.to_string())?;
+    let hide_upcoming = db.get_hide_upcoming_releases().map_err(|e| e.to_string())?;
+    let min_start_date = db.get_deck_min_start_date().map_err(|e| e.to_string())?;
+    // `max_start_date` defaults to "today" (end of the current UTC day) when never
+    // explicitly set — a moving target, not a value frozen when the setting was read.
+    // `min_start_date` gets no such substitution: unbounded really does mean unbounded.
+    let max_start_date = db.get_deck_max_start_date().map_err(|e| e.to_string())?.or_else(|| {
+        chrono::Utc::now()
+            .date_naive()
+            .and_hms_opt(23, 59, 59)
+            .map(|dt| dt.and_utc().timestamp())
+    });
+    let min_score = db.get_deck_min_score().map_err(|e| e.to_string())?;
+    let candidates = filter_candidate_genres(
+        db.distinct_catalog_genres().map_err(|e| e.to_string())?,
+        &banned_genres,
+    );
+    if candidates.is_empty() {
+        return Ok(None);
+    }
+
+    // Titles of series the user has already engaged with (followed/want/discarded/
+    // watched-externally), normalized so a followed *site*-scraped series (almost always
+    // anilist_id=NULL) still blocks a same-titled catalog entry from being re-offered.
+    let excluded_norm_titles: HashSet<String> = db
+        .engaged_series_titles()
+        .map_err(|e| e.to_string())?
+        .iter()
+        .map(|t| crate::matching::normalize_title(t))
+        .collect();
+
+    Ok(Some(CatalogDeckSetup {
+        affinity,
+        format_affinity,
+        taste_signals,
+        banned_genres,
+        banned_formats,
+        hide_upcoming,
+        min_start_date,
+        max_start_date,
+        min_score,
+        candidates,
+        excluded_norm_titles,
+    }))
+}
+
+/// One card from `setup`, skipping `excluded_norm_titles` / `excluded_ids` (a batch passes
+/// what it already picked, which is not persisted yet). A pool of candidate genres still
+/// worth trying: a genre that yields nothing undecided is dropped so a retry never
+/// re-picks the same exhausted genre.
+fn pick_single_catalog_card(
+    db: &Db,
+    setup: &CatalogDeckSetup,
+    recommended: bool,
+    excluded_norm_titles: &HashSet<String>,
+    excluded_ids: &HashSet<i64>,
+) -> Result<Option<(FinishedCard, crate::anilist::CatalogAnime)>, String> {
+    let mut pool: Vec<usize> = (0..setup.candidates.len()).collect();
+    for _ in 0..MAX_GENRE_ATTEMPTS.min(setup.candidates.len()) {
+        if pool.is_empty() {
+            break;
+        }
+        let pool_weights: Vec<f64> = pool
+            .iter()
+            .map(|&i| crate::recommend::dampen_genre_weight(*setup.affinity.get(&setup.candidates[i]).unwrap_or(&0.0)))
+            .collect();
+        let Some(pick_in_pool) = weighted_pick_index(&pool_weights) else { break };
+        let genre_idx = pool[pick_in_pool];
+        let genre = &setup.candidates[genre_idx];
+
+        if let Some(anime) = db
+            .random_catalog_anime_in_genre_with_signals_and_excluded_ids(
+                genre,
+                &setup.banned_formats,
+                // Not just the outer genre pick (`filter_candidate_genres`): the ban list
+                // also has to reach the card-level query, or a title tagged both an
+                // allowed genre and a banned one still lands on the deck.
+                &setup.banned_genres,
+                excluded_norm_titles,
+                excluded_ids,
+                &setup.affinity,
+                &setup.format_affinity,
+                &setup.taste_signals,
+                recommended,
+                setup.hide_upcoming,
+                setup.min_start_date,
+                setup.max_start_date,
+                setup.min_score,
+            )
+            .map_err(|e| e.to_string())?
+        {
+            let card = FinishedCard {
+                title: anime.title.clone(),
+                url: anime.url.clone(),
+                poster_url: anime.cover_url.clone(),
+                kind: anime.format.clone().unwrap_or_default(),
+                matched_genre: Some(genre.clone()),
+            };
+            return Ok(Some((card, anime)));
+        }
+        pool.remove(pick_in_pool);
+    }
+    Ok(None)
+}
+
 /// Pick a taste-weighted genre (mirroring `discover_swipe_card`'s scheme:
 /// `get_genre_affinity` + `weighted_pick_index`, uniform fallback when
 /// nothing's been decided yet — but see the dampening note below) and ask
@@ -399,132 +554,67 @@ pub async fn discover_catalog_card(
     state: State<'_, AppState>,
     recommended: bool,
 ) -> Result<Option<FinishedCard>, String> {
-    // Catalog cards are site-agnostic (see the cross-site affinity note
-    // below), but this still requires a site to be configured — same
-    // "no source configured; run scan_airing first" guard every other
-    // command in this app expects to have run by the time it's reachable.
     let _ = get_source_id(&state)?;
     let db = state.db.lock().unwrap();
-
-    let affinity = if recommended {
-        // Cross-site, unlike `discover_swipe_card`'s per-site pick: the
-        // AniList catalog itself is site-agnostic (candidates are excluded
-        // globally via `engaged_series_titles`/`anilist_id NOT IN series`),
-        // so scoring which genre to recommend from it using only the active
-        // site's follow/want/discard signal reset the user's whole taste
-        // profile on every site switch, even though nothing else about this
-        // deck is site-specific. `get_genre_affinity` stays per-site for
-        // `discover_swipe_card`, which genuinely does browse one site's own
-        // genre archive pages.
-        db.get_genre_affinity_across_sites().map_err(|e| e.to_string())?
-    } else {
-        HashMap::new()
-    };
-    // Format-affinity map for the inner (per-candidate) score — built once
-    // per call, not per genre attempt or per candidate (see
-    // `recommend::format_affinity_from_type_stats`'s doc comment: empty for
-    // a brand-new user with no follows, which reduces the format term to 0
-    // for everyone, i.e. cold start behaves like the pre-recommendation-
-    // engine build). Also empty in "Aleatorio" mode.
-    let format_affinity = if recommended {
-        crate::recommend::format_affinity_from_type_stats(&db.get_type_stats().map_err(|e| e.to_string())?)
-    } else {
-        HashMap::new()
-    };
-    // Taste signals (tags and studios) for the inner per-candidate score.
-    // Built once per call, empty in "Aleatorio" mode.
-    let taste_signals = if recommended {
-        let mut signals = db.get_taste_signals_across_sites().map_err(|e| e.to_string())?;
-        signals.niche_bias = db.get_discover_niche().map_err(|e| e.to_string())?;
-        signals
-    } else {
-        crate::recommend::TasteSignals::default()
-    };
-    // Candidate-genre filter: only the user's own banned-genre list (Section B).
-    // Filtering is purely user-driven; there is no hardcoded baseline exclusion.
-    let banned_genres = db.get_banned_genres().map_err(|e| e.to_string())?;
-    let banned_formats = db.get_banned_formats().map_err(|e| e.to_string())?;
-    let hide_upcoming = db.get_hide_upcoming_releases().map_err(|e| e.to_string())?;
-    let min_start_date = db.get_deck_min_start_date().map_err(|e| e.to_string())?;
-    // `max_start_date` defaults to "today" (end of the current UTC day) when
-    // never explicitly set — a moving target, not a value frozen at whatever
-    // day the setting happened to be read on. `min_start_date` gets no such
-    // substitution: unbounded really does mean unbounded.
-    let max_start_date = db.get_deck_max_start_date().map_err(|e| e.to_string())?.or_else(|| {
-        chrono::Utc::now()
-            .date_naive()
-            .and_hms_opt(23, 59, 59)
-            .map(|dt| dt.and_utc().timestamp())
-    });
-    let min_score = db.get_deck_min_score().map_err(|e| e.to_string())?;
-    let candidates = filter_candidate_genres(
-        db.distinct_catalog_genres().map_err(|e| e.to_string())?,
-        &banned_genres,
-    );
-    if candidates.is_empty() {
+    let Some(setup) = prepare_catalog_deck_setup(&db, recommended)? else {
         return Ok(None);
+    };
+    let res = pick_single_catalog_card(
+        &db,
+        &setup,
+        recommended,
+        &setup.excluded_norm_titles,
+        &HashSet::new(),
+    )?;
+    Ok(res.map(|(card, _)| card))
+}
+
+/// Up to `count` (clamped to 1..=20) distinct catalog cards for the deck in ONE call: the
+/// per-batch setup runs once and the db lock is taken once, instead of `count` separate
+/// `discover_catalog_card` calls each repeating it. Returns what it found when it hits
+/// a few empty picks in a row (the deck is running out of undecided candidates).
+#[tauri::command]
+pub async fn discover_catalog_cards(
+    state: State<'_, AppState>,
+    recommended: bool,
+    count: u32,
+) -> Result<Vec<FinishedCard>, String> {
+    let _ = get_source_id(&state)?;
+    let db = state.db.lock().unwrap();
+    let Some(setup) = prepare_catalog_deck_setup(&db, recommended)? else {
+        return Ok(Vec::new());
+    };
+    let count = count.clamp(1, 20);
+    let mut cards = Vec::with_capacity(count as usize);
+    let mut excluded_titles = setup.excluded_norm_titles.clone();
+    let mut excluded_ids = HashSet::new();
+
+    // One pick can come back empty without the deck being exhausted: it samples a few
+    // random genres, and a small one (every title already picked or decided) is a miss.
+    // Keep going until `count` cards, giving up after a few misses in a row — which is
+    // what the old one-call-per-card deck did implicitly by asking again.
+    const MAX_CONSECUTIVE_MISSES: u32 = 3;
+    let mut misses = 0;
+    while cards.len() < count as usize && misses < MAX_CONSECUTIVE_MISSES {
+        let Some((card, anime)) = pick_single_catalog_card(
+            &db,
+            &setup,
+            recommended,
+            &excluded_titles,
+            &excluded_ids,
+        )? else {
+            misses += 1;
+            continue;
+        };
+        misses = 0;
+        excluded_ids.insert(anime.id);
+        for t in [Some(&anime.title), anime.title_romaji.as_ref(), anime.title_english.as_ref()].into_iter().flatten() {
+            excluded_titles.insert(crate::matching::normalize_title(t));
+        }
+        cards.push(card);
     }
 
-    // Titles of series the user has already engaged with (followed/want/
-    // discarded/watched-externally), normalized so a followed *site*-scraped
-    // series (almost always anilist_id=NULL — see `engaged_series_titles`'s
-    // doc comment) still blocks a same-titled catalog entry from being
-    // re-offered by the deck. Built once per call, not per genre attempt.
-    let excluded_norm_titles: HashSet<String> = db
-        .engaged_series_titles()
-        .map_err(|e| e.to_string())?
-        .iter()
-        .map(|t| crate::matching::normalize_title(t))
-        .collect();
-
-    // Pool of candidate-genre indices still worth trying this call; a genre
-    // that yields no undecided candidate is removed from the pool so a
-    // retry never re-picks the same exhausted genre.
-    let mut pool: Vec<usize> = (0..candidates.len()).collect();
-    for _ in 0..MAX_GENRE_ATTEMPTS.min(candidates.len()) {
-        if pool.is_empty() {
-            break;
-        }
-        let pool_weights: Vec<f64> = pool
-            .iter()
-            .map(|&i| crate::recommend::dampen_genre_weight(*affinity.get(&candidates[i]).unwrap_or(&0.0)))
-            .collect();
-        let Some(pick_in_pool) = weighted_pick_index(&pool_weights) else { break };
-        let genre_idx = pool[pick_in_pool];
-        let genre = &candidates[genre_idx];
-
-        if let Some(anime) = db
-            .random_catalog_anime_in_genre_with_signals(
-                genre,
-                &banned_formats,
-                // Not just the outer genre pick (`filter_candidate_genres`
-                // above): the ban list also has to reach the card-level query,
-                // or a title tagged both an allowed genre and a banned one
-                // still lands on the deck.
-                &banned_genres,
-                &excluded_norm_titles,
-                &affinity,
-                &format_affinity,
-                &taste_signals,
-                recommended,
-                hide_upcoming,
-                min_start_date,
-                max_start_date,
-                min_score,
-            )
-            .map_err(|e| e.to_string())?
-        {
-            return Ok(Some(FinishedCard {
-                title: anime.title,
-                url: anime.url,
-                poster_url: anime.cover_url,
-                kind: anime.format.unwrap_or_default(),
-                matched_genre: Some(genre.clone()),
-            }));
-        }
-        pool.remove(pick_in_pool);
-    }
-    Ok(None)
+    Ok(cards)
 }
 
 /// Decide on a catalog-sourced card: Discard, Want, or Seen. Stores a
@@ -637,6 +727,15 @@ mod tests {
             backlog_status: None, watched_externally: false,
         };
         assert_eq!(decision_for_history_row(&none), "none");
+    }
+
+    #[test]
+    fn discover_catalog_cards_count_clamping() {
+        assert_eq!(0u32.clamp(1, 20), 1);
+        assert_eq!(100u32.clamp(1, 20), 20);
+        assert_eq!(5u32.clamp(1, 20), 5);
+        assert_eq!(1u32.clamp(1, 20), 1);
+        assert_eq!(20u32.clamp(1, 20), 20);
     }
 }
 

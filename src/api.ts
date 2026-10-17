@@ -264,6 +264,9 @@ export const getNextAir = (anilistId: number) =>
 export const discoverCatalogCard = (recommended: boolean) =>
   invoke<SwipeCard | null>("discover_catalog_card", { recommended });
 
+export const discoverCatalogCards = (recommended: boolean, count: number) =>
+  invoke<SwipeCard[]>("discover_catalog_cards", { recommended, count });
+
 export const decideCatalogCard = (params: {
   anilistId: number;
   title: string;
