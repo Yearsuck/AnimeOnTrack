@@ -510,26 +510,21 @@ async fn run_library_import(app: AppHandle) -> Result<crate::models::LibraryImpo
     Ok(crate::models::LibraryImportResult { total, linked, skipped })
 }
 
-/// Max fallback sites to query for a catalog link if the active site yields no match.
-/// Every other site is eligible: `site_priority` appends sites the user never ranked
-/// (the newest adapters) at the END, so a smaller cap would silently never reach them.
-/// Politeness comes from the per-site query cap below instead.
-const LINK_FALLBACK_MAX_SITES: usize = 8;
-
 /// Queries a fallback site gets: its franchise base ("Haikyuu!!") returns every entry of
 /// the franchise on a substring-searching site, and the matcher picks the right one.
 const LINK_FALLBACK_MAX_QUERIES: usize = 2;
 
-/// Pick up to `LINK_FALLBACK_MAX_SITES` fallback sites in priority order,
-/// excluding the active site. Pure and unit-tested.
+/// Every site except the active one, in `site_priority` order. NO cap on purpose:
+/// `site_priority` appends the sites the user never ranked (the newest adapters) at the END,
+/// so any fixed cap silently stops reaching them as soon as one more site is registered (it
+/// did: a cap of 8 broke at the 10th site). Politeness is the per-site query cap below.
+/// Pure and unit-tested.
 fn link_fallback_sites<'a>(
     all_sites: &'a [SiteInfo],
     active_site_id: &str,
     priority: &[String],
 ) -> Vec<&'a SiteInfo> {
-    let mut sites = super::fallback::next_sites_to_try(all_sites, active_site_id, &[], priority);
-    sites.truncate(LINK_FALLBACK_MAX_SITES);
-    sites
+    super::fallback::next_sites_to_try(all_sites, active_site_id, &[], priority)
 }
 
 /// Strip the trailing season/part marker words of a title.
