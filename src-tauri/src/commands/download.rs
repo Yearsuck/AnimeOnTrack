@@ -1,6 +1,6 @@
 use super::*;
 use crate::download_sources::{
-    candidates, mytsumi_direct_media, parse_animeyt_container_url, parse_animeflv_servers, parse_jkanime_servers, parse_mytsumi_tabs,
+    candidates, mytsumi_direct_media, parse_animeyt_container_url, parse_animeflv_servers, parse_jkanime_servers, parse_monoschinos_servers, parse_mytsumi_tabs,
     parse_tioanime_servers, resolve_from_page, supported_host, voe_redirect_target, Media, Server,
 };
 use crate::hls::{parse_gogoanime_player_url, parse_megaplay_playlist_url, parse_wrapper_iframe};
@@ -900,6 +900,7 @@ enum Site {
     AnimeYt,
     GogoAnime,
     AnimeFlv,
+    MonosChinos,
 }
 
 fn site_of(url: &str) -> Option<Site> {
@@ -917,6 +918,8 @@ fn site_of(url: &str) -> Option<Site> {
         Some(Site::GogoAnime)
     } else if is("animeflv.or.at") {
         Some(Site::AnimeFlv)
+    } else if is("monoschinos.st") {
+        Some(Site::MonosChinos)
     } else {
         None
     }
@@ -929,6 +932,7 @@ fn site_label(url: &str) -> String {
         Some(Site::AnimeYt) => "animeytx".to_string(),
         Some(Site::GogoAnime) => "gogoanime".to_string(),
         Some(Site::AnimeFlv) => "animeflv".to_string(),
+        Some(Site::MonosChinos) => "monoschinos".to_string(),
         None => url::Url::parse(url)
             .ok()
             .and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase()))
@@ -1142,6 +1146,7 @@ async fn resolve_media(
         Site::TioAnime => parse_tioanime_servers(&page.html),
         Site::JkAnime => parse_jkanime_servers(&page.html),
         Site::AnimeFlv => parse_animeflv_servers(&page.html),
+        Site::MonosChinos => parse_monoschinos_servers(&page.html),
         Site::AnimeYt => {
             // animeyt.cc embeds one "container" player; its runtime page is plain
             // HTML listing the servers and, often, a direct mp4 tab.
@@ -1358,6 +1363,10 @@ mod tests {
         assert_eq!(site_of("https://notjkanime.net/x"), None);
         assert_eq!(site_of("https://animeflv.or.at/2026/10/11/x-episodio-3/"), Some(Site::AnimeFlv));
         assert_eq!(site_of("https://animeflv.or.at.evil.example/x"), None);
+        assert_eq!(site_of("https://monoschinos.st/ver/haikyuu-episodio-1"), Some(Site::MonosChinos));
+        assert_eq!(site_label("https://monoschinos.st/ver/haikyuu-episodio-1"), "monoschinos");
+        assert_eq!(site_of("https://monoschinos.st.evil.example/x"), None);
+        assert_eq!(site_of("https://aniwaves.ru/watch/78821/ep-1"), None, "aniwaves hosts are not readable yet");
         assert_eq!(site_of("https://www4.animeflv.net/ver/x-1"), None);
         assert_eq!(site_of("https://gogoanime.by.evil.example/x"), None);
         assert_eq!(site_of("not a url"), None);
