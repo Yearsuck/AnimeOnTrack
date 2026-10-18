@@ -782,6 +782,27 @@ fn fold_romanization(s: &str) -> String {
     result
 }
 
+/// The tokens of a site title joined without spaces, with the word "movie" and the integer
+/// right after it ("Movie 3") left out: the site's numbering of a film, which AniList's
+/// title does not carry.
+fn squash_without_movie_number(tokens: &[&str]) -> String {
+    let mut out = String::new();
+    let mut skip_number = false;
+    for t in tokens {
+        if *t == "movie" {
+            skip_number = true;
+            continue;
+        }
+        if skip_number && is_ascii_int(t) {
+            skip_number = false;
+            continue;
+        }
+        skip_number = false;
+        out.push_str(t);
+    }
+    out
+}
+
 /// Score a query-candidate pair under season-aware rules: combines plain `score()`,
 /// romanization-folded score, and whitespace-squashed comparison with optional `movie`
 /// token ignoring.
@@ -819,11 +840,7 @@ fn score_pair_season_aware(query_norm: &str, candidate_norm: &str) -> f64 {
         if q_squash == c_squash || q_fold_squash == c_fold_squash {
             s_squash = 1.0;
         } else if !q_has_movie && c_has_movie {
-            let c_no_movie: String = c_tokens
-                .iter()
-                .filter(|&&t| t != "movie")
-                .flat_map(|t| t.chars())
-                .collect();
+            let c_no_movie = squash_without_movie_number(&c_tokens);
             let c_no_movie_fold = fold_romanization(&c_no_movie);
             if q_squash == c_no_movie || q_fold_squash == c_no_movie_fold {
                 s_squash = 1.0;
@@ -890,6 +907,28 @@ pub fn best_match_season_aware(
                 index,
                 score: candidate_best_score,
             });
+        }
+    }
+
+    // Films that differ only by their "Movie N" would all squash to the same key, and the
+    // first one listed would win silently. When no query names a movie, that is ambiguity:
+    // better a miss (retried by hand) than the wrong film.
+    if let Some(b) = &best {
+        let queries_name_a_movie = normalized_queries.iter().any(|q| q.split_whitespace().any(|t| t == "movie"));
+        if !queries_name_a_movie {
+            let key = |norm: &str| {
+                let tokens: Vec<&str> = norm.split_whitespace().collect();
+                tokens.contains(&"movie").then(|| squash_without_movie_number(&tokens))
+            };
+            if let Some(winner) = key(&normalize_title(candidates[b.index].title)) {
+                let same = candidates
+                    .iter()
+                    .filter(|c| key(&normalize_title(c.title)).as_deref() == Some(winner.as_str()))
+                    .count();
+                if same > 1 {
+                    return None;
+                }
+            }
         }
     }
 
@@ -2232,5 +2271,41 @@ mod tests {
         assert_eq!(extract_season_number("the third prince"), Some(1));
         let s2 = vec![TitleCandidate { title: "The Third Prince Season 2", url: "" }];
         assert_eq!(best_match_season_aware(&["The Third Prince"], &s2), None);
+    }
+
+    #[test]
+    fn season_aware_matches_a_site_movie_title_that_carries_a_movie_number() {
+        // monoschinos titles the Haikyuu films "Movie 3: ..." / "Movie 4: ..."; AniList's romaji has no number.
+        let site = [
+            "Haikyuu!!",
+            "Haikyuu!! Movie 3: Sainou to Sense",
+            "Haikyuu!! Movie 4: Concept no Tatakai",
+            "Haikyuu!!: Riku vs. Kuu",
+        ];
+        let cands: Vec<TitleCandidate> = site.iter().map(|t| TitleCandidate { title: t, url: "" }).collect();
+        let pick = |q: &[&str]| best_match_season_aware(q, &cands).map(|m| site[m.index]);
+        assert_eq!(pick(&["Haikyuu!!: Sainou to Sense", "Haikyu!! The Movie: Talent and Sense"]), Some("Haikyuu!! Movie 3: Sainou to Sense"));
+        assert_eq!(pick(&["Haikyuu!!: Concept no Tatakai", "Haikyu!! The Movie: Battle of Concepts"]), Some("Haikyuu!! Movie 4: Concept no Tatakai"));
+        // the two films must not be swapped
+        assert_ne!(pick(&["Haikyuu!!: Sainou to Sense"]), Some("Haikyuu!! Movie 4: Concept no Tatakai"));
+        // a movie number must not make an unrelated movie match
+        assert_eq!(best_match_season_aware(&["Gintama: The Movie"], &[TitleCandidate { title: "Haikyuu!! Movie 3: Sainou to Sense", url: "" }]), None);
+    }
+
+    #[test]
+    fn season_aware_refuses_to_pick_between_films_that_differ_only_by_their_movie_number() {
+        let site = [
+            "Code Geass Movie 1 Hangyaku no Lelouch",
+            "Code Geass Movie 2 Hangyaku no Lelouch",
+            "Code Geass Movie 3 Hangyaku no Lelouch",
+        ];
+        let cands: Vec<TitleCandidate> = site.iter().map(|t| TitleCandidate { title: t, url: "" }).collect();
+        assert_eq!(best_match_season_aware(&["Code Geass: Hangyaku no Lelouch"], &cands), None);
+        // a query that names the movie number still resolves
+        let m = best_match_season_aware(&["Code Geass Movie 2 Hangyaku no Lelouch"], &cands).expect("exact");
+        assert_eq!(site[m.index], "Code Geass Movie 2 Hangyaku no Lelouch");
+        // one film only: still resolved without its number
+        let one = [TitleCandidate { title: "Code Geass Movie 1 Hangyaku no Lelouch", url: "" }];
+        assert!(best_match_season_aware(&["Code Geass: Hangyaku no Lelouch"], &one).is_some());
     }
 }
