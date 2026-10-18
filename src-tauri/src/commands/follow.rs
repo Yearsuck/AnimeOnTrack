@@ -1,5 +1,6 @@
 use super::*;
 use super::discover::to_candidates;
+use crate::adapter::SiteInfo;
 
 /// One search-results page, wrapped so a genuine "zero hits" answer can be
 /// told apart from "this mirror's page didn't parse at all". See
@@ -154,7 +155,7 @@ pub async fn start_watching(
         !db.list_series_episodes(series_id).map_err(|e| e.to_string())?.is_empty()
     };
     if info.anilist_id.is_some() && !has_episodes {
-        let (outcome, resulting_id) = link_series_core(&app, &state, series_id).await?;
+        let (outcome, resulting_id) = link_series_core(&app, &state, series_id, true).await?;
         let Some(target_id) = resulting_id else {
             // NoMatch — do not follow; hand the outcome back so the UI can
             // surface "No encontrado" and keep the row in the backlog.
@@ -334,18 +335,19 @@ pub enum LinkOutcome {
 /// confident match, rewrite the row into a real, fully-tracked series (real
 /// site URL/slug, scraped episode list, site genres/kind) — see the design
 /// spec (`docs/superpowers/specs/2026-07-10-discover-site-link-search-design.md`)
-/// for the full rationale. Politeness: at most 3 scrapes total (search,
-/// optionally a second search with the English title, then one fetch of the
-/// matched series page reused for both `parse_series` and
-/// `parse_series_detail`) — no batching, no background sweep of the existing
-/// backlog (out of scope, see the spec).
+/// for the full rationale. Politeness: on the active site at most 7 searches
+/// (usually 1-3: it stops at the first hit) plus one fetch of the matched
+/// series page; when the active site has no match, each other site gets at
+/// most `LINK_FALLBACK_MAX_QUERIES` searches (worst case about 22 scrapes for
+/// one click, typically a few). No batching, no background sweep of the existing backlog
+/// (out of scope, see the spec).
 #[tauri::command]
 pub async fn link_catalog_series(
     app: AppHandle,
     state: State<'_, AppState>,
     series_id: i64,
 ) -> Result<LinkOutcome, String> {
-    let (outcome, _resulting_id) = link_series_core(&app, &state, series_id).await?;
+    let (outcome, _resulting_id) = link_series_core(&app, &state, series_id, true).await?;
     Ok(outcome)
 }
 
@@ -464,7 +466,7 @@ async fn run_library_import(app: AppHandle) -> Result<crate::models::LibraryImpo
             db.set_anilist_id(sid, anilist_id).map_err(|e| e.to_string())?;
             sid
         };
-        match link_series_core(&app, &state, sid).await {
+        match link_series_core(&app, &state, sid, false).await {
             Ok((_, Some(target_id))) => {
                 let db = state.db.lock().unwrap();
                 db.set_followed_canonical(target_id, true).map_err(|e| e.to_string())?;
@@ -508,6 +510,129 @@ async fn run_library_import(app: AppHandle) -> Result<crate::models::LibraryImpo
     Ok(crate::models::LibraryImportResult { total, linked, skipped })
 }
 
+/// Queries a fallback site gets: its franchise base ("Haikyuu!!") returns every entry of
+/// the franchise on a substring-searching site, and the matcher picks the right one.
+const LINK_FALLBACK_MAX_QUERIES: usize = 2;
+
+/// Every site except the active one, in `site_priority` order. NO cap on purpose:
+/// `site_priority` appends the sites the user never ranked (the newest adapters) at the END,
+/// so any fixed cap silently stops reaching them as soon as one more site is registered (it
+/// did: a cap of 8 broke at the 10th site). Politeness is the per-site query cap below.
+/// Pure and unit-tested.
+fn link_fallback_sites<'a>(
+    all_sites: &'a [SiteInfo],
+    active_site_id: &str,
+    priority: &[String],
+) -> Vec<&'a SiteInfo> {
+    super::fallback::next_sites_to_try(all_sites, active_site_id, &[], priority)
+}
+
+/// Strip the trailing season/part marker words of a title.
+fn strip_season(q: &str) -> String {
+    crate::matching::strip_season_markers(q.split_whitespace().collect(), crate::matching::normalize_title)
+        .join(" ")
+        .trim()
+        .to_string()
+}
+
+/// The franchise name of a title: the part before the first colon when that is a real
+/// word ("Haikyuu!!: Gomi Suteba no Kessen" -> "Haikyuu!!"), season markers stripped.
+/// A short head ("Re:Zero" -> "Re") is not a name, so the whole title is used then.
+fn franchise_query(q: &str) -> String {
+    if let Some((head, _)) = q.split_once(':') {
+        let head = strip_season(head);
+        if head.chars().filter(|c| c.is_alphanumeric()).count() >= 4 {
+            return head;
+        }
+    }
+    strip_season(q)
+}
+
+fn dedup_queries(raw: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for q in raw {
+        if !q.is_empty() && !out.iter().any(|o| o.eq_ignore_ascii_case(&q)) {
+            out.push(q);
+        }
+    }
+    out
+}
+
+/// The query rounds for the ACTIVE site, best first, de-duplicated
+/// case-insensitively: the title as AniList writes it, its season-stripped form,
+/// its franchise name, then the same for the english title, and the subtitle
+/// after the first colon.
+///
+/// The stripped rounds are not optional. The sites filter their search by
+/// substring, so "Haikyuu!! 2nd Season" returns NOTHING on tioanime while
+/// "Haikyuu!!" returns all seven entries; the matcher then picks the right
+/// season out of the cards (`best_match_season_aware` vetoes the wrong ones).
+fn link_search_queries(title: &str, romaji: Option<&str>, english: Option<&str>) -> Vec<String> {
+    let primary = romaji.unwrap_or(title);
+    let mut raw: Vec<String> = vec![primary.to_string(), strip_season(primary), franchise_query(primary)];
+    if let Some(eng) = english {
+        raw.push(eng.to_string());
+        raw.push(strip_season(eng));
+        raw.push(franchise_query(eng));
+    }
+    // Scraped sites frequently index the subtitle as the primary series title
+    // (e.g. "Steel Ball Run: JoJo no Kimyou na Bouken"), whereas AniList romaji
+    // places the franchise name before the colon.
+    if let Some((_, sub)) = primary.split_once(':') {
+        let cleaned = strip_season(sub);
+        if cleaned.split_whitespace().count() >= 2 {
+            raw.push(cleaned);
+        }
+    }
+    dedup_queries(raw)
+}
+
+/// The (few) queries for a FALLBACK site: franchise names only, see
+/// `LINK_FALLBACK_MAX_QUERIES`. Titles with no colon fall back to their
+/// season-stripped form, so a one-word franchise costs one search.
+fn link_fallback_queries(title: &str, romaji: Option<&str>, english: Option<&str>) -> Vec<String> {
+    let primary = romaji.unwrap_or(title);
+    let mut raw = vec![franchise_query(primary)];
+    if let Some(eng) = english {
+        raw.push(franchise_query(eng));
+    }
+    let mut out = dedup_queries(raw);
+    out.truncate(LINK_FALLBACK_MAX_QUERIES);
+    out
+}
+
+/// Search one site (adapter + mirror list) round by round and return the first
+/// card that clears `best_match_season_aware`, scored against the romaji,
+/// english and display titles together. Stops at the first hit, so a title the
+/// site spells like the first query costs one scrape, not four.
+async fn search_series_for_link(
+    app: &AppHandle,
+    mirrors: &[String],
+    a: &dyn SiteAdapter,
+    queries: &[String],
+    title: &str,
+    romaji: Option<&str>,
+    english: Option<&str>,
+) -> Result<Option<FinishedCard>, String> {
+    let primary = romaji.unwrap_or(title);
+    let mut scored: Vec<&str> = vec![primary];
+    if let Some(eng) = english {
+        if !scored.contains(&eng) {
+            scored.push(eng);
+        }
+    }
+    if !scored.contains(&title) {
+        scored.push(title);
+    }
+    for query in queries {
+        let cards = search_site(app, mirrors, query, a).await?;
+        if let Some(m) = crate::matching::best_match_season_aware(&scored, &to_candidates(&cards)) {
+            return Ok(Some(cards[m.index].clone()));
+        }
+    }
+    Ok(None)
+}
+
 /// The shared body behind both `link_catalog_series` (fire-and-forget from a
 /// `Seen` swipe / manual retry) and `start_watching` (which must link an
 /// unlinked catalog row *before* following it). Returns the outcome plus the
@@ -520,6 +645,7 @@ async fn link_series_core(
     app: &AppHandle,
     state: &State<'_, AppState>,
     series_id: i64,
+    allow_fallback: bool,
 ) -> Result<(LinkOutcome, Option<i64>), String> {
     let site_id = get_active_site_id(state);
     let a = get_active_adapter(state)?;
@@ -545,49 +671,87 @@ async fn link_series_core(
             .ok_or_else(|| "catalog entry not found for this anilist_id".to_string())?
     };
 
-    let primary_query = romaji.clone().unwrap_or_else(|| title.clone());
-    let mut cards = search_site(app, &mirrors, &primary_query, a.as_ref()).await?;
-    let mut best = crate::matching::best_match(&[&primary_query], &to_candidates(&cards));
+    let active_match = search_series_for_link(
+        app,
+        &mirrors,
+        a.as_ref(),
+        &link_search_queries(&title, romaji.as_deref(), english.as_deref()),
+        &title,
+        romaji.as_deref(),
+        english.as_deref(),
+    )
+    .await?;
 
-    // Second search only on failure, only if an english title exists and
-    // actually differs from what was just tried — one extra scrape, not two
-    // searches every time.
-    if best.is_none() {
-        if let Some(english) = &english {
-            if !english.eq_ignore_ascii_case(&primary_query) {
-                cards = search_site(app, &mirrors, english, a.as_ref()).await?;
-                best = crate::matching::best_match(&[english], &to_candidates(&cards));
+    let (matched, adapter, target_source_id, is_fallback) = match active_match {
+        Some(hit) => (hit, a, info.source_id, false),
+        // The library import exists to bring entries onto the ACTIVE site, and a row
+        // that lands on another source would stay "missing" there: no fallback.
+        None if !allow_fallback => return Ok((LinkOutcome::NoMatch, None)),
+        None => {
+            let all_sites = crate::adapter::all_sites();
+            let priority = {
+                let db = state.db.lock().unwrap();
+                let known: Vec<&str> = all_sites.iter().map(|s| s.id).collect();
+                db.get_site_priority(&known).unwrap_or_default()
+            };
+            let fallback_sites = link_fallback_sites(all_sites, &site_id, &priority);
+            let mut found: Option<(FinishedCard, Box<dyn SiteAdapter>, i64)> = None;
+
+            for site in fallback_sites {
+                let fallback_adapter = match crate::adapter::adapter_for(site.id) {
+                    Some(adapter) => adapter,
+                    None => continue,
+                };
+                let fallback_mirrors = {
+                    let db = state.db.lock().unwrap();
+                    super::fallback::mirrors_or_default(load_mirrors(&db, site.id), site.default_base_url)
+                };
+                if fallback_mirrors.first().map(|m| crate::domain_breaker::is_open(m)).unwrap_or(false) {
+                    continue;
+                }
+                match search_series_for_link(
+                    app,
+                    &fallback_mirrors,
+                    fallback_adapter.as_ref(),
+                    &link_fallback_queries(&title, romaji.as_deref(), english.as_deref()),
+                    &title,
+                    romaji.as_deref(),
+                    english.as_deref(),
+                )
+                .await
+                {
+                    Ok(Some(hit)) => {
+                        let x_source_id = {
+                            let db = state.db.lock().unwrap();
+                            match db.get_source_id_for_site(site.id).map_err(|e| e.to_string())? {
+                                Some(id) => id,
+                                None => {
+                                    let working = fallback_mirrors
+                                        .iter()
+                                        .find(|m| hit.url.starts_with(*m))
+                                        .cloned()
+                                        .unwrap_or_else(|| site.default_base_url.to_string());
+                                    db.upsert_source(site.name, &working, site.id).map_err(|e| e.to_string())?
+                                }
+                            }
+                        };
+                        found = Some((hit, fallback_adapter, x_source_id));
+                        break;
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        eprintln!("[fallback] link search failed on {}: {e}", site.id);
+                    }
+                }
+            }
+
+            match found {
+                Some((hit, adapter, x_source_id)) => (hit, adapter, x_source_id, true),
+                None => return Ok((LinkOutcome::NoMatch, None)),
             }
         }
-    }
+    };
 
-    // Third search: if still unlinked and the romaji/primary title contains
-    // a colon, try searching using the cleaned subtitle clause after the first
-    // colon with trailing season/stage markers stripped. Scraped sites frequently
-    // index the subtitle as the primary series title (e.g. "Steel Ball Run: JoJo
-    // no Kimyou na Bouken"), whereas AniList romaji places the franchise name
-    // before the colon ("JoJo no Kimyou na Bouken: Steel Ball Run...").
-    if best.is_none() {
-        if let Some((_, raw_sub)) = primary_query.split_once(':') {
-            let tokens = crate::matching::strip_season_markers(
-                raw_sub.split_whitespace().collect(),
-                crate::matching::normalize_title,
-            );
-            let cleaned_sub = tokens.join(" ").trim().to_string();
-            let word_count = cleaned_sub.split_whitespace().count();
-            let already_tried = cleaned_sub.eq_ignore_ascii_case(&primary_query)
-                || english
-                    .as_deref()
-                    .is_some_and(|eng| cleaned_sub.eq_ignore_ascii_case(eng));
-            if word_count >= 2 && !already_tried {
-                cards = search_site(app, &mirrors, &cleaned_sub, a.as_ref()).await?;
-                best = crate::matching::best_match(&[&primary_query], &to_candidates(&cards));
-            }
-        }
-    }
-
-    let Some(m) = best else { return Ok((LinkOutcome::NoMatch, None)) };
-    let matched = cards[m.index].clone();
     let new_slug = slug_from_url(&matched.url);
 
     // Slug collision: the matched site series may already be tracked (e.g.
@@ -605,7 +769,7 @@ async fn link_series_core(
             return Ok((LinkOutcome::NoMatch, None));
         }
         if let Some(existing_id) =
-            db.find_series_id_by_slug(info.source_id, &new_slug, series_id).map_err(|e| e.to_string())?
+            db.find_series_id_by_slug(target_source_id, &new_slug, series_id).map_err(|e| e.to_string())?
         {
             db.merge_series_into(existing_id, series_id).map_err(|e| e.to_string())?;
             let episodes = db.list_series_episodes(existing_id).map_err(|e| e.to_string())?.len() as i64;
@@ -621,25 +785,33 @@ async fn link_series_core(
     // Detail parse (genres/kind) is skipped: this series is linked to AniList,
     // which is the source of truth for all facts about the anime.
     let scraped =
-        fetch_html_with_script(app, &matched.url, a.episode_fetch_script()).await.map_err(|e| e.to_string())?;
-    let episodes = a
+        fetch_html_with_script(app, &matched.url, adapter.episode_fetch_script()).await.map_err(|e| e.to_string())?;
+    let episodes = adapter
         .parse_series(scraped.extra.as_deref().unwrap_or(&scraped.html))
         .map_err(|e| e.to_string())?;
 
     let episode_count = episodes.len() as i64;
     let written = {
         let db = state.db.lock().unwrap();
-        apply_link_writes(
-            &db,
-            series_id,
-            &new_slug,
-            &matched.url,
-            matched.poster_url.as_deref(),
-            None,
-            None,
-            &episodes,
-            info.watched_externally,
-        )?
+        if !db.series_exists(series_id).map_err(|e| e.to_string())? {
+            false
+        } else {
+            if is_fallback {
+                db.set_series_source(series_id, target_source_id, &new_slug, &matched.url)
+                    .map_err(|e| e.to_string())?;
+            }
+            apply_link_writes(
+                &db,
+                series_id,
+                &new_slug,
+                &matched.url,
+                matched.poster_url.as_deref(),
+                None,
+                None,
+                &episodes,
+                info.watched_externally,
+            )?
+        }
     };
     if !written {
         // The user undid the decision while the scrape above was running.
@@ -1018,5 +1190,102 @@ mod tests {
     fn plan_carryover_empty_when_nothing_followed_elsewhere() {
         let new_site = vec![scanned("Anything")];
         assert!(plan_carryover(&new_site, &[]).is_empty());
+    }
+
+    #[test]
+    fn test_link_fallback_sites_excludes_active_and_orders_by_priority_and_reaches_the_unranked_sites() {
+        let all_sites = crate::adapter::all_sites();
+        assert!(all_sites.len() >= 8, "test assumes full 8-site registry");
+
+        let active_site_id = "tioanime";
+        let priority = vec![
+            "aniwaves".to_string(),
+            "jkanime".to_string(),
+            "tioanime".to_string(),
+        ];
+
+        let fallbacks = link_fallback_sites(all_sites, active_site_id, &priority);
+
+        // 1. Every other site is reachable, including the ones the user never ranked
+        //    (the newest adapters sit at the END of the priority list).
+        assert_eq!(fallbacks.len(), all_sites.len() - 1);
+        for newest in ["aniwaves", "monoschinos"] {
+            assert!(fallbacks.iter().any(|s| s.id == newest), "{newest} must be reachable");
+        }
+
+        // 2. Excludes active site
+        assert!(fallbacks.iter().all(|s| s.id != "tioanime"));
+
+        // 3. Orders by priority: aniwaves first, then jkanime
+        assert_eq!(fallbacks[0].id, "aniwaves");
+        assert_eq!(fallbacks[1].id, "jkanime");
+
+        // 4. Unknown ids sort last in stable order (next site by all_sites order)
+        let expected_third = all_sites
+            .iter()
+            .find(|s| s.id != "tioanime" && s.id != "aniwaves" && s.id != "jkanime")
+            .unwrap();
+        assert_eq!(fallbacks[2].id, expected_third.id);
+    }
+
+    #[test]
+    fn link_search_queries_strip_the_season_so_substring_search_sites_still_answer() {
+        // tioanime answers "Haikyuu!!" with seven entries but "Haikyuu!! 2nd Season" with none.
+        let q = link_search_queries("HAIKYU!! 2nd Season", Some("Haikyuu!! 2nd Season"), Some("HAIKYU!! 2nd Season"));
+        assert_eq!(q[0], "Haikyuu!! 2nd Season");
+        assert!(q.iter().any(|x| x == "Haikyuu!!"), "romaji base missing: {q:?}");
+        assert!(q.iter().any(|x| x == "HAIKYU!!") || q.len() >= 2, "english base missing: {q:?}");
+        // no empty and no case-insensitive duplicates
+        assert!(q.iter().all(|x| !x.is_empty()));
+        let lower: std::collections::HashSet<String> = q.iter().map(|x| x.to_lowercase()).collect();
+        assert_eq!(lower.len(), q.len());
+    }
+
+    #[test]
+    fn link_search_queries_keep_the_colon_subtitle_round() {
+        let q = link_search_queries(
+            "JoJo no Kimyou na Bouken: Steel Ball Run",
+            Some("JoJo no Kimyou na Bouken: Steel Ball Run"),
+            None,
+        );
+        assert!(q.iter().any(|x| x == "Steel Ball Run"), "{q:?}");
+    }
+
+    #[test]
+    fn link_search_queries_do_not_repeat_an_unmarked_title() {
+        let q = link_search_queries("Monster", Some("Monster"), Some("Monster"));
+        assert_eq!(q, vec!["Monster".to_string()]);
+    }
+
+    #[test]
+    fn franchise_query_takes_the_name_before_the_colon_without_the_season() {
+        assert_eq!(franchise_query("Haikyuu!!: Gomi Suteba no Kessen"), "Haikyuu!!");
+        assert_eq!(franchise_query("Haikyuu!! 2nd Season"), "Haikyuu!!");
+        assert_eq!(franchise_query("HAIKYU!! The Dumpster Battle"), "HAIKYU!! The Dumpster Battle");
+        // a head that is too short to be a name ("Re") keeps the whole title
+        assert_eq!(franchise_query("Re:Zero kara Hajimeru Isekai Seikatsu"), "Re:Zero kara Hajimeru Isekai Seikatsu");
+    }
+
+    #[test]
+    fn fallback_sites_get_at_most_two_franchise_queries() {
+        let q = link_fallback_queries(
+            "HAIKYU!! The Dumpster Battle",
+            Some("Haikyuu!!: Gomi Suteba no Kessen"),
+            Some("HAIKYU!! The Dumpster Battle"),
+        );
+        assert_eq!(q, vec!["Haikyuu!!".to_string(), "HAIKYU!! The Dumpster Battle".to_string()]);
+        assert!(q.len() <= LINK_FALLBACK_MAX_QUERIES);
+        // a title with no marker and no colon costs a single search
+        assert_eq!(link_fallback_queries("Monster", Some("Monster"), Some("Monster")), vec!["Monster".to_string()]);
+    }
+
+    #[test]
+    fn active_site_queries_include_the_franchise_name_of_a_subtitled_movie() {
+        let q = link_search_queries(
+            "HAIKYU!! The Dumpster Battle",
+            Some("Haikyuu!!: Gomi Suteba no Kessen"),
+            Some("HAIKYU!! The Dumpster Battle"),
+        );
+        assert!(q.iter().any(|x| x == "Haikyuu!!"), "{q:?}");
     }
 }

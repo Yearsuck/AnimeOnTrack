@@ -2,10 +2,14 @@ use crate::models::{Episode, FinishedCard, Series, SeriesDetail};
 use anyhow::Result;
 
 pub mod animeflv;
+pub mod animefenix;
 pub mod animeland;
 pub mod animeytx;
+pub mod animoratv;
+pub mod aniwaves;
 pub mod gogoanime;
 pub mod jkanime;
+pub mod monoschinos;
 pub mod tioanime;
 
 /// Static metadata for one supported site — never the base URL (that changes
@@ -29,6 +33,10 @@ pub fn all_sites() -> &'static [SiteInfo] {
         SiteInfo { id: "jkanime", name: "JKanime", default_base_url: "https://jkanime.net" },
         SiteInfo { id: "gogoanime", name: "GogoAnime", default_base_url: "https://gogoanime.by" },
         SiteInfo { id: "animeland", name: "AnimeLand", default_base_url: "https://w7.animeland.tv" },
+        SiteInfo { id: "aniwaves", name: "Aniwaves", default_base_url: "https://aniwaves.ru" },
+        SiteInfo { id: "monoschinos", name: "MonosChinos", default_base_url: "https://monoschinos.st" },
+        SiteInfo { id: "animefenix", name: "AnimeFenix", default_base_url: "https://animefenix.com.co" },
+        SiteInfo { id: "animoratv", name: "AnimoraTV", default_base_url: "https://www.animoratv.com" },
     ]
 }
 
@@ -43,6 +51,10 @@ pub fn adapter_for(site_id: &str) -> Option<Box<dyn SiteAdapter>> {
         "jkanime" => Some(Box::new(jkanime::JkanimeAdapter)),
         "gogoanime" => Some(Box::new(gogoanime::GogoanimeAdapter)),
         "animeland" => Some(Box::new(animeland::AnimelandAdapter)),
+        "aniwaves" => Some(Box::new(aniwaves::AniwavesAdapter)),
+        "monoschinos" => Some(Box::new(monoschinos::MonoschinosAdapter)),
+        "animefenix" => Some(Box::new(animefenix::AnimefenixAdapter)),
+        "animoratv" => Some(Box::new(animoratv::AnimoratvAdapter)),
         _ => None,
     }
 }

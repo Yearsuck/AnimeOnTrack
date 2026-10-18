@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <!-- Google tag (gtag.js). Va lo mas arriba posible del <head>, como pide
+         Google, y ANTES del resto de metadatos para que mida tambien las
+         visitas que abandonan antes de que hidrate la SPA. Convive con
+         @vercel/analytics: son dos medidores independientes, y tener dos
+         fuentes es justo lo que permitio detectar que la caida del 52% de
+         agosto era un fallo de medicion y no de trafico. -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-C1DXW72VYW"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag("js", new Date());
+
+      gtag("config", "G-C1DXW72VYW");
+    </script>
+
+    <!-- Core -->
+    <meta charset="UTF-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+
+    <!-- Aquí solo hay valores globales. El servidor coloca los metadatos de
+         ruta en el HTML inicial y SEOHead actualiza esos mismos nodos al
+         navegar por la SPA; no debe haber dos canonical ni dos robots. -->
+    
+    <meta name="author" content="AnimoraTV" />
+    <meta name="publisher" content="AnimoraTV" />
+    <meta name="application-name" content="AnimoraTV" />
+    <meta name="apple-mobile-web-app-title" content="AnimoraTV" />
+    <meta name="rating" content="general" />
+    <meta name="referrer" content="origin-when-cross-origin" />
+    <!-- Idioma del documento. No se emiten hreflang regionales porque no
+         existen versiones regionales equivalentes de cada URL; apuntar todos
+         los documentos a la homepage generaba clusters contradictorios. -->
+    <meta http-equiv="content-language" content="es" />
+
+    <!-- Tema -->
+    <meta name="theme-color" content="#0d0f16" />
+    <meta name="color-scheme" content="dark light" />
+
+    <!-- Open Graph global. og:title/description/image/url/type los pone
+         SEOHead por ruta; aca solo lo que no cambia nunca. -->
+    <meta property="og:site_name" content="AnimoraTV" />
+    <meta property="og:image:type" content="image/png" />
+    
+    
+    
+    <meta property="og:locale:alternate" content="es_MX" />
+    <meta property="og:locale:alternate" content="es_AR" />
+
+    <meta name="twitter:site" content="@AnimoraTV" />
+    <meta name="twitter:creator" content="@AnimoraTV" />
+    <meta name="twitter:image:alt" content="AnimoraTV — Ver anime online sub español gratis" />
+
+    <!-- Iconos -->
+    <!-- Iconos. Se generan con `npm run iconos` (scripts/generar-iconos.mjs).
+         favicon.ico es obligatorio aunque se declaren PNG: Google y los
+         navegadores piden /favicon.ico igualmente, y antes esa ruta caia en el
+         catch-all del servidor y devolvia el HTML de la SPA, asi que Google se
+         quedaba sin icono en los resultados. Los PNG son cuadrados y de lado
+         multiplo de 48, como exige Google. -->
+    <link rel="icon" href="/favicon.ico" sizes="32x32" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/png" sizes="48x48" href="/favicon-48.png" />
+    <link rel="icon" type="image/png" sizes="96x96" href="/favicon-96.png" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/favicon-192.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/site.webmanifest" />
+
+    <!-- Descubrimiento -->
+    <link rel="sitemap" type="application/xml" href="https://www.animoratv.com/sitemap.xml" />
+    <link rel="alternate" type="application/rss+xml" title="AnimoraTV - Últimos Episodios" href="https://www.animoratv.com/rss.xml" />
+
+    <!-- Rendimiento: la API es same-origin; solo preconectamos recursos que
+         el navegador realmente necesita conocer. -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="preconnect" href="https://s4.anilist.co" crossorigin />
+    <link rel="dns-prefetch" href="https://s4.anilist.co" />
+
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "Organization",
+        "name": "AnimoraTV",
+        "alternateName": ["Animora", "Animora TV"],
+        "url": "https://www.animoratv.com/",
+        "logo": "https://www.animoratv.com/animora-logo.png",
+        "description": "Catálogo de anime online con fichas, episodios, recomendaciones y subtítulos en español."
+      }
+    </script>
+    <!--
+      Pantalla de carga sobre el cuerpo prerenderizado (#ssr-seo, ver
+      api/prerender.js). Ese HTML lo reciben igual bots y personas y React lo
+      reemplaza al montar; sin esto se veia como texto crudo en cada carga.
+      NO se oculta: sigue en el DOM tal cual (enlaces, h1) y solo lo tapa un
+      pseudo-elemento del propio #ssr-seo, que desaparece con el. Si el JS
+      falla o tarda mas de 8 s, la capa se desvanece y el contenido queda
+      legible.
+    -->
+    <style>
+      html, body { background: #0d0f16; }
+      #ssr-seo { max-width: 960px; margin: 0 auto; padding: 88px 24px 48px; color: #d4d4d8; font: 15px/1.6 system-ui, -apple-system, 'Segoe UI', sans-serif; }
+      #ssr-seo h1 { margin: 0 0 8px; color: #f4f4f5; font-size: 26px; line-height: 1.25; }
+      #ssr-seo h2 { margin: 24px 0 8px; color: #f4f4f5; font-size: 18px; }
+      #ssr-seo a { color: #c7d2fe; text-decoration: none; }
+      #ssr-seo ul { margin: 0; padding-left: 18px; }
+      #ssr-seo nav { margin: 16px 0; color: #8a8a92; }
+      #ssr-seo::before { content: ''; position: fixed; inset: 0; z-index: 2147483000; background: #0d0f16 url(/animora-logo.png) center calc(50% - 18px) / 150px auto no-repeat; animation: atv-carga-fin .4s ease 8s forwards; }
+      #ssr-seo::after { content: ''; position: fixed; z-index: 2147483001; left: 50%; top: calc(50% + 26px); width: 22px; height: 22px; margin-left: -11px; border: 2px solid rgba(255, 255, 255, .14); border-top-color: #818cf8; border-radius: 50%; animation: atv-giro .8s linear infinite, atv-carga-fin .4s ease 8s forwards; }
+      @keyframes atv-giro { to { transform: rotate(360deg); } }
+      @keyframes atv-carga-fin { to { opacity: 0; visibility: hidden; } }
+      @media (prefers-reduced-motion: reduce) { #ssr-seo::after { animation: atv-carga-fin .4s ease 8s forwards; } }
+    </style>
+    <script type="module" crossorigin src="/assets/index-TyfoN7hO.js"></script>
+    <link rel="modulepreload" crossorigin href="/assets/react-vendor-Biz5T7XS.js">
+    <link rel="stylesheet" crossorigin href="/assets/index-Cc31ZkV2.css">
+      <title>Ver Haikyuu!! TO THE TOP Online Sub Español | AnimoraTV</title>
+    <meta name="description" content="Shoyo Hinata ha querido jugar al voleibol desde que vio triunfar a un jugador de pequeña estatura en el Torneo Nacional cuando estaba en primaria. Por desgraci…" />
+    <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1" />
+    <meta name="googlebot" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1" />
+    <link rel="canonical" href="https://www.animoratv.com/anime/haikyuu-to-the-top" />
+    <meta property="og:type" content="video.tv_show" />
+    <meta property="og:title" content="Ver Haikyuu!! TO THE TOP Online Sub Español | AnimoraTV" />
+    <meta property="og:description" content="Shoyo Hinata ha querido jugar al voleibol desde que vio triunfar a un jugador de pequeña estatura en el Torneo Nacional cuando estaba en primaria. Por desgraci…" />
+    <meta property="og:image" content="https://s4.anilist.co/file/anilistcdn/media/anime/banner/106625-wab2Mx4NQqPQ.jpg" />
+    <meta property="og:url" content="https://www.animoratv.com/anime/haikyuu-to-the-top" />
+    <meta property="og:locale" content="es_ES" />
+    <meta property="og:image:width" content="1900" />
+    <meta property="og:image:height" content="400" />
+    <meta property="og:image:alt" content="Ver Haikyuu!! TO THE TOP Online Sub Español | AnimoraTV" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Ver Haikyuu!! TO THE TOP Online Sub Español | AnimoraTV" />
+    <meta name="twitter:description" content="Shoyo Hinata ha querido jugar al voleibol desde que vio triunfar a un jugador de pequeña estatura en el Torneo Nacional cuando estaba en primaria. Por desgraci…" />
+    <meta name="twitter:image" content="https://s4.anilist.co/file/anilistcdn/media/anime/banner/106625-wab2Mx4NQqPQ.jpg" />
+    <script type="application/ld+json" data-animora-seo="route">[{"@context":"https://schema.org","@type":"TVSeries","name":"Haikyuu!! TO THE TOP","alternateName":"HAIKYU!! TO THE TOP","description":"Shoyo Hinata ha querido jugar al voleibol desde que vio triunfar a un jugador de pequeña estatura en el Torneo Nacional cuando estaba en primaria. Por desgraci…","image":"https://s4.anilist.co/file/anilistcdn/media/anime/banner/106625-wab2Mx4NQqPQ.jpg","url":"https://www.animoratv.com/anime/haikyuu-to-the-top","genre":["Comedy","Drama","Sports"],"numberOfEpisodes":13,"datePublished":"2020","productionCompany":{"@type":"Organization","name":"Production I.G"}},{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Inicio","item":"https://www.animoratv.com/"},{"@type":"ListItem","position":2,"name":"Anime","item":"https://www.animoratv.com/explorar"},{"@type":"ListItem","position":3,"name":"Haikyuu!! TO THE TOP","item":"https://www.animoratv.com/anime/haikyuu-to-the-top"}]}]</script>
+  </head>
+  <body>
+    <div id="root"><div id="ssr-seo">
+      <nav><a href="/">Inicio</a> › <a href="/explorar">Anime</a> › <span>Haikyuu!! TO THE TOP</span></nav>
+      <h1>Ver Haikyuu!! TO THE TOP sub español online gratis</h1>
+      <p>Shoyo Hinata ha querido jugar al voleibol desde que vio triunfar a un jugador de pequeña estatura en el Torneo Nacional cuando estaba en primaria. Por desgracia, cuando finalmente consiguió formar un equipo fue aplastado por su rival Tobio Kageyama. Al ingresar en el Instituto Karasuno, el mismo al que atendió su ídolo, Hinata se dispone a cumplir su sueño de jugar en un equipo de voleibol de pri…</p>
+      <h2>Episodios de Haikyuu!! TO THE TOP</h2>
+      <ul><li><a href="/anime/haikyuu-to-the-top/episodio/1">Haikyu!! The Dumpster Battle</a></li><li><a href="/anime/haikyuu-to-the-top/episodio/2">Episodio 2</a></li><li><a href="/anime/haikyuu-to-the-top/episodio/3">Episodio 3</a></li><li><a href="/anime/haikyuu-to-the-top/episodio/4">Episodio 4</a></li><li><a href="/anime/haikyuu-to-the-top/episodio/5">Episodio 5</a></li><li><a href="/anime/haikyuu-to-the-top/episodio/6">Episodio 6</a></li><li><a href="/anime/haikyuu-to-the-top/episodio/7">Episodio 7</a></li><li><a href="/anime/haikyuu-to-the-top/episodio/8">Episodio 8</a></li><li><a href="/anime/haikyuu-to-the-top/episodio/9">Episodio 9</a></li><li><a href="/anime/haikyuu-to-the-top/episodio/10">Episodio 10</a></li><li><a href="/anime/haikyuu-to-the-top/episodio/11">Episodio 11</a></li><li><a href="/anime/haikyuu-to-the-top/episodio/12">Episodio 12</a></li><li><a href="/anime/haikyuu-to-the-top/episodio/13">Episodio 13</a></li></ul>
+      <nav><a href="/">Inicio</a> · <a href="/explorar">Explorar anime</a> · <a href="/horario">Horario de estrenos</a> · <a href="/buscar">Buscar anime</a></nav>
+    </div></div>
+  </body>
+</html>

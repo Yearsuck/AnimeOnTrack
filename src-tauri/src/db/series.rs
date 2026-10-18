@@ -470,6 +470,23 @@ impl Db {
         Ok(())
     }
 
+    /// Move a freshly matched catalog stub to the matched site: `source_id`,
+    /// `slug` and `url` change in ONE statement.
+    ///
+    /// All three together on purpose. Moving only the source would leave the
+    /// stub's `anilist-N` slug under the new source, which collides with a stub
+    /// the same title left there earlier (`UNIQUE(source_id, slug)`); writing the
+    /// real slug in the same UPDATE can only collide with a real series, and the
+    /// caller already checked that with `find_series_id_by_slug`. A violation is
+    /// still returned as `Err`, never a panic.
+    pub fn set_series_source(&self, series_id: i64, source_id: i64, slug: &str, url: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE series SET source_id=?1, slug=?2, url=?3 WHERE id=?4",
+            (source_id, slug, url, series_id),
+        )?;
+        Ok(())
+    }
+
     /// Replace a series' genre set outright (unlike `insert_series_genres`,
     /// which is additive) — used when linking rewrites a synthetic row's
     /// AniList-sourced genres with the site's own.
@@ -3534,5 +3551,86 @@ mod tests {
         let items = db.list_library(a).unwrap();
         assert_eq!(items.len(), 1, "two members sharing anilist_id must collapse into one library item");
         assert_eq!(items[0].series.title, "Canonical Title");
+    }
+
+    #[test]
+    fn set_series_source_moves_stub_and_preserves_fields_and_errors_on_collision() {
+        let db = Db::open(":memory:").unwrap();
+        let src_a = db.upsert_source("Site A", "https://site-a.com", "site_a").unwrap();
+        let src_b = db.upsert_source("Site B", "https://site-b.com", "site_b").unwrap();
+
+        let s = crate::models::Series {
+            id: 0,
+            slug: "stub-1".into(),
+            title: "Stub Title".into(),
+            url: "https://site-a.com/stub-1".into(),
+            cover_url: Some("https://site-a.com/cover.jpg".into()),
+            is_airing: false,
+            followed: true,
+            next_episode_at: None,
+            site_episode_count: None,
+        };
+        let sid = db.upsert_series(src_a, &s).unwrap();
+        db.set_anilist_id(sid, 999).unwrap();
+        // upsert_series deliberately never writes `followed` (see its doc comment).
+        db.set_followed(sid, true).unwrap();
+
+        // Move stub from source A to source B
+        db.set_series_source(sid, src_b, "real-slug", "https://site-b.com/real-slug").unwrap();
+
+        let (src_id, slug, anilist_id, followed): (i64, String, Option<i64>, bool) = db
+            .conn
+            .query_row(
+                "SELECT source_id, slug, anilist_id, followed FROM series WHERE id=?1",
+                [sid],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get::<_, i64>(3)? != 0)),
+            )
+            .unwrap();
+        assert_eq!(src_id, src_b, "source_id must be moved to src_b");
+        assert_eq!(slug, "real-slug", "slug moves together with the source");
+        assert_eq!(anilist_id, Some(999), "anilist_id must be left untouched");
+        assert!(followed, "followed must be left untouched");
+
+        // Another stub on source A
+        let s2 = crate::models::Series {
+            id: 0,
+            slug: "collision-slug".into(),
+            title: "Collision 1".into(),
+            url: "https://site-a.com/collision-slug".into(),
+            cover_url: None,
+            is_airing: false,
+            followed: false,
+            next_episode_at: None,
+            site_episode_count: None,
+        };
+        let sid2 = db.upsert_series(src_a, &s2).unwrap();
+
+        // Existing row on source B with the same slug
+        let s3 = crate::models::Series {
+            id: 0,
+            slug: "collision-slug".into(),
+            title: "Collision 2".into(),
+            url: "https://site-b.com/collision-slug".into(),
+            cover_url: None,
+            is_airing: false,
+            followed: false,
+            next_episode_at: None,
+            site_episode_count: None,
+        };
+        let _sid3 = db.upsert_series(src_b, &s3).unwrap();
+
+        // Moving sid2 to src_b collides on UNIQUE(source_id, slug) and returns Err, not panic
+        let res = db.set_series_source(sid2, src_b, "collision-slug", "https://site-b.com/collision-slug");
+        assert!(res.is_err(), "UNIQUE(source_id, slug) violation must return Err, not panic");
+
+        // A stub the same title left on the target earlier must not block the move:
+        // the real slug is written in the same statement.
+        let mk = |slug: &str| crate::models::Series {
+            id: 0, slug: slug.into(), title: slug.into(), url: format!("u-{slug}"),
+            cover_url: None, is_airing: false, followed: false, next_episode_at: None, site_episode_count: None,
+        };
+        let moving = db.upsert_series(src_a, &mk("anilist-77")).unwrap();
+        let _left_behind = db.upsert_series(src_b, &mk("anilist-77")).unwrap();
+        db.set_series_source(moving, src_b, "movie-77", "https://site-b.com/movie-77").unwrap();
     }
 }

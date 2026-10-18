@@ -1526,6 +1526,34 @@ pub fn parse_animeflv_servers(html: &str) -> Vec<Server> {
     servers
 }
 
+/// Parses the server options from a MonosChinos episode page (`/ver/<slug>-episodio-N`).
+///
+/// Every `button[data-player]` carries one mirror as a base64 URL and its host's name as the
+/// button text ("voe", "ok", "mp4upload", "filemoon"...). Same decoding as
+/// `parse_animeflv_servers`: only http(s) URLs, page order, duplicates by URL dropped, never
+/// panics. The text is kept as the server name because `supported_host` also looks at it.
+pub fn parse_monoschinos_servers(html: &str) -> Vec<Server> {
+    use base64::Engine;
+    static SELECTOR: OnceLock<Selector> = OnceLock::new();
+    let selector = SELECTOR.get_or_init(|| Selector::parse("[data-player]").expect("valid data-player selector"));
+    let doc = Html::parse_document(html);
+    let mut seen = HashSet::new();
+    let mut servers = Vec::new();
+    for el in doc.select(selector) {
+        let Some(raw) = el.value().attr("data-player") else { continue };
+        let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(raw.trim()) else { continue };
+        let Ok(url) = String::from_utf8(bytes) else { continue };
+        let url = url.trim().to_string();
+        let Ok(parsed) = Url::parse(&url) else { continue };
+        if (parsed.scheme() != "http" && parsed.scheme() != "https") || !seen.insert(url.clone()) {
+            continue;
+        }
+        let name = el.text().collect::<String>().trim().to_string();
+        servers.push(Server { name: if name.is_empty() { "server".to_string() } else { name }, url });
+    }
+    servers
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2609,5 +2637,44 @@ mod tests {
         let servers = parse_animeflv_servers(&html);
         assert_eq!(servers, vec![Server { name: "ok".into(), url: "https://voe.sx/e/abc".into() }]);
         assert!(parse_animeflv_servers("").is_empty());
+    }
+
+    #[test]
+    fn parses_monoschinos_servers_from_fixture() {
+        let html = include_str!("../tests/fixtures/monoschinos_episode.html");
+        let servers = parse_monoschinos_servers(html);
+        let names: Vec<&str> = servers.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["filemoon", "doodstream", "voe", "mp4upload", "ok", "luluvdo", "swhoi"],
+            "page order and the host name as server name"
+        );
+        assert_eq!(servers[2].url, "https://voe.sx/e/egmri19iponj");
+        assert_eq!(servers[3].url, "https://www.mp4upload.com/embed-giqjhm5yz9os.html");
+        assert_eq!(servers[4].url, "https://ok.ru/videoembed/8172912314925");
+    }
+
+    #[test]
+    fn monoschinos_candidates_keep_only_the_hosts_the_downloader_reads_best_first() {
+        let html = include_str!("../tests/fixtures/monoschinos_episode.html");
+        let picked: Vec<String> = candidates(&parse_monoschinos_servers(html)).into_iter().map(|s| s.name).collect();
+        assert_eq!(picked, ["mp4upload", "ok", "voe"], "mp4upload > okru > voe; filemoon/doodstream/luluvdo/swhoi unsupported");
+    }
+
+    #[test]
+    fn monoschinos_servers_skip_garbage_and_non_http_players() {
+        use base64::Engine;
+        let enc = |u: &str| base64::engine::general_purpose::STANDARD.encode(u);
+        let html = format!(
+            r#"<button data-player="{}">ftp</button><button data-player="not base64!!">bad</button>
+               <button data-player="{}">dup</button><button data-player="{}">dup2</button><button data-player="">empty</button>"#,
+            enc("ftp://host/x"),
+            enc("https://voe.sx/e/a"),
+            enc("https://voe.sx/e/a"),
+        );
+        let servers = parse_monoschinos_servers(&html);
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers[0].name, "dup");
+        assert!(parse_monoschinos_servers("").is_empty());
     }
 }
