@@ -440,6 +440,20 @@ fn is_ascii_int(t: &str) -> bool {
     !t.is_empty() && t.chars().all(|c| c.is_ascii_digit())
 }
 
+/// Spelled-out ordinal words ("second".."sixth", Spanish "segunda".."sexta" / "segundo".."sexto").
+/// Deliberately excludes "first"/"primera" so franchise bases like "Initial D First Stage"
+/// remain distinct from "Initial D Second Stage" without merging distinct works.
+pub(crate) fn spelled_ordinal_num(t: &str) -> Option<u32> {
+    match t {
+        "second" | "segunda" | "segundo" => Some(2),
+        "third" | "tercera" | "tercero" => Some(3),
+        "fourth" | "cuarta" | "cuarto" => Some(4),
+        "fifth" | "quinta" | "quinto" => Some(5),
+        "sixth" | "sexta" | "sexto" => Some(6),
+        _ => None,
+    }
+}
+
 /// Drop trailing season/part markers from `tokens`, testing each token's
 /// normalized form via `normalize` (identity for already-normalized input —
 /// see `franchise_base` — or real normalization for raw display tokens, as
@@ -452,7 +466,7 @@ fn is_ascii_int(t: &str) -> bool {
 /// to happen in one place now.
 ///
 /// Drops marker words ("season", "temporada", "part", "final", "the", …),
-/// ordinals ("2nd"), Roman numerals ("ii".."x"), and a bare integer **only
+/// ordinals ("2nd", "second"..), Roman numerals ("ii".."x"), and a bare integer **only
 /// when a marker word immediately precedes it** ("... part 2" → the 2 goes;
 /// "steins gate 0" → the 0 stays, because no marker precedes it, so it's part
 /// of the title of a distinct work). Order-aware on purpose — a token *set*
@@ -465,6 +479,9 @@ pub(crate) fn strip_season_markers(
     let is_marker = |t: &str| SEASON_MARKERS.contains(&t);
     let is_int = is_ascii_int;
     let is_ordinal = |t: &str| {
+        if spelled_ordinal_num(t).is_some() {
+            return true;
+        }
         // char-boundary safe: use strip_suffix instead of byte indexing.
         // Titles can contain multi-byte Unicode (roman numerals, Cyrillic,
         // superscripts, fullwidth, fractions). Byte-slicing panics on non-char
@@ -537,6 +554,9 @@ pub fn extract_season_number(normalized_title: &str) -> Option<u32> {
     let is_marker = |t: &str| SEASON_MARKERS.contains(&t);
     let roman_num = |t: &str| ROMAN_NUMERALS.iter().position(|r| *r == t).map(|i| i as u32 + 2);
     let ordinal_num = |t: &str| -> Option<u32> {
+        if let Some(n) = spelled_ordinal_num(t) {
+            return Some(n);
+        }
         let head = t
             .strip_suffix("st")
             .or_else(|| t.strip_suffix("nd"))
@@ -551,9 +571,12 @@ pub fn extract_season_number(normalized_title: &str) -> Option<u32> {
     if let Some(n) = roman_num(last) {
         return Some(n);
     }
+    if let Some(n) = spelled_ordinal_num(last) {
+        return Some(n);
+    }
     if tokens.len() >= 2 {
         let prev = tokens[tokens.len() - 2];
-        // "... 2nd Season": ordinal immediately before the marker word.
+        // "... 2nd Season" / "... Second Season": ordinal immediately before the marker word.
         if is_marker(last) {
             if let Some(n) = ordinal_num(prev) {
                 // A multi-ordinal range like "... 2nd 3rd stage" names an arc or
@@ -578,8 +601,14 @@ pub fn extract_season_number(normalized_title: &str) -> Option<u32> {
                 return Some(n);
             }
         }
+        // "... Temporada Segunda": marker word immediately before spelled ordinal.
+        if is_marker(prev) {
+            if let Some(n) = spelled_ordinal_num(last) {
+                return Some(n);
+            }
+        }
     }
-    if tokens.iter().any(|t| is_marker(t) || roman_num(t).is_some()) {
+    if tokens.iter().any(|&t| (is_marker(t) && t != "the") || roman_num(t).is_some()) {
         None
     } else {
         Some(1)
@@ -720,6 +749,150 @@ pub fn best_match(queries: &[&str], candidates: &[TitleCandidate]) -> Option<Mat
             best = Some(MatchResult { index, score: candidate_score });
         }
     }
+    best
+}
+
+/// Fold romanization differences between AniList titles and scraped site titles:
+/// maps "ou" -> "o" (e.g. "koukou" -> "kokou" / "koko") and collapses consecutive
+/// duplicate letters (e.g. "haikyuu" -> "haikyu"). Char-safe, never slices byte indices.
+fn fold_romanization(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mut step1 = String::with_capacity(chars.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == 'o' && i + 1 < chars.len() && chars[i + 1] == 'u' {
+            step1.push('o');
+            i += 2;
+        } else {
+            step1.push(chars[i]);
+            i += 1;
+        }
+    }
+    let mut result = String::with_capacity(step1.len());
+    let mut prev: Option<char> = None;
+    for c in step1.chars() {
+        if let Some(p) = prev {
+            if c.is_alphabetic() && c == p {
+                continue;
+            }
+        }
+        result.push(c);
+        prev = Some(c);
+    }
+    result
+}
+
+/// Score a query-candidate pair under season-aware rules: combines plain `score()`,
+/// romanization-folded score, and whitespace-squashed comparison with optional `movie`
+/// token ignoring.
+fn score_pair_season_aware(query_norm: &str, candidate_norm: &str) -> f64 {
+    // Distinct name-reusing work ("Steins;Gate" vs "Steins;Gate 0") never matches,
+    // on either raw or folded strings.
+    if distinct_extension(query_norm, candidate_norm) {
+        return 0.0;
+    }
+    let s_plain = score(query_norm, candidate_norm);
+
+    let q_fold = fold_romanization(query_norm);
+    let c_fold = fold_romanization(candidate_norm);
+    let s_fold = if distinct_extension(&q_fold, &c_fold) {
+        0.0
+    } else {
+        score(&q_fold, &c_fold)
+    };
+
+    // Squashed comparison: also compare with whitespace removed and with a
+    // leading/trailing token `movie` ignored when the query lacks it
+    // ("gomi suteba no kessen" ~ "movie gomisuteba no kessen").
+    let mut s_squash = 0.0;
+    let q_tokens: Vec<&str> = query_norm.split_whitespace().collect();
+    let c_tokens: Vec<&str> = candidate_norm.split_whitespace().collect();
+    let q_has_movie = q_tokens.contains(&"movie");
+    let c_has_movie = c_tokens.contains(&"movie");
+
+    let q_squash: String = query_norm.chars().filter(|c| !c.is_whitespace()).collect();
+    let c_squash: String = candidate_norm.chars().filter(|c| !c.is_whitespace()).collect();
+    let q_fold_squash = fold_romanization(&q_squash);
+    let c_fold_squash = fold_romanization(&c_squash);
+
+    if !q_squash.is_empty() && q_squash.chars().count() >= MIN_SQUASHED_KEY_LEN {
+        if q_squash == c_squash || q_fold_squash == c_fold_squash {
+            s_squash = 1.0;
+        } else if !q_has_movie && c_has_movie {
+            let c_no_movie: String = c_tokens
+                .iter()
+                .filter(|&&t| t != "movie")
+                .flat_map(|t| t.chars())
+                .collect();
+            let c_no_movie_fold = fold_romanization(&c_no_movie);
+            if q_squash == c_no_movie || q_fold_squash == c_no_movie_fold {
+                s_squash = 1.0;
+            }
+        }
+    }
+
+    s_plain.max(s_fold).max(s_squash)
+}
+
+/// Season-aware candidate matcher for catalog->site linking (`link_series_core`).
+///
+/// Same contract as `best_match` (returns index of winning candidate and max score >= MATCH_THRESHOLD),
+/// but:
+/// 1. VETO: skips candidates whose `extract_season_number` differs from the query when either
+///    is >= 2 (so query "haikyuu 2nd season" never takes candidate "haikyuu", and query
+///    "haikyuu" never takes candidate "haikyuu second season"). Also vetoes a "Final Season"
+///    candidate against an unmarked / season-1 query (and vice-versa).
+/// 2. Romanization folding: collapses duplicate letters and maps "ou" -> "o", taking the
+///    better of the plain and folded score.
+/// 3. Squash: compares titles with whitespace stripped and candidate `movie` tokens ignored
+///    when the query lacks it ("gomi suteba no kessen" ~ "movie gomisuteba no kessen").
+pub fn best_match_season_aware(
+    queries: &[&str],
+    candidates: &[TitleCandidate],
+) -> Option<MatchResult> {
+    let normalized_queries: Vec<String> = queries.iter().map(|q| normalize_title(q)).collect();
+    let mut best: Option<MatchResult> = None;
+
+    for (index, candidate) in candidates.iter().enumerate() {
+        let candidate_norm = normalize_title(candidate.title);
+        let mut candidate_best_score = 0.0_f64;
+
+        for q in &normalized_queries {
+            // Season VETO:
+            let q_season = extract_season_number(q);
+            let c_season = extract_season_number(&candidate_norm);
+
+            if let (Some(qn), Some(cn)) = (q_season, c_season) {
+                if (qn >= 2 || cn >= 2) && qn != cn {
+                    continue;
+                }
+            }
+
+            // Final season veto: "Final Season" vs plain Season 1 are different seasons.
+            let q_final = q.split_whitespace().any(|t| t == "final");
+            let c_final = candidate_norm.split_whitespace().any(|t| t == "final");
+            // A "Final Season" title only names the same work as another "Final Season"
+            // title, and two final-season titles must agree on their part number.
+            if q_final != c_final || (q_final && q_season != c_season) {
+                continue;
+            }
+
+            let s = score_pair_season_aware(q, &candidate_norm);
+            if s > candidate_best_score {
+                candidate_best_score = s;
+            }
+        }
+
+        if candidate_best_score >= MATCH_THRESHOLD
+            && best.as_ref().is_none_or(|b| candidate_best_score > b.score)
+        {
+            best = Some(MatchResult {
+                index,
+                score: candidate_best_score,
+            });
+        }
+    }
+
     best
 }
 
@@ -1873,5 +2046,191 @@ mod tests {
             "Steel Ball Run 2nd & 3rd STAGE",
             &["JoJo: Steel Ball Run - 2nd & 3rd STAGE"]
         ));
+    }
+
+    #[test]
+    fn test_extract_season_number_spelled_ordinals() {
+        assert_eq!(extract_season_number("haikyuu second season"), Some(2));
+        assert_eq!(extract_season_number("haikyuu third season"), Some(3));
+        assert_eq!(extract_season_number("haikyuu fourth season"), Some(4));
+        assert_eq!(extract_season_number("haikyuu fifth season"), Some(5));
+        assert_eq!(extract_season_number("haikyuu sixth season"), Some(6));
+        assert_eq!(extract_season_number("haikyuu segunda temporada"), Some(2));
+        assert_eq!(extract_season_number("haikyuu tercera temporada"), Some(3));
+        assert_eq!(extract_season_number("haikyuu cuarta temporada"), Some(4));
+    }
+
+    #[test]
+    fn test_strip_season_markers_spelled_ordinals() {
+        let tokens = vec!["haikyuu", "second", "season"];
+        assert_eq!(
+            strip_season_markers(tokens, normalize_title),
+            vec!["haikyuu"]
+        );
+        assert_eq!(franchise_base("haikyuu second season"), "haikyuu");
+        assert_eq!(franchise_base("haikyuu third season"), "haikyuu");
+    }
+
+    #[test]
+    fn test_fold_romanization() {
+        assert_eq!(fold_romanization("haikyuu"), "haikyu");
+        assert_eq!(fold_romanization("haikyu"), "haikyu");
+        assert_eq!(fold_romanization("koukou"), "koko");
+        assert_eq!(fold_romanization("kokou"), "koko");
+        assert_eq!(fold_romanization("karasuno koukou"), "karasuno koko");
+        assert_eq!(fold_romanization("steins gate 0"), "steins gate 0");
+    }
+
+    #[test]
+    fn test_haikyuu_must_pass_examples_table() {
+        let site_titles = [
+            "Haikyuu!!",
+            "Haikyuu!! Third Season",
+            "Haikyuu!! Movie: Gomisuteba no Kessen",
+            "Haikyuu!!: vs. Akaten",
+            "Haikyuu!! Second Season",
+            "Haikyuu!!: Riku vs. Kuu",
+            "Haikyuu!!: To the Top",
+        ];
+        let candidates: Vec<TitleCandidate> = site_titles
+            .iter()
+            .map(|t| TitleCandidate { title: t, url: "" })
+            .collect();
+
+        let must_pass: &[(&[&str], &str)] = &[
+            (&["Haikyuu!!", "HAIKYU!!"], "Haikyuu!!"),
+            (
+                &["Haikyuu!! 2nd Season", "HAIKYU!! 2nd Season"],
+                "Haikyuu!! Second Season",
+            ),
+            (
+                &[
+                    "Haikyuu!!: Karasuno Koukou VS Shiratorizawa Gakuen Koukou",
+                    "HAIKYU!! 3rd Season",
+                ],
+                "Haikyuu!! Third Season",
+            ),
+            (&["HAIKYU!!"], "Haikyuu!!"),
+            (
+                &["Haikyuu!! TO THE TOP", "HAIKYU!! TO THE TOP"],
+                "Haikyuu!!: To the Top",
+            ),
+            (
+                &["Haikyuu!! Riku VS Kuu", "HAIKYU!! LAND VS. AIR"],
+                "Haikyuu!!: Riku vs. Kuu",
+            ),
+            (
+                &["Haikyuu!!: VS Akaten", "HAIKYU!!: VS Failing Marks"],
+                "Haikyuu!!: vs. Akaten",
+            ),
+            (
+                &[
+                    "Haikyuu!!: Gomi Suteba no Kessen",
+                    "HAIKYU!! The Dumpster Battle",
+                ],
+                "Haikyuu!! Movie: Gomisuteba no Kessen",
+            ),
+        ];
+
+        for (queries, expected_title) in must_pass {
+            let res = best_match_season_aware(queries, &candidates)
+                .unwrap_or_else(|| panic!("expected match for queries {queries:?}"));
+            assert_eq!(
+                candidates[res.index].title, *expected_title,
+                "wrong match for queries {queries:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_must_not_happen_season_aware() {
+        let site_titles = [
+            "Haikyuu!!",
+            "Haikyuu!! Third Season",
+            "Haikyuu!! Movie: Gomisuteba no Kessen",
+            "Haikyuu!!: vs. Akaten",
+            "Haikyuu!! Second Season",
+            "Haikyuu!!: Riku vs. Kuu",
+            "Haikyuu!!: To the Top",
+        ];
+        let site_candidates: Vec<TitleCandidate> = site_titles
+            .iter()
+            .map(|t| TitleCandidate { title: t, url: "" })
+            .collect();
+
+        // 1. ["Haikyuu!! 2nd Season"] against ["Haikyuu!!"] only -> None
+        let h1 = vec![TitleCandidate {
+            title: "Haikyuu!!",
+            url: "",
+        }];
+        assert_eq!(
+            best_match_season_aware(&["Haikyuu!! 2nd Season"], &h1),
+            None,
+            "season 2 query must not match season 1 candidate"
+        );
+
+        // 2. ["Haikyuu!! TO THE TOP Part 2", "Haikyuu!! TO THE TOP 2"] against 7-title site list -> None
+        assert_eq!(
+            best_match_season_aware(
+                &["Haikyuu!! TO THE TOP Part 2", "Haikyuu!! TO THE TOP 2"],
+                &site_candidates
+            ),
+            None,
+            "to the top part 2 is not in the site list"
+        );
+
+        // 3. ["Steins;Gate"] against ["Steins;Gate 0"] -> None
+        let sg0 = vec![TitleCandidate {
+            title: "Steins;Gate 0",
+            url: "",
+        }];
+        assert_eq!(
+            best_match_season_aware(&["Steins;Gate"], &sg0),
+            None,
+            "steins;gate must not match distinct sequel steins;gate 0"
+        );
+
+        // 4. ["Initial D First Stage"] vs existing second-stage candidates -> None
+        let second_stage = vec![TitleCandidate {
+            title: "Initial D Second Stage",
+            url: "",
+        }];
+        assert_eq!(
+            best_match_season_aware(&["Initial D First Stage"], &second_stage),
+            None,
+            "initial d first stage must not match second stage"
+        );
+
+        // 5. ["Attack on Titan"] against ["Attack on Titan Final Season"] -> None (season veto)
+        let aot_final = vec![TitleCandidate {
+            title: "Attack on Titan Final Season",
+            url: "",
+        }];
+        assert_eq!(
+            best_match_season_aware(&["Attack on Titan"], &aot_final),
+            None,
+            "plain attack on titan query must not match final season candidate"
+        );
+    }
+
+    #[test]
+    fn season_aware_final_season_never_crosses_a_numbered_season() {
+        let s2 = vec![TitleCandidate { title: "Attack on Titan Season 2", url: "" }];
+        assert_eq!(best_match_season_aware(&["Attack on Titan: The Final Season"], &s2), None);
+        let fin = vec![TitleCandidate { title: "Attack on Titan Final Season", url: "" }];
+        assert_eq!(best_match_season_aware(&["Attack on Titan Season 2"], &fin), None);
+        let fin_p1 = vec![TitleCandidate { title: "Attack on Titan Final Season", url: "" }];
+        assert_eq!(
+            best_match_season_aware(&["Attack on Titan Final Season Part 2"], &fin_p1),
+            None
+        );
+        assert!(best_match_season_aware(&["Attack on Titan: The Final Season"], &fin).is_some());
+    }
+
+    #[test]
+    fn a_spelled_ordinal_inside_a_title_does_not_make_it_season_ambiguous() {
+        assert_eq!(extract_season_number("the third prince"), Some(1));
+        let s2 = vec![TitleCandidate { title: "The Third Prince Season 2", url: "" }];
+        assert_eq!(best_match_season_aware(&["The Third Prince"], &s2), None);
     }
 }

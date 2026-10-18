@@ -547,7 +547,16 @@ async fn link_series_core(
 
     let primary_query = romaji.clone().unwrap_or_else(|| title.clone());
     let mut cards = search_site(app, &mirrors, &primary_query, a.as_ref()).await?;
-    let mut best = crate::matching::best_match(&[&primary_query], &to_candidates(&cards));
+    let mut first_queries: Vec<&str> = vec![&primary_query];
+    if let Some(eng) = english.as_deref() {
+        if !first_queries.contains(&eng) {
+            first_queries.push(eng);
+        }
+    }
+    if !first_queries.contains(&title.as_str()) {
+        first_queries.push(&title);
+    }
+    let mut best = crate::matching::best_match_season_aware(&first_queries, &to_candidates(&cards));
 
     // Second search only on failure, only if an english title exists and
     // actually differs from what was just tried — one extra scrape, not two
@@ -556,7 +565,11 @@ async fn link_series_core(
         if let Some(english) = &english {
             if !english.eq_ignore_ascii_case(&primary_query) {
                 cards = search_site(app, &mirrors, english, a.as_ref()).await?;
-                best = crate::matching::best_match(&[english], &to_candidates(&cards));
+                let mut second_queries: Vec<&str> = vec![english.as_str()];
+                if !second_queries.contains(&primary_query.as_str()) {
+                    second_queries.push(&primary_query);
+                }
+                best = crate::matching::best_match_season_aware(&second_queries, &to_candidates(&cards));
             }
         }
     }
@@ -581,7 +594,13 @@ async fn link_series_core(
                     .is_some_and(|eng| cleaned_sub.eq_ignore_ascii_case(eng));
             if word_count >= 2 && !already_tried {
                 cards = search_site(app, &mirrors, &cleaned_sub, a.as_ref()).await?;
-                best = crate::matching::best_match(&[&primary_query], &to_candidates(&cards));
+                let mut third_queries: Vec<&str> = vec![&primary_query];
+                if let Some(eng) = english.as_deref() {
+                    if !third_queries.contains(&eng) {
+                        third_queries.push(eng);
+                    }
+                }
+                best = crate::matching::best_match_season_aware(&third_queries, &to_candidates(&cards));
             }
         }
     }
