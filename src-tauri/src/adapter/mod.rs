@@ -7,6 +7,7 @@ pub mod animeytx;
 pub mod aniwaves;
 pub mod gogoanime;
 pub mod jkanime;
+pub mod monoschinos;
 pub mod tioanime;
 
 /// Static metadata for one supported site — never the base URL (that changes
@@ -31,6 +32,7 @@ pub fn all_sites() -> &'static [SiteInfo] {
         SiteInfo { id: "gogoanime", name: "GogoAnime", default_base_url: "https://gogoanime.by" },
         SiteInfo { id: "animeland", name: "AnimeLand", default_base_url: "https://w7.animeland.tv" },
         SiteInfo { id: "aniwaves", name: "Aniwaves", default_base_url: "https://aniwaves.ru" },
+        SiteInfo { id: "monoschinos", name: "MonosChinos", default_base_url: "https://monoschinos.st" },
     ]
 }
 
@@ -46,6 +48,7 @@ pub fn adapter_for(site_id: &str) -> Option<Box<dyn SiteAdapter>> {
         "gogoanime" => Some(Box::new(gogoanime::GogoanimeAdapter)),
         "animeland" => Some(Box::new(animeland::AnimelandAdapter)),
         "aniwaves" => Some(Box::new(aniwaves::AniwavesAdapter)),
+        "monoschinos" => Some(Box::new(monoschinos::MonoschinosAdapter)),
         _ => None,
     }
 }
