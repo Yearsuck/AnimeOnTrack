@@ -448,7 +448,7 @@ fn perform_resolver_db_step(
     Ok((sid, true))
 }
 
-fn next_sites_to_try<'a>(
+pub(crate) fn next_sites_to_try<'a>(
     all_sites: &'a [crate::adapter::SiteInfo],
     active_site_id: &str,
     misses: &[String],
@@ -467,7 +467,7 @@ fn next_sites_to_try<'a>(
     sites
 }
 
-fn mirrors_or_default(loaded: Result<Vec<String>, String>, default_url: &str) -> Vec<String> {
+pub(crate) fn mirrors_or_default(loaded: Result<Vec<String>, String>, default_url: &str) -> Vec<String> {
     match loaded {
         Ok(v) if !v.is_empty() => v,
         _ => vec![default_url.to_string()],
