@@ -376,9 +376,16 @@ async fn extract_when_ready(
     // "ready" previously meant extracting an error page as if it were real
     // content, which parses to zero results and cascades into trying every
     // configured mirror (even unrelated ones) for nothing.
+    //
+    // A JSON endpoint (the `/api/...` urls of animoratv) has no markup to size: the browser shows
+    // the text in a bare `<pre>`, and a one- or two-result answer is far below the 3000-char body
+    // floor, so it was never "ready" and cost the full 40 s. A document the browser typed as
+    // application/json with some text in it is the answer itself (a Cloudflare challenge is
+    // always text/html).
     const PROBE: &str = "JSON.stringify({\
 ready: (document.readyState==='interactive' || document.readyState==='complete') \
-&& !!document.body && document.body.innerHTML.length>3000 \
+&& !!document.body \
+&& (document.body.innerHTML.length>3000 || (document.contentType==='application/json' && document.body.innerText.trim().length>1)) \
 && !/just a moment|un momento|checking your browser|verificando|502|503|504|bad gateway|gateway time-out|service unavailable/i.test(document.title),\
 readyState: document.readyState,\
 title: document.title,\
