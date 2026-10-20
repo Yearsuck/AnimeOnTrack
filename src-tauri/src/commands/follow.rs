@@ -9,6 +9,18 @@ struct SearchOutcome {
     cards: Vec<FinishedCard>,
 }
 
+/// Do two titles name DIFFERENT definite seasons ("Overlord IV" vs "Overlord")?
+/// Deliberately weaker than `season_markers_compatible`: that one is built for
+/// matching a site title against a whole set of catalog synonyms and rejects
+/// ambiguous pairs ("The Final Season" vs "Season 4", "First Season" vs the
+/// unmarked title) that a cross-site carry-over should still accept. Only a
+/// conflict between two explicit season numbers blocks the carry.
+fn seasons_conflict(a: &str, b: &str) -> bool {
+    let x = crate::matching::extract_season_number(&crate::matching::normalize_title(a));
+    let y = crate::matching::extract_season_number(&crate::matching::normalize_title(b));
+    matches!((x, y), (Some(p), Some(q)) if p != q)
+}
+
 /// Pure carry-over planner: for each newly-scanned series, find the best
 /// title match among series followed on OTHER sites and, if it clears
 /// `matching::MATCH_THRESHOLD`, return `(index into new_site_series, watermark)`
@@ -28,7 +40,9 @@ struct SearchOutcome {
 /// Carrying onto all of them followed *and* cascade-marked-seen a pile of
 /// seasons the user never watched, off one follow. Only the single
 /// best-scoring row per followed title is carried; ties resolve to the
-/// earliest-scanned row so the plan is deterministic.
+/// earliest-scanned row so the plan is deterministic. Pairs naming two different explicit
+/// seasons are skipped (`seasons_conflict`) so that a followed Season 1 watermark is not
+/// carried onto a lone Season 4 row on the new site.
 pub fn plan_carryover(
     new_site_series: &[Series],
     followed_elsewhere: &[(String, i64)],
@@ -45,6 +59,10 @@ pub fn plan_carryover(
         std::collections::HashMap::new();
     for (i, s) in new_site_series.iter().enumerate() {
         let Some(m) = crate::matching::best_match(&[&s.title], &candidates) else { continue };
+        let followed_title = &followed_elsewhere[m.index].0;
+        if seasons_conflict(&s.title, followed_title) {
+            continue;
+        }
         match best_per_followed.get(&m.index) {
             // `>=` keeps the earlier row on a tie (deterministic ordering).
             Some((_, best_score)) if *best_score >= m.score => {}
@@ -189,7 +207,8 @@ pub async fn start_watching(
     // takes seconds, during which the row can be removed from Listas (or
     // undone from the history strip). Writing episodes to a dead id would
     // leave orphan `episodes` rows behind, which no cascade cleans up.
-    if !db.series_exists(series_id).map_err(|e| e.to_string())? {
+    // Also guards against rowid reuse: verify the row still has the same identity.
+    if !db.series_still_is(series_id, info.anilist_id, &info.slug).map_err(|e| e.to_string())? {
         return Ok(LinkOutcome::NoMatch);
     }
     let episode_count = eps.len() as i64;
@@ -765,7 +784,7 @@ async fn link_series_core(
     // `apply_link_writes`).
     {
         let db = state.db.lock().unwrap();
-        if !db.series_exists(series_id).map_err(|e| e.to_string())? {
+        if !db.series_still_is(series_id, info.anilist_id, &info.slug).map_err(|e| e.to_string())? {
             return Ok((LinkOutcome::NoMatch, None));
         }
         if let Some(existing_id) =
@@ -793,7 +812,7 @@ async fn link_series_core(
     let episode_count = episodes.len() as i64;
     let written = {
         let db = state.db.lock().unwrap();
-        if !db.series_exists(series_id).map_err(|e| e.to_string())? {
+        if !db.series_still_is(series_id, info.anilist_id, &info.slug).map_err(|e| e.to_string())? {
             false
         } else {
             if is_fallback {
@@ -1145,12 +1164,12 @@ mod tests {
         assert_eq!(out, vec![(0usize, 7i64)]);
     }
 
-    /// The multi-carry bug: several rows on the newly-scanned site can clear
+    /// The season-aware carryover: several rows on the newly-scanned site can clear
     /// MATCH_THRESHOLD against ONE followed title, because `matching::score`
     /// treats every season/part of a show as a ≥0.9 match by design and the
-    /// sites split long-runners into one card per season/arc. Carrying onto all
-    /// of them followed *and* cascade-marked-seen seasons the user never
-    /// watched. Only the single best-scoring row may be carried.
+    /// sites split long-runners into one card per season/arc. A season-blind carry
+    /// would carry a followed Season 1 onto a lone Season 4 row and cascade-mark
+    /// it seen. Only exact/same-season matches clear `season_markers_compatible`.
     #[test]
     fn plan_carryover_carries_only_the_best_match_per_followed_title() {
         let new_site = vec![
@@ -1159,17 +1178,42 @@ mod tests {
             scanned("Overlord II"),    // another season variant, scores 0.9
         ];
         let followed = vec![("Overlord".to_string(), 39i64)];
-        // Sanity: every one of these clears the threshold on its own, so the
-        // old "push every match" loop really did carry all three.
-        for s in &new_site {
-            assert!(
-                !plan_carryover(std::slice::from_ref(s), &followed).is_empty(),
-                "{} clears the threshold in isolation",
-                s.title
-            );
-        }
+        // Season variants alone must NOT carry onto an unmarked/season-1 followed title.
+        assert!(plan_carryover(&[scanned("Overlord IV")], &followed).is_empty());
+        assert!(plan_carryover(&[scanned("Overlord II")], &followed).is_empty());
+        // Only the exact/same-season row carries in isolation.
+        assert_eq!(
+            plan_carryover(&[scanned("Overlord")], &followed),
+            vec![(0usize, 39i64)]
+        );
         let out = plan_carryover(&new_site, &followed);
         assert_eq!(out, vec![(1usize, 39i64)], "only the exact 'Overlord' row carries");
+    }
+
+    #[test]
+    fn plan_carryover_still_carries_ambiguous_season_naming_across_sites() {
+        let final_s = scanned("Attack on Titan The Final Season");
+        let followed = vec![("Attack on Titan Season 4".to_string(), 12i64)];
+        assert_eq!(plan_carryover(std::slice::from_ref(&final_s), &followed), vec![(0usize, 12i64)]);
+    }
+
+    #[test]
+    fn plan_carryover_carries_exact_season_variants_when_followed() {
+        let s4 = scanned("Overlord IV");
+        let followed_s4 = vec![("Overlord IV".to_string(), 7i64)];
+        assert_eq!(
+            plan_carryover(std::slice::from_ref(&s4), &followed_s4),
+            vec![(0usize, 7i64)],
+            "Overlord IV carries onto followed Overlord IV"
+        );
+
+        let s2 = scanned("Some Show 2nd Season");
+        let followed_s2 = vec![("Some Show 2nd Season".to_string(), 15i64)];
+        assert_eq!(
+            plan_carryover(std::slice::from_ref(&s2), &followed_s2),
+            vec![(0usize, 15i64)],
+            "Some Show 2nd Season carries onto followed Some Show 2nd Season"
+        );
     }
 
     /// The narrowing is per followed title, not global: two genuinely different
