@@ -32,7 +32,7 @@ static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
             if attempt.previous().len() >= 5 {
                 attempt.error("too many redirects")
             } else if !crate::scraper_engine::is_safe_external_url(attempt.url().as_str()) {
-                attempt.stop()
+                attempt.error("unsafe redirect")
             } else {
                 attempt.follow()
             }
@@ -53,6 +53,8 @@ pub enum DownloadError {
     InvalidContentType(String),
     /// Image payload exceeded `MAX_COVER_BYTES` (5MB).
     TooLarge(usize),
+    /// Redirect to an unsafe host was blocked.
+    UnsafeRedirect,
     /// Filesystem error when writing to disk.
     Io(std::io::Error),
     /// Transport/network error.
@@ -70,6 +72,7 @@ impl std::fmt::Display for DownloadError {
             Self::HttpStatus(code) => write!(f, "HTTP error status ({code})"),
             Self::InvalidContentType(ct) => write!(f, "invalid content-type: {ct}"),
             Self::TooLarge(size) => write!(f, "cover exceeded 5MB cap ({size} bytes)"),
+            Self::UnsafeRedirect => write!(f, "unsafe redirect blocked"),
             Self::Io(e) => write!(f, "IO error: {e}"),
             Self::Network(e) => write!(f, "network error: {e}"),
             Self::InvalidUrl(u) => write!(f, "invalid url: {u}"),
@@ -88,7 +91,10 @@ impl DownloadError {
     /// a URL we refuse on safety grounds, an oversized payload, or a local
     /// disk error (a browser would hit the same wall).
     pub fn should_fallback_to_webview(&self) -> bool {
-        !matches!(self, Self::InvalidUrl(_) | Self::TooLarge(_) | Self::Io(_))
+        !matches!(
+            self,
+            Self::InvalidUrl(_) | Self::TooLarge(_) | Self::Io(_) | Self::UnsafeRedirect
+        )
     }
 }
 
@@ -155,6 +161,30 @@ pub fn validate_response_size(size: usize, max: usize) -> Result<()> {
         Err(anyhow!("response size {size} exceeds cap of {max} bytes"))
     } else {
         Ok(())
+    }
+}
+
+/// Whether `e` is our own redirect-policy rejection. `reqwest::Error`'s Display only
+/// says "error following redirect"; the message we attach in the policy lives in the
+/// source chain, so walk it instead of matching on `to_string()`.
+fn is_unsafe_redirect_error(e: &(dyn std::error::Error + 'static)) -> bool {
+    let mut cur: Option<&(dyn std::error::Error + 'static)> = Some(e);
+    while let Some(err) = cur {
+        if err.to_string().contains("unsafe redirect") {
+            return true;
+        }
+        cur = err.source();
+    }
+    false
+}
+
+/// Check if adding `chunk_len` to `current` exceeds `limit`. Returns the new total or Err(new_total).
+pub fn check_payload_limit(current: usize, chunk_len: usize, limit: usize) -> Result<usize, usize> {
+    let new_total = current.saturating_add(chunk_len);
+    if new_total > limit {
+        Err(new_total)
+    } else {
+        Ok(new_total)
     }
 }
 
@@ -272,7 +302,7 @@ pub async fn fetch_and_cache_cover_to_dir(
     }
 
     // Direct HTTP GET request
-    let resp = HTTP_CLIENT
+    let mut resp = HTTP_CLIENT
         .get(image_url)
         .header(reqwest::header::USER_AGENT, BROWSER_USER_AGENT)
         .header(reqwest::header::REFERER, &origin)
@@ -289,11 +319,17 @@ pub async fn fetch_and_cache_cover_to_dir(
                     return DownloadError::CloudflareBlocked(code);
                 }
             }
+            if is_unsafe_redirect_error(&e) {
+                return DownloadError::UnsafeRedirect;
+            }
             DownloadError::Network(e)
         })?;
 
     let status = resp.status();
     let status_code = status.as_u16();
+    if status.is_redirection() {
+        return Err(DownloadError::UnsafeRedirect);
+    }
     if status_code == 403 || status_code == 503 {
         return Err(DownloadError::CloudflareBlocked(status_code));
     }
@@ -324,8 +360,17 @@ pub async fn fetch_and_cache_cover_to_dir(
             .map_err(|_| DownloadError::TooLarge(cl as usize))?;
     }
 
-    // Download payload bytes
-    let bytes = resp.bytes().await.map_err(DownloadError::Network)?;
+    // Download payload bytes streaming with running-total check against MAX_COVER_BYTES
+    let mut bytes = if let Some(cl) = resp.content_length() {
+        Vec::with_capacity((cl as usize).min(MAX_COVER_BYTES))
+    } else {
+        Vec::new()
+    };
+    while let Some(chunk) = resp.chunk().await.map_err(DownloadError::Network)? {
+        check_payload_limit(bytes.len(), chunk.len(), MAX_COVER_BYTES)
+            .map_err(DownloadError::TooLarge)?;
+        bytes.extend_from_slice(&chunk);
+    }
 
     validate_response_size(bytes.len(), MAX_COVER_BYTES)
         .map_err(|_| DownloadError::TooLarge(bytes.len()))?;
@@ -391,6 +436,35 @@ mod tests {
         assert!(!DownloadError::InvalidUrl("http://127.0.0.1/x".into()).should_fallback_to_webview());
         assert!(!DownloadError::TooLarge(10_000_000).should_fallback_to_webview());
         assert!(!DownloadError::Io(std::io::Error::other("disk")).should_fallback_to_webview());
+        assert!(!DownloadError::UnsafeRedirect.should_fallback_to_webview());
+    }
+
+    #[test]
+    fn unsafe_redirect_is_found_in_the_error_source_chain() {
+        #[derive(Debug)]
+        struct Outer(Box<dyn std::error::Error + 'static>);
+        impl std::fmt::Display for Outer {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "error following redirect")
+            }
+        }
+        impl std::error::Error for Outer {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(self.0.as_ref())
+            }
+        }
+        let wrapped = Outer("unsafe redirect".into());
+        assert!(is_unsafe_redirect_error(&wrapped));
+        let other = Outer("connection reset".into());
+        assert!(!is_unsafe_redirect_error(&other));
+    }
+
+    #[test]
+    fn check_payload_limit_enforces_running_total() {
+        assert_eq!(check_payload_limit(100, 200, 500), Ok(300));
+        assert_eq!(check_payload_limit(400, 100, 500), Ok(500));
+        assert_eq!(check_payload_limit(400, 101, 500), Err(501));
+        assert_eq!(check_payload_limit(usize::MAX - 10, 20, 500), Err(usize::MAX));
     }
 
     /// Regression: `$APPDATA` in a Tauri scope is ALREADY `<Roaming>/<identifier>`
