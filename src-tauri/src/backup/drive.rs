@@ -20,10 +20,30 @@ pub struct FileMeta {
     pub modified_time: Option<String>,
 }
 
-fn client() -> reqwest::Client { reqwest::Client::new() }
+use std::time::Duration;
+
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+pub const METADATA_TIMEOUT: Duration = Duration::from_secs(60);
+pub const TRANSFER_TIMEOUT: Duration = Duration::from_secs(600);
+
+fn metadata_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .timeout(METADATA_TIMEOUT)
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
+fn transfer_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .timeout(TRANSFER_TIMEOUT)
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
 
 pub async fn find_backup_file(token: &str) -> Result<Option<String>, String> {
-    let resp = client()
+    let resp = metadata_client()
         .get(FILES)
         .bearer_auth(token)
         .query(&[
@@ -52,7 +72,7 @@ pub async fn create_backup(token: &str, bytes: Vec<u8>) -> Result<String, String
             "media",
             reqwest::multipart::Part::bytes(bytes).mime_str("application/octet-stream").unwrap(),
         );
-    let resp = client()
+    let resp = transfer_client()
         .post(UPLOAD)
         .bearer_auth(token)
         .query(&[("uploadType", "multipart"), ("fields", "id")])
@@ -64,7 +84,7 @@ pub async fn create_backup(token: &str, bytes: Vec<u8>) -> Result<String, String
 }
 
 pub async fn update_backup(token: &str, file_id: &str, bytes: Vec<u8>) -> Result<(), String> {
-    client()
+    transfer_client()
         .patch(format!("{UPLOAD}/{file_id}"))
         .bearer_auth(token)
         .query(&[("uploadType", "media")])
@@ -75,7 +95,7 @@ pub async fn update_backup(token: &str, file_id: &str, bytes: Vec<u8>) -> Result
 }
 
 pub async fn get_metadata(token: &str, file_id: &str) -> Result<FileMeta, String> {
-    let resp = client()
+    let resp = metadata_client()
         .get(format!("{FILES}/{file_id}"))
         .bearer_auth(token)
         .query(&[("fields", "size,modifiedTime")])
@@ -85,11 +105,24 @@ pub async fn get_metadata(token: &str, file_id: &str) -> Result<FileMeta, String
 }
 
 pub async fn download_backup(token: &str, file_id: &str) -> Result<Vec<u8>, String> {
-    let resp = client()
+    let resp = transfer_client()
         .get(format!("{FILES}/{file_id}"))
         .bearer_auth(token)
         .query(&[("alt", "media")])
         .send().await.map_err(|e| format!("download: {e}"))?
         .error_for_status().map_err(|e| format!("download status: {e}"))?;
     Ok(resp.bytes().await.map_err(|e| format!("download bytes: {e}"))?.to_vec())
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn drive_timeouts_are_configured() {
+        assert_eq!(CONNECT_TIMEOUT.as_secs(), 15);
+        assert_eq!(METADATA_TIMEOUT.as_secs(), 60);
+        assert_eq!(TRANSFER_TIMEOUT.as_secs(), 600);
+    }
 }

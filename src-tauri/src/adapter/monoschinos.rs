@@ -177,6 +177,10 @@ impl SiteAdapter for MonoschinosAdapter {
 
     fn parse_airing(&self, html: &str) -> Result<Vec<Series>> {
         let doc = Html::parse_document(html);
+        let container_sel = Selector::parse("main .grid, main div.grid").unwrap();
+        if doc.select(&container_sel).next().is_none() {
+            return Err(anyhow!("no listing grid container found; not a recognizable monoschinos airing page"));
+        }
         let card_sel = Selector::parse(CARD).unwrap();
         let a_sel = Selector::parse("a.card-wrap").unwrap();
         let img_sel = Selector::parse("img.card-img, img").unwrap();
@@ -391,6 +395,14 @@ impl SiteAdapter for MonoschinosAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn parse_airing_rejects_unrecognizable_and_accepts_empty_listing() {
+        assert!(MonoschinosAdapter.parse_airing("<html><body>error</body></html>").is_err());
+        assert!(MonoschinosAdapter.parse_airing("").is_err());
+        let empty = MonoschinosAdapter.parse_airing("<html><body><main><div class=\"grid\"></div></main></body></html>").unwrap();
+        assert!(empty.is_empty(), "a recognizable main .grid with 0 cards must parse to Ok(vec![])");
+    }
+
 
     #[test]
     fn airing_url_returns_emision_path() {

@@ -147,6 +147,7 @@ impl Db {
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
 
+        let group_keys = self.canonical_group_keys()?;
         // Group by canonical identity; a group is followed if *any* member is.
         let mut order: Vec<String> = Vec::new();
         let mut groups: std::collections::HashMap<String, Vec<AiringRow>> =
@@ -158,9 +159,15 @@ impl Db {
             if row.anilist_id.is_none() && !row.followed && crate::matching::is_live_action(&row.series.title) {
                 continue;
             }
-            let key = match row.anilist_id {
-                Some(id) => format!("al:{id}"),
-                None => format!("t:{}", crate::matching::franchise_dedup_key(&row.series.title)),
+            // The catalog bridge only ever upgrades an unlinked row to the `al:` key of
+            // the show it demonstrably is; everything else keeps the franchise key so
+            // season variants of unlinked rows still collapse ("Temporada 2" vs "2nd Season").
+            let key = match group_keys.get(&row.series.id) {
+                Some(k) if k.starts_with("al:") => k.clone(),
+                _ => match row.anilist_id {
+                    Some(id) => format!("al:{id}"),
+                    None => format!("t:{}", crate::matching::franchise_dedup_key(&row.series.title)),
+                },
             };
             if !groups.contains_key(&key) {
                 order.push(key.clone());
@@ -2268,5 +2275,35 @@ mod tests {
         assert_eq!(ep4.series_id, row_b);
         assert_eq!(ep4.number, "28");
         assert_eq!(ep4.url, "https://tioanime.com/ver/tensei-28");
+    }
+
+    #[test]
+    fn linked_and_unlinked_same_title_rows_collapse_into_one_airing_card() {
+        let db = Db::open(":memory:").unwrap();
+        let src_a = db.upsert_source("AnimeYT", "https://animeyt.cc", "animeytx").unwrap();
+        let src_b = db.upsert_source("TioAnime", "https://tioanime.com", "tioanime").unwrap();
+
+        let mk = |slug: &str, title: &str| crate::models::Series {
+            id: 0,
+            slug: slug.into(),
+            title: title.into(),
+            url: format!("https://site/{slug}"),
+            cover_url: None,
+            is_airing: true,
+            followed: true,
+            next_episode_at: None,
+            site_episode_count: None,
+        };
+
+        // row_a is linked to AniList 9999
+        let row_a = db.upsert_series(src_a, &mk("frieren-a", "Sousou no Frieren")).unwrap();
+        db.set_anilist_id(row_a, 9999).unwrap();
+
+        // row_b is unlinked (None) but shares the exact same title
+        let _row_b = db.upsert_series(src_b, &mk("frieren-b", "Sousou no Frieren")).unwrap();
+
+        let airing = db.list_airing(src_a).unwrap();
+        assert_eq!(airing.len(), 1, "linked and unlinked same-title rows collapse into one airing card");
+        assert_eq!(airing[0].title, "Sousou no Frieren");
     }
 }

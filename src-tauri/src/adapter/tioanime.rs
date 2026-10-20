@@ -90,6 +90,12 @@ impl SiteAdapter for TioanimeAdapter {
 
     fn parse_airing(&self, html: &str) -> Result<Vec<Series>> {
         let doc = Html::parse_document(html);
+        let container_sel = Selector::parse("ul.animes").unwrap();
+        if doc.select(&container_sel).next().is_none() {
+            return Err(anyhow::anyhow!(
+                "no ul.animes container found; not a recognizable airing listing page"
+            ));
+        }
         let card_sel = Selector::parse(CARD).unwrap();
         let a_sel = Selector::parse("a").unwrap();
         let title_sel = Selector::parse(".title").unwrap();
@@ -224,6 +230,14 @@ impl SiteAdapter for TioanimeAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn parse_airing_rejects_unrecognizable_and_accepts_empty_listing() {
+        assert!(TioanimeAdapter.parse_airing("<html><body>error</body></html>").is_err());
+        assert!(TioanimeAdapter.parse_airing("").is_err());
+        let empty = TioanimeAdapter.parse_airing("<html><body><ul class=\"animes\"></ul></body></html>").unwrap();
+        assert!(empty.is_empty(), "a recognizable ul.animes with 0 cards must parse to Ok(vec![])");
+    }
+
 
     #[test]
     fn airing_pages_use_the_p_param() {

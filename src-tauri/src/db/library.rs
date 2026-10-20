@@ -25,7 +25,7 @@ pub struct LibraryEntry {
     pub followed: bool,
     pub backlog_status: Option<String>,
     pub watched_externally: bool,
-    pub seen_watermark: i64,
+    pub seen_watermark: f64,
 }
 
 /// The canonical identity key for a series: its AniList id when it has one,
@@ -38,15 +38,6 @@ pub(crate) fn canon_key(anilist_id: Option<i64>, title: &str) -> String {
     }
 }
 
-/// One `series` row's contribution to the canonical library, straight from SQL.
-struct SeriesLibRow {
-    anilist_id: Option<i64>,
-    title: String,
-    followed: bool,
-    watched_externally: bool,
-    backlog_status: Option<String>,
-    seen_watermark: i64,
-}
 
 /// Precedence for a canonical entry's single backlog status when member rows
 /// disagree: an actual follow (or "watched") outranks any backlog tag, and
@@ -96,30 +87,71 @@ impl Db {
     /// shortest member (ties alphabetically) so a season/arc-qualified name
     /// doesn't win over the base show name.
     pub fn sync_library_from_series(&self) -> Result<()> {
+        let group_keys = self.canonical_group_keys()?;
+        let now = chrono::Utc::now().timestamp();
+
         let mut stmt = self.conn.prepare(
-            "SELECT s.anilist_id, s.title, s.followed, s.watched_externally, s.backlog_status,
-                    COALESCE(MAX(CASE WHEN e.seen=1 THEN CAST(e.number AS INTEGER) END), 0) AS watermark
+            "SELECT s.id, s.anilist_id, s.title, s.followed, s.watched_externally, s.backlog_status
              FROM series s
-             LEFT JOIN episodes e ON e.series_id = s.id
-             WHERE s.followed=1 OR s.watched_externally=1 OR s.backlog_status='want'
-             GROUP BY s.id",
+             WHERE s.followed=1 OR s.watched_externally=1 OR s.backlog_status='want'",
         )?;
-        let rows: Vec<SeriesLibRow> = stmt
+        struct BaseRow {
+            id: i64,
+            anilist_id: Option<i64>,
+            title: String,
+            followed: bool,
+            watched_externally: bool,
+            backlog_status: Option<String>,
+        }
+        let rows: Vec<BaseRow> = stmt
             .query_map([], |r| {
-                Ok(SeriesLibRow {
-                    anilist_id: r.get(0)?,
-                    title: r.get(1)?,
-                    followed: r.get::<_, i64>(2)? != 0,
-                    watched_externally: r.get::<_, i64>(3)? != 0,
-                    backlog_status: r.get(4)?,
-                    seen_watermark: r.get(5)?,
+                Ok(BaseRow {
+                    id: r.get(0)?,
+                    anilist_id: r.get(1)?,
+                    title: r.get(2)?,
+                    followed: r.get::<_, i64>(3)? != 0,
+                    watched_externally: r.get::<_, i64>(4)? != 0,
+                    backlog_status: r.get(5)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
 
+        // Fetch all seen episodes for contributing series in one pass
+        let mut ep_stmt = self.conn.prepare(
+            "SELECT e.series_id, e.number
+             FROM episodes e
+             JOIN series s ON s.id = e.series_id
+             WHERE e.seen = 1
+               AND (s.followed=1 OR s.watched_externally=1 OR s.backlog_status='want')",
+        )?;
+        let mut seen_numbers_by_series: HashMap<i64, Vec<String>> = HashMap::new();
+        let ep_rows = ep_stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
+        for ep in ep_rows {
+            let (sid, num) = ep?;
+            seen_numbers_by_series.entry(sid).or_default().push(num);
+        }
+
         let mut grouped: HashMap<String, LibraryEntry> = HashMap::new();
         for row in rows {
-            let key = canon_key(row.anilist_id, &row.title);
+            let align = self.row_align(row.id, now)?;
+            let mut row_watermark = 0.0f64;
+            if let Some(nums) = seen_numbers_by_series.get(&row.id) {
+                for num_str in nums {
+                    if let Some(parsed) = crate::db::episodes::parse_ep_number(num_str) {
+                        if let Some(canon) = align.to_canonical(parsed) {
+                            if canon > row_watermark {
+                                row_watermark = canon;
+                            }
+                        }
+                    }
+                }
+            }
+
+            let key = group_keys
+                .get(&row.id)
+                .cloned()
+                .unwrap_or_else(|| canon_key(row.anilist_id, &row.title));
+
             let entry = grouped.entry(key.clone()).or_insert_with(|| LibraryEntry {
                 id: 0,
                 canon_key: key,
@@ -128,11 +160,13 @@ impl Db {
                 followed: false,
                 backlog_status: None,
                 watched_externally: false,
-                seen_watermark: 0,
+                seen_watermark: 0.0,
             });
             entry.followed |= row.followed;
             entry.watched_externally |= row.watched_externally;
-            entry.seen_watermark = entry.seen_watermark.max(row.seen_watermark);
+            if row_watermark > entry.seen_watermark {
+                entry.seen_watermark = row_watermark;
+            }
             entry.backlog_status = merge_backlog(entry.backlog_status.take(), row.backlog_status);
             entry.anilist_id = entry.anilist_id.or(row.anilist_id);
             let shorter = row.title.chars().count() < entry.display_title.chars().count();
@@ -547,61 +581,91 @@ impl Db {
     }
 
     pub(crate) fn sync_seen_progress_across_sites_at(&self, now: i64) -> Result<usize> {
+        let group_keys = self.canonical_group_keys()?;
+
         let mut stmt = self.conn.prepare(
-            "SELECT s.id, s.anilist_id, s.title, s.sync_watermark_applied, s.sync_rollback_active,
-                    COALESCE(MAX(CASE WHEN e.seen=1 THEN CAST(e.number AS INTEGER) END), 0) AS own_watermark
-             FROM series s LEFT JOIN episodes e ON e.series_id = s.id
-             WHERE s.followed=1
-             GROUP BY s.id",
+            "SELECT s.id, s.anilist_id, s.title, s.sync_watermark_applied, s.sync_rollback_active
+             FROM series s
+             WHERE s.followed=1",
         )?;
+        struct BaseFollowed {
+            id: i64,
+            anilist_id: Option<i64>,
+            title: String,
+            applied: Option<f64>,
+            rollback_active: bool,
+        }
+        let base_rows: Vec<BaseFollowed> = stmt
+            .query_map([], |r| {
+                Ok(BaseFollowed {
+                    id: r.get(0)?,
+                    anilist_id: r.get(1)?,
+                    title: r.get(2)?,
+                    applied: r.get(3)?,
+                    rollback_active: r.get::<_, i64>(4)? != 0,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        let mut ep_stmt = self.conn.prepare(
+            "SELECT e.series_id, e.number
+             FROM episodes e
+             JOIN series s ON s.id = e.series_id
+             WHERE s.followed=1 AND e.seen=1",
+        )?;
+        let mut seen_eps_by_series: HashMap<i64, Vec<String>> = HashMap::new();
+        let ep_rows = ep_stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
+        for ep in ep_rows {
+            let (sid, num) = ep?;
+            seen_eps_by_series.entry(sid).or_default().push(num);
+        }
+
         struct Row {
             id: i64,
             key: String,
-            applied: Option<i64>,
+            applied: Option<f64>,
             rollback_active: bool,
-            own_watermark: i64,
+            own_watermark: f64,
             align: super::episode_align::RowAlign,
-            canon_watermark: i64,
+            canon_watermark: f64,
         }
-        let rows: Vec<Row> = stmt
-            .query_map([], |r| {
-                let id: i64 = r.get(0)?;
-                let anilist_id: Option<i64> = r.get(1)?;
-                let title: String = r.get(2)?;
-                let applied: Option<i64> = r.get(3)?;
-                let rollback_active: i64 = r.get(4)?;
-                let own_watermark: i64 = r.get(5)?;
-                Ok((id, anilist_id, title, applied, rollback_active != 0, own_watermark))
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?
-            .into_iter()
-            .map(|(id, anilist_id, title, applied, rollback_active, own_watermark)| {
-                let key = canon_key(anilist_id, &title);
-                let align = self.row_align(id, now)?;
-                let canon_watermark = if align.cumulative {
-                    if own_watermark <= align.offset {
-                        0
-                    } else {
-                        own_watermark - align.offset
+        let mut rows: Vec<Row> = Vec::with_capacity(base_rows.len());
+        for base in base_rows {
+            let key = group_keys
+                .get(&base.id)
+                .cloned()
+                .unwrap_or_else(|| canon_key(base.anilist_id, &base.title));
+            let align = self.row_align(base.id, now)?;
+            let mut own_watermark = 0.0f64;
+            let mut canon_watermark = 0.0f64;
+            if let Some(nums) = seen_eps_by_series.get(&base.id) {
+                for num_str in nums {
+                    if let Some(parsed) = crate::db::episodes::parse_ep_number(num_str) {
+                        if parsed > own_watermark {
+                            own_watermark = parsed;
+                        }
+                        if let Some(canon) = align.to_canonical(parsed) {
+                            if canon > canon_watermark {
+                                canon_watermark = canon;
+                            }
+                        }
                     }
-                } else {
-                    own_watermark
-                };
-                Ok(Row {
-                    id,
-                    key,
-                    applied,
-                    rollback_active,
-                    own_watermark,
-                    align,
-                    canon_watermark,
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
+                }
+            }
+            rows.push(Row {
+                id: base.id,
+                key,
+                applied: base.applied,
+                rollback_active: base.rollback_active,
+                own_watermark,
+                align,
+                canon_watermark,
+            });
+        }
 
-        let mut canonical: HashMap<String, i64> = HashMap::new();
+        let mut canonical: HashMap<String, f64> = HashMap::new();
         for row in &rows {
-            let entry = canonical.entry(row.key.clone()).or_insert(0);
+            let entry = canonical.entry(row.key.clone()).or_insert(0.0);
             if row.canon_watermark > *entry {
                 *entry = row.canon_watermark;
             }
@@ -615,20 +679,12 @@ impl Db {
                 // Already flagged from an earlier cycle: stays suppressed
                 // until the user's own watermark rises past where it stood
                 // when the rollback was first detected (`applied`) — not
-                // just until it reaches the ceiling again. Comparing only
-                // against `applied` (with no separate flag) can't tell
-                // "still sitting at the rolled-back value" apart from
-                // "never rolled back", since resyncing `applied` down to
-                // match makes the two states look identical on the very
-                // next sync — which is exactly how this bug shipped once
-                // already (undid the rollback one launch later).
-                if row.own_watermark > row.applied.unwrap_or(0) {
+                // just until it reaches the ceiling again.
+                if row.own_watermark > row.applied.unwrap_or(0.0) {
                     self.conn.execute(
                         "UPDATE series SET sync_rollback_active=0 WHERE id=?1",
                         [row.id],
                     )?;
-                    // Fall through to normal catch-up below using the now-
-                    // cleared state, same as a row that was never rolled back.
                 } else {
                     self.conn.execute(
                         "UPDATE series SET sync_watermark_applied=?2 WHERE id=?1",
@@ -649,28 +705,22 @@ impl Db {
             }
 
             if ceiling > row.canon_watermark {
-                let target = row.align.to_row(ceiling as f64);
+                let target = row.align.to_row(ceiling);
                 let target_str = super::episode_align::format_ep_number(target);
                 self.set_seen_cascade(row.id, &target_str, true)?;
                 // Re-read what actually got marked, rather than assuming the
-                // cascade reached `ceiling` exactly: this row's own episode
-                // set can simply not extend that far yet (fewer episodes
-                // scraped here so far than the twin site has, a numbering
-                // gap, ...) — `set_seen_cascade` marks everything it has up
-                // to the target and stops there, silently capped below
-                // `ceiling`. Stamping `applied=ceiling` regardless made the
-                // very next sync see `own_watermark < applied` and latch a
-                // rollback that never happened — nothing was ever unmarked,
-                // this site just hadn't caught up to the target yet. That
-                // false latch then permanently suppressed real cross-site
-                // catch-up for the row (confirmed live: it affected 162 of
-                // 438 followed rows in one real library).
-                let real_watermark: i64 = self.conn.query_row(
-                    "SELECT COALESCE(MAX(CASE WHEN seen=1 THEN CAST(number AS INTEGER) END), 0)
-                     FROM episodes WHERE series_id=?1",
-                    [row.id],
-                    |r| r.get(0),
-                )?;
+                // cascade reached `ceiling` exactly
+                let mut num_stmt = self.conn.prepare("SELECT number FROM episodes WHERE series_id=?1 AND seen=1")?;
+                let mut real_watermark = 0.0f64;
+                let nums = num_stmt.query_map([row.id], |r| r.get::<_, String>(0))?;
+                for n_res in nums {
+                    let n_str = n_res?;
+                    if let Some(parsed) = crate::db::episodes::parse_ep_number(&n_str) {
+                        if parsed > real_watermark {
+                            real_watermark = parsed;
+                        }
+                    }
+                }
                 self.conn.execute(
                     "UPDATE series SET sync_watermark_applied=?2 WHERE id=?1",
                     (row.id, real_watermark),
@@ -710,15 +760,17 @@ impl Db {
     /// placeholder on failure (`delete_orphan_synthetic_series`); this clause is
     /// what un-blocks the ones already sitting in existing databases.
     pub fn library_entries_missing_on_site(&self, source_id: i64) -> Result<Vec<LibraryEntry>> {
+        let group_keys = self.canonical_group_keys()?;
         // What the target site already has, as canonical keys.
         let mut stmt = self
             .conn
-            .prepare("SELECT anilist_id, title FROM series WHERE source_id=?1 AND slug NOT LIKE 'anilist-%'")?;
+            .prepare("SELECT id, anilist_id, title FROM series WHERE source_id=?1 AND slug NOT LIKE 'anilist-%'")?;
         let present: std::collections::HashSet<String> = stmt
             .query_map([source_id], |r| {
-                let anilist_id: Option<i64> = r.get(0)?;
-                let title: String = r.get(1)?;
-                Ok(canon_key(anilist_id, &title))
+                let id: i64 = r.get(0)?;
+                let anilist_id: Option<i64> = r.get(1)?;
+                let title: String = r.get(2)?;
+                Ok(group_keys.get(&id).cloned().unwrap_or_else(|| canon_key(anilist_id, &title)))
             })?
             .collect::<rusqlite::Result<std::collections::HashSet<_>>>()?;
 
@@ -790,7 +842,7 @@ mod tests {
         assert_eq!(lib.len(), 1, "one canonical entry across both sites");
         assert_eq!(lib[0].anilist_id, Some(21));
         assert!(lib[0].followed);
-        assert_eq!(lib[0].seen_watermark, 8, "max progress across sites");
+        assert_eq!(lib[0].seen_watermark, 8.0, "max progress across sites");
     }
 
     #[test]
@@ -803,7 +855,7 @@ mod tests {
         db.sync_library_from_series().unwrap();
         let lib = db.list_library_entries().unwrap();
         assert_eq!(lib.len(), 1, "grouped by normalized title");
-        assert_eq!(lib[0].seen_watermark, 3);
+        assert_eq!(lib[0].seen_watermark, 3.0);
     }
 
     #[test]
@@ -850,7 +902,7 @@ mod tests {
         let missing = db.library_entries_missing_on_site(b).unwrap();
         assert_eq!(missing.len(), 1, "only Frieren is missing on TioAnime");
         assert_eq!(missing[0].display_title, "Frieren");
-        assert_eq!(missing[0].seen_watermark, 3);
+        assert_eq!(missing[0].seen_watermark, 3.0);
     }
 
     /// A failed cross-site import must stay retryable. `run_library_import`
@@ -1836,5 +1888,98 @@ mod tests {
         // Assert the number of seen animeyt episodes is exactly 3 (without fix, it would have marked all seen up to 27)
         assert_eq!(db.list_series_episodes(row_a).unwrap().iter().filter(|e| e.seen).count(), 3, "animeyt must be marked seen up to 3");
         assert_eq!(db.list_series_episodes(row_b).unwrap().iter().filter(|e| e.seen).count(), 27, "tioanime stays at 27");
+    }
+
+    #[test]
+    fn watermark_of_12_5_survives_sync_library_from_series() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        let sid = db.upsert_series(src, &mk_airing("show-125", "Fractional Show", None)).unwrap();
+        db.set_followed(sid, true).unwrap();
+
+        for i in 1..=12 {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: sid, number: i.to_string(), title: None,
+                url: format!("https://site/ep-{i}"), released_at: None, seen: true,
+                download_path: None, download_status: None,
+            }).unwrap();
+        }
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: sid, number: "12.5".into(), title: None,
+            url: "https://site/ep-12-5".into(), released_at: None, seen: true,
+            download_path: None, download_status: None,
+        }).unwrap();
+
+        db.sync_library_from_series().unwrap();
+        let lib = db.list_library_entries().unwrap();
+        assert_eq!(lib.len(), 1);
+        assert_eq!(lib[0].seen_watermark, 12.5, "12.5 fractional watermark preserved without integer truncation");
+    }
+
+    #[test]
+    fn linked_and_unlinked_same_title_rows_collapse_into_one_library_entry() {
+        let db = Db::open(":memory:").unwrap();
+        let src_a = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        let src_b = db.upsert_source("TioAnime", "b", "tioanime").unwrap();
+
+        let mk = |slug: &str, title: &str| crate::models::Series {
+            id: 0, slug: slug.into(), title: title.into(), url: format!("https://site/{slug}"),
+            cover_url: None, is_airing: true, followed: true, next_episode_at: None, site_episode_count: None,
+        };
+
+        let row_a = db.upsert_series(src_a, &mk("frieren-a", "Sousou no Frieren")).unwrap();
+        db.set_anilist_id(row_a, 500).unwrap();
+        db.set_followed(row_a, true).unwrap();
+
+        let row_b = db.upsert_series(src_b, &mk("frieren-b", "Sousou no Frieren")).unwrap();
+        db.set_followed(row_b, true).unwrap();
+
+        db.sync_library_from_series().unwrap();
+        let lib = db.list_library_entries().unwrap();
+        assert_eq!(lib.len(), 1, "linked and unlinked same-title rows collapse into one library entry");
+        assert_eq!(lib[0].canon_key, "al:500");
+    }
+
+    #[test]
+    fn cumulative_offset_target_replays_aligned_watermark_not_raw() {
+        let db = Db::open(":memory:").unwrap();
+        let now = chrono::Utc::now().timestamp();
+        let src_b = db.upsert_source("TioAnime", "https://tioanime.com", "tioanime").unwrap();
+
+        let entries = vec![
+            crate::anizip::MapEntry { episode: 1, season: 3, absolute: Some(25), air_at: Some(now - 14 * 86400) },
+            crate::anizip::MapEntry { episode: 2, season: 3, absolute: Some(26), air_at: Some(now - 7 * 86400) },
+            crate::anizip::MapEntry { episode: 3, season: 3, absolute: Some(27), air_at: Some(now) },
+            crate::anizip::MapEntry { episode: 4, season: 3, absolute: Some(28), air_at: Some(now + 7 * 86400) },
+        ];
+        db.replace_episode_map(185756, &entries, now).unwrap();
+
+        let row_b = db.upsert_series(src_b, &crate::models::Series {
+            id: 0, slug: "tensei-b".into(), title: "Tensei".into(), url: "https://tioanime.com/ver/tensei".into(),
+            cover_url: None, is_airing: true, followed: true, next_episode_at: None, site_episode_count: None,
+        }).unwrap();
+        db.set_anilist_id(row_b, 185756).unwrap();
+
+        for i in 1..=28 {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: row_b, number: i.to_string(), title: None,
+                url: format!("https://tioanime.com/ver/tensei-{i}"), released_at: None, seen: false,
+                download_path: None, download_status: None,
+            }).unwrap();
+        }
+
+        // Suppose library entry has canonical seen_watermark 3.0
+        let entry_watermark = 3.0f64;
+        let align = db.row_align(row_b, now).unwrap();
+        assert!(align.cumulative, "sanity: row_b is cumulative with offset 24");
+        assert_eq!(align.offset, 24);
+
+        let row_number = crate::db::episode_align::format_ep_number(align.to_row(entry_watermark));
+        assert_eq!(row_number, "27", "canonical 3.0 aligned to cumulative 27");
+
+        db.set_seen_cascade(row_b, &row_number, true).unwrap();
+        let eps = db.list_series_episodes(row_b).unwrap();
+        assert_eq!(eps.iter().filter(|e| e.seen).count(), 27, "episodes 1..=27 are marked seen");
+        assert!(!eps.iter().find(|e| e.number == "28").unwrap().seen);
     }
 }
