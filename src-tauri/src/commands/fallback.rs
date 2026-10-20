@@ -235,7 +235,7 @@ async fn run_episode_fallback(app: AppHandle) -> Result<(), String> {
                             all_refs.push(e.as_str());
                         }
 
-                        if !crate::matching::season_consistent(&matched.title, &all_refs) {
+                        if !crate::matching::season_markers_compatible(&matched.title, &all_refs) {
                             return SiteOutcome::DefinitiveMiss;
                         }
 
