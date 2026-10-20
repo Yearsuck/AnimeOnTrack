@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 // Custom minimize / maximize-restore / close controls for the frameless
@@ -11,21 +11,31 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 // event so it stays correct even when the OS maximizes the window some other
 // way (double-click drag region, Win+Up, snapping).
 export function WindowControls() {
-  const win = getCurrentWindow();
+  const win = useMemo(() => getCurrentWindow(), []);
   const [maximized, setMaximized] = useState(false);
 
   useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    win.isMaximized().then(setMaximized).catch(() => {});
+    let cancelled = false;
     win
-      .onResized(() => {
-        win.isMaximized().then(setMaximized).catch(() => {});
-      })
-      .then((fn) => {
-        unlisten = fn;
+      .isMaximized()
+      .then((isMax) => {
+        if (!cancelled) setMaximized(isMax);
       })
       .catch(() => {});
-    return () => unlisten?.();
+
+    const unlistenPromise = win.onResized(() => {
+      win
+        .isMaximized()
+        .then((isMax) => {
+          if (!cancelled) setMaximized(isMax);
+        })
+        .catch(() => {});
+    });
+
+    return () => {
+      cancelled = true;
+      unlistenPromise.then((fn) => fn()).catch(() => {});
+    };
   }, [win]);
 
   return (
