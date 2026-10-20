@@ -178,6 +178,15 @@ fn is_unsafe_redirect_error(e: &(dyn std::error::Error + 'static)) -> bool {
     false
 }
 
+/// Whether a 3xx response represents a refused or stopped redirect.
+/// Only genuine redirect statuses accompanied by a `Location` header should be
+/// treated as `UnsafeRedirect`. Non-redirect responses in the 3xx range (such as
+/// `304 Not Modified`) or malformed redirects missing `Location` fall through to
+/// standard `DownloadError::HttpStatus`.
+pub fn is_refused_redirect(status: reqwest::StatusCode, has_location: bool) -> bool {
+    status.is_redirection() && status != reqwest::StatusCode::NOT_MODIFIED && has_location
+}
+
 /// Check if adding `chunk_len` to `current` exceeds `limit`. Returns the new total or Err(new_total).
 pub fn check_payload_limit(current: usize, chunk_len: usize, limit: usize) -> Result<usize, usize> {
     let new_total = current.saturating_add(chunk_len);
@@ -327,7 +336,8 @@ pub async fn fetch_and_cache_cover_to_dir(
 
     let status = resp.status();
     let status_code = status.as_u16();
-    if status.is_redirection() {
+    let has_location = resp.headers().contains_key(reqwest::header::LOCATION);
+    if is_refused_redirect(status, has_location) {
         return Err(DownloadError::UnsafeRedirect);
     }
     if status_code == 403 || status_code == 503 {
@@ -425,6 +435,17 @@ pub async fn cache_cover_image(app: &AppHandle, image_url: &str) -> Result<PathB
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn is_refused_redirect_distinguishes_genuine_redirects_from_304() {
+        use reqwest::StatusCode;
+        assert!(is_refused_redirect(StatusCode::FOUND, true)); // 302 with Location
+        assert!(is_refused_redirect(StatusCode::MOVED_PERMANENTLY, true)); // 301 with Location
+        assert!(!is_refused_redirect(StatusCode::NOT_MODIFIED, false)); // 304 without Location
+        assert!(!is_refused_redirect(StatusCode::FOUND, false)); // 302 without Location
+        assert!(!is_refused_redirect(StatusCode::NOT_MODIFIED, true)); // 304 is not a redirect
+        assert!(!is_refused_redirect(StatusCode::OK, true)); // 200 is not redirection
+    }
 
     #[test]
     fn should_fallback_to_webview_covers_browser_recoverable_failures_only() {
