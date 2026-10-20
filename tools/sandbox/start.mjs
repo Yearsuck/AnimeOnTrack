@@ -3,6 +3,7 @@
 //   node tools/sandbox/start.mjs            # dev build (hot reload), reuse existing sandbox data
 //   node tools/sandbox/start.mjs --fresh    # re-copy the real DB first (discards sandbox state)
 //   node tools/sandbox/start.mjs --release  # optimised build, frontend embedded (what users run)
+//   node tools/sandbox/start.mjs --empty    # brand-new install: no data copied, own identifier (--fresh wipes it again)
 //
 // Isolation comes from overriding the Tauri `identifier` (see `--config`): the data dir
 // becomes %APPDATA%\com.animeontrack.sandbox and the WebView2 profile is separate too, so
@@ -17,12 +18,14 @@ import { cpus, constants, setPriority } from 'node:os';
 import { join } from 'node:path';
 import { stripCloudSettings } from './sanitize.mjs';
 
-const SANDBOX_ID = 'com.animeontrack.sandbox';
+const args = new Set(process.argv.slice(2));
+// `--empty` is a first-run simulation with its own data dir, so it never clobbers the copied-data sandbox.
+const EMPTY = args.has('--empty');
+const SANDBOX_ID = EMPTY ? 'com.animeontrack.sandbox-empty' : 'com.animeontrack.sandbox';
 const REAL_ID = 'com.animeontrack.app';
 const appdata = process.env.APPDATA;
 if (!appdata) { console.error('APPDATA is not set (this tool targets Windows).'); process.exit(1); }
 
-const args = new Set(process.argv.slice(2));
 const sandboxDir = join(appdata, SANDBOX_ID);
 const realDb = join(appdata, REAL_ID, 'animeontrack.sqlite');
 const sandboxDb = join(sandboxDir, 'animeontrack.sqlite');
@@ -66,13 +69,14 @@ if (args.has('--fresh') && existsSync(sandboxDir)) {
   try { rmSync(sandboxDir, { recursive: true, force: true }); }
   catch (e) { console.error(`Cannot reset ${sandboxDir} (${e.code}). Is the sandbox app still running? Close it first.`); process.exit(1); }
 }
-if (!existsSync(sandboxDb)) {
+if (!EMPTY && !existsSync(sandboxDb)) {
   if (!existsSync(realDb)) { console.error(`No real DB at ${realDb} to copy.`); process.exit(1); }
   await copyRealDbSanitised();
 }
 
 // Passed as a file, not inline JSON: `spawn(..., { shell: true })` does not quote arguments, so
 // cmd/npm.cmd on Windows would strip the double quotes of an inline JSON string.
+mkdirSync(sandboxDir, { recursive: true });
 const configPath = join(sandboxDir, 'tauri-sandbox-config.json');
 // Only the identifier is overridden: `$APPDATA` in the asset-protocol scope of tauri.conf.json already
 // resolves to <Roaming>/<identifier>, so the sandbox's covers dir is covered by the very same scope.

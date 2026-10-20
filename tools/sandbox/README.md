@@ -32,6 +32,7 @@ copy at all if `node:sqlite` is unavailable. Scans still hit the real sites from
 node tools/sandbox/start.mjs              # dev build, hot reload, CDP on :9222
 node tools/sandbox/start.mjs --fresh      # discard sandbox state, re-copy the real DB (close the sandbox app first)
 node tools/sandbox/start.mjs --release    # optimised build, frontend embedded (what users run)
+node tools/sandbox/start.mjs --empty      # brand-new install (own data dir com.animeontrack.sandbox-empty, nothing copied): find first-run bugs
 ```
 
 With `--release` the command only compiles; start `src-tauri/target/release/aot-scaffold.exe` yourself
