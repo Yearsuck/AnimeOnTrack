@@ -703,6 +703,14 @@ pub fn spawn_episode_backfill(app: AppHandle) {
     });
 }
 
+struct BackfillTarget {
+    id: i64,
+    slug: String,
+    title: String,
+    url: String,
+    anilist_id: Option<i64>,
+}
+
 async fn run_episode_backfill(app: AppHandle) -> Result<(), String> {
     use std::sync::atomic::Ordering;
     use tauri::Manager;
@@ -751,7 +759,21 @@ async fn run_episode_backfill(app: AppHandle) -> Result<(), String> {
         // network loop below, not after.
         db.link_series_to_catalog_with(&index, rows).map_err(|e| e.to_string())?;
         db.sync_status_from_catalog().map_err(|e| e.to_string())?;
-        let needing = db.followed_series_without_episodes(src).map_err(|e| e.to_string())?;
+        let needing_raw = db.followed_series_without_episodes(src).map_err(|e| e.to_string())?;
+        let mut needing = Vec::with_capacity(needing_raw.len());
+        for s in needing_raw {
+            let anilist_id = db
+                .get_series_for_link(s.id)
+                .map_err(|e| e.to_string())?
+                .and_then(|info| info.anilist_id);
+            needing.push(BackfillTarget {
+                id: s.id,
+                slug: s.slug,
+                title: s.title,
+                url: s.url,
+                anilist_id,
+            });
+        }
         (a, mirrors, needing)
     };
 
@@ -773,14 +795,12 @@ async fn run_episode_backfill(app: AppHandle) -> Result<(), String> {
             let db = state.db.lock().unwrap();
             let new_url = format!("{working_mirror}{path}");
             let new_url = (new_url != s.url).then_some(new_url.as_str());
-            // A never-fetched series has no known episode numbers yet, so
-            // this is always the full list — same insert path `refresh()`
-            // uses, so a later real refresh() sees these as already-known
-            // and doesn't duplicate them. One transaction for the whole list
-            // — see `apply_episode_diff`'s doc comment.
-            db.apply_episode_diff(s.id, new_url, &eps).map_err(|e| e.to_string())?;
-            if let Some(n) = db.take_carried_seen_number(s.id).map_err(|e| e.to_string())? {
-                db.set_seen_cascade(s.id, &n.to_string(), true).map_err(|e| e.to_string())?;
+            if !apply_backfill_writes(&db, s.id, s.anilist_id, &s.slug, new_url, &eps)? {
+                eprintln!(
+                    "[backfill] series {} ({}) identity changed after fetch, skipping write",
+                    s.id, s.title
+                );
+                return Ok(());
             }
             Ok(())
         })();
@@ -790,6 +810,37 @@ async fn run_episode_backfill(app: AppHandle) -> Result<(), String> {
         tokio::time::sleep(PACED).await;
     }
     Ok(())
+}
+
+/// The DB-write half of `run_episode_backfill`, guarded on the target
+/// `series` row still having its expected identity.
+///
+/// Returns `false` when the row is gone or its identity changed — skipping
+/// the write is the correct answer to avoid overwriting a deleted/reused rowid.
+fn apply_backfill_writes(
+    db: &Db,
+    series_id: i64,
+    expected_anilist_id: Option<i64>,
+    expected_slug: &str,
+    new_url: Option<&str>,
+    eps: &[Episode],
+) -> Result<bool, String> {
+    if !db
+        .series_still_is(series_id, expected_anilist_id, expected_slug)
+        .map_err(|e| e.to_string())?
+    {
+        return Ok(false);
+    }
+    // A never-fetched series has no known episode numbers yet, so
+    // this is always the full list — same insert path `refresh()`
+    // uses, so a later real refresh() sees these as already-known
+    // and doesn't duplicate them. One transaction for the whole list
+    // — see `apply_episode_diff`'s doc comment.
+    db.apply_episode_diff(series_id, new_url, eps).map_err(|e| e.to_string())?;
+    if let Some(n) = db.take_carried_seen_number(series_id).map_err(|e| e.to_string())? {
+        db.set_seen_cascade(series_id, &n.to_string(), true).map_err(|e| e.to_string())?;
+    }
+    Ok(true)
 }
 
 /// Try direct image cache download first. Only on Cloudflare bot/WAF blocks (403/503),
@@ -1554,5 +1605,115 @@ mod tests {
         assert!(should_fetch_series(
             false, false, true, Some(NOW + DAY), Some(5), 5, Some(0), NOW
         ));
+    }
+
+    fn ep(number: &str) -> Episode {
+        Episode {
+            id: 0,
+            series_id: 0,
+            number: number.into(),
+            title: None,
+            url: format!("https://site.example/ep/{number}"),
+            released_at: None,
+            seen: false,
+            download_path: None,
+            download_status: None,
+        }
+    }
+
+    fn insert_test_series(db: &Db, src: i64, slug: &str) -> i64 {
+        let s = Series {
+            id: 0,
+            slug: slug.into(),
+            title: slug.into(),
+            url: format!("https://site.example/{slug}"),
+            cover_url: None,
+            is_airing: false,
+            followed: true,
+            next_episode_at: None,
+            site_episode_count: None,
+        };
+        db.upsert_series(src, &s).unwrap()
+    }
+
+    #[test]
+    fn apply_backfill_writes_applies_episodes_to_matching_row() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let sid = insert_test_series(&db, src, "show-1");
+        db.set_anilist_id(sid, 42).unwrap();
+        db.conn
+            .execute("UPDATE series SET carried_seen_number=1 WHERE id=?1", [sid])
+            .unwrap();
+
+        let written = apply_backfill_writes(
+            &db,
+            sid,
+            Some(42),
+            "show-1",
+            Some("https://site.example/show-1/rebased"),
+            &[ep("1"), ep("2")],
+        )
+        .unwrap();
+
+        assert!(written, "matching identity must apply writes");
+        let eps = db.list_series_episodes(sid).unwrap();
+        assert_eq!(eps.len(), 2);
+        assert!(eps[0].seen, "carried seen watermark must mark episode 1 seen");
+        assert!(!eps[1].seen, "episode 2 must remain unseen");
+        let url: String = db
+            .conn
+            .query_row("SELECT url FROM series WHERE id=?1", [sid], |r| r.get(0))
+            .unwrap();
+        assert_eq!(url, "https://site.example/show-1/rebased");
+    }
+
+    #[test]
+    fn apply_backfill_writes_skips_when_row_deleted() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let sid = insert_test_series(&db, src, "show-1");
+
+        db.delete_series(sid).unwrap();
+
+        let written = apply_backfill_writes(&db, sid, None, "show-1", None, &[ep("1")]).unwrap();
+        assert!(!written, "deleted row must be skipped");
+    }
+
+    #[test]
+    fn apply_backfill_writes_skips_when_rowid_reused() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let sid_a = insert_test_series(&db, src, "show-a");
+        db.set_anilist_id(sid_a, 10).unwrap();
+
+        db.delete_series(sid_a).unwrap();
+
+        let sid_b = insert_test_series(&db, src, "show-b");
+        db.set_anilist_id(sid_b, 20).unwrap();
+        assert_eq!(sid_b, sid_a, "SQLite must reuse the rowid of the deleted row");
+
+        // Stale scrape finishes for show-a with expected identity 10/"show-a":
+        let written = apply_backfill_writes(
+            &db,
+            sid_a,
+            Some(10),
+            "show-a",
+            Some("https://site.example/show-a/new"),
+            &[ep("1"), ep("2")],
+        )
+        .unwrap();
+
+        assert!(!written, "stale backfill scrape must report false");
+        let eps = db.list_series_episodes(sid_b).unwrap();
+        assert_eq!(eps.len(), 0, "no episodes should be inserted for reused rowid");
+        let url: String = db
+            .conn
+            .query_row("SELECT url FROM series WHERE id=?1", [sid_b], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            url, "https://site.example/show-b",
+            "url must not be overwritten by stale backfill"
+        );
     }
 }
