@@ -234,7 +234,12 @@ export function SeriesDetail({
         return e;
       })
     );
-    setSeenCascade(series.id, ep.number, nextSeen).then(onChanged);
+    setSeenCascade(series.id, ep.number, nextSeen)
+      .catch((err) => {
+        console.error("setSeenCascade failed for episode", ep.number, err);
+        return load().catch(() => {});
+      })
+      .finally(onChanged);
   }
 
   // Local/instant, no scrape — the universal reclassify inverse (see

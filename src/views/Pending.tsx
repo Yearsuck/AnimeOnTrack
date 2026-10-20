@@ -77,7 +77,10 @@ export function Pending({
     setRemoving((r) => new Set(r).add(it.episode.id));
     setTimeout(async () => {
       try {
-        await setSeenCascade(it.series.id, it.episode.number, true);
+        // A PendingItem's `series` is the representative row for the show,
+        // but its `episode` can belong to another site's row (`episode.series_id`
+        // differs). Target the owning series row so episode numbering aligns.
+        await setSeenCascade(it.episode.series_id, it.episode.number, true);
         await load();
         onChanged();
       } catch (e) {

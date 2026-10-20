@@ -81,9 +81,11 @@ type AiringViewMode = "all" | "season" | "week";
 export function AiringGrid({
   onOpenSeries,
   refreshSignal,
+  onChanged,
 }: {
   onOpenSeries: (s: Series) => void;
   refreshSignal?: number;
+  onChanged?: () => void;
 }) {
   const t = useT();
   const [items, setItems] = useState<AiringItem[]>([]);
@@ -118,6 +120,7 @@ export function AiringGrid({
     e.stopPropagation();
     await setFollowed(s.id, !s.followed);
     await load();
+    onChanged?.();
   }
 
   const filtered = useMemo(() => {

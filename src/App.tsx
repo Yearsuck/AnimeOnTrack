@@ -6,7 +6,7 @@ import { ProgressBar } from "./views/ProgressBar";
 import { WindowControls } from "./views/WindowControls";
 import { ShortcutsOverlay } from "./views/ShortcutsOverlay";
 import { UpdateBanner } from "./views/UpdateBanner";
-import { shortcutFor } from "./lib/shortcuts";
+import { shortcutFor, shouldNavigateToCatalogOnSearch } from "./lib/shortcuts";
 import {
   listAiring,
   refresh,
@@ -276,6 +276,9 @@ export default function App() {
           }
           break;
         case "search":
+          if (!shouldNavigateToCatalogOnSearch(view, descubrirSubView)) {
+            break;
+          }
           e.preventDefault();
           navigate("catalog");
           requestAnimationFrame(() => {
@@ -305,7 +308,7 @@ export default function App() {
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [view, refreshing, shortcutsOpen, selected]);
+  }, [view, refreshing, shortcutsOpen, selected, descubrirSubView]);
 
   // Frameless window: every screen needs *some* draggable strip with the
   // window controls, or the loading/onboarding views (which don't render the
@@ -400,7 +403,11 @@ export default function App() {
         )}
         {view === "airing" && (
           <div className="view-panel" ref={panelRef}>
-            <AiringGrid onOpenSeries={setSelected} refreshSignal={airingRefreshSignal} />
+            <AiringGrid
+              onOpenSeries={setSelected}
+              refreshSignal={airingRefreshSignal}
+              onChanged={onPendingDataChanged}
+            />
           </div>
         )}
         {view === "library" && (

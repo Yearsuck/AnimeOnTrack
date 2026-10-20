@@ -88,11 +88,23 @@ export function SourcesSection({ onSiteChanged }: SourcesSectionProps) {
     setMsg(null);
     try {
       const result = await setActiveSite(pendingSite.id);
-      const s = await scanAiring(result.site.default_base_url);
+      // The backend is already on the new site: align the local state first so
+      // a failing scan cannot leave Settings showing the old one.
       setActiveSiteState(result.site);
       setPendingSiteId(null);
-      await loadMirrors();
-      setMsg(t("settings.siteChanged", { site: result.site.name, count: s.length }));
+      try {
+        await loadMirrors();
+      } catch (mirrorErr) {
+        console.error("loadMirrors failed after a site switch", mirrorErr);
+      }
+      try {
+        const s = await scanAiring(result.site.default_base_url);
+        setMsg(t("settings.siteChanged", { site: result.site.name, count: s.length }));
+      } catch (scanErr) {
+        setMsg(t("errors.generic", { detail: String(scanErr) }));
+      }
+      // After the scan: App's handler navigates to the airing grid, which must
+      // load the freshly scanned listing rather than race it.
       onSiteChanged?.(result.site);
     } catch (e) {
       setMsg(t("errors.generic", { detail: String(e) }));
