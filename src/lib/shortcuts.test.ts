@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { shortcutFor, SHORTCUT_ROWS } from "./shortcuts";
+import { shortcutFor, SHORTCUT_ROWS, shouldNavigateToCatalogOnSearch } from "./shortcuts";
 
 function createEvent(overrides: Partial<Parameters<typeof shortcutFor>[0]> = {}) {
   return {
@@ -160,5 +160,26 @@ describe("shortcutFor", () => {
       "shortcuts.help",
       "shortcuts.escape",
     ]);
+  });
+});
+
+describe("shouldNavigateToCatalogOnSearch", () => {
+  it("returns false when on descubrir view with listas subview", () => {
+    expect(shouldNavigateToCatalogOnSearch("descubrir", "listas")).toBe(false);
+  });
+
+  it("returns true when on descubrir view with swipe subview", () => {
+    expect(shouldNavigateToCatalogOnSearch("descubrir", "swipe")).toBe(true);
+  });
+
+  it("returns true when on descubrir view without subview", () => {
+    expect(shouldNavigateToCatalogOnSearch("descubrir")).toBe(true);
+  });
+
+  it("returns true on other views even if subview is listas", () => {
+    expect(shouldNavigateToCatalogOnSearch("airing", "listas")).toBe(true);
+    expect(shouldNavigateToCatalogOnSearch("library", "listas")).toBe(true);
+    expect(shouldNavigateToCatalogOnSearch("catalog", "listas")).toBe(true);
+    expect(shouldNavigateToCatalogOnSearch("pending", "listas")).toBe(true);
   });
 });

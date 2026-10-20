@@ -87,3 +87,15 @@ export function shortcutFor(e: {
 
   return null;
 }
+
+/**
+ * Decides whether the global search shortcut (`/`) should navigate to the
+ * Catalog view. When on the "descubrir" view with the "listas" subview active,
+ * ListasToolbar handles `/` locally to focus its own search input instead.
+ */
+export function shouldNavigateToCatalogOnSearch(
+  view: string,
+  descubrirSubView?: string
+): boolean {
+  return !(view === "descubrir" && descubrirSubView === "listas");
+}
