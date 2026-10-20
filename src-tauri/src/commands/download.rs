@@ -66,18 +66,62 @@ fn enqueue(app: &AppHandle, episode_id: i64) -> Result<(), String> {
     emit(app, episode_id, "downloading", None, None);
 
     let app = app.clone();
+    let cancel_task = cancel.clone();
     tauri::async_runtime::spawn(async move {
-        let outcome = run_download(&app, episode_id, &cancel).await;
+        // The drop-guard is created BEFORE the await so that ACTIVE is cleaned up
+        // unconditionally even if the task panics or is cancelled.
+        // Drops at the end of this scope, AFTER the DB row is updated below,
+        // preserving the ordering guarantee that a finished file is covered by
+        // either ACTIVE or the DB row so the orphan scan never treats it as stray.
+        let _active = ActiveEntry(episode_id, cancel_task.clone());
+
+        let app_inner = app.clone();
+        let cancel_inner = cancel_task.clone();
+        let work = tauri::async_runtime::spawn(async move {
+            run_download(&app_inner, episode_id, &cancel_inner).await
+        });
+        let outcome = match work.await {
+            Ok(res) => res,
+            Err(join_err) => {
+                crate::file_log::warn(&format!("download task panicked: episode {episode_id}: {join_err}"));
+                let state = app.state::<AppState>();
+                let _ = state.db.lock().unwrap().set_download_status(episode_id, "failed", None);
+                emit(&app, episode_id, "failed", None, Some("download task panicked".into()));
+                return;
+            }
+        };
+
         let state = app.state::<AppState>();
-        // The row is updated before the episode leaves ACTIVE, so a finished
-        // file is always covered by one or the other and the orphan scan can
-        // never mistake it for a stray.
-        let _active = ActiveEntry(episode_id, cancel.clone());
         match outcome {
             Ok(path) => {
-                let _ = state.db.lock().unwrap().set_download_status(episode_id, "downloaded", Some(&path));
-                crate::file_log::info(&format!("download finished: episode {episode_id}"));
-                emit(&app, episode_id, "downloaded", Some(100), None);
+                // The cancel flag is read while holding the DB lock and right before
+                // the row is written, so a cancel/delete that lands any earlier is
+                // always honoured and the window left is a few instructions wide.
+                let committed = {
+                    let db = state.db.lock().unwrap();
+                    if cancel_task.load(Ordering::SeqCst) {
+                        false
+                    } else {
+                        let _ = db.set_download_status(episode_id, "downloaded", Some(&path));
+                        true
+                    }
+                };
+                if !committed {
+                    if let Ok(dir) = app.path().app_data_dir().map(|d| d.join("downloads")) {
+                        let p = std::path::Path::new(&path);
+                        if crate::commands::storage::is_safe_file_in_dir(&dir, p) {
+                            let _ = std::fs::remove_file(p);
+                            if let Some(parent) = p.parent() {
+                                crate::commands::storage::remove_empty_dir_in_dir(&dir, parent);
+                            }
+                        }
+                    }
+                    let _ = state.db.lock().unwrap().clear_download_columns(&[episode_id]);
+                    emit(&app, episode_id, "cancelled", None, None);
+                } else {
+                    crate::file_log::info(&format!("download finished: episode {episode_id}"));
+                    emit(&app, episode_id, "downloaded", Some(100), None);
+                }
             }
             Err(DlError::Cancelled) => {
                 let _ = state.db.lock().unwrap().clear_download_columns(&[episode_id]);
@@ -289,7 +333,19 @@ pub async fn delete_series_downloads(
                     None => p.is_file(),
                 };
                 if can_delete {
-                    let _ = std::fs::remove_file(p);
+                    match std::fs::remove_file(p) {
+                        Ok(()) => {}
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(e) => {
+                            // Still open elsewhere (e.g. the video player): keep the
+                            // row so the file stays reachable instead of orphaned.
+                            crate::file_log::warn(&format!(
+                                "could not remove download of episode {}: {e}",
+                                ep.id
+                            ));
+                            continue;
+                        }
+                    }
                 }
             }
             let db = state.db.lock().unwrap();
@@ -666,7 +722,7 @@ async fn search_other_sites_and_try(
                         Ok(eng_cards) => {
                             cards = eng_cards;
                             best = crate::matching::best_match(
-                                &[primary_title],
+                                &[english.as_str(), primary_title.as_str()],
                                 &crate::commands::discover::to_candidates(&cards),
                             );
                         }
@@ -975,7 +1031,7 @@ async fn fetch_text(url: &str, referer: &str) -> Result<(String, String), String
     if !is_safe_external_url(url) {
         return Err("not a public web address".into());
     }
-    let resp = downloader::client()
+    let mut resp = downloader::client()
         .get(url)
         .header(reqwest::header::USER_AGENT, downloader::browser_user_agent())
         .header(reqwest::header::REFERER, referer)
@@ -991,7 +1047,14 @@ async fn fetch_text(url: &str, referer: &str) -> Result<(String, String), String
     }
     // The URL after redirects: relative links and Referer checks depend on it.
     let final_url = resp.url().to_string();
-    let body = resp.text().await.map_err(|e| e.to_string())?;
+    let mut body = Vec::new();
+    while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
+        if downloader::would_exceed(body.len() as u64, chunk.len(), MAX_PAGE_BYTES) {
+            return Err("page too large".into());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    let body = String::from_utf8_lossy(&body).into_owned();
     Ok((final_url, body))
 }
 
@@ -1002,7 +1065,7 @@ async fn fetch_json_text(url: &str, referer: &str) -> Result<String, String> {
     if !is_safe_external_url(url) {
         return Err("not a public web address".into());
     }
-    let resp = downloader::client()
+    let mut resp = downloader::client()
         .get(url)
         .header(reqwest::header::USER_AGENT, downloader::browser_user_agent())
         .header(reqwest::header::REFERER, referer)
@@ -1017,10 +1080,14 @@ async fn fetch_json_text(url: &str, referer: &str) -> Result<String, String> {
     if resp.content_length().is_some_and(|n| n > MAX_JSON_BYTES) {
         return Err("response too large".into());
     }
-    let body = resp.text().await.map_err(|e| e.to_string())?;
-    if body.len() as u64 > MAX_JSON_BYTES {
-        return Err("response too large".into());
+    let mut body = Vec::new();
+    while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
+        if downloader::would_exceed(body.len() as u64, chunk.len(), MAX_JSON_BYTES) {
+            return Err("response too large".into());
+        }
+        body.extend_from_slice(&chunk);
     }
+    let body = String::from_utf8_lossy(&body).into_owned();
     Ok(body)
 }
 
@@ -1310,15 +1377,26 @@ pub async fn delete_download(
             None => p.is_file(),
         };
         if can_delete {
-            let _ = std::fs::remove_file(p);
-            if let Some(parent) = p.parent() {
-                if let Some(base) = &downloads_dir {
-                    crate::commands::storage::remove_empty_dir_in_dir(base, parent);
-                } else {
-                    let _ = std::fs::remove_dir(parent);
+            match std::fs::remove_file(p) {
+                Ok(()) => {
+                    if let Some(parent) = p.parent() {
+                        if let Some(base) = &downloads_dir {
+                            crate::commands::storage::remove_empty_dir_in_dir(base, parent);
+                        } else {
+                            let _ = std::fs::remove_dir(parent);
+                        }
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    // File is already gone, ok
+                }
+                Err(e) => {
+                    return Err(format!("could not remove file {path}: {e}"));
                 }
             }
         }
+        // A path outside the downloads dir is never ours to delete; only the
+        // row is cleared below, exactly as before.
     }
     let db = state.db.lock().unwrap();
     db.clear_download_columns(&[episode_id])
@@ -1337,10 +1415,18 @@ pub async fn get_downloads_size(
 /// Delete ALL downloaded files and clear their DB columns.
 #[tauri::command]
 pub async fn clear_all_downloads(
+    app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<usize, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("downloads");
+    // Running transfers would otherwise finish after the wipe and bring files back.
+    cancel_active(&active_episode_ids().into_iter().collect::<Vec<_>>());
     let db = state.db.lock().unwrap();
-    db.clear_all_downloads().map_err(|e| e.to_string())
+    db.clear_all_downloads(&dir).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

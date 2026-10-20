@@ -16,6 +16,13 @@ use tokio::io::AsyncWriteExt;
 /// Refuse anything larger than this: an episode is a few hundred MB, so a
 /// multi-gigabyte answer is not a video the user asked for.
 pub const MAX_DOWNLOAD_BYTES: u64 = 6 * 1024 * 1024 * 1024;
+/// Refuse any single HLS segment larger than this (hostile or misconfigured stream).
+pub const MAX_SEGMENT_BYTES: u64 = 128 * 1024 * 1024;
+
+/// Pure helper to check whether adding `chunk_len` to `current` would exceed `cap`.
+pub(crate) fn would_exceed(current: u64, chunk_len: usize, cap: u64) -> bool {
+    current.saturating_add(chunk_len as u64) > cap
+}
 /// A transfer that delivers nothing for this long is abandoned.
 const STALL_TIMEOUT: Duration = Duration::from_secs(30);
 const USER_AGENT: &str =
@@ -179,12 +186,13 @@ fn url_allowed(url: &str) -> bool {
 }
 
 /// Plain GET of a (small) text resource such as a playlist.
-async fn get_text(url: &str, referer: &str) -> Result<String, DlError> {
+/// Returns `(final_url_after_redirects, text_content)`.
+async fn get_text(url: &str, referer: &str) -> Result<(String, String), DlError> {
     const MAX_PLAYLIST_BYTES: usize = 4 * 1024 * 1024;
     if !url_allowed(url) {
         return Err(DlError::Net("the playlist is not a public web address".into()));
     }
-    let resp = CLIENT
+    let mut resp = CLIENT
         .get(url)
         .header(reqwest::header::USER_AGENT, USER_AGENT)
         .header(reqwest::header::REFERER, referer)
@@ -195,11 +203,21 @@ async fn get_text(url: &str, referer: &str) -> Result<String, DlError> {
     if !resp.status().is_success() {
         return Err(DlError::Http(resp.status().as_u16()));
     }
-    let bytes = resp.bytes().await.map_err(|e| DlError::Net(e.to_string()))?;
-    if bytes.len() > MAX_PLAYLIST_BYTES {
+    let final_url = resp.url().to_string();
+    if !url_allowed(&final_url) {
+        return Err(DlError::Net("the playlist redirect is not a public web address".into()));
+    }
+    if resp.content_length().is_some_and(|n| n > MAX_PLAYLIST_BYTES as u64) {
         return Err(DlError::TooLarge);
     }
-    Ok(String::from_utf8_lossy(&bytes).into_owned())
+    let mut bytes = Vec::new();
+    while let Some(chunk) = resp.chunk().await.map_err(|e| DlError::Net(e.to_string()))? {
+        if would_exceed(bytes.len() as u64, chunk.len(), MAX_PLAYLIST_BYTES as u64) {
+            return Err(DlError::TooLarge);
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok((final_url, String::from_utf8_lossy(&bytes).into_owned()))
 }
 
 /// Some hosts disguise HLS segments as images (a tiny PNG/JPEG/GIF, served from
@@ -260,6 +278,9 @@ async fn append_segment(
         if ct.starts_with("text/") {
             return Err(DlError::BadContentType(ct));
         }
+        if resp.content_length().is_some_and(|n| n > MAX_SEGMENT_BYTES) {
+            return Err(DlError::TooLarge);
+        }
         // Buffer the whole segment (a few MB): an image-wrapped one has to be
         // unwrapped before it is written.
         let mut body: Vec<u8> = Vec::new();
@@ -273,7 +294,9 @@ async fn append_segment(
                 Ok(Ok(c)) => c,
             };
             let Some(chunk) = chunk else { break };
-            if *total + body.len() as u64 + chunk.len() as u64 > MAX_DOWNLOAD_BYTES {
+            if would_exceed(body.len() as u64, chunk.len(), MAX_SEGMENT_BYTES)
+                || would_exceed(*total + body.len() as u64, chunk.len(), MAX_DOWNLOAD_BYTES)
+            {
                 return Err(DlError::TooLarge);
             }
             body.extend_from_slice(&chunk);
@@ -317,7 +340,8 @@ pub async fn fetch_hls_to_file(
     let mut parsed = None;
     // A master playlist points at media playlists; one hop is all that is valid.
     for _ in 0..2 {
-        let text = get_text(&media_url, referer).await?;
+        let (final_url, text) = get_text(&media_url, referer).await?;
+        media_url = final_url;
         match parse_playlist(&text, &media_url) {
             Some(Playlist::Master { variants }) => {
                 let Some(chosen) = select_variant(&variants, preferred_height) else {
@@ -332,10 +356,10 @@ pub async fn fetch_hls_to_file(
             None => return Err(DlError::Net("the stream playlist is not valid".into())),
         }
     }
-    let Some(Playlist::Media { segments, ended, encrypted, has_init_map }) = parsed else {
+    let Some(Playlist::Media { segments, ended, encrypted, has_init_map, has_byte_ranges }) = parsed else {
         return Err(DlError::Net("the stream playlist is nested too deeply".into()));
     };
-    check_downloadable(&segments, ended, encrypted, has_init_map)
+    check_downloadable(&segments, ended, encrypted, has_init_map, has_byte_ranges)
         .map_err(|crate::hls::HlsError::NotPlayable(why)| DlError::Net(format!("this stream cannot be downloaded: {why}")))?;
 
     let part = part_path(base);
@@ -883,5 +907,16 @@ mod tests {
         assert!(series_dir.join("7.ts").exists());
         assert_eq!(sweep_partial_downloads(&root.join("missing")), 0);
         cleanup(&base);
+    }
+
+    #[test]
+    fn would_exceed_checks_caps_accurately_with_saturation() {
+        assert!(!would_exceed(100, 50, 150));
+        assert!(would_exceed(100, 51, 150));
+        assert!(!would_exceed(0, 10, 10));
+        assert!(would_exceed(0, 11, 10));
+        // The sum saturates at u64::MAX instead of wrapping, so it still exceeds a cap just below it.
+        assert!(would_exceed(u64::MAX - 10, 20, u64::MAX - 1));
+        assert!(!would_exceed(u64::MAX - 10, 10, u64::MAX));
     }
 }

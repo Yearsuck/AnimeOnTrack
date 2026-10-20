@@ -37,6 +37,7 @@ pub enum Playlist {
         ended: bool,
         encrypted: bool,
         has_init_map: bool,
+        has_byte_ranges: bool,
     },
 }
 
@@ -204,6 +205,7 @@ pub fn parse_playlist(text: &str, base_url: &str) -> Option<Playlist> {
         let mut ended = false;
         let mut encrypted = false;
         let mut has_init_map = false;
+        let mut has_byte_ranges = false;
         let mut pending_duration: Option<f64> = None;
 
         for raw_line in trimmed.lines() {
@@ -215,6 +217,8 @@ pub fn parse_playlist(text: &str, base_url: &str) -> Option<Playlist> {
                 ended = true;
             } else if line.starts_with("#EXT-X-MAP") {
                 has_init_map = true;
+            } else if line.starts_with("#EXT-X-BYTERANGE") {
+                has_byte_ranges = true;
             } else if let Some(key_attrs) = line.strip_prefix("#EXT-X-KEY:") {
                 for attr in split_hls_attributes(key_attrs) {
                     if let Some((k, v)) = attr.split_once('=') {
@@ -248,6 +252,7 @@ pub fn parse_playlist(text: &str, base_url: &str) -> Option<Playlist> {
             ended,
             encrypted,
             has_init_map,
+            has_byte_ranges,
         })
     }
 }
@@ -337,14 +342,17 @@ pub fn select_variant(variants: &[Variant], preferred_height: Option<u32>) -> Op
 /// 1. `encrypted` -> "encrypted stream"
 /// 2. `!ended` -> "live stream"
 /// 3. `has_init_map` -> "fragmented mp4 stream"
-/// 4. empty `segments` -> "empty playlist"
-/// 5. segments exceeding `MAX_SEGMENTS` -> "playlist too long"
+/// 4. `has_byte_ranges` -> "byte-range streams are not supported"
+/// 5. empty `segments` -> "empty playlist"
+/// 6. segments exceeding `MAX_SEGMENTS` -> "playlist too long"
 #[allow(dead_code)] // Consumed by HLS download supervisor in later stages
 pub fn check_downloadable(
     segments: &[Segment],
     ended: bool,
     encrypted: bool,
     has_init_map: bool,
+    has_byte_ranges: bool,
+
 ) -> Result<(), HlsError> {
     if encrypted {
         return Err(HlsError::NotPlayable("encrypted stream"));
@@ -354,6 +362,9 @@ pub fn check_downloadable(
     }
     if has_init_map {
         return Err(HlsError::NotPlayable("fragmented mp4 stream"));
+    }
+    if has_byte_ranges {
+        return Err(HlsError::NotPlayable("byte-range streams are not supported"));
     }
     if segments.is_empty() {
         return Err(HlsError::NotPlayable("empty playlist"));
@@ -550,6 +561,7 @@ mod tests {
             ended,
             encrypted,
             has_init_map,
+            has_byte_ranges,
         } = playlist
         else {
             panic!("expected media playlist, got {playlist:?}");
@@ -569,9 +581,10 @@ mod tests {
         assert!(ended);
         assert!(!encrypted);
         assert!(!has_init_map);
+        assert!(!has_byte_ranges);
 
         assert_eq!(
-            check_downloadable(&segments, ended, encrypted, has_init_map),
+            check_downloadable(&segments, ended, encrypted, has_init_map, has_byte_ranges),
             Ok(())
         );
     }
@@ -705,29 +718,35 @@ https://cdn.example/hi/index.m3u8\n";
 
         // 1. Encrypted stream error
         assert_eq!(
-            check_downloadable(&single_seg, true, true, false),
+            check_downloadable(&single_seg, true, true, false, false),
             Err(HlsError::NotPlayable("encrypted stream"))
         );
 
         // 2. Live stream (not ended)
         assert_eq!(
-            check_downloadable(&single_seg, false, false, false),
+            check_downloadable(&single_seg, false, false, false, false),
             Err(HlsError::NotPlayable("live stream"))
         );
 
         // 3. Fragmented MP4 stream (has init map)
         assert_eq!(
-            check_downloadable(&single_seg, true, false, true),
+            check_downloadable(&single_seg, true, false, true, false),
             Err(HlsError::NotPlayable("fragmented mp4 stream"))
         );
 
-        // 4. Empty playlist
+        // 4. Byte-range stream (has byte ranges)
         assert_eq!(
-            check_downloadable(&[], true, false, false),
+            check_downloadable(&single_seg, true, false, false, true),
+            Err(HlsError::NotPlayable("byte-range streams are not supported"))
+        );
+
+        // 5. Empty playlist
+        assert_eq!(
+            check_downloadable(&[], true, false, false, false),
             Err(HlsError::NotPlayable("empty playlist"))
         );
 
-        // 5. Playlist too long (more than MAX_SEGMENTS)
+        // 6. Playlist too long (more than MAX_SEGMENTS)
         let too_many_segments: Vec<Segment> = (0..=MAX_SEGMENTS)
             .map(|i| Segment {
                 url: format!("https://example.com/seg_{i}.ts"),
@@ -735,21 +754,58 @@ https://cdn.example/hi/index.m3u8\n";
             })
             .collect();
         assert_eq!(
-            check_downloadable(&too_many_segments, true, false, false),
+            check_downloadable(&too_many_segments, true, false, false, false),
             Err(HlsError::NotPlayable("playlist too long"))
         );
 
         // Strict priority order: encrypted takes precedence over live stream
         assert_eq!(
-            check_downloadable(&single_seg, false, true, true),
+            check_downloadable(&single_seg, false, true, true, false),
             Err(HlsError::NotPlayable("encrypted stream"))
         );
 
         // Live stream takes precedence over init map
         assert_eq!(
-            check_downloadable(&single_seg, false, false, true),
+            check_downloadable(&single_seg, false, false, true, false),
             Err(HlsError::NotPlayable("live stream"))
         );
+
+        // Init map takes precedence over byte ranges
+        assert_eq!(
+            check_downloadable(&single_seg, true, false, true, true),
+            Err(HlsError::NotPlayable("fragmented mp4 stream"))
+        );
+
+        // Byte ranges take precedence over empty playlist
+        assert_eq!(
+            check_downloadable(&[], true, false, false, true),
+            Err(HlsError::NotPlayable("byte-range streams are not supported"))
+        );
+    }
+
+    #[test]
+    fn parses_byte_range_media_playlist_and_rejects_download() {
+        let m3u8 = "#EXTM3U\n#EXT-X-VERSION:4\n#EXTINF:6.0,\n#EXT-X-BYTERANGE:1024@0\nvideo.ts\n#EXTINF:6.0,\n#EXT-X-BYTERANGE:2048@1024\nvideo.ts\n#EXT-X-ENDLIST\n";
+        let parsed = parse_playlist(m3u8, "https://example.com/stream.m3u8");
+        let Playlist::Media {
+            segments,
+            ended,
+            encrypted,
+            has_init_map,
+            has_byte_ranges,
+        } = parsed.expect("should parse byte-range playlist")
+        else {
+            panic!("expected Media playlist");
+        };
+
+        assert_eq!(segments.len(), 2);
+        assert!(ended);
+        assert!(!encrypted);
+        assert!(!has_init_map);
+        assert!(has_byte_ranges);
+
+        let err = check_downloadable(&segments, ended, encrypted, has_init_map, has_byte_ranges);
+        assert_eq!(err, Err(HlsError::NotPlayable("byte-range streams are not supported")));
     }
 
     #[test]
