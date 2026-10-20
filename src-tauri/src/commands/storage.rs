@@ -30,18 +30,18 @@ fn episode_id_of(p: &Path) -> Option<i64> {
 
 /// Everything that protects a file from being treated as an orphan: the
 /// canonical paths of finished downloads, and the ids of episodes whose
-/// download is running or recorded (covers the moment between the `.part`
+/// download is running or being finalized (covers the moment between the `.part`
 /// rename and the row update).
 #[derive(Default)]
 pub struct Tracked {
     pub paths: HashSet<PathBuf>,
-    pub episode_ids: HashSet<i64>,
+    pub active_ids: HashSet<i64>,
 }
 
 impl Tracked {
     fn covers(&self, p: &Path) -> bool {
         let canon = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
-        self.paths.contains(&canon) || episode_id_of(p).is_some_and(|id| self.episode_ids.contains(&id))
+        self.paths.contains(&canon) || episode_id_of(p).is_some_and(|id| self.active_ids.contains(&id))
     }
 }
 
@@ -277,18 +277,18 @@ pub fn rotate_log_if_exceeds(log_path: &Path, max_bytes: u64) -> std::io::Result
 // Tauri Commands
 // ---------------------------------------------------------------------------
 
-/// Snapshot of what is tracked. The DB is read before `ACTIVE` and the two
-/// locks are never held together.
+/// Snapshot of what is tracked: canonical paths of all recorded downloads from the DB,
+/// and episode ids whose download is currently active in memory. `ACTIVE` is read
+/// BEFORE the DB and the two locks are never held together: a download only moves
+/// from `ACTIVE` to the DB (the row is written before the id leaves `ACTIVE`), so
+/// an episode finishing between the two reads is seen by at least one of them.
 fn tracked_downloads(state: &State<'_, AppState>) -> Result<Tracked, String> {
-    let (paths, mut episode_ids) = {
+    let active_ids = crate::commands::download::active_episode_ids();
+    let paths = {
         let db = state.db.lock().unwrap();
-        (
-            db.downloaded_episode_canonical_paths().map_err(|e| e.to_string())?,
-            db.download_tracked_episode_ids().map_err(|e| e.to_string())?,
-        )
+        db.downloaded_episode_canonical_paths().map_err(|e| e.to_string())?
     };
-    episode_ids.extend(crate::commands::download::active_episode_ids());
-    Ok(Tracked { paths, episode_ids })
+    Ok(Tracked { paths, active_ids })
 }
 
 /// Read-only walk of the downloads directory returning untracked files.
@@ -497,7 +497,7 @@ mod tests {
 
         let mut tracked = Tracked::default();
         tracked.paths.insert(tracked_file.canonicalize().unwrap());
-        tracked.episode_ids.insert(4);
+        tracked.active_ids.insert(4);
 
         // Scan orphans: only orphan_file (tracked path, tracked id and *.part skipped)
         let orphans = scan_orphans_in_dir(&downloads, &tracked);
@@ -600,6 +600,58 @@ mod tests {
         let rotated2 = rotate_log_if_exceeds(&log, 100).unwrap();
         assert!(rotated2);
         assert_eq!(std::fs::metadata(&backup).unwrap().len(), 150);
+
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+    #[test]
+    fn scan_orphans_reports_stale_variant_but_protects_tracked_and_active() {
+        let temp = create_test_dir("stale_variants");
+        let downloads = temp.join("downloads");
+        let series_dir = downloads.join("10");
+        std::fs::create_dir_all(&series_dir).unwrap();
+
+        // Episode 1: tracked path is 1.mp4, but a stale 1.mkv also exists on disk
+        let ep1_tracked = series_dir.join("1.mp4");
+        let ep1_stale = series_dir.join("1.mkv");
+        std::fs::write(&ep1_tracked, b"tracked video").unwrap();
+        std::fs::write(&ep1_stale, b"stale video").unwrap();
+
+        // Episode 2: currently in-flight/being finalized (in active_ids), row not yet in DB
+        let ep2_active = series_dir.join("2.mp4");
+        std::fs::write(&ep2_active, b"active video").unwrap();
+
+        // Episode 3: totally untracked orphan
+        let ep3_orphan = series_dir.join("3.mp4");
+        std::fs::write(&ep3_orphan, b"orphan video").unwrap();
+
+        let mut tracked = Tracked::default();
+        tracked.paths.insert(ep1_tracked.canonicalize().unwrap());
+        tracked.active_ids.insert(2);
+
+        let orphans = scan_orphans_in_dir(&downloads, &tracked);
+        let orphan_paths: Vec<&str> = orphans.iter().map(|o| o.path.as_str()).collect();
+
+        // ep1_stale (1.mkv) and ep3_orphan (3.mp4) MUST be reported as orphans
+        assert!(orphan_paths.iter().any(|p| p.ends_with("1.mkv")), "stale variant 1.mkv must be reported as orphan");
+        assert!(orphan_paths.iter().any(|p| p.ends_with("3.mp4")), "untracked 3.mp4 must be reported as orphan");
+
+        // ep1_tracked (1.mp4) and ep2_active (2.mp4) must NOT be reported as orphans
+        assert!(!orphan_paths.iter().any(|p| p.ends_with("1.mp4")), "tracked file 1.mp4 must not be orphan");
+        assert!(!orphan_paths.iter().any(|p| p.ends_with("2.mp4")), "in-flight active file 2.mp4 must not be orphan");
+
+        // Delete orphans: only 1.mkv and 3.mp4 should be deleted
+        let to_delete: Vec<String> = vec![
+            ep1_tracked.to_str().unwrap().to_string(),
+            ep1_stale.to_str().unwrap().to_string(),
+            ep2_active.to_str().unwrap().to_string(),
+            ep3_orphan.to_str().unwrap().to_string(),
+        ];
+        delete_orphans_in_dir(&downloads, &to_delete, &tracked);
+
+        assert!(ep1_tracked.exists(), "tracked file must be preserved");
+        assert!(!ep1_stale.exists(), "stale variant must be deleted");
+        assert!(ep2_active.exists(), "active file must be preserved");
+        assert!(!ep3_orphan.exists(), "orphan must be deleted");
 
         let _ = std::fs::remove_dir_all(&temp);
     }
