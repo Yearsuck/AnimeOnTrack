@@ -154,23 +154,32 @@ export function SwipeView() {
       setCard(next);
       setExhausted(false);
       if (queueRef.current.length <= REFILL_THRESHOLD) {
-        fillQueue();
+        fillQueue().catch((err) => console.error("fillQueue failed in background refill", err));
       }
       return;
     }
     cardUrlRef.current = null;
     setCard(null);
     setLoading(true);
-    fillQueue().then(() => {
-      setLoading(false);
-      // A resetQueue callback may already have shown a card.
-      if (cardUrlRef.current !== null) return;
-      if (queueRef.current.length > 0) {
-        popNext();
-      } else {
-        setExhausted(true);
-      }
-    });
+    fillQueue()
+      .then(() => {
+        // A resetQueue callback may already have shown a card.
+        if (cardUrlRef.current !== null) return;
+        if (queueRef.current.length > 0) {
+          popNext();
+        } else {
+          setExhausted(true);
+        }
+      })
+      .catch((err) => {
+        console.error("fillQueue failed in popNext", err);
+        if (cardUrlRef.current === null && queueRef.current.length === 0) {
+          setExhausted(true);
+        }
+      })
+      .finally(() => {
+        setLoading(false);
+      });
   }, [fillQueue]);
 
   useEffect(() => {
@@ -188,12 +197,22 @@ export function SwipeView() {
         setCard(firstCard);
         setLoading(false);
         setExhausted(false);
-        void fillQueue();
+        void fillQueue().catch((err) => console.error("fillQueue background fill failed", err));
       } else {
-        await fillQueue();
-        if (cancelled) return;
-        popNext();
-        setLoading(false);
+        try {
+          await fillQueue();
+          if (cancelled) return;
+          popNext();
+        } catch (err) {
+          console.error("fillQueue failed on initial load", err);
+          if (!cancelled && cardUrlRef.current === null && queueRef.current.length === 0) {
+            setExhausted(true);
+          }
+        } finally {
+          if (!cancelled) {
+            setLoading(false);
+          }
+        }
       }
     })();
     return () => {
@@ -218,9 +237,13 @@ export function SwipeView() {
     // this starts one. Either way, once the queue is refilled, show a card if
     // none is on screen (a deck that had gone "exhausted" revives).
     pendingResetRef.current = true;
-    fillQueue().then(() => {
-      if (cardUrlRef.current === null && queueRef.current.length > 0) popNext();
-    });
+    fillQueue()
+      .then(() => {
+        if (cardUrlRef.current === null && queueRef.current.length > 0) popNext();
+      })
+      .catch((err) => {
+        console.error("fillQueue failed in resetQueue", err);
+      });
   }, [fillQueue, popNext]);
 
   // Switching Recomendado <-> Aleatorio must refresh the *upcoming* deck
@@ -264,27 +287,42 @@ export function SwipeView() {
         setOutDirection(null);
         popNext(); // instant — already prefetched, no round-trip to wait on
         busyRef.current = false;
-        decidePromise.then((seriesId) => {
-          setCanUndo(true);
-          // Linking is a real scrape (seconds) — it must not block the swipe,
-          // so it's fired here without awaiting it, queued through
-          // useLinkQueue so rapid swiping serializes the scrapes instead of
-          // firing them all in parallel.
-          //
-          // Only `Seen` triggers a scrape here. `Want` must NEVER scrape —
-          // swiping right is fast, cheap, local, and stays that way; a scrape
-          // per right-swipe would hammer the site behind Cloudflare for
-          // titles the user may never actually watch. A `Want` row is only
-          // ever linked later, explicitly: via "Empezar a ver" (start_watching)
-          // or the manual "Buscar en la web" retry button in Listas.
-          if (seriesId !== null && decision === "Seen") {
-            enqueueLink(seriesId, activeCard.title);
-          }
-          refreshHistory();
-        });
+        decidePromise
+          .then((seriesId) => {
+            setCanUndo(true);
+            // Linking is a real scrape (seconds) — it must not block the swipe,
+            // so it's fired here without awaiting it, queued through
+            // useLinkQueue so rapid swiping serializes the scrapes instead of
+            // firing them all in parallel.
+            //
+            // Only `Seen` triggers a scrape here. `Want` must NEVER scrape —
+            // swiping right is fast, cheap, local, and stays that way; a scrape
+            // per right-swipe would hammer the site behind Cloudflare for
+            // titles the user may never actually watch. A `Want` row is only
+            // ever linked later, explicitly: via "Empezar a ver" (start_watching)
+            // or the manual "Buscar en la web" retry button in Listas.
+            if (seriesId !== null && decision === "Seen") {
+              enqueueLink(seriesId, activeCard.title);
+            }
+            refreshHistory();
+          })
+          .catch((err) => {
+            console.error("decideCatalogCard failed for", activeCard.url, err);
+            decidedUrlsRef.current.delete(activeCard.url);
+            if (lastDecidedUrlRef.current === activeCard.url) {
+              lastDecidedUrlRef.current = null;
+            }
+            queueRef.current = [activeCard, ...queueRef.current];
+            if (cardUrlRef.current === null) {
+              popNext();
+            }
+            setUndoneMessage(t("errors.generic", { detail: String(err) }));
+            if (undoneMessageTimerRef.current) clearTimeout(undoneMessageTimerRef.current);
+            undoneMessageTimerRef.current = setTimeout(() => setUndoneMessage(null), 5000);
+          });
       }, 160);
     },
-    [card, popNext, enqueueLink, refreshHistory]
+    [card, popNext, enqueueLink, refreshHistory, t]
   );
 
   const undo = useCallback(async () => {
