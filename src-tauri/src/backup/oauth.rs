@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use base64::Engine;
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -190,6 +192,20 @@ const REDIRECT_HTML: &str = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset
 <html><body style='font-family:sans-serif;background:#0d1117;color:#e6edf3'>\
 <h2>AnimeOnTrack</h2><p>Autenticación completada. Puedes cerrar esta pestaña.</p></body></html>";
 
+/// Read up to 2048 bytes of the incoming HTTP redirect request within `limit`.
+/// Returns the request head as a string, or an error if the read failed or timed out.
+async fn read_request_head<R: tokio::io::AsyncRead + Unpin>(
+    stream: &mut R,
+    limit: Duration,
+) -> Result<String, String> {
+    let mut buf = [0u8; 2048];
+    let n = match tokio::time::timeout(limit, stream.read(&mut buf)).await {
+        Ok(res) => res.map_err(|e| format!("read: {e}"))?,
+        Err(_) => return Err("timed out reading the Google redirect".into()),
+    };
+    Ok(String::from_utf8_lossy(&buf[..n]).into_owned())
+}
+
 /// Bind a loopback listener, open the system browser to Google's consent
 /// screen, and block until Google redirects back with `?code=`. Returns the
 /// authorization code and the `redirect_uri` actually used (needed verbatim
@@ -221,9 +237,13 @@ pub async fn run_loopback_and_get_code<F: Fn(&str)>(
             return Err(SIGNIN_TIMEOUT_MSG.into());
         }
     };
-    let mut buf = [0u8; 2048];
-    let n = stream.read(&mut buf).await.map_err(|e| format!("read: {e}"))?;
-    let request = String::from_utf8_lossy(&buf[..n]);
+    let request = match read_request_head(&mut stream, READ_TIMEOUT).await {
+        Ok(req) => req,
+        Err(e) => {
+            drop(stream);
+            return Err(e);
+        }
+    };
     let first_line = request.lines().next().unwrap_or("");
     let result = parse_redirect_line(first_line);
     stream.write_all(REDIRECT_HTML.as_bytes()).await.ok();
@@ -244,6 +264,7 @@ pub async fn run_loopback_and_get_code<F: Fn(&str)>(
 pub const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 pub const TOKEN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 pub const SIGNIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+pub const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 pub const SIGNIN_TIMEOUT_MSG: &str = "timed out waiting for the Google sign-in";
 
 fn client() -> reqwest::Client {
@@ -310,8 +331,31 @@ mod tests {
     fn signin_timeouts_and_message_are_configured() {
         assert_eq!(SIGNIN_TIMEOUT_MSG, "timed out waiting for the Google sign-in");
         assert_eq!(SIGNIN_TIMEOUT.as_secs(), 300);
+        assert_eq!(READ_TIMEOUT.as_secs(), 30);
         assert_eq!(TOKEN_TIMEOUT.as_secs(), 60);
         assert_eq!(CONNECT_TIMEOUT.as_secs(), 15);
+    }
+
+    #[tokio::test]
+    async fn read_request_head_times_out_when_writer_is_silent() {
+        let (_writer, mut reader) = tokio::io::duplex(1024);
+        let err = read_request_head(&mut reader, Duration::from_millis(50))
+            .await
+            .unwrap_err();
+        assert!(err.contains("timed out"), "expected timeout error, got {err}");
+    }
+
+    #[tokio::test]
+    async fn read_request_head_reads_request_line() {
+        let (mut writer, mut reader) = tokio::io::duplex(1024);
+        writer
+            .write_all(b"GET /?code=a&state=b HTTP/1.1\r\n\r\n")
+            .await
+            .unwrap();
+        let head = read_request_head(&mut reader, Duration::from_secs(1))
+            .await
+            .unwrap();
+        assert!(head.contains("GET /?code=a&state=b HTTP/1.1"), "got {head}");
     }
 
 
