@@ -205,17 +205,58 @@ fn prioritize_mirror(mirrors: &[String], sticky: &str) -> Vec<String> {
     out
 }
 
-/// Remember `mirror` as the last one that actually worked for the active
-/// site, so the next `scrape_via_mirrors` call tries it first instead of
-/// restarting from the top of the configured list every time. Without this,
-/// once mirror #1 goes down, every command (scan, per-series fetch, cover
-/// fetch...) keeps retrying and failing against it before falling through —
-/// wasted requests against a dead site, and no guarantee two commands in the
-/// same session land on the same live mirror. In-memory only (`AppState`,
-/// not persisted): a fresh app launch is free to re-probe from the top.
+/// Match `mirror` against the configured mirrors of all known sites by host/origin,
+/// returning the owning `site_id` if one matches.
+pub fn site_for_mirror<S: AsRef<str>>(mirror: &str, site_mirrors: &[(S, Vec<String>)]) -> Option<String> {
+    let mirror_host = url::Url::parse(mirror)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_lowercase()));
+    let mirror_norm = mirror.trim_end_matches('/');
+
+    for (site_id, mirrors) in site_mirrors {
+        for m in mirrors {
+            if let Some(ref mh) = mirror_host {
+                if let Ok(u) = url::Url::parse(m) {
+                    if let Some(uh) = u.host_str() {
+                        if uh.eq_ignore_ascii_case(mh) {
+                            return Some(site_id.as_ref().to_string());
+                        }
+                    }
+                }
+            }
+            if m.trim_end_matches('/').eq_ignore_ascii_case(mirror_norm) {
+                return Some(site_id.as_ref().to_string());
+            }
+        }
+    }
+    None
+}
+
+fn site_for_mirror_or_active(state: &AppState, mirror: &str) -> String {
+    let active = state.active_site_id.lock().unwrap().clone();
+    let all_mirrors: Vec<(&'static str, Vec<String>)> = {
+        let db = state.db.lock().unwrap();
+        crate::adapter::all_sites()
+            .iter()
+            .map(|s| {
+                let mut list = load_mirrors(&db, s.id).unwrap_or_default();
+                if list.is_empty() {
+                    list.push(s.default_base_url.to_string());
+                }
+                (s.id, list)
+            })
+            .collect()
+    };
+    site_for_mirror(mirror, &all_mirrors).unwrap_or(active)
+}
+
+/// Remember `mirror` as the last one that actually worked for its owning site
+/// (derived from configured mirrors, falling back to active site), so the next
+/// `scrape_via_mirrors` call tries it first instead of restarting from the top
+/// of the configured list every time.
 fn remember_working_mirror(app: &AppHandle, mirror: &str) {
     let state = app.state::<AppState>();
-    let site_id = get_active_site_id(&state);
+    let site_id = site_for_mirror_or_active(&state, mirror);
     state.sticky_mirror.lock().unwrap().insert(site_id, mirror.to_string());
 }
 
@@ -274,9 +315,12 @@ async fn scrape_via_mirrors_with_script<T>(
     }
     let sticky = {
         let state = app.state::<AppState>();
-        let site_id = get_active_site_id(&state);
-        let sticky = state.sticky_mirror.lock().unwrap().get(&site_id).cloned();
-        sticky
+        let site_id = mirrors
+            .first()
+            .map(|m| site_for_mirror_or_active(&state, m))
+            .unwrap_or_else(|| get_active_site_id(&state));
+        let remembered = state.sticky_mirror.lock().unwrap().get(&site_id).cloned();
+        remembered
     };
     let ordered = match &sticky {
         Some(m) => prioritize_mirror(mirrors, m),
@@ -444,4 +488,24 @@ mod tests {
         assert_eq!(got, mirrors);
     }
 
+
+    #[test]
+    fn site_for_mirror_matches_configured_mirror_by_host_or_url() {
+        let sites = vec![
+            ("animeytx", vec!["https://animeyt.cc".to_string(), "https://mirror1.animeyt.cc".to_string()]),
+            ("tioanime", vec!["https://tioanime.com".to_string(), "https://tioanime.net/".to_string()]),
+        ];
+
+        // Exact match
+        assert_eq!(site_for_mirror("https://animeyt.cc", &sites), Some("animeytx".to_string()));
+        // With trailing slash vs without
+        assert_eq!(site_for_mirror("https://tioanime.com/", &sites), Some("tioanime".to_string()));
+        assert_eq!(site_for_mirror("https://tioanime.net", &sites), Some("tioanime".to_string()));
+        // Case insensitive host
+        assert_eq!(site_for_mirror("https://TIOANIME.COM", &sites), Some("tioanime".to_string()));
+        // Match with path
+        assert_eq!(site_for_mirror("https://mirror1.animeyt.cc/horario", &sites), Some("animeytx".to_string()));
+        // Unmatched mirror
+        assert_eq!(site_for_mirror("https://unknown-mirror.example", &sites), None);
+    }
 }
