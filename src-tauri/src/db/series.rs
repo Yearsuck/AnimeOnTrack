@@ -1265,6 +1265,7 @@ impl Db {
     /// (the background catalog link, `start_watching`) must re-check this
     /// under the `db` lock right before writing — the user can have undone
     /// the decision, and deleted the row, while the scrape was in flight.
+    #[cfg(test)]
     pub fn series_exists(&self, series_id: i64) -> Result<bool> {
         Ok(self
             .conn
