@@ -360,22 +360,21 @@ impl Db {
         Ok(())
     }
 
-    /// Returns the series IDs for every row in the same canonical group as `series_id`.
-    pub fn canonical_series_ids(&self, series_id: i64) -> Result<Vec<i64>> {
-        let (al_id, title): (Option<i64>, String) = match self.conn.query_row(
-            "SELECT anilist_id, title FROM series WHERE id=?1",
-            [series_id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        ) {
-            Ok(v) => v,
-            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(vec![]),
-            Err(e) => return Err(e.into()),
-        };
-
+    /// Single-pass grouping of all series rows into canonical identity keys.
+    ///
+    /// Bridges:
+    /// - Linked rows (`anilist_id` IS NOT NULL) map to `al:{id}`.
+    /// - Unlinked rows map to `al:{id}` when their normalized title matches either
+    ///   the catalog title or the local title of a linked row in the same catalog group.
+    /// - Otherwise unlinked rows map to `t:{normalize_title}`.
+    ///
+    /// Executes a single pass over `series` LEFT JOIN `anilist_catalog` (no per-row queries).
+    pub fn canonical_group_keys(&self) -> Result<std::collections::HashMap<i64, String>> {
         let mut stmt = self.conn.prepare(
             "SELECT s.id, s.anilist_id, s.title, c.title AS catalog_title
              FROM series s
-             LEFT JOIN anilist_catalog c ON c.id = s.anilist_id"
+             LEFT JOIN anilist_catalog c ON c.id = s.anilist_id
+             ORDER BY s.id ASC",
         )?;
         struct Row {
             id: i64,
@@ -397,28 +396,23 @@ impl Db {
         let mut tkey_to_anilist: std::collections::HashMap<String, i64> =
             std::collections::HashMap::new();
         for r in &rows {
-            if let (Some(al_id), Some(cat_title)) = (r.anilist_id, &r.catalog_title) {
-                let tkey = format!("t:{}", crate::matching::normalize_title(cat_title));
+            if let Some(al_id) = r.anilist_id {
+                let tkey_local = format!("t:{}", crate::matching::normalize_title(&r.title));
                 tkey_to_anilist
-                    .entry(tkey)
+                    .entry(tkey_local)
                     .and_modify(|id| *id = (*id).min(al_id))
                     .or_insert(al_id);
+                if let Some(cat_title) = &r.catalog_title {
+                    let tkey_cat = format!("t:{}", crate::matching::normalize_title(cat_title));
+                    tkey_to_anilist
+                        .entry(tkey_cat)
+                        .and_modify(|id| *id = (*id).min(al_id))
+                        .or_insert(al_id);
+                }
             }
         }
 
-        let target_key = match al_id {
-            Some(id) => format!("al:{id}"),
-            None => {
-                let tkey = format!("t:{}", crate::matching::normalize_title(&title));
-                if let Some(al_id) = tkey_to_anilist.get(&tkey).copied() {
-                    format!("al:{al_id}")
-                } else {
-                    tkey
-                }
-            }
-        };
-
-        let mut out = Vec::new();
+        let mut out = std::collections::HashMap::with_capacity(rows.len());
         for r in rows {
             let key = match r.anilist_id {
                 Some(id) => format!("al:{id}"),
@@ -431,10 +425,23 @@ impl Db {
                     }
                 }
             };
-            if key == target_key {
-                out.push(r.id);
-            }
+            out.insert(r.id, key);
         }
+        Ok(out)
+    }
+
+    /// Returns the series IDs for every row in the same canonical group as `series_id`.
+    pub fn canonical_series_ids(&self, series_id: i64) -> Result<Vec<i64>> {
+        let keys = self.canonical_group_keys()?;
+        let target_key = match keys.get(&series_id) {
+            Some(k) => k.clone(),
+            None => return Ok(vec![]),
+        };
+        let mut out: Vec<i64> = keys
+            .into_iter()
+            .filter_map(|(id, k)| if k == target_key { Some(id) } else { None })
+            .collect();
+        out.sort_unstable();
         Ok(out)
     }
 

@@ -490,8 +490,11 @@ async fn run_library_import(app: AppHandle) -> Result<crate::models::LibraryImpo
                 let db = state.db.lock().unwrap();
                 db.set_followed_canonical(target_id, true).map_err(|e| e.to_string())?;
                 db.set_backlog_status(target_id, None).map_err(|e| e.to_string())?;
-                if entry.seen_watermark > 0 {
-                    db.set_seen_cascade(target_id, &entry.seen_watermark.to_string(), true)
+                if entry.seen_watermark > 0.0 {
+                    let now = chrono::Utc::now().timestamp();
+                    let align = db.row_align(target_id, now).map_err(|e| e.to_string())?;
+                    let row_number = crate::db::episode_align::format_ep_number(align.to_row(entry.seen_watermark));
+                    db.set_seen_cascade(target_id, &row_number, true)
                         .map_err(|e| e.to_string())?;
                 }
                 linked += 1;

@@ -1357,6 +1357,110 @@ impl Db {
         })
     }
 
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct DeduplicatedSeenEpisode {
+    pub title: String,
+    pub seen_at: String,
+    pub local_day: String,
+    pub local_hour: i64,
+    pub local_year: i32,
+}
+
+impl Db {
+    /// Returns seen episodes deduplicated across twin site rows of the same show.
+    ///
+    /// For each canonical episode of a canonical show group (bridged by `canonical_group_keys`
+    /// and canonicalized by `RowAlign::to_canonical`), keeps only the earliest mark
+    /// (minimum `seen_at`). Each entry carries the timestamp converted to local calendar
+    /// day, hour (0-23), and year.
+    pub(crate) fn deduplicated_seen_episodes(&self) -> Result<Vec<DeduplicatedSeenEpisode>> {
+        let group_keys = self.canonical_group_keys()?;
+        let now = chrono::Utc::now().timestamp();
+
+        let mut stmt = self.conn.prepare(
+            "SELECT e.series_id, s.title, e.number, e.seen_at,
+                    DATE(e.seen_at, 'localtime') AS local_day,
+                    CAST(strftime('%H', e.seen_at, 'localtime') AS INTEGER) AS local_hour,
+                    CAST(strftime('%Y', DATE(e.seen_at, 'localtime')) AS INTEGER) AS local_year
+             FROM episodes e
+             JOIN series s ON s.id = e.series_id
+             WHERE e.seen = 1 AND e.seen_at IS NOT NULL
+             ORDER BY e.seen_at ASC, e.id ASC",
+        )?;
+
+        struct RawSeen {
+            series_id: i64,
+            title: String,
+            number: String,
+            seen_at: String,
+            local_day: String,
+            local_hour: i64,
+            local_year: i32,
+        }
+
+        let raw_rows = stmt
+            .query_map([], |r| {
+                Ok(RawSeen {
+                    series_id: r.get(0)?,
+                    title: r.get(1)?,
+                    number: r.get(2)?,
+                    seen_at: r.get(3)?,
+                    local_day: r.get(4)?,
+                    local_hour: r.get(5)?,
+                    local_year: r.get(6)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        let mut aligns: HashMap<i64, super::episode_align::RowAlign> = HashMap::new();
+        for r in &raw_rows {
+            if let std::collections::hash_map::Entry::Vacant(slot) = aligns.entry(r.series_id) {
+                slot.insert(self.row_align(r.series_id, now)?);
+            }
+        }
+
+        let mut deduped: HashMap<(String, String), DeduplicatedSeenEpisode> = HashMap::new();
+        for r in raw_rows {
+            let group = group_keys
+                .get(&r.series_id)
+                .cloned()
+                .unwrap_or_else(|| format!("s:{}", r.series_id));
+            let align = aligns.get(&r.series_id).copied().unwrap_or(super::episode_align::RowAlign {
+                offset: 0,
+                cumulative: false,
+            });
+
+            let canon_ep = match crate::db::episodes::parse_ep_number(&r.number) {
+                Some(n) => match align.to_canonical(n) {
+                    Some(c) => crate::db::episode_align::format_ep_number(c),
+                    None => crate::db::episode_align::format_ep_number(n),
+                },
+                None => r.number.clone(),
+            };
+
+            let item = DeduplicatedSeenEpisode {
+                title: r.title,
+                seen_at: r.seen_at,
+                local_day: r.local_day,
+                local_hour: r.local_hour,
+                local_year: r.local_year,
+            };
+
+            deduped
+                .entry((group, canon_ep))
+                .and_modify(|existing| {
+                    if item.seen_at < existing.seen_at {
+                        *existing = item.clone();
+                    }
+                })
+                .or_insert(item);
+        }
+
+        Ok(deduped.into_values().collect())
+    }
+
     /// Local-only watch metrics for the Estadísticas "Resumen" block — see
     /// `docs/superpowers/specs/2026-07-13-stats-new-metrics-design.md`. Pure
     /// SQL against the local DB; never touches the network. Time uses
@@ -1462,26 +1566,27 @@ impl Db {
         // then land in no bucket at all, since the spine only spans
         // `today-29..=today`: the chart's own total silently disagreed with a
         // raw count of the rows it claimed to be counting.
-        let mut stmt = self.conn.prepare(
-            "SELECT DATE(e.seen_at, 'localtime') AS d, COUNT(*) AS cnt
-             FROM episodes e
-             WHERE e.seen = 1
-               AND e.seen_at IS NOT NULL
-               AND DATE(e.seen_at, 'localtime') >= DATE('now', 'localtime', '-29 days')
-               AND DATE(e.seen_at, 'localtime') <= DATE('now', 'localtime')
-             GROUP BY d
-             ORDER BY d",
-        )?;
-        let counted_days: HashMap<String, i64> = stmt
-            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
-            .collect::<rusqlite::Result<HashMap<_, _>>>()?;
+        let deduped = self.deduplicated_seen_episodes()?;
+        let today = chrono::Local::now().date_naive();
+        let min_day = today
+            .checked_sub_days(chrono::Days::new(29))
+            .unwrap()
+            .format("%Y-%m-%d")
+            .to_string();
+        let max_day = today.format("%Y-%m-%d").to_string();
+
+        let mut counted_days: HashMap<String, i64> = HashMap::new();
+        for ep in &deduped {
+            if ep.local_day >= min_day && ep.local_day <= max_day {
+                *counted_days.entry(ep.local_day.clone()).or_insert(0) += 1;
+            }
+        }
 
         // Zero-filled 30-day spine. SQL only emits days that have marks, and a
         // consumer plotting that array directly draws inactive days as if they
         // never existed, silently compressing the timeline. Handing back an
         // explicit `count: 0` for every quiet day makes the shape honest and
         // means no caller has to reconstruct the calendar.
-        let today = chrono::Local::now().date_naive();
         let marks_by_day: Vec<crate::models::DayCount> = (0..30)
             .rev()
             .filter_map(|offset| today.checked_sub_days(chrono::Days::new(offset)))
@@ -1789,55 +1894,44 @@ impl Db {
     /// than erroring. Filters on `seen=1 AND seen_at IS NOT NULL`, the same
     /// pair every other watch-history query in this file uses.
     pub fn get_binge_record(&self) -> Result<crate::models::BingeRecord> {
-        let mut stmt = self.conn.prepare(
-            "SELECT DATE(e.seen_at, 'localtime') AS d, COUNT(*) AS cnt
-             FROM episodes e
-             WHERE e.seen = 1
-               AND e.seen_at IS NOT NULL
-             GROUP BY d
-             ORDER BY cnt DESC, d DESC
-             LIMIT 1",
-        )?;
-        let row: Option<(String, i64)> = stmt
-            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
-            .next()
-            .transpose()?;
-        match row {
-            Some((day, count)) => {
-                let mut stmt2 = self.conn.prepare(
-                    "SELECT s.title, COUNT(*) as c
-                     FROM episodes e
-                     JOIN series s ON s.id = e.series_id
-                     WHERE e.seen = 1
-                       AND e.seen_at IS NOT NULL
-                       AND DATE(e.seen_at, 'localtime') = ?1
-                     GROUP BY s.id"
-                )?;
-                let episode_rows: Vec<(String, i64)> = stmt2.query_map([&day], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
-
-                let mut groups: HashMap<String, i64> = HashMap::new();
-                for (title, eps) in episode_rows {
-                    let label = franchise_display_title(&title);
-                    *groups.entry(label).or_insert(0) += eps;
-                }
-
-                let mut top_list: Vec<(String, i64)> = groups.into_iter().collect();
-                top_list.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-                top_list.truncate(3);
-                let top_series: Vec<String> = top_list.into_iter().map(|(t, _)| t).collect();
-
-                Ok(crate::models::BingeRecord {
-                    day: Some(day),
-                    count,
-                    top_series,
-                })
-            },
-            None => Ok(crate::models::BingeRecord {
+        let deduped = self.deduplicated_seen_episodes()?;
+        if deduped.is_empty() {
+            return Ok(crate::models::BingeRecord {
                 day: None,
                 count: 0,
                 top_series: Vec::new(),
-            }),
+            });
         }
+
+        let mut day_counts: HashMap<String, i64> = HashMap::new();
+        for ep in &deduped {
+            *day_counts.entry(ep.local_day.clone()).or_insert(0) += 1;
+        }
+
+        // Find day with max count. Tie-breaker: most recent day (cnt DESC, d DESC).
+        let mut sorted_days: Vec<(String, i64)> = day_counts.into_iter().collect();
+        sorted_days.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| b.0.cmp(&a.0)));
+
+        let (top_day, count) = sorted_days.into_iter().next().unwrap();
+
+        let mut groups: HashMap<String, i64> = HashMap::new();
+        for ep in &deduped {
+            if ep.local_day == top_day {
+                let label = franchise_display_title(&ep.title);
+                *groups.entry(label).or_insert(0) += 1;
+            }
+        }
+
+        let mut top_list: Vec<(String, i64)> = groups.into_iter().collect();
+        top_list.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        top_list.truncate(3);
+        let top_series: Vec<String> = top_list.into_iter().map(|(t, _)| t).collect();
+
+        Ok(crate::models::BingeRecord {
+            day: Some(top_day),
+            count,
+            top_series,
+        })
     }
 
     /// 24-hour distribution of when the user marks episodes as seen — one entry
@@ -1848,18 +1942,11 @@ impl Db {
     /// evening is exactly when this app is used, so the misattribution is the
     /// common case, not an edge one.
     pub fn get_hourly_distribution(&self) -> Result<Vec<crate::models::HourCount>> {
-        // Count seen episodes per local hour (0-23).
-        let mut stmt = self.conn.prepare(
-            "SELECT CAST(strftime('%H', e.seen_at, 'localtime') AS INTEGER) AS h, COUNT(*) AS cnt
-             FROM episodes e
-             WHERE e.seen_at IS NOT NULL
-               AND e.seen = 1
-             GROUP BY h
-             ORDER BY h",
-        )?;
-        let counted_hours: HashMap<i64, i64> = stmt
-            .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?
-            .collect::<rusqlite::Result<HashMap<_, _>>>()?;
+        let deduped = self.deduplicated_seen_episodes()?;
+        let mut counted_hours: HashMap<i64, i64> = HashMap::new();
+        for ep in &deduped {
+            *counted_hours.entry(ep.local_hour).or_insert(0) += 1;
+        }
 
         // Zero-fill all 24 hours — the frontend must get exactly 24 entries,
         // hour 0 through 23, with count 0 for hours with no activity.
@@ -2242,19 +2329,13 @@ impl Db {
         let is_leap = chrono::NaiveDate::from_ymd_opt(year, 2, 29).is_some();
         let days_in_year = if is_leap { 366 } else { 365 };
 
-        // Count seen episodes per day within the given year (local time).
-        let mut stmt = self.conn.prepare(
-            "SELECT DATE(e.seen_at, 'localtime') AS d, COUNT(*) AS cnt
-             FROM episodes e
-             WHERE e.seen = 1
-               AND e.seen_at IS NOT NULL
-               AND CAST(strftime('%Y', DATE(e.seen_at, 'localtime')) AS INTEGER) = ?1
-             GROUP BY d
-             ORDER BY d",
-        )?;
-        let counted_days: HashMap<String, i64> = stmt
-            .query_map([year], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
-            .collect::<rusqlite::Result<HashMap<_, _>>>()?;
+        let deduped = self.deduplicated_seen_episodes()?;
+        let mut counted_days: HashMap<String, i64> = HashMap::new();
+        for ep in &deduped {
+            if ep.local_year == year {
+                *counted_days.entry(ep.local_day.clone()).or_insert(0) += 1;
+            }
+        }
 
         // Zero-filled spine for the entire year.
         let start_date = chrono::NaiveDate::from_ymd_opt(year, 1, 1).unwrap();
@@ -5231,5 +5312,90 @@ mod tests {
         let _insights = db.get_watch_insights().unwrap();
         let took = started.elapsed();
         assert!(took < std::time::Duration::from_millis(3000), "get_watch_insights took {took:?} (limit 3000ms)");
+    }
+
+    #[test]
+    fn twin_site_rows_deduplicate_seen_activity_across_all_four_metrics() {
+        let db = Db::open(":memory:").unwrap();
+        let src_a = db.upsert_source("AnimeYT", "https://animeyt.cc", "animeytx").unwrap();
+        let src_b = db.upsert_source("TioAnime", "https://tioanime.com", "tioanime").unwrap();
+
+        let mk = |slug: &str, title: &str| crate::models::Series {
+            id: 0,
+            slug: slug.into(),
+            title: title.into(),
+            url: format!("https://site/{slug}"),
+            cover_url: None,
+            is_airing: true,
+            followed: true,
+            next_episode_at: None,
+            site_episode_count: None,
+        };
+
+        // Two site rows for the same show (same title)
+        let row_a = db.upsert_series(src_a, &mk("frieren-a", "Sousou no Frieren")).unwrap();
+        let row_b = db.upsert_series(src_b, &mk("frieren-b", "Sousou no Frieren")).unwrap();
+
+        let now = chrono::Local::now();
+        let current_year = now.year();
+        let current_day = now.date_naive().format("%Y-%m-%d").to_string();
+
+        // Episode 1 present and seen on both sites, with slightly different timestamps within today
+        let (ep_a1, _) = db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: row_a, number: "1".into(), title: None,
+            url: "https://a/1".into(), released_at: None, seen: true,
+            download_path: None, download_status: None,
+        }).unwrap();
+        let (ep_b1, _) = db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: row_b, number: "1".into(), title: None,
+            url: "https://b/1".into(), released_at: None, seen: true,
+            download_path: None, download_status: None,
+        }).unwrap();
+
+        db.conn.execute("UPDATE episodes SET seen_at = datetime('now') WHERE id = ?1", [ep_a1]).unwrap();
+        db.conn.execute("UPDATE episodes SET seen_at = datetime('now', '+1 minute') WHERE id = ?1", [ep_b1]).unwrap();
+
+        // 1. marks_by_day in get_watch_insights: episode 1 on two sites counts ONCE
+        let insights = db.get_watch_insights().unwrap();
+        let today_count = insights.marks_by_day.iter().find(|d| d.day == current_day).map(|d| d.count).unwrap_or(0);
+        assert_eq!(today_count, 1, "marks_by_day counts episode 1 only once despite twin site rows");
+
+        // 2. get_binge_record: count is 1
+        let binge = db.get_binge_record().unwrap();
+        assert_eq!(binge.day.as_deref(), Some(current_day.as_str()));
+        assert_eq!(binge.count, 1, "get_binge_record counts episode 1 only once");
+
+        // 3. get_hourly_distribution: total count is 1
+        let hourly = db.get_hourly_distribution().unwrap();
+        let total_hour_marks: i64 = hourly.iter().map(|h| h.count).sum();
+        assert_eq!(total_hour_marks, 1, "get_hourly_distribution counts episode 1 only once");
+
+        // 4. get_yearly_activity: total count is 1
+        let yearly = db.get_yearly_activity(current_year).unwrap();
+        let total_year_marks: i64 = yearly.days.iter().map(|d| d.count).sum();
+        assert_eq!(total_year_marks, 1, "get_yearly_activity counts episode 1 only once");
+
+        // Now add episode 2 on Site A: two different episodes still count twice
+        let (ep_a2, _) = db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: row_a, number: "2".into(), title: None,
+            url: "https://a/2".into(), released_at: None, seen: true,
+            download_path: None, download_status: None,
+        }).unwrap();
+        db.conn.execute("UPDATE episodes SET seen_at = datetime('now') WHERE id = ?1", [ep_a2]).unwrap();
+
+        let insights2 = db.get_watch_insights().unwrap();
+        let today_count2 = insights2.marks_by_day.iter().find(|d| d.day == current_day).map(|d| d.count).unwrap_or(0);
+        assert_eq!(today_count2, 2, "marks_by_day counts 2 different episodes as 2");
+
+        let binge2 = db.get_binge_record().unwrap();
+        assert_eq!(binge2.count, 2, "get_binge_record counts 2 different episodes as 2");
+
+        let hourly2 = db.get_hourly_distribution().unwrap();
+        let total_hour_marks2: i64 = hourly2.iter().map(|h| h.count).sum();
+        assert_eq!(total_hour_marks2, 2, "get_hourly_distribution counts 2 different episodes as 2");
+
+        let yearly2 = db.get_yearly_activity(current_year).unwrap();
+        let total_year_marks2: i64 = yearly2.days.iter().map(|d| d.count).sum();
+        assert_eq!(total_year_marks2, 2, "get_yearly_activity counts 2 different episodes as 2");
     }
 }

@@ -18,6 +18,9 @@ pub const FORMAT_VERSION: u32 = 1;
 /// Maximum allowable decompressed snapshot payload size (256 MB) to prevent gzip bombs.
 pub const MAX_DECOMPRESSED_BYTES: u64 = 256 * 1024 * 1024;
 
+/// Maximum allowable items in a single snapshot payload to prevent allocation overflow.
+pub const MAX_SNAPSHOT_ITEMS: usize = 1_000_000;
+
 /// Metadata header stored as the first line of every snapshot payload.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SnapshotHeader {
@@ -103,7 +106,14 @@ fn decode_with_limit(
         );
     }
 
-    let mut items = Vec::with_capacity(header.count);
+    if header.count > MAX_SNAPSHOT_ITEMS {
+        anyhow::bail!(
+            "snapshot header count {} exceeds maximum allowed limit of {MAX_SNAPSHOT_ITEMS}",
+            header.count
+        );
+    }
+
+    let mut items = Vec::with_capacity(header.count.min(65_536));
     let mut line_num = 1;
 
     loop {
@@ -387,5 +397,20 @@ mod tests {
             });
             assert!(res.is_ok(), "decode must not panic on malformed input");
         }
+    }
+
+    #[test]
+    fn test_decode_rejects_excessive_header_count_without_panicking() {
+        let json_line = format!(
+            r#"{{"format":{},"generated_at":1700000000,"count":18446744073709551615}}"#,
+            FORMAT_VERSION
+        );
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(json_line.as_bytes()).unwrap();
+        encoder.write_all(b"\n").unwrap();
+        let bytes = encoder.finish().unwrap();
+
+        let err = decode(&bytes).unwrap_err();
+        assert!(!err.to_string().is_empty());
     }
 }
