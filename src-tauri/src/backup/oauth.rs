@@ -214,7 +214,13 @@ pub async fn run_loopback_and_get_code<F: Fn(&str)>(
     let expected_state = random_state();
     open_browser(&build_auth_url(client_id, &redirect_uri, challenge, &expected_state));
 
-    let (mut stream, _) = listener.accept().await.map_err(|e| format!("accept: {e}"))?;
+    let (mut stream, _) = match tokio::time::timeout(SIGNIN_TIMEOUT, listener.accept()).await {
+        Ok(res) => res.map_err(|e| format!("accept: {e}"))?,
+        Err(_) => {
+            drop(listener);
+            return Err(SIGNIN_TIMEOUT_MSG.into());
+        }
+    };
     let mut buf = [0u8; 2048];
     let n = stream.read(&mut buf).await.map_err(|e| format!("read: {e}"))?;
     let request = String::from_utf8_lossy(&buf[..n]);
@@ -235,6 +241,19 @@ pub async fn run_loopback_and_get_code<F: Fn(&str)>(
     }
 }
 
+pub const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+pub const TOKEN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+pub const SIGNIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+pub const SIGNIN_TIMEOUT_MSG: &str = "timed out waiting for the Google sign-in";
+
+fn client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .timeout(TOKEN_TIMEOUT)
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
 pub async fn exchange_code(
     client_id: &str,
     client_secret: &str,
@@ -250,7 +269,7 @@ pub async fn exchange_code(
         ("grant_type", "authorization_code"),
         ("redirect_uri", redirect_uri),
     ];
-    let resp = reqwest::Client::new()
+    let resp = client()
         .post(TOKEN_ENDPOINT)
         .form(&body)
         .send()
@@ -272,7 +291,7 @@ pub async fn refresh_access_token(
         ("refresh_token", refresh_token),
         ("grant_type", "refresh_token"),
     ];
-    let resp = reqwest::Client::new()
+    let resp = client()
         .post(TOKEN_ENDPOINT)
         .form(&body)
         .send()
@@ -286,6 +305,15 @@ pub async fn refresh_access_token(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn signin_timeouts_and_message_are_configured() {
+        assert_eq!(SIGNIN_TIMEOUT_MSG, "timed out waiting for the Google sign-in");
+        assert_eq!(SIGNIN_TIMEOUT.as_secs(), 300);
+        assert_eq!(TOKEN_TIMEOUT.as_secs(), 60);
+        assert_eq!(CONNECT_TIMEOUT.as_secs(), 15);
+    }
+
 
     #[test]
     fn pkce_challenge_is_s256_of_verifier() {
