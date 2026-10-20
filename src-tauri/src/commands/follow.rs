@@ -107,26 +107,62 @@ pub async fn promote_discarded(
 ) -> Result<(), String> {
     let site_id = get_active_site_id(&state);
     let a = get_active_adapter(&state)?;
-    let (needs_detail, series_url, mirrors) = {
+    let (needs_detail, series_url, mirrors, info) = {
         let db = state.db.lock().unwrap();
+        let info = db
+            .get_series_for_link(series_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "series not found".to_string())?;
         let needs_detail = db.series_needs_genre_backfill(series_id).map_err(|e| e.to_string())?;
         let url = db
             .get_series_url(series_id)
             .map_err(|e| e.to_string())?
             .ok_or_else(|| "series not found".to_string())?;
-        (needs_detail, url, load_mirrors(&db, &site_id)?)
+        (needs_detail, url, load_mirrors(&db, &site_id)?, info)
     };
-    if needs_detail {
-        let detail = fetch_series_detail(&app, &mirrors, &series_url, a.as_ref()).await?;
-        let db = state.db.lock().unwrap();
+    let detail = if needs_detail {
+        Some(fetch_series_detail(&app, &mirrors, &series_url, a.as_ref()).await?)
+    } else {
+        None
+    };
+    let db = state.db.lock().unwrap();
+    if !apply_promote_discarded_writes(
+        &db,
+        series_id,
+        info.anilist_id,
+        &info.slug,
+        detail.as_ref(),
+    )? {
+        eprintln!(
+            "[promote_discarded] series {} identity changed after fetch, skipping write",
+            series_id
+        );
+        return Ok(());
+    }
+    Ok(())
+}
+
+fn apply_promote_discarded_writes(
+    db: &Db,
+    series_id: i64,
+    expected_anilist_id: Option<i64>,
+    expected_slug: &str,
+    detail: Option<&SeriesDetail>,
+) -> Result<bool, String> {
+    if !db
+        .series_still_is(series_id, expected_anilist_id, expected_slug)
+        .map_err(|e| e.to_string())?
+    {
+        return Ok(false);
+    }
+    if let Some(detail) = detail {
         db.insert_series_genres(series_id, &detail.genres).map_err(|e| e.to_string())?;
         if let Some(kind) = &detail.kind {
             db.set_kind(series_id, kind).map_err(|e| e.to_string())?;
         }
     }
-    let db = state.db.lock().unwrap();
     db.set_backlog_status(series_id, Some("want")).map_err(|e| e.to_string())?;
-    Ok(())
+    Ok(true)
 }
 
 /// Promote a `backlog_status='want'` row to an ordinary followed series.
@@ -825,6 +861,8 @@ async fn link_series_core(
             apply_link_writes(
                 &db,
                 series_id,
+                info.anilist_id,
+                &info.slug,
                 &new_slug,
                 &matched.url,
                 matched.poster_url.as_deref(),
@@ -848,7 +886,7 @@ async fn link_series_core(
 }
 
 /// The DB-write half of a successful (non-merge) link, guarded on the target
-/// `series` row still existing.
+/// `series` row still having its expected identity.
 ///
 /// **The guard is the point.** `link_series_core` scrapes before it writes,
 /// and that scrape takes seconds; a `Seen` swipe fires it in the background
@@ -861,10 +899,15 @@ async fn link_series_core(
 /// episode totals, the 30-day heatmap and the binge record with a show the
 /// user explicitly un-decided.
 ///
-/// Returns `false` when the row is gone — a silent no-op is the correct
-/// answer, not an error: the decision this link belonged to was already
-/// reversed, so there is nothing left to link. Callers must hold the `db`
-/// mutex across this call (as `link_series_core` does): `undo_swipe_decision`
+/// Also guards against SQLite rowid reuse: if row X was deleted and another
+/// card swiped before this scrape returns, SQLite can reuse rowid X for the
+/// new series; verifying `expected_anilist_id` / `expected_slug` guarantees
+/// we never overwrite the new anime's metadata and episodes.
+///
+/// Returns `false` when the row is gone or its identity changed — a silent
+/// no-op is the correct answer, not an error: the decision this link belonged
+/// to was already reversed, so there is nothing left to link. Callers must hold
+/// the `db` mutex across this call (as `link_series_core` does): `undo_swipe_decision`
 /// takes the same mutex, which is what makes check-then-write atomic against
 /// it. It can't be one SQL transaction because `apply_episode_diff` opens its
 /// own and SQLite rejects nesting.
@@ -872,6 +915,8 @@ async fn link_series_core(
 fn apply_link_writes(
     db: &Db,
     series_id: i64,
+    expected_anilist_id: Option<i64>,
+    expected_slug: &str,
     slug: &str,
     url: &str,
     cover_url: Option<&str>,
@@ -880,7 +925,10 @@ fn apply_link_writes(
     episodes: &[Episode],
     watched_externally: bool,
 ) -> Result<bool, String> {
-    if !db.series_exists(series_id).map_err(|e| e.to_string())? {
+    if !db
+        .series_still_is(series_id, expected_anilist_id, expected_slug)
+        .map_err(|e| e.to_string())?
+    {
         return Ok(false);
     }
     let existing_kind: String = db
@@ -1042,7 +1090,7 @@ mod tests {
         let sid = insert_test_series(&db, src, "anilist-77");
 
         let written = apply_link_writes(
-            &db, sid, "real-slug", "https://site.example/real-slug", None, Some("TV"),
+            &db, sid, None, "anilist-77", "real-slug", "https://site.example/real-slug", None, Some("TV"),
             Some(&["Action".to_string()]), &[ep("1"), ep("2")], false,
         )
         .unwrap();
@@ -1070,7 +1118,7 @@ mod tests {
         assert!(!db.series_exists(sid).unwrap());
 
         let written = apply_link_writes(
-            &db, sid, "real-slug", "https://site.example/real-slug", None, Some("TV"),
+            &db, sid, None, "anilist-88", "real-slug", "https://site.example/real-slug", None, Some("TV"),
             Some(&["Action".to_string()]), &[ep("1"), ep("2"), ep("3")], true,
         )
         .unwrap();
@@ -1111,7 +1159,7 @@ mod tests {
         db.insert_series_genres(sid, &["Action".to_string(), "Adventure".to_string()]).unwrap();
 
         let written = apply_link_writes(
-            &db, sid, "real-slug", "https://site.example/real-slug", None, None,
+            &db, sid, Some(77), "anilist-77", "real-slug", "https://site.example/real-slug", None, None,
             None, &[ep("1"), ep("2")], false,
         )
         .unwrap();
@@ -1121,6 +1169,100 @@ mod tests {
         assert_eq!(genres, vec!["Action".to_string(), "Adventure".to_string()]);
         let kind: String = db.conn.query_row("SELECT kind FROM series WHERE id=?1", [sid], |r| r.get(0)).unwrap();
         assert_eq!(kind, "TV");
+    }
+
+    /// Regression: rowid reuse after delete must not allow a stale link scrape
+    /// to overwrite the new row that inherited the same id.
+    #[test]
+    fn apply_link_writes_is_silent_no_op_when_rowid_was_reused_by_different_series() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let sid_a = insert_test_series(&db, src, "anilist-1");
+        db.set_anilist_id(sid_a, 1).unwrap();
+
+        // sid_a was deleted (e.g. user undid swipe while scrape was in flight).
+        db.delete_series(sid_a).unwrap();
+
+        // Next swipe inserts a different series; SQLite reuses sid_a's rowid.
+        let sid_b = insert_test_series(&db, src, "anilist-2");
+        db.set_anilist_id(sid_b, 2).unwrap();
+        assert_eq!(sid_b, sid_a, "SQLite must reuse the rowid of the deleted row");
+
+        // Stale scrape for series 1 finishes and tries to write to sid_a.
+        let written = apply_link_writes(
+            &db,
+            sid_a,
+            Some(1),
+            "anilist-1",
+            "scraped-show-1",
+            "https://site.example/scraped-show-1",
+            None,
+            Some("TV"),
+            Some(&["Action".to_string()]),
+            &[ep("1"), ep("2")],
+            false,
+        )
+        .unwrap();
+
+        assert!(!written, "stale link scrape must report that it wrote nothing");
+        // Verify sid_b (the new series) was NOT touched:
+        let episodes = db.list_series_episodes(sid_b).unwrap();
+        assert_eq!(episodes.len(), 0, "episodes must not be written to reused rowid");
+        let (slug, anilist_id): (String, Option<i64>) = db
+            .conn
+            .query_row("SELECT slug, anilist_id FROM series WHERE id=?1", [sid_b], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(slug, "anilist-2", "slug must not be overwritten by stale scrape");
+        assert_eq!(anilist_id, Some(2), "anilist_id must remain that of the new series");
+    }
+
+    #[test]
+    fn apply_promote_discarded_writes_updates_matching_row() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let sid = insert_test_series(&db, src, "show-a");
+        db.set_backlog_status(sid, Some("discarded")).unwrap();
+
+        let detail = SeriesDetail {
+            genres: vec!["Sci-Fi".into()],
+            kind: Some("TV".into()),
+            synopsis: None,
+        };
+        let written = apply_promote_discarded_writes(&db, sid, None, "show-a", Some(&detail)).unwrap();
+        assert!(written);
+        assert_eq!(db.get_backlog_status(sid).unwrap().as_deref(), Some("want"));
+        let genres = db.list_series_genres(sid).unwrap();
+        assert_eq!(genres, vec!["Sci-Fi"]);
+        let kind: String = db.conn.query_row("SELECT kind FROM series WHERE id=?1", [sid], |r| r.get(0)).unwrap();
+        assert_eq!(kind, "TV");
+    }
+
+    #[test]
+    fn apply_promote_discarded_writes_skips_when_rowid_reused() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let sid_a = insert_test_series(&db, src, "show-a");
+        db.set_backlog_status(sid_a, Some("discarded")).unwrap();
+
+        db.delete_series(sid_a).unwrap();
+
+        let sid_b = insert_test_series(&db, src, "show-b");
+        db.set_backlog_status(sid_b, Some("discarded")).unwrap();
+        assert_eq!(sid_b, sid_a);
+
+        let detail = SeriesDetail {
+            genres: vec!["Sci-Fi".into()],
+            kind: Some("TV".into()),
+            synopsis: None,
+        };
+        // Stale scrape for show-a finishes:
+        let written = apply_promote_discarded_writes(&db, sid_a, None, "show-a", Some(&detail)).unwrap();
+        assert!(!written);
+        // show-b remains discarded and has no genres:
+        assert_eq!(db.get_backlog_status(sid_b).unwrap().as_deref(), Some("discarded"));
+        assert!(db.list_series_genres(sid_b).unwrap().is_empty());
     }
 
     fn scanned(title: &str) -> Series {

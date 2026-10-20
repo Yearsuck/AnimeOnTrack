@@ -28,6 +28,27 @@ fn episode_id_of(p: &Path) -> Option<i64> {
     p.file_stem()?.to_str()?.parse().ok()
 }
 
+/// Strips Windows verbatim/extended-length prefixes (`\\?\` or `\\?\UNC\`) from a path.
+/// Returns a normalized `PathBuf`.
+/// On non-Windows platforms, this is a no-op that returns `p.to_path_buf()`.
+pub fn strip_verbatim(p: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let s = p.to_string_lossy();
+        if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+            return PathBuf::from(format!(r"\\{}", rest));
+        }
+        if let Some(rest) = s.strip_prefix(r"\\?\") {
+            return PathBuf::from(rest);
+        }
+        p.to_path_buf()
+    }
+    #[cfg(not(windows))]
+    {
+        p.to_path_buf()
+    }
+}
+
 /// Everything that protects a file from being treated as an orphan: the
 /// canonical paths of finished downloads, and the ids of episodes whose
 /// download is running or being finalized (covers the moment between the `.part`
@@ -41,7 +62,11 @@ pub struct Tracked {
 impl Tracked {
     fn covers(&self, p: &Path) -> bool {
         let canon = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
-        self.paths.contains(&canon) || episode_id_of(p).is_some_and(|id| self.active_ids.contains(&id))
+        let stripped = strip_verbatim(&canon);
+        self.paths.contains(&canon)
+            || self.paths.contains(&stripped)
+            || self.paths.iter().any(|tracked| strip_verbatim(tracked) == stripped)
+            || episode_id_of(p).is_some_and(|id| self.active_ids.contains(&id))
     }
 }
 
@@ -284,10 +309,15 @@ pub fn rotate_log_if_exceeds(log_path: &Path, max_bytes: u64) -> std::io::Result
 /// an episode finishing between the two reads is seen by at least one of them.
 fn tracked_downloads(state: &State<'_, AppState>) -> Result<Tracked, String> {
     let active_ids = crate::commands::download::active_episode_ids();
-    let paths = {
+    let raw_paths = {
         let db = state.db.lock().unwrap();
         db.downloaded_episode_canonical_paths().map_err(|e| e.to_string())?
     };
+    let mut paths = HashSet::with_capacity(raw_paths.len() * 2);
+    for p in raw_paths {
+        paths.insert(strip_verbatim(&p));
+        paths.insert(p);
+    }
     Ok(Tracked { paths, active_ids })
 }
 
@@ -394,6 +424,52 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn tracked_covers_normalizes_verbatim_prefix() {
+        #[cfg(windows)]
+        {
+            let mut tracked = Tracked::default();
+            tracked.paths.insert(PathBuf::from(r"\\?\C:\x\1.mp4"));
+            assert!(
+                tracked.covers(Path::new(r"C:\x\1.mp4")),
+                "verbatim tracked path must cover plain path"
+            );
+
+            let mut tracked2 = Tracked::default();
+            tracked2.paths.insert(PathBuf::from(r"C:\x\1.mp4"));
+            assert!(
+                tracked2.covers(Path::new(r"\\?\C:\x\1.mp4")),
+                "plain tracked path must cover verbatim path"
+            );
+        }
+    }
+
+    #[test]
+    fn strip_verbatim_normalizes_prefixes() {
+        #[cfg(windows)]
+        {
+            assert_eq!(
+                strip_verbatim(Path::new(r"\\?\C:\x\1.mp4")),
+                PathBuf::from(r"C:\x\1.mp4")
+            );
+            assert_eq!(
+                strip_verbatim(Path::new(r"\\?\UNC\server\share\file.mp4")),
+                PathBuf::from(r"\\server\share\file.mp4")
+            );
+            assert_eq!(
+                strip_verbatim(Path::new(r"C:\x\1.mp4")),
+                PathBuf::from(r"C:\x\1.mp4")
+            );
+        }
+        #[cfg(not(windows))]
+        {
+            assert_eq!(
+                strip_verbatim(Path::new("/x/1.mp4")),
+                PathBuf::from("/x/1.mp4")
+            );
+        }
     }
 
     #[test]

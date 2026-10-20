@@ -283,12 +283,17 @@ export function SwipeView() {
               format: activeCard.kind,
               decision,
             });
+      const outcome = decidePromise.then(
+        (seriesId) => ({ ok: true as const, seriesId }),
+        (err) => ({ ok: false as const, err })
+      );
       setTimeout(() => {
         setOutDirection(null);
         popNext(); // instant — already prefetched, no round-trip to wait on
         busyRef.current = false;
-        decidePromise
-          .then((seriesId) => {
+        outcome.then((res) => {
+          if (res.ok) {
+            const seriesId = res.seriesId;
             setCanUndo(true);
             // Linking is a real scrape (seconds) — it must not block the swipe,
             // so it's fired here without awaiting it, queued through
@@ -305,8 +310,8 @@ export function SwipeView() {
               enqueueLink(seriesId, activeCard.title);
             }
             refreshHistory();
-          })
-          .catch((err) => {
+          } else {
+            const err = res.err;
             console.error("decideCatalogCard failed for", activeCard.url, err);
             decidedUrlsRef.current.delete(activeCard.url);
             if (lastDecidedUrlRef.current === activeCard.url) {
@@ -319,7 +324,8 @@ export function SwipeView() {
             setUndoneMessage(t("errors.generic", { detail: String(err) }));
             if (undoneMessageTimerRef.current) clearTimeout(undoneMessageTimerRef.current);
             undoneMessageTimerRef.current = setTimeout(() => setUndoneMessage(null), 5000);
-          });
+          }
+        });
       }, 160);
     },
     [card, popNext, enqueueLink, refreshHistory, t]
