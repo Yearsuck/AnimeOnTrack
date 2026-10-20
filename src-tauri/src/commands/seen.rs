@@ -235,12 +235,14 @@ pub(crate) fn cleanup_downloads(
                                 }
                             }
                         }
-                        Err(e) => {
-                            eprintln!("[download] failed to delete {path}: {e}");
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                             cleaned.push(*id);
                         }
+                        Err(e) => {
+                            eprintln!("[download] failed to delete {path}: {e}");
+                        }
                     }
-                } else {
+                } else if !p.exists() {
                     cleaned.push(*id);
                 }
             }

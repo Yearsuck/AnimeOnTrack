@@ -1039,9 +1039,9 @@ impl Db {
         Ok(total)
     }
 
-    /// Delete ALL downloaded episode files from disk and clear their DB
-    /// columns. Returns how many files were cleaned up.
-    pub fn clear_all_downloads(&self) -> Result<usize> {
+    /// Delete ALL downloaded episode files from disk within `downloads_dir` and
+    /// clear their DB columns. Returns how many files were cleaned up.
+    pub fn clear_all_downloads(&self, downloads_dir: &std::path::Path) -> Result<usize> {
         let mut stmt = self
             .conn
             .prepare("SELECT id, download_path FROM episodes WHERE download_path IS NOT NULL")?;
@@ -1049,13 +1049,47 @@ impl Db {
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let mut cleaned = 0;
+        let mut failed = 0;
         for (id, path) in &rows {
-            let _ = std::fs::remove_file(path);
-            self.conn.execute(
-                "UPDATE episodes SET download_path = NULL, download_status = NULL WHERE id=?1",
-                [id],
-            )?;
-            cleaned += 1;
+            let p = std::path::Path::new(path);
+            let can_delete = crate::commands::is_safe_file_in_dir(downloads_dir, p);
+            if can_delete {
+                match std::fs::remove_file(p) {
+                    Ok(()) => {
+                        self.conn.execute(
+                            "UPDATE episodes SET download_path = NULL, download_status = NULL WHERE id=?1",
+                            [id],
+                        )?;
+                        cleaned += 1;
+                        if let Some(parent) = p.parent() {
+                            crate::commands::remove_empty_dir_in_dir(downloads_dir, parent);
+                        }
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        self.conn.execute(
+                            "UPDATE episodes SET download_path = NULL, download_status = NULL WHERE id=?1",
+                            [id],
+                        )?;
+                        cleaned += 1;
+                    }
+                    Err(e) => {
+                        eprintln!("[download] clear_all_downloads: failed to remove {path}: {e}");
+                        failed += 1;
+                    }
+                }
+            } else if !p.exists() {
+                self.conn.execute(
+                    "UPDATE episodes SET download_path = NULL, download_status = NULL WHERE id=?1",
+                    [id],
+                )?;
+                cleaned += 1;
+            } else {
+                eprintln!("[download] clear_all_downloads: skipping file outside downloads_dir: {path}");
+                failed += 1;
+            }
+        }
+        if failed > 0 {
+            eprintln!("[download] clear_all_downloads: {failed} files could not be cleaned up");
         }
         Ok(cleaned)
     }
@@ -1069,18 +1103,6 @@ impl Db {
             .query_map([series_id], |r| r.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(paths)
-    }
-
-    /// Episode ids whose download is in flight or finished. Their files are
-    /// never orphans, even before the row's `download_path` is written.
-    pub fn download_tracked_episode_ids(&self) -> Result<std::collections::HashSet<i64>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id FROM episodes WHERE download_status IN ('downloading', 'downloaded')",
-        )?;
-        let ids = stmt
-            .query_map([], |r| r.get::<_, i64>(0))?
-            .collect::<rusqlite::Result<std::collections::HashSet<_>>>()?;
-        Ok(ids)
     }
 
     /// Returns canonicalized `PathBuf`s for all episodes with `download_status = 'downloaded'`.
@@ -2750,5 +2772,47 @@ mod tests {
         let canon_set = db.downloaded_episode_canonical_paths().unwrap();
         assert_eq!(canon_set.len(), 1);
         assert!(canon_set.contains(std::path::Path::new(path1)));
+    }
+    #[test]
+    fn clear_all_downloads_only_removes_files_inside_downloads_dir() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let sid = db.upsert_series(src, &mk_airing("a", "A", None)).unwrap();
+
+        let (ep_inside, _) = db.insert_episode(&crate::models::Episode { id: 0, series_id: sid, number: "1".into(), title: None, url: "u1".into(), released_at: None, seen: false, download_path: None, download_status: None }).unwrap();
+        let (ep_outside, _) = db.insert_episode(&crate::models::Episode { id: 0, series_id: sid, number: "2".into(), title: None, url: "u2".into(), released_at: None, seen: false, download_path: None, download_status: None }).unwrap();
+
+        let temp_root = std::env::temp_dir().join(format!("aot_clear_all_test_{}_{}", std::process::id(), sid));
+        let downloads_dir = temp_root.join("downloads");
+        let outside_dir = temp_root.join("outside");
+        std::fs::create_dir_all(&downloads_dir).unwrap();
+        std::fs::create_dir_all(&outside_dir).unwrap();
+
+        let inside_file = downloads_dir.join(format!("{}.mp4", ep_inside));
+        let outside_file = outside_dir.join(format!("{}.mp4", ep_outside));
+        std::fs::write(&inside_file, b"inside video bytes").unwrap();
+        std::fs::write(&outside_file, b"outside video bytes").unwrap();
+
+        db.set_download_status(ep_inside, "downloaded", Some(inside_file.to_str().unwrap())).unwrap();
+        db.set_download_status(ep_outside, "downloaded", Some(outside_file.to_str().unwrap())).unwrap();
+
+        // Run clear_all_downloads
+        let cleaned = db.clear_all_downloads(&downloads_dir).unwrap();
+        assert_eq!(cleaned, 1);
+
+        // Inside file is deleted and its DB row cleared
+        assert!(!inside_file.exists());
+        let ep_in = db.get_episode(ep_inside).unwrap();
+        assert_eq!(ep_in.download_path, None);
+        assert_eq!(ep_in.download_status, None);
+
+        // Outside file is NOT deleted and its DB row is left untouched
+        assert!(outside_file.exists());
+        let ep_out = db.get_episode(ep_outside).unwrap();
+        assert_eq!(ep_out.download_path.as_deref(), Some(outside_file.to_str().unwrap()));
+        assert_eq!(ep_out.download_status.as_deref(), Some("downloaded"));
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&temp_root);
     }
 }
