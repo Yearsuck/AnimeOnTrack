@@ -77,6 +77,10 @@ if (!EMPTY && !existsSync(sandboxDb)) {
 // Passed as a file, not inline JSON: `spawn(..., { shell: true })` does not quote arguments, so
 // cmd/npm.cmd on Windows would strip the double quotes of an inline JSON string.
 mkdirSync(sandboxDir, { recursive: true });
+// The app copies the pre-0.5.5 database over when the data dir has none (`migrate_legacy_app_data`),
+// which would turn a first-run simulation into a populated one. An existing zero-byte file is a valid
+// empty SQLite database and makes that migration skip.
+if (EMPTY && !existsSync(sandboxDb)) writeFileSync(sandboxDb, '');
 const configPath = join(sandboxDir, 'tauri-sandbox-config.json');
 // Only the identifier is overridden: `$APPDATA` in the asset-protocol scope of tauri.conf.json already
 // resolves to <Roaming>/<identifier>, so the sandbox's covers dir is covered by the very same scope.
