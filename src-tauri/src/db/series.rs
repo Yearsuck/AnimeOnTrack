@@ -1273,6 +1273,41 @@ impl Db {
             .is_some())
     }
 
+    /// Whether a `series` row with this id still exists AND still identifies
+    /// the same anime it did when an async link/scrape operation started.
+    ///
+    /// Exists because SQLite's `INTEGER PRIMARY KEY` without `AUTOINCREMENT`
+    /// reuses rowids from recently deleted rows. When a swipe decision
+    /// creates a stub row X and kicks off a background link scrape, the user
+    /// can undo the swipe (deleting row X) and swipe a completely different
+    /// card (which gets rowid X again!). When the first scrape finishes, a bare
+    /// `series_exists(X)` would pass and overwrite the new anime's metadata and
+    /// episodes with the old anime's scrape.
+    ///
+    /// Callers must check this under the `db` lock right before writing.
+    /// Identity check:
+    /// - If `anilist_id` was `Some(aid)`, the row at `series_id` must have `anilist_id == Some(aid)`.
+    /// - If `anilist_id` was `None`, the row at `series_id` must have `slug == expected_slug` (it may have been linked to AniList in the meantime).
+    pub fn series_still_is(&self, series_id: i64, anilist_id: Option<i64>, slug: &str) -> Result<bool> {
+        let row: Option<(Option<i64>, String)> = self
+            .conn
+            .query_row(
+                "SELECT anilist_id, slug FROM series WHERE id=?1",
+                [series_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let Some((row_anilist_id, row_slug)) = row else {
+            return Ok(false);
+        };
+        match anilist_id {
+            Some(expected_aid) => Ok(row_anilist_id == Some(expected_aid)),
+            // (source_id, slug) is unique, so the slug alone identifies the row; the row may
+            // legitimately have gained an anilist_id since (catalog linking) without being replaced.
+            None => Ok(row_slug == slug),
+        }
+    }
+
     /// Hard-delete a series and everything referencing it (episodes,
     /// genres). No `ON DELETE CASCADE` is declared on the schema, so this
     /// deletes children first. Safe to call on any series — used both by
@@ -2326,6 +2361,83 @@ mod tests {
         db.delete_series(sid).unwrap();
         assert!(!db.series_exists(sid).unwrap());
         assert!(!db.series_exists(sid + 9_999).unwrap());
+    }
+
+    #[test]
+    fn series_still_is_detects_rowid_reuse_after_delete_and_reinsert() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+
+        // 1. AniList-linked stub: id reused, anilist_id differs.
+        let sid_a = db
+            .upsert_series(
+                src,
+                &crate::models::Series {
+                    id: 0, slug: "anilist-1".into(), title: "A".into(), url: "https://anilist.co/anime/1".into(),
+                    cover_url: None, is_airing: false, followed: false,
+                    next_episode_at: None, site_episode_count: None,
+                },
+            )
+            .unwrap();
+        db.set_anilist_id(sid_a, 1).unwrap();
+        assert!(db.series_still_is(sid_a, Some(1), "anilist-1").unwrap());
+
+        // Row deleted (e.g. undo swipe).
+        db.delete_series(sid_a).unwrap();
+        assert!(!db.series_still_is(sid_a, Some(1), "anilist-1").unwrap());
+
+        // New row inserted (e.g. next swipe): reuses sid_a rowid.
+        let sid_b = db
+            .upsert_series(
+                src,
+                &crate::models::Series {
+                    id: 0, slug: "anilist-2".into(), title: "B".into(), url: "https://anilist.co/anime/2".into(),
+                    cover_url: None, is_airing: false, followed: false,
+                    next_episode_at: None, site_episode_count: None,
+                },
+            )
+            .unwrap();
+        db.set_anilist_id(sid_b, 2).unwrap();
+        assert_eq!(sid_b, sid_a, "SQLite must reuse the rowid of the recently deleted row");
+        // Stale scrape for A must NOT see row B as the same series!
+        assert!(!db.series_still_is(sid_b, Some(1), "anilist-1").unwrap());
+        assert!(db.series_still_is(sid_b, Some(2), "anilist-2").unwrap());
+
+        // 2. NULL-anilist rows: id reused, slug compared.
+        db.delete_series(sid_b).unwrap();
+        let sid_c = db
+            .upsert_series(
+                src,
+                &crate::models::Series {
+                    id: 0, slug: "show-c".into(), title: "C".into(), url: "https://site/show-c".into(),
+                    cover_url: None, is_airing: false, followed: false,
+                    next_episode_at: None, site_episode_count: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(sid_c, sid_a, "SQLite must reuse the rowid");
+        assert!(db.series_still_is(sid_c, None, "show-c").unwrap());
+        assert!(!db.series_still_is(sid_c, None, "show-d").unwrap());
+        assert!(!db.series_still_is(sid_c, Some(2), "show-c").unwrap());
+        // Linked to AniList while the scrape ran: still the same row.
+        db.set_anilist_id(sid_c, 7).unwrap();
+        assert!(db.series_still_is(sid_c, None, "show-c").unwrap());
+        assert!(!db.series_still_is(sid_c, None, "show-d").unwrap());
+
+        db.delete_series(sid_c).unwrap();
+        let sid_d = db
+            .upsert_series(
+                src,
+                &crate::models::Series {
+                    id: 0, slug: "show-d".into(), title: "D".into(), url: "https://site/show-d".into(),
+                    cover_url: None, is_airing: false, followed: false,
+                    next_episode_at: None, site_episode_count: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(sid_d, sid_a);
+        assert!(!db.series_still_is(sid_a, None, "show-c").unwrap());
+        assert!(db.series_still_is(sid_a, None, "show-d").unwrap());
     }
 
     #[test]
