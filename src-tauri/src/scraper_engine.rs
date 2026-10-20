@@ -224,8 +224,20 @@ where
 /// of those (DNS rebinding) is not caught here — that needs an actual DNS
 /// lookup, which this cheap pre-navigation check doesn't perform.
 fn is_safe_ipv4(ip: &std::net::Ipv4Addr) -> bool {
+    let octets = ip.octets();
+    // 100.64.0.0/10 is Carrier-Grade NAT (RFC 6598) shared address space.
+    let is_cgnat = octets[0] == 100 && (octets[1] & 0xc0) == 0x40;
     // 0.0.0.0/8 ("this network") reaches the local host on common stacks, not just 0.0.0.0.
-    !(ip.octets()[0] == 0 || ip.is_loopback() || ip.is_private() || ip.is_link_local() || ip.is_unspecified())
+    !(octets[0] == 0 || ip.is_loopback() || ip.is_private() || ip.is_link_local() || ip.is_unspecified() || is_cgnat)
+}
+
+fn ipv4_from_segments(hi: u16, lo: u16) -> std::net::Ipv4Addr {
+    std::net::Ipv4Addr::new(
+        (hi >> 8) as u8,
+        (hi & 0xff) as u8,
+        (lo >> 8) as u8,
+        (lo & 0xff) as u8,
+    )
 }
 
 pub fn is_safe_external_url(raw: &str) -> bool {
@@ -241,6 +253,17 @@ pub fn is_safe_external_url(raw: &str) -> bool {
                 return false;
             }
             if let Some(v4) = ip.to_ipv4_mapped().or_else(|| ip.to_ipv4()) {
+                return is_safe_ipv4(&v4);
+            }
+            let segs = ip.segments();
+            // NAT64 well-known prefix: 64:ff9b::/96 (RFC 6052), embeds IPv4 in the last two segments.
+            if segs[0..6] == [0x64, 0xff9b, 0, 0, 0, 0] {
+                let v4 = ipv4_from_segments(segs[6], segs[7]);
+                return is_safe_ipv4(&v4);
+            }
+            // 6to4 prefix: 2002::/16 (RFC 3056), embeds IPv4 in segments 1 and 2.
+            if segs[0] == 0x2002 {
+                let v4 = ipv4_from_segments(segs[1], segs[2]);
                 return is_safe_ipv4(&v4);
             }
             true
@@ -520,24 +543,29 @@ len: document.body ? document.body.innerHTML.length : -1})";
 /// right after a batch of concurrent scraper windows had just closed — a
 /// WebView2-runtime hiccup under rapid window churn is the leading suspect,
 /// but this guards the symptom (one series' cover stalling the whole refresh
-/// cycle forever) regardless of the exact cause. A timeout leaks the
-/// in-flight hidden window (there is no handle left to call `.close()` on
-/// once the future driving it is dropped) — an acceptable trade against
-/// hanging the caller forever, and rare in practice.
+/// cycle forever) regardless of the exact cause. On timeout the hidden window
+/// is closed by label to prevent leaks.
 pub async fn fetch_cover_image(app: &AppHandle, image_url: &str) -> Result<String> {
     const OUTER_TIMEOUT: Duration = Duration::from_secs(30);
-    match tokio::time::timeout(OUTER_TIMEOUT, fetch_cover_image_inner(app, image_url)).await {
+    let label = format!("cover-{}", uuid_like());
+    match tokio::time::timeout(OUTER_TIMEOUT, fetch_cover_image_inner(app, &label, image_url)).await {
         Ok(result) => result,
-        Err(_) => Err(anyhow!("cover fetch timed out (window build or ready-poll stalled)")),
+        Err(_) => {
+            if let Some(w) = app.get_webview_window(&label) {
+                w.close().ok();
+                note_window_activity(&format!("cover window closed after timeout: {label}"));
+            }
+            Err(anyhow!("cover fetch timed out (window build or ready-poll stalled)"))
+        }
     }
 }
 
-async fn fetch_cover_image_inner(app: &AppHandle, image_url: &str) -> Result<String> {
+async fn fetch_cover_image_inner(app: &AppHandle, label: &str, image_url: &str) -> Result<String> {
     if !is_safe_external_url(image_url) {
         return Err(anyhow!("refusing to navigate to unsafe cover url: {image_url}"));
     }
     let _permit = SCRAPE_PERMITS.acquire().await?;
-    let label = format!("cover-{}", uuid_like());
+    let label_for_build = label.to_string();
     let parsed_url: url::Url = image_url.parse().map_err(|_| anyhow!("bad image url: {image_url}"))?;
 
     // Record the target host (not the full image URL) before moving
@@ -557,7 +585,7 @@ async fn fetch_cover_image_inner(app: &AppHandle, image_url: &str) -> Result<Str
     let build_result = build_webview_window_with_timeout(
         app,
         move || {
-            WebviewWindowBuilder::new(&app_for_build, &label, WebviewUrl::External(parsed_url))
+            WebviewWindowBuilder::new(&app_for_build, &label_for_build, WebviewUrl::External(parsed_url))
                 .title("AnimeOnTrack cover")
                 .inner_size(300.0, 450.0)
                 .visible(false)
@@ -752,6 +780,26 @@ mod tests {
     fn rejects_unique_local_and_link_local_ipv6() {
         assert!(!is_safe_external_url("http://[fc00::1]/"));
         assert!(!is_safe_external_url("http://[fe80::1]/"));
+    }
+
+    #[test]
+    fn rejects_nat64_and_6to4_internal_embeds() {
+        // NAT64 (64:ff9b::/96)
+        assert!(!is_safe_external_url("http://[64:ff9b::7f00:1]/")); // 127.0.0.1
+        assert!(!is_safe_external_url("http://[64:ff9b::a00:1]/")); // 10.0.0.1
+        assert!(is_safe_external_url("http://[64:ff9b::808:808]/")); // 8.8.8.8
+
+        // 6to4 (2002::/16)
+        assert!(!is_safe_external_url("http://[2002:7f00:1::]/")); // 127.0.0.1
+        assert!(is_safe_external_url("http://[2002:808:808::]/")); // 8.8.8.8
+    }
+
+    #[test]
+    fn rejects_cgnat_ipv4_range() {
+        assert!(!is_safe_external_url("http://100.64.0.1/"));
+        assert!(!is_safe_external_url("http://100.127.255.254/"));
+        assert!(is_safe_external_url("http://100.63.255.255/"));
+        assert!(is_safe_external_url("http://100.128.0.1/"));
     }
 
     #[test]
