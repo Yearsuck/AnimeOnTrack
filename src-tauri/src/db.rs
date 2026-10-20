@@ -569,9 +569,38 @@ impl Db {
         if duplicate_groups > 0 {
             eprintln!("[db] collapsing {duplicate_groups} duplicated episode number group(s)");
             self.conn.execute_batch(
-                "UPDATE episodes SET seen = 1, seen_at = COALESCE(seen_at, datetime('now'))
+                "UPDATE episodes SET seen = 1,
+                   seen_at = COALESCE(
+                     seen_at,
+                     (SELECT MIN(d.seen_at) FROM episodes d
+                      WHERE d.series_id = episodes.series_id AND d.number = episodes.number
+                        AND d.seen = 1 AND d.seen_at IS NOT NULL),
+                     datetime('now')
+                   )
                    WHERE id IN (
                      SELECT MIN(id) FROM episodes GROUP BY series_id, number HAVING MAX(seen) = 1
+                   );
+                 UPDATE episodes SET
+                   download_path = (
+                     SELECT d.download_path FROM episodes d
+                     WHERE d.series_id = episodes.series_id AND d.number = episodes.number
+                       AND (d.download_path IS NOT NULL OR d.download_status IS NOT NULL)
+                     ORDER BY (d.download_path IS NOT NULL) DESC, d.id ASC LIMIT 1
+                   ),
+                   download_status = (
+                     SELECT d.download_status FROM episodes d
+                     WHERE d.series_id = episodes.series_id AND d.number = episodes.number
+                       AND (d.download_path IS NOT NULL OR d.download_status IS NOT NULL)
+                     ORDER BY (d.download_path IS NOT NULL) DESC, d.id ASC LIMIT 1
+                   )
+                   WHERE id IN (
+                     SELECT MIN(id) FROM episodes GROUP BY series_id, number
+                   )
+                   AND download_path IS NULL
+                   AND EXISTS (
+                     SELECT 1 FROM episodes d
+                     WHERE d.series_id = episodes.series_id AND d.number = episodes.number
+                       AND (d.download_path IS NOT NULL OR d.download_status IS NOT NULL)
                    );
                  DELETE FROM episodes WHERE id NOT IN (
                    SELECT MIN(id) FROM episodes GROUP BY series_id, number
@@ -798,6 +827,103 @@ https://other.example")
             .unwrap();
         // One row per episode; episode 1 stays seen, episode 2 stays unseen.
         assert_eq!(rows, vec![("1".to_string(), 1), ("2".to_string(), 0)]);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn duplicate_episodes_migration_preserves_seen_at_and_downloads_when_survivor_unseen() {
+        let path = std::env::temp_dir()
+            .join(format!("aot_ep_dedup_preserve_test_{}.sqlite", std::process::id()));
+        let path_str = path.to_str().unwrap();
+        let _ = std::fs::remove_file(&path);
+        let sid;
+        {
+            let db = Db::open(path_str).unwrap();
+            let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+            sid = db.upsert_series(src, &mk_airing("x", "X", None)).unwrap();
+
+            // Survivor (lowest id): unseen, no seen_at, no download info
+            db.insert_episode(&crate::models::Episode {
+                id: 0,
+                series_id: sid,
+                number: "1".into(),
+                title: None,
+                url: "https://old.example/x-1/".into(),
+                released_at: None,
+                seen: false,
+                download_path: None,
+                download_status: None,
+            }).unwrap();
+
+            // Duplicate copy (higher id): seen with real timestamp and downloaded video
+            let (ep2_id, _) = db.insert_episode(&crate::models::Episode {
+                id: 0,
+                series_id: sid,
+                number: "1".into(),
+                title: None,
+                url: "https://new.example/x-1/".into(),
+                released_at: None,
+                seen: true,
+                download_path: Some("C:/downloads/x-1.mp4".into()),
+                download_status: Some("downloaded".into()),
+            }).unwrap();
+
+            db.conn
+                .execute(
+                    "UPDATE episodes SET seen_at = '2026-01-03 10:00:00' WHERE id = ?1",
+                    [ep2_id],
+                )
+                .unwrap();
+            // insert_episode does not write the download columns.
+            db.set_download_status(ep2_id, "downloaded", Some("C:/downloads/x-1.mp4")).unwrap();
+        }
+
+        // Re-open: dedup migration runs
+        let db = Db::open(path_str).unwrap();
+        let mut stmt = db
+            .conn
+            .prepare("SELECT number, seen, seen_at, download_path, download_status FROM episodes WHERE series_id=?1")
+            .unwrap();
+        struct EpCheck {
+            number: String,
+            seen: i64,
+            seen_at: Option<String>,
+            download_path: Option<String>,
+            download_status: Option<String>,
+        }
+        let rows: Vec<EpCheck> = stmt
+            .query_map([sid], |r| {
+                Ok(EpCheck {
+                    number: r.get(0)?,
+                    seen: r.get(1)?,
+                    seen_at: r.get(2)?,
+                    download_path: r.get(3)?,
+                    download_status: r.get(4)?,
+                })
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+
+        assert_eq!(rows.len(), 1, "exactly one collapsed row remains");
+        assert_eq!(rows[0].number, "1");
+        assert_eq!(rows[0].seen, 1, "survivor kept seen progress");
+        assert_eq!(
+            rows[0].seen_at.as_deref(),
+            Some("2026-01-03 10:00:00"),
+            "survivor inherited the real seen_at timestamp from the seen duplicate"
+        );
+        assert_eq!(
+            rows[0].download_path.as_deref(),
+            Some("C:/downloads/x-1.mp4"),
+            "survivor preserved the download path"
+        );
+        assert_eq!(
+            rows[0].download_status.as_deref(),
+            Some("downloaded"),
+            "survivor preserved the download status"
+        );
+
         let _ = std::fs::remove_file(&path);
     }
 
