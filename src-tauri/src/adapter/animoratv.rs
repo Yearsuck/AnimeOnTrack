@@ -212,18 +212,14 @@ impl SiteAdapter for AnimoratvAdapter {
 
     fn parse_airing(&self, html: &str) -> Result<Vec<Series>> {
         let payload = extract_json_payload(html);
-        let parsed: serde_json::Value = match serde_json::from_str(&payload) {
-            Ok(v) => v,
-            Err(_) => return Ok(Vec::new()),
-        };
+        let parsed: serde_json::Value = serde_json::from_str(&payload)
+            .map_err(|e| anyhow!("animoratv: invalid JSON in airing response: {e}"))?;
 
-        let Some(animes) = parsed
+        let animes = parsed
             .get("data")
             .and_then(|d| d.get("animes"))
             .and_then(|a| a.as_array())
-        else {
-            return Ok(Vec::new());
-        };
+            .ok_or_else(|| anyhow!("animoratv: missing data.animes array in airing response"))?;
 
         let mut out = Vec::new();
         for anime in animes {
@@ -513,6 +509,18 @@ impl SiteAdapter for AnimoratvAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn parse_airing_rejects_unrecognizable_and_accepts_empty_data() {
+        let a = AnimoratvAdapter;
+        assert!(a.parse_airing("").is_err());
+        assert!(a.parse_airing("<html><body>error</body></html>").is_err());
+        assert!(a.parse_airing("{}").is_err());
+        assert!(a.parse_airing(r#"{"data":{}}"#).is_err());
+
+        let empty = a.parse_airing(r#"{"data":{"animes":[]}}"#).unwrap();
+        assert!(empty.is_empty(), "valid empty animes array must parse to Ok(vec![])");
+    }
+
 
     #[test]
     fn search_url_encodes_query() {

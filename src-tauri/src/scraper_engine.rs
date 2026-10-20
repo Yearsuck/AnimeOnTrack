@@ -2,7 +2,7 @@ use anyhow::{anyhow, Result};
 use std::collections::VecDeque;
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
 /// Process-wide cap on concurrent scraper windows, shared by every caller
 /// (refresh()'s own chunking, discover_swipe_card, decide_swipe, etc). Each
@@ -223,6 +223,11 @@ where
 /// hostname `localhost` is rejected. A hostname that only *resolves* to one
 /// of those (DNS rebinding) is not caught here — that needs an actual DNS
 /// lookup, which this cheap pre-navigation check doesn't perform.
+fn is_safe_ipv4(ip: &std::net::Ipv4Addr) -> bool {
+    // 0.0.0.0/8 ("this network") reaches the local host on common stacks, not just 0.0.0.0.
+    !(ip.octets()[0] == 0 || ip.is_loopback() || ip.is_private() || ip.is_link_local() || ip.is_unspecified())
+}
+
 pub fn is_safe_external_url(raw: &str) -> bool {
     let Ok(u) = url::Url::parse(raw) else { return false };
     if u.scheme() != "http" && u.scheme() != "https" {
@@ -230,13 +235,29 @@ pub fn is_safe_external_url(raw: &str) -> bool {
     }
     match u.host() {
         Some(url::Host::Domain(d)) => !d.eq_ignore_ascii_case("localhost"),
-        Some(url::Host::Ipv4(ip)) => {
-            !(ip.is_loopback() || ip.is_private() || ip.is_link_local() || ip.is_unspecified())
-        }
+        Some(url::Host::Ipv4(ip)) => is_safe_ipv4(&ip),
         Some(url::Host::Ipv6(ip)) => {
-            !(ip.is_loopback() || ip.is_unspecified() || is_unique_local_v6(&ip) || is_link_local_v6(&ip))
+            if ip.is_loopback() || ip.is_unspecified() || is_unique_local_v6(&ip) || is_link_local_v6(&ip) {
+                return false;
+            }
+            if let Some(v4) = ip.to_ipv4_mapped().or_else(|| ip.to_ipv4()) {
+                return is_safe_ipv4(&v4);
+            }
+            true
         }
         None => false,
+    }
+}
+
+/// Helper for WebView navigation guard: allows safe external HTTP/HTTPS URLs,
+/// as well as standard browser pseudo-schemes (about:blank, data:, blob:)
+/// needed for internal operations like Cloudflare handling or canvas reading.
+pub fn navigation_allowed(raw: &str) -> bool {
+    let Ok(u) = url::Url::parse(raw) else { return false };
+    match u.scheme() {
+        "http" | "https" => is_safe_external_url(raw),
+        "about" | "data" | "blob" => true,
+        _ => false,
     }
 }
 
@@ -272,14 +293,22 @@ pub async fn fetch_html_with_script(
     // jkanime fetch can take, so this only fires when something is
     // genuinely stuck rather than just slow.
     const OUTER_TIMEOUT: Duration = Duration::from_secs(150);
-    match tokio::time::timeout(OUTER_TIMEOUT, fetch_html_with_script_inner(app, url, extra_script)).await {
+    let label = format!("scraper-{}", uuid_like());
+    match tokio::time::timeout(OUTER_TIMEOUT, fetch_html_with_script_inner(app, &label, url, extra_script)).await {
         Ok(result) => result,
-        Err(_) => Err(anyhow!("scrape timed out (window build stalled): {url}")),
+        Err(_) => {
+            if let Some(w) = app.get_webview_window(&label) {
+                w.close().ok();
+                note_window_activity(&format!("scraper window closed after timeout: {label}"));
+            }
+            Err(anyhow!("scrape timed out (window build stalled): {url}"))
+        }
     }
 }
 
 async fn fetch_html_with_script_inner(
     app: &AppHandle,
+    label: &str,
     url: &str,
     extra_script: Option<&str>,
 ) -> Result<ScrapeResult> {
@@ -293,7 +322,7 @@ async fn fetch_html_with_script_inner(
     // that ever changed.
     let _permit = SCRAPE_PERMITS.acquire().await?;
     emit_stage(app, "opening");
-    let label = format!("scraper-{}", uuid_like());
+    let label_for_build = label.to_string();
     let parsed_url: url::Url = url.parse().map_err(|_| anyhow!("bad url: {url}"))?;
 
     // Record the target host (not the full URL — it can be very long) so
@@ -315,7 +344,7 @@ async fn fetch_html_with_script_inner(
     let build_result = build_webview_window_with_timeout(
         app,
         move || {
-            WebviewWindowBuilder::new(&app_for_build, &label, WebviewUrl::External(parsed_url))
+            WebviewWindowBuilder::new(&app_for_build, &label_for_build, WebviewUrl::External(parsed_url))
                 .title("AnimeOnTrack scraper")
                 .inner_size(1000.0, 800.0)
                 // Hidden: a visible popup stealing focus/screen space on every
@@ -328,6 +357,7 @@ async fn fetch_html_with_script_inner(
                 // to solve it in — that shows up as a 40s "did not become
                 // ready" error instead of a stuck window waiting on you.
                 .visible(false)
+                .on_navigation(|url| navigation_allowed(url.as_str()))
                 .build()
         },
         WINDOW_BUILD_TIMEOUT,
@@ -531,6 +561,7 @@ async fn fetch_cover_image_inner(app: &AppHandle, image_url: &str) -> Result<Str
                 .title("AnimeOnTrack cover")
                 .inner_size(300.0, 450.0)
                 .visible(false)
+                .on_navigation(|url| navigation_allowed(url.as_str()))
                 .build()
         },
         WINDOW_BUILD_TIMEOUT,
@@ -674,6 +705,31 @@ mod tests {
         assert!(!is_safe_external_url("file:///C:/Windows/System32/config"));
         assert!(!is_safe_external_url("data:text/html,<script>1</script>"));
         assert!(!is_safe_external_url("ftp://example.com/x"));
+    }
+
+    #[test]
+    fn rejects_ipv4_mapped_and_compatible_ipv6() {
+        assert!(!is_safe_external_url("http://[::ffff:127.0.0.1]/"));
+        assert!(!is_safe_external_url("http://[::ffff:169.254.169.254]/"));
+        assert!(!is_safe_external_url("http://[::ffff:10.0.0.1]/"));
+        assert!(!is_safe_external_url("http://[::127.0.0.1]/"));
+        assert!(!is_safe_external_url("http://0.1.2.3/"));
+        assert!(!is_safe_external_url("http://[::ffff:0.0.0.1]/"));
+        assert!(is_safe_external_url("http://[::ffff:8.8.8.8]/"));
+        assert!(is_safe_external_url("http://[2606:4700::1111]/"));
+    }
+
+    #[test]
+    fn navigation_allowed_guards_internal_and_allows_safe() {
+        assert!(!navigation_allowed("http://127.0.0.1/"));
+        assert!(!navigation_allowed("http://[::ffff:127.0.0.1]/"));
+        assert!(!navigation_allowed("file:///C:/Windows/System32"));
+        assert!(!navigation_allowed("javascript:alert(1)"));
+        assert!(!navigation_allowed("invalid-url"));
+        assert!(navigation_allowed("https://animeflv.net/browse"));
+        assert!(navigation_allowed("about:blank"));
+        assert!(navigation_allowed("data:image/jpeg;base64,1234"));
+        assert!(navigation_allowed("blob:https://example.com/blob-id"));
     }
 
     #[test]

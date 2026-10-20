@@ -93,18 +93,28 @@ const RESTORE_MARKER: &str = ".restore_pending";
 /// file's directory-mate: we snapshot next to it then read+delete.
 /// Holds the DB lock only for SQLite's `VACUUM INTO`, releasing it before
 /// reading the snapshot from disk.
+/// Drop guard that removes a temporary file when it goes out of scope,
+/// ensuring cleanup even on early error returns.
+pub struct TempFileGuard(pub std::path::PathBuf);
+
+impl Drop for TempFileGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 pub fn snapshot_bytes(db: &std::sync::Mutex<Db>, dir: &std::path::Path) -> Result<Vec<u8>, String> {
     // Unique per call: the lock no longer covers the read+delete below, so a
     // manual backup overlapping an automatic one must not share the file.
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let tmp = dir.join(format!("animeontrack.snapshot.{}.{seq}.sqlite", std::process::id()));
+    let _guard = TempFileGuard(tmp.clone());
     {
         let db = db.lock().unwrap();
         db.snapshot_to(tmp.to_str().ok_or("bad path")?).map_err(|e| format!("snapshot: {e}"))?;
     }
     let bytes = std::fs::read(&tmp).map_err(|e| format!("read snapshot: {e}"))?;
-    std::fs::remove_file(&tmp).ok();
     Ok(bytes)
 }
 
@@ -578,5 +588,18 @@ mod tests {
         assert!(!is_auto_backup_due(Some(0), 90_000, "same", "same"));
         // never backed up → due.
         assert!(is_auto_backup_due(None, 90_000, "x", "x"));
+    }
+
+    #[test]
+    fn temp_file_guard_removes_file_on_drop() {
+        let dir = temp_dir("guard_cleanup");
+        let file = dir.join("test_guard.tmp");
+        std::fs::write(&file, b"data").unwrap();
+        assert!(file.exists());
+        {
+            let _guard = TempFileGuard(file.clone());
+        }
+        assert!(!file.exists(), "temp file must be deleted when guard drops");
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
