@@ -43,24 +43,31 @@ pub fn canonical_genre(raw: &str) -> Option<&'static str> {
     let normalized = strip_accents(raw.trim()).to_lowercase();
     match normalized.as_str() {
         "accion" | "action" => Some("Action"),
-        "aventura" | "adventure" => Some("Adventure"),
+        "aventura" | "aventuras" | "adventure" => Some("Adventure"),
         "comedia" | "comedy" => Some("Comedy"),
         "drama" => Some("Drama"),
         "ecchi" => Some("Ecchi"),
         "fantasia" | "fantasy" => Some("Fantasy"),
         "hentai" => Some("Hentai"),
         "terror" | "horror" => Some("Horror"),
-        "mahou shoujo" => Some("Mahou Shoujo"),
-        "mecha" => Some("Mecha"),
-        "musica" | "music" => Some("Music"),
+        "mahou shoujo" | "chicas magicas" | "chica magica" | "magical girl" | "magical girls" => {
+            Some("Mahou Shoujo")
+        }
+        "mecha" | "robots" => Some("Mecha"),
+        "musica" | "musical" | "music" => Some("Music"),
         "misterio" | "mystery" => Some("Mystery"),
-        "psicologico" | "psychological" => Some("Psychological"),
-        "romance" => Some("Romance"),
-        "ciencia ficcion" | "sci-fi" | "scifi" => Some("Sci-Fi"),
-        "recuentos de la vida" | "slice of life" => Some("Slice of Life"),
-        "deportes" | "sports" => Some("Sports"),
-        "supernatural" => Some("Supernatural"),
-        "thriller" => Some("Thriller"),
+        "psicologico" | "psicologica" | "psychological" => Some("Psychological"),
+        "romance" | "romantico" | "romantica" => Some("Romance"),
+        "ciencia ficcion" | "ciencia-ficcion" | "sci-fi" | "sci fi" | "scifi" | "science fiction" => {
+            Some("Sci-Fi")
+        }
+        "recuentos de la vida" | "recuentos de vida" | "vida cotidiana" | "slice of life" => {
+            Some("Slice of Life")
+        }
+        "deportes" | "deporte" | "sports" => Some("Sports"),
+        "sobrenatural" | "supernatural" => Some("Supernatural"),
+        // MAL's "Suspense" (and the sites' Spanish "Suspenso") is AniList's Thriller.
+        "suspenso" | "suspense" | "thriller" => Some("Thriller"),
         _ => None,
     }
 }
@@ -99,6 +106,35 @@ mod tests {
             "Music", "Psychological", "Hentai", "Mahou Shoujo",
         ] {
             assert_eq!(canonical_genre(g), Some(g), "expected {g} to pass through unchanged");
+        }
+    }
+
+    #[test]
+    fn maps_the_other_spanish_and_mal_labels_the_sites_publish() {
+        // Labels seen in the adapters' fixtures (src-tauri/tests/fixtures/).
+        // Stats drop any site label that does not map, so a miss here makes
+        // an unlinked show lose a real genre.
+        for (raw, canon) in [
+            ("Sobrenatural", "Supernatural"),
+            ("Suspenso", "Thriller"),
+            ("Suspense", "Thriller"),
+            ("Deporte", "Sports"),
+            ("Chicas mágicas", "Mahou Shoujo"),
+            ("Chicas magicas", "Mahou Shoujo"),
+            ("Chica mágica", "Mahou Shoujo"),
+            ("Magical Girl", "Mahou Shoujo"),
+            ("Aventuras", "Adventure"),
+            ("Musical", "Music"),
+            ("Psicológica", "Psychological"),
+            ("Ciencia-ficción", "Sci-Fi"),
+            ("Sci Fi", "Sci-Fi"),
+            ("Science Fiction", "Sci-Fi"),
+            ("Recuentos de vida", "Slice of Life"),
+            ("Vida cotidiana", "Slice of Life"),
+            ("Romántico", "Romance"),
+            ("Robots", "Mecha"),
+        ] {
+            assert_eq!(canonical_genre(raw), Some(canon), "{raw}");
         }
     }
 

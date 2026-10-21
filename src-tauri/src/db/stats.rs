@@ -166,19 +166,77 @@ pub(crate) fn effective_kind(catalog_format: Option<&str>, site_kind: Option<&st
     site_kind.map(|k| normalize(k).unwrap_or_else(|| k.to_string()))
 }
 
-/// Genres of one series in AniList's vocabulary where a mapping exists
-/// (`genres::canonical_genre`: "Acción"/"Action" -> "Action"), so a linked
-/// series (AniList's English names) and an unlinked one (the site's Spanish
-/// names) land in the same stats bucket. Unmapped tags are kept as they are.
-fn canonical_genres(raw: Vec<String>) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    for g in raw {
-        let label = crate::genres::canonical_genre(&g).map(str::to_string).unwrap_or(g);
-        if !out.contains(&label) {
-            out.push(label);
-        }
+/// AniList tags below this rank are noise ("mentioned once"); same floor as
+/// the `series_effective_genres` view.
+const STATS_TAG_MIN_RANK: i64 = 50;
+
+/// Map one stats label onto AniList's genre vocabulary. AniList's own genres
+/// are kept even if `canonical_genre` doesn't know them (its list is closed
+/// but may grow); a scraped site label survives only when it maps onto a real
+/// genre ("Acción" -> "Action"), so site-only labels ("Shounen", "Isekai",
+/// "Escolar") never become stats "genres".
+fn stats_genre_label(raw: String, from_anilist: bool) -> Option<String> {
+    match crate::genres::canonical_genre(&raw) {
+        Some(canon) => Some(canon.to_string()),
+        None if from_anilist => Some(raw),
+        None => None,
     }
-    out
+}
+
+/// How many cover thumbnails a ranked genre/tag card carries.
+const CARD_COVERS: usize = 3;
+
+/// One show's contribution to a ranked card: display title, cover, weight.
+type CardShow = (String, Option<String>, i64);
+
+/// Turn per-label show lists into ranked cards (by watched episodes, then
+/// name), truncated to `limit`. Covers are picked so the biggest show does not
+/// open every card: walking the cards in rank order, a show that already
+/// *leads* (first cover of) a higher-ranked card is skipped in later cards, so
+/// each card shows the shows most characteristic of it rather than the same
+/// One Piece / Pokémon on every card. If every show of a card leads elsewhere
+/// the card falls back to its top show, so a card is never cover-less.
+fn rank_cards(
+    by_label: HashMap<String, Vec<CardShow>>,
+    corpus_episodes: i64,
+    limit: Option<usize>,
+) -> Vec<crate::models::GenreCard> {
+    let mut ranked: Vec<(String, i64, Vec<CardShow>)> = by_label
+        .into_iter()
+        .map(|(label, mut shows)| {
+            shows.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.cmp(&b.0)));
+            let count: i64 = shows.iter().map(|s| s.2).sum();
+            (label, count, shows)
+        })
+        .collect();
+    ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    if let Some(limit) = limit {
+        ranked.truncate(limit);
+    }
+    let mut leads: HashSet<String> = HashSet::new();
+    ranked
+        .into_iter()
+        .map(|(genre, count, shows)| {
+            let show_count = shows.len() as i64;
+            let mut picked: Vec<&CardShow> =
+                shows.iter().filter(|s| !leads.contains(&s.0)).take(CARD_COVERS).collect();
+            if picked.is_empty() {
+                picked.extend(shows.first());
+            }
+            if let Some(lead) = picked.first() {
+                leads.insert(lead.0.clone());
+            }
+            let top_series = picked
+                .into_iter()
+                .map(|(title, cover_url, _)| crate::models::GenreCardSeries {
+                    title: title.clone(),
+                    cover_url: cover_url.clone(),
+                })
+                .collect();
+            let share = if corpus_episodes > 0 { count as f64 / corpus_episodes as f64 } else { 0.0 };
+            crate::models::GenreCard { genre, count, show_count, share, top_series }
+        })
+        .collect()
 }
 
 /// Whether `candidate` is a better franchise label than `current`. Members of
@@ -552,7 +610,7 @@ impl Db {
         for g in &groups {
             let mut genres: HashSet<String> = HashSet::new();
             for &id in &g.member_ids {
-                genres.extend(canonical_genres(self.list_series_genres(id)?));
+                genres.extend(self.stats_genres(id)?);
             }
             for genre in genres {
                 *counts.entry(genre).or_insert(0) += 1;
@@ -574,6 +632,27 @@ impl Db {
     /// over its member rows: real marks (best single site), or the "Ya lo vi"
     /// catalog estimate when larger — never their sum.
     pub fn get_genre_cards(&self) -> Result<Vec<crate::models::GenreCard>> {
+        self.taste_cards(|db, id| db.stats_genres(id), None)
+    }
+
+    /// The tag counterpart of `get_genre_cards`: AniList tags with rank >= 50
+    /// ("Male Protagonist", "Time Skip"...) over the same taste corpus,
+    /// canonical grouping and episode weighting, top `limit` by episodes.
+    /// Kept apart from genres so the graph and genre cards stay readable.
+    /// Unlinked shows have no tags (the sites only publish genres).
+    pub fn get_tag_cards(&self, limit: usize) -> Result<Vec<crate::models::GenreCard>> {
+        self.taste_cards(|db, id| db.stats_tags(id), Some(limit))
+    }
+
+    /// Shared body of the genre and tag cards. Each canonical show is weighted
+    /// by `FranchiseRollup::episodes` from the shared `RollupBuilder` over its
+    /// member rows (real marks, or the "Ya lo vi" estimate when larger — never
+    /// their sum) and contributes once to each label any member carries.
+    fn taste_cards(
+        &self,
+        labels_of: impl Fn(&Self, i64) -> Result<Vec<String>>,
+        limit: Option<usize>,
+    ) -> Result<Vec<crate::models::GenreCard>> {
         let groups = self.group_taste_canonically()?;
         let watch_rows: HashMap<i64, SeriesWatchRow> = self
             .series_watch_rows("s.followed=1 OR s.watched_externally=1")?
@@ -581,56 +660,79 @@ impl Db {
             .map(|row| (row.id, row))
             .collect();
 
-        // Build a map: genre -> list of (title, cover_url, watched_episodes)
-        let mut genre_series: HashMap<String, Vec<(String, Option<String>, i64)>> = HashMap::new();
-
+        let mut by_label: HashMap<String, Vec<CardShow>> = HashMap::new();
+        let mut corpus_episodes: i64 = 0;
         for g in &groups {
-            let mut genres: HashSet<String> = HashSet::new();
+            let mut labels: HashSet<String> = HashSet::new();
             let mut rollup = RollupBuilder::new(g.display_title.clone());
             for &id in &g.member_ids {
-                genres.extend(canonical_genres(self.list_series_genres(id)?));
+                labels.extend(labels_of(self, id)?);
                 if let Some(row) = watch_rows.get(&id) {
                     rollup.add(row);
                 }
             }
             let watched_episodes = rollup.finish().episodes();
-
-            // Add this show to each of its genres
-            let title = g.display_title.clone();
-            let cover_url = g.cover_url.clone();
-            for genre in genres {
-                genre_series
-                    .entry(genre)
-                    .or_default()
-                    .push((title.clone(), cover_url.clone(), watched_episodes));
+            corpus_episodes += watched_episodes;
+            for label in labels {
+                by_label.entry(label).or_default().push((
+                    g.display_title.clone(),
+                    g.cover_url.clone(),
+                    watched_episodes,
+                ));
             }
         }
+        Ok(rank_cards(by_label, corpus_episodes, limit))
+    }
 
-        // Build GenreCard for each genre, taking top 4 by watched_episodes
-        let mut cards: Vec<crate::models::GenreCard> = genre_series
-            .into_iter()
-            .map(|(genre, mut series_list)| {
-                series_list.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.cmp(&b.0)));
-                // count = total episodes watched across every show in this
-                // genre, not the number of shows — the card displays it with
-                // an "N episodes" label.
-                let count: i64 = series_list.iter().map(|(_, _, ep)| ep).sum();
-                let top_series: Vec<crate::models::GenreCardSeries> = series_list
-                    .into_iter()
-                    .take(4)
-                    .map(|(title, cover_url, _)| crate::models::GenreCardSeries { title, cover_url })
-                    .collect();
-                crate::models::GenreCard {
-                    genre,
-                    count,
-                    top_series,
+    /// Real genres of one series row for the descriptive stats (graph, genre
+    /// cards, genre bars): AniList's genres when the row is linked to a
+    /// catalog entry that has any, otherwise its scraped site genres mapped
+    /// through `stats_genre_label` (unmapped site labels dropped). Same
+    /// precedence as the `series_effective_genres` view minus its AniList
+    /// tags, which stay in that view for Descubrir's affinity but read as a
+    /// hairball of 15+ "genres" per show here (see `stats_tags`).
+    fn stats_genres(&self, series_id: i64) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT cg.genre, 1
+             FROM series s
+             JOIN anilist_catalog_genres cg ON cg.anilist_id = s.anilist_id
+             WHERE s.id = ?1
+             UNION
+             SELECT sg.genre, 0
+             FROM series_genres sg
+             JOIN series s ON s.id = sg.series_id
+             WHERE sg.series_id = ?1
+               AND (s.anilist_id IS NULL
+                    OR NOT EXISTS (SELECT 1 FROM anilist_catalog_genres WHERE anilist_id = s.anilist_id))",
+        )?;
+        let rows = stmt
+            .query_map([series_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? == 1)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut out: Vec<String> = Vec::new();
+        for (raw, from_anilist) in rows {
+            if let Some(label) = stats_genre_label(raw, from_anilist) {
+                if !out.contains(&label) {
+                    out.push(label);
                 }
-            })
-            .collect();
+            }
+        }
+        out.sort();
+        Ok(out)
+    }
 
-        // Sort by count descending, then genre name
-        cards.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.genre.cmp(&b.genre)));
-        Ok(cards)
+    /// AniList tags (rank >= `STATS_TAG_MIN_RANK`) of one linked series row.
+    fn stats_tags(&self, series_id: i64) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT DISTINCT ct.tag
+             FROM series s
+             JOIN anilist_catalog_tags ct ON ct.anilist_id = s.anilist_id
+             WHERE s.id = ?1 AND ct.rank >= ?2
+             ORDER BY ct.tag",
+        )?;
+        let rows = stmt
+            .query_map((series_id, STATS_TAG_MIN_RANK), |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
     }
 
     /// Show count per `kind` ("TV"/"OVA"/...) over followed and "Ya lo vi"
@@ -963,7 +1065,7 @@ impl Db {
             .map(|g| {
                 let mut genres: HashSet<String> = HashSet::new();
                 for &id in &g.member_ids {
-                    genres.extend(canonical_genres(self.list_series_genres(id)?));
+                    genres.extend(self.stats_genres(id)?);
                 }
                 let mut genres: Vec<String> = genres.into_iter().collect();
                 genres.sort();
@@ -3183,7 +3285,7 @@ mod tests {
         assert_eq!(rows.len(), 2);
 
         let full_row = rows.iter().find(|r| r.id == sid_full).unwrap();
-        assert_eq!(full_row.genres, vec!["Drama".to_string(), "Seinen".to_string()]);
+        assert_eq!(full_row.genres, vec!["Drama".to_string()], "site-only \"Seinen\" is not a genre");
         assert_eq!(full_row.kind.as_deref(), Some("TV"));
         assert_eq!(full_row.cover_url.as_deref(), Some("data:image/png;base64,x"));
 
@@ -3523,14 +3625,14 @@ mod tests {
         let sid_a = db.upsert_series(a, &mk_airing("dup", "Dup Show", None)).unwrap();
         db.set_followed(sid_a, true).unwrap();
         db.set_kind(sid_a, "TV").unwrap();
-        db.insert_series_genres(sid_a, &["Seinen".to_string()]).unwrap();
+        db.insert_series_genres(sid_a, &["Comedia".to_string()]).unwrap();
         let sid_b = db.upsert_series(b, &mk_airing("dup", "Dup Show", None)).unwrap();
         db.set_followed(sid_b, true).unwrap();
         db.insert_series_genres(sid_b, &["Drama".to_string()]).unwrap();
 
         let genre_stats = db.get_genre_stats().unwrap();
         let genres: HashSet<&str> = genre_stats.iter().map(|g| g.genre.as_str()).collect();
-        assert_eq!(genres, HashSet::from(["Seinen", "Drama"]), "genres from both sites' rows are unioned");
+        assert_eq!(genres, HashSet::from(["Comedy", "Drama"]), "genres from both sites' rows are unioned");
         assert!(
             genre_stats.iter().all(|g| g.count == 1),
             "one canonical show contributes 1 to each genre it carries, not 2: {genre_stats:?}"
@@ -4368,7 +4470,7 @@ mod tests {
     }
 
     #[test]
-    fn get_genre_cards_caps_thumbnails_at_four_but_counts_all_episodes() {
+    fn get_genre_cards_caps_thumbnails_but_counts_all_episodes() {
         let db = Db::open(":memory:").unwrap();
         let src = db.upsert_source("A", "a", "animeytx").unwrap();
 
@@ -4387,7 +4489,7 @@ mod tests {
 
         let cards = db.get_genre_cards().unwrap();
         assert_eq!(cards.len(), 1);
-        assert_eq!(cards[0].top_series.len(), 4, "thumbnails capped at 4");
+        assert_eq!(cards[0].top_series.len(), CARD_COVERS, "thumbnails capped");
         assert_eq!(cards[0].count, 5, "but the episode count reflects all 5 shows");
     }
 
@@ -4891,7 +4993,7 @@ mod tests {
 
         assert!(has_action, "reports Action from catalog");
         assert!(has_drama, "reports Drama from catalog");
-        assert_eq!(seinen_count, 1, "reports Seinen from unlinked");
+        assert_eq!(seinen_count, 0, "site-only Seinen is not a real genre");
         assert!(has_comedy, "reports Comedy from site because catalog had NO genres");
     }
 
@@ -5656,5 +5758,213 @@ mod tests {
 
         let bias = db.get_popularity_bias().unwrap();
         assert_eq!(bias.average_popularity, Some(300_000.0), "A, B and C, C once");
+    }
+
+    // ---- Genres vs tags (2026-10-21) ----
+
+    /// One linked, followed show carrying AniList genres plus tags above and
+    /// below the rank-50 floor, and one unlinked show whose scraped labels
+    /// mix a mappable genre ("Acción") with a site-only label ("Shounen").
+    fn seed_genres_and_tags(db: &Db) -> (i64, i64) {
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+        let mut anime = catalog_anime(500, "Tagged Show", &["Action", "Drama"]);
+        anime.tags = vec![
+            crate::anilist::CatalogTag { name: "Male Protagonist".into(), rank: 80 },
+            crate::anilist::CatalogTag { name: "Kuudere".into(), rank: 30 },
+        ];
+        db.upsert_catalog_anime(&anime, 0).unwrap();
+        let linked = db.upsert_series(src, &mk_airing("tagged", "Tagged Show", None)).unwrap();
+        db.set_followed(linked, true).unwrap();
+        db.set_anilist_id(linked, 500).unwrap();
+        insert_eps_seen_up_to(db, linked, 4, 4);
+
+        let unlinked = db.upsert_series(src, &mk_airing("site", "Site Show", None)).unwrap();
+        db.set_followed(unlinked, true).unwrap();
+        db.insert_series_genres(unlinked, &["Acción".into(), "Shounen".into()]).unwrap();
+        insert_eps_seen_up_to(db, unlinked, 2, 2);
+        (linked, unlinked)
+    }
+
+    #[test]
+    fn stats_graph_nodes_carry_only_real_genres_never_tags() {
+        let db = Db::open(":memory:").unwrap();
+        let (linked, unlinked) = seed_genres_and_tags(&db);
+        let nodes = db.get_stats_graph_data().unwrap();
+        let genres = |id: i64| nodes.iter().find(|n| n.id == id).unwrap().genres.clone();
+        assert_eq!(genres(linked), vec!["Action".to_string(), "Drama".to_string()]);
+        assert_eq!(
+            genres(unlinked),
+            vec!["Action".to_string()],
+            "scraped labels map onto AniList's genres; unmapped ones are dropped"
+        );
+    }
+
+    #[test]
+    fn genre_cards_and_genre_stats_exclude_tags_and_unmapped_site_labels() {
+        let db = Db::open(":memory:").unwrap();
+        seed_genres_and_tags(&db);
+        let cards = db.get_genre_cards().unwrap();
+        let names: HashSet<&str> = cards.iter().map(|c| c.genre.as_str()).collect();
+        assert_eq!(names, HashSet::from(["Action", "Drama"]), "{cards:?}");
+        let action = cards.iter().find(|c| c.genre == "Action").unwrap();
+        assert_eq!(action.count, 6);
+        assert_eq!(action.show_count, 2);
+        assert!((action.share - 1.0).abs() < 1e-9, "every watched episode is in an Action show");
+
+        let stats = db.get_genre_stats().unwrap();
+        let names: HashSet<&str> = stats.iter().map(|g| g.genre.as_str()).collect();
+        assert_eq!(names, HashSet::from(["Action", "Drama"]), "{stats:?}");
+    }
+
+    #[test]
+    fn unlinked_show_with_spanish_sobrenatural_lands_in_supernatural() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+        let sid = db.upsert_series(src, &mk_airing("sob", "Site Sobrenatural", None)).unwrap();
+        db.set_followed(sid, true).unwrap();
+        db.insert_series_genres(sid, &["Sobrenatural".into(), "Suspenso".into()]).unwrap();
+        insert_eps_seen_up_to(&db, sid, 2, 2);
+        let names: HashSet<String> = db.get_genre_cards().unwrap().into_iter().map(|c| c.genre).collect();
+        assert_eq!(names, HashSet::from(["Supernatural".to_string(), "Thriller".to_string()]));
+        let node = db.get_stats_graph_data().unwrap();
+        assert_eq!(node[0].genres, vec!["Supernatural".to_string(), "Thriller".to_string()]);
+    }
+
+    /// 22k catalog rows (3 genres + 15 tags each), 6000 series, 600 of them in
+    /// the taste corpus (half linked, all with site genres and 12 seen
+    /// episodes) — the owner's real data is ~170 followed shows.
+    fn seed_real_size_taste(db: &Db) {
+        let src = db.upsert_source("TestSite", "https://site.example", "testsite").unwrap();
+        let tx = db.conn.unchecked_transaction().unwrap();
+        for i in 1..=22000i64 {
+            tx.execute(
+                "INSERT INTO anilist_catalog(id, title, url, sort_order, metadata_version) VALUES(?1, 'Cat', 'x', ?1, 1)",
+                [i],
+            ).unwrap();
+            for j in 1..=3 {
+                tx.execute(
+                    "INSERT INTO anilist_catalog_genres(anilist_id, genre) VALUES(?1, ?2)",
+                    (i, ["Action", "Drama", "Comedy", "Fantasy", "Romance"][((i + j) % 5) as usize]),
+                ).ok();
+            }
+            for j in 1..=15 {
+                tx.execute(
+                    "INSERT INTO anilist_catalog_tags(anilist_id, tag, rank) VALUES(?1, ?2, ?3)",
+                    (i, format!("Tag{}", (i + j) % 300), 40 + j * 4),
+                ).ok();
+            }
+        }
+        for i in 1..=6000i64 {
+            let anilist_id = if i % 2 == 0 { Some(i) } else { None };
+            let taste = i <= 600;
+            tx.execute(
+                "INSERT INTO series(id, source_id, slug, title, url, anilist_id, followed, watched_externally)
+                 VALUES(?1, ?2, ?3, ?4, 'x', ?5, ?6, 0)",
+                (i, src, format!("slug{i}"), format!("Series {i}"), anilist_id, taste as i64),
+            ).unwrap();
+            for g in ["Acción", "Sobrenatural"] {
+                tx.execute("INSERT INTO series_genres(series_id, genre) VALUES(?1, ?2)", (i, g)).unwrap();
+            }
+            if taste {
+                for e in 1..=12 {
+                    tx.execute(
+                        "INSERT INTO episodes(series_id, number, url, seen, seen_at) VALUES(?1, ?2, ?3, 1, datetime('now'))",
+                        (i, e.to_string(), format!("u{i}-{e}")),
+                    ).unwrap();
+                }
+            }
+        }
+        tx.commit().unwrap();
+    }
+
+    #[test]
+    fn genre_and_tag_cards_are_fast_at_real_size() {
+        let db = Db::open(":memory:").unwrap();
+        seed_real_size_taste(&db);
+
+        let started = std::time::Instant::now();
+        let genres = db.get_genre_cards().unwrap();
+        let took_genres = started.elapsed();
+        let started = std::time::Instant::now();
+        let tags = db.get_tag_cards(24).unwrap();
+        let took_tags = started.elapsed();
+        let started = std::time::Instant::now();
+        let graph = db.get_stats_graph_data().unwrap();
+        let took_graph = started.elapsed();
+
+        assert!(!genres.is_empty() && graph.len() == 600);
+        assert_eq!(tags.len(), 24);
+        let limit = std::time::Duration::from_secs(1);
+        assert!(took_genres < limit, "get_genre_cards took {took_genres:?}");
+        assert!(took_tags < limit, "get_tag_cards took {took_tags:?}");
+        assert!(took_graph < limit, "get_stats_graph_data took {took_graph:?}");
+    }
+
+    #[test]
+    fn tag_cards_list_ranked_tags_weighted_like_genre_cards() {
+        let db = Db::open(":memory:").unwrap();
+        seed_genres_and_tags(&db);
+        let tags = db.get_tag_cards(24).unwrap();
+        let names: Vec<&str> = tags.iter().map(|c| c.genre.as_str()).collect();
+        assert_eq!(names, vec!["Male Protagonist"], "rank < 50 tags stay out: {tags:?}");
+        assert_eq!(tags[0].count, 4, "weighted by the show's watched episodes");
+        assert!((tags[0].share - 4.0 / 6.0).abs() < 1e-9);
+        assert_eq!(tags[0].top_series[0].title, "Tagged Show");
+    }
+
+    #[test]
+    fn tag_cards_honour_the_limit() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+        let mut anime = catalog_anime(600, "Many Tags", &["Action"]);
+        anime.tags = (0..5)
+            .map(|i| crate::anilist::CatalogTag { name: format!("Tag {i}"), rank: 90 })
+            .collect();
+        db.upsert_catalog_anime(&anime, 0).unwrap();
+        let sid = db.upsert_series(src, &mk_airing("many", "Many Tags", None)).unwrap();
+        db.set_followed(sid, true).unwrap();
+        db.set_anilist_id(sid, 600).unwrap();
+        assert_eq!(db.get_tag_cards(3).unwrap().len(), 3);
+    }
+
+    #[test]
+    fn genre_cards_do_not_lead_with_a_show_that_already_leads_a_higher_card() {
+        // Before: the biggest show topped every card it belonged to, so every
+        // card opened with the same One Piece / Pokémon covers.
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+        let big = db.upsert_series(src, &mk_airing("big", "Big Show", None)).unwrap();
+        db.set_followed(big, true).unwrap();
+        db.insert_series_genres(big, &["Adventure".into(), "Action".into()]).unwrap();
+        insert_eps_seen_up_to(&db, big, 100, 100);
+        let adv = db.upsert_series(src, &mk_airing("adv", "Adventure Show", None)).unwrap();
+        db.set_followed(adv, true).unwrap();
+        db.insert_series_genres(adv, &["Adventure".into()]).unwrap();
+        insert_eps_seen_up_to(&db, adv, 10, 10);
+        let act = db.upsert_series(src, &mk_airing("act", "Action Show", None)).unwrap();
+        db.set_followed(act, true).unwrap();
+        db.insert_series_genres(act, &["Action".into()]).unwrap();
+        insert_eps_seen_up_to(&db, act, 5, 5);
+
+        let cards = db.get_genre_cards().unwrap();
+        assert_eq!(cards[0].genre, "Adventure", "110 episodes beat Action's 105");
+        assert_eq!(cards[0].top_series[0].title, "Big Show");
+        assert_eq!(cards[1].genre, "Action");
+        assert_eq!(cards[1].count, 105, "the count still includes the big show");
+        let action_titles: Vec<&str> = cards[1].top_series.iter().map(|s| s.title.as_str()).collect();
+        assert_eq!(action_titles, vec!["Action Show"], "Big Show already leads Adventure");
+    }
+
+    #[test]
+    fn genre_card_falls_back_to_its_top_show_when_every_show_leads_elsewhere() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+        let only = db.upsert_series(src, &mk_airing("only", "Only Show", None)).unwrap();
+        db.set_followed(only, true).unwrap();
+        db.insert_series_genres(only, &["Action".into(), "Drama".into()]).unwrap();
+        insert_eps_seen_up_to(&db, only, 3, 3);
+        let cards = db.get_genre_cards().unwrap();
+        assert_eq!(cards.len(), 2);
+        assert!(cards.iter().all(|c| c.top_series.len() == 1), "never an empty card: {cards:?}");
     }
 }

@@ -29,6 +29,15 @@ pub async fn get_genre_cards(state: State<'_, AppState>) -> Result<Vec<GenreCard
     db.get_genre_cards().map_err(|e| e.to_string())
 }
 
+/// How many tag cards "Por género" shows next to the genre cards.
+const TAG_CARDS_LIMIT: usize = 24;
+
+#[tauri::command]
+pub async fn get_tag_cards(state: State<'_, AppState>) -> Result<Vec<GenreCard>, String> {
+    let db = state.db.lock().unwrap();
+    db.get_tag_cards(TAG_CARDS_LIMIT).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn get_type_stats(state: State<'_, AppState>) -> Result<Vec<TypeStat>, String> {
     let db = state.db.lock().unwrap();

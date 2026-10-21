@@ -206,8 +206,15 @@ pub struct GenreCardSeries {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GenreCard {
+    /// The genre — or, for `get_tag_cards`, the AniList tag — this card is about.
     pub genre: String,
+    /// Watched episodes across every show carrying this label.
     pub count: i64,
+    /// How many (canonical) shows carry this label.
+    pub show_count: i64,
+    /// `count` over the watched episodes of the whole taste corpus (each show
+    /// once), 0.0-1.0. Labels overlap, so shares do not sum to 1.
+    pub share: f64,
     pub top_series: Vec<GenreCardSeries>,
 }
 
