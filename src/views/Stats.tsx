@@ -193,14 +193,19 @@ export function Stats({
       )}
 
       {!loaded && !error && (
-        <div className="kpi-strip" role="status" aria-label={t("stats.loading")}>
-          {[0, 1, 2, 3].map((i) => (
-            <div className="kpi-card" key={i}>
-              <div className="skeleton skeleton-kpi-label" />
-              <div className="skeleton skeleton-kpi-val" />
-              <div className="skeleton skeleton-kpi-sub" />
-            </div>
-          ))}
+        <div className="stats-hero stats-hero-skeleton" role="status" aria-label={t("stats.loading")}>
+          <div className="hero-figs">
+            {[0, 1, 2, 3].map((i) => (
+              <div className={i === 0 ? "hero-fig hero-fig-lead" : "hero-fig"} key={i}>
+                <div className="skeleton skeleton-hero-label" />
+                <div className="skeleton skeleton-hero-val" />
+                <div className="skeleton skeleton-hero-sub" />
+              </div>
+            ))}
+          </div>
+          <div className="hero-activity">
+            <div className="skeleton skeleton-hero-heatmap" />
+          </div>
         </div>
       )}
 
