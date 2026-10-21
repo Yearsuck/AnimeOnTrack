@@ -35,7 +35,13 @@ function saveTab(tab: SettingsTab) {
   }
 }
 
-export function Settings({ onSiteChanged }: { onSiteChanged?: (site: SiteSummary) => void }) {
+export function Settings({
+  onSiteChanged,
+  onReplayTutorial,
+}: {
+  onSiteChanged?: (site: SiteSummary) => void;
+  onReplayTutorial?: () => void;
+}) {
   const t = useT();
   const [activeTab, setActiveTab] = useState<SettingsTab>(getInitialTab);
   // A panel mounts on its first visit (so tabs never opened fire no IPC) and
@@ -113,7 +119,7 @@ export function Settings({ onSiteChanged }: { onSiteChanged?: (site: SiteSummary
           >
             {visited.has("general") && (
               <>
-                <AppearanceSection />
+                <AppearanceSection onReplayTutorial={onReplayTutorial} />
                 <PlayerSettingsCard />
               </>
             )}
