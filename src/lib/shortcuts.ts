@@ -5,7 +5,6 @@ export type ShortcutAction =
         | "pending"
         | "airing"
         | "library"
-        | "descubrir"
         | "catalog"
         | "stats"
         | "settings";
@@ -30,7 +29,7 @@ export interface ShortcutRow {
 }
 
 export const SHORTCUT_ROWS: ShortcutRow[] = [
-  { keys: "1-7", labelKey: "shortcuts.nav" },
+  { keys: "1-6", labelKey: "shortcuts.nav" },
   { keys: "R", labelKey: "shortcuts.refresh" },
   { keys: "/", labelKey: "shortcuts.search" },
   { keys: "?", labelKey: "shortcuts.help" },
@@ -42,7 +41,6 @@ const NAV_VIEWS: Record<
   | "pending"
   | "airing"
   | "library"
-  | "descubrir"
   | "catalog"
   | "stats"
   | "settings"
@@ -50,10 +48,9 @@ const NAV_VIEWS: Record<
   "1": "pending",
   "2": "airing",
   "3": "library",
-  "4": "descubrir",
-  "5": "catalog",
-  "6": "stats",
-  "7": "settings",
+  "4": "catalog",
+  "5": "stats",
+  "6": "settings",
 };
 
 export function shortcutFor(e: {
@@ -89,13 +86,13 @@ export function shortcutFor(e: {
 }
 
 /**
- * Decides whether the global search shortcut (`/`) should navigate to the
- * Catalog view. When on the "descubrir" view with the "listas" subview active,
+ * Decides whether the global search shortcut (`/`) should jump to the Catalog
+ * explorer. When Catálogo is already showing its "listas" section,
  * ListasToolbar handles `/` locally to focus its own search input instead.
  */
 export function shouldNavigateToCatalogOnSearch(
   view: string,
-  descubrirSubView?: string
+  catalogSection?: string
 ): boolean {
-  return !(view === "descubrir" && descubrirSubView === "listas");
+  return !(view === "catalog" && catalogSection === "listas");
 }

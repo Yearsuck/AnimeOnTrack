@@ -6,6 +6,8 @@ import { ProgressBar } from "./views/ProgressBar";
 import { WindowControls } from "./views/WindowControls";
 import { ShortcutsOverlay } from "./views/ShortcutsOverlay";
 import { UpdateBanner } from "./views/UpdateBanner";
+import { CatalogSectionSwitch } from "./views/CatalogSectionSwitch";
+import { DEFAULT_CATALOG_SECTION, discoverSubViewFor, type CatalogSection } from "./lib/catalogSection";
 import { shortcutFor, shouldNavigateToCatalogOnSearch } from "./lib/shortcuts";
 import {
   listAiring,
@@ -50,7 +52,6 @@ type View =
   | "airing"
   | "library"
   | "stats"
-  | "descubrir"
   | "catalog"
   | "settings";
 
@@ -79,7 +80,9 @@ export default function App() {
   // switching tabs and back doesn't rebuild the renderer or re-scramble the
   // layout. Lazy: only mounts on first visit, not eagerly at app start.
   const [statsVisited, setStatsVisited] = useState(false);
-  const [descubrirSubView, setDescubrirSubView] = useState<"swipe" | "listas">("swipe");
+  // Catálogo's active sub-section (Explorar / Descubrir / Listas). Kept here,
+  // not in the view, so it survives switching tabs and back.
+  const [catalogSection, setCatalogSection] = useState<CatalogSection>(DEFAULT_CATALOG_SECTION);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
 
   const refreshBadge = useCallback(async () => {
@@ -276,10 +279,11 @@ export default function App() {
           }
           break;
         case "search":
-          if (!shouldNavigateToCatalogOnSearch(view, descubrirSubView)) {
+          if (!shouldNavigateToCatalogOnSearch(view, catalogSection)) {
             break;
           }
           e.preventDefault();
+          setCatalogSection("explore");
           navigate("catalog");
           requestAnimationFrame(() => {
             requestAnimationFrame(() => {
@@ -308,7 +312,7 @@ export default function App() {
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [view, refreshing, shortcutsOpen, selected, descubrirSubView]);
+  }, [view, refreshing, shortcutsOpen, selected, catalogSection]);
 
   // Frameless window: every screen needs *some* draggable strip with the
   // window controls, or the loading/onboarding views (which don't render the
@@ -341,10 +345,19 @@ export default function App() {
       </>
     );
 
+  const preloadCatalogSection = (section: CatalogSection) => {
+    if (section === "explore") void loadCatalog();
+    else void loadDescubrir();
+  };
+
+  const goCatalogSection = (section: CatalogSection) => {
+    setCatalogSection(section);
+    navigate("catalog");
+  };
+
   const preloadTab = (id: View) => {
     if (id === "library") void loadLibrary();
-    else if (id === "descubrir") void loadDescubrir();
-    else if (id === "catalog") void loadCatalog();
+    else if (id === "catalog") preloadCatalogSection(catalogSection);
     else if (id === "stats") void loadStats();
     else if (id === "settings") void loadSettings();
   };
@@ -377,7 +390,6 @@ export default function App() {
           <Tab id="pending" label={t("nav.pending")} />
           <Tab id="airing" label={t("nav.airing")} />
           <Tab id="library" label={t("nav.library")} />
-          <Tab id="descubrir" label={t("nav.discover")} />
           <Tab id="catalog" label={t("nav.catalog")} />
           <Tab id="stats" label={t("nav.stats")} />
           <Tab id="settings" label={t("nav.settings")} />
@@ -397,7 +409,7 @@ export default function App() {
               onOpenSeries={setSelected}
               onChanged={onPendingDataChanged}
               refreshSignal={pendingRefreshSignal}
-              onGoDiscover={() => navigate("descubrir")}
+              onGoDiscover={() => goCatalogSection("swipe")}
             />
           </div>
         )}
@@ -415,21 +427,7 @@ export default function App() {
             <Suspense fallback={<div className="empty">{t("common.loading")}</div>}>
               <Library
                 onOpenSeries={setSelected}
-                onGoToListas={() => {
-                  setDescubrirSubView("listas");
-                  navigate("descubrir");
-                }}
-              />
-            </Suspense>
-          </div>
-        )}
-        {view === "descubrir" && (
-          <div className="view-panel" ref={panelRef}>
-            <Suspense fallback={<div className="empty">{t("common.loading")}</div>}>
-              <Descubrir
-                onOpenSeries={setSelected}
-                initialSubView={descubrirSubView}
-                onSubViewChange={setDescubrirSubView}
+                onGoToListas={() => goCatalogSection("listas")}
               />
             </Suspense>
           </div>
@@ -437,7 +435,25 @@ export default function App() {
         {view === "catalog" && (
           <div className="view-panel" ref={panelRef}>
             <Suspense fallback={<div className="empty">{t("common.loading")}</div>}>
-              <Catalog onChanged={onPendingDataChanged} />
+              {(() => {
+                const headExtra = (
+                  <CatalogSectionSwitch
+                    value={catalogSection}
+                    onChange={setCatalogSection}
+                    onHover={preloadCatalogSection}
+                  />
+                );
+                return catalogSection === "explore" ? (
+                  <Catalog onChanged={onPendingDataChanged} headExtra={headExtra} />
+                ) : (
+                  <Descubrir
+                    onOpenSeries={setSelected}
+                    subView={discoverSubViewFor(catalogSection)}
+                    onSwitchToSwipe={() => setCatalogSection("swipe")}
+                    headExtra={headExtra}
+                  />
+                );
+              })()}
             </Suspense>
           </div>
         )}

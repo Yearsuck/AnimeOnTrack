@@ -262,7 +262,6 @@ export const en: Messages = {
   "discover.chipWatched": "Watched",
   "discover.moreActions": "More actions",
   "discover.viewDetails": "View details",
-  "discover.tabSwipe": "Swipe",
   "discover.tabLists": "Lists",
   // Swipe history strip (multi-level undo cache)
   "discover.historyHeading": "Recently classified",
@@ -292,6 +291,9 @@ export const en: Messages = {
   "discover.filtersReset": "Reset filters",
   "discover.filtersAutoHint": "Changes apply automatically.",
   "discover.deckPanelTitle": "Deck settings",
+  "discover.deckPanelRightTitle": "Date and score",
+  "catalog.sectionExplore": "Explore",
+  "catalog.sectionsAria": "Catalog sections",
   "discover.deckPanelToggleAria": "Show or hide the deck settings",
   "discover.deckPanelBansBadge": "{count} active filters",
 
@@ -662,7 +664,7 @@ export const en: Messages = {
   // keyboard shortcuts
   "shortcuts.title": "Keyboard shortcuts",
   "shortcuts.close": "Close",
-  "shortcuts.nav": "Switch tab (1-7)",
+  "shortcuts.nav": "Switch tab (1-6)",
   "shortcuts.refresh": "Refresh catalog and episodes",
   "shortcuts.search": "Search catalog",
   "shortcuts.help": "Show or hide this help",

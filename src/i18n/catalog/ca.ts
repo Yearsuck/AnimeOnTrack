@@ -272,7 +272,6 @@ export const ca: Messages = {
   "discover.chipWatched": "Vista",
   "discover.moreActions": "Més accions",
   "discover.viewDetails": "Mostra els detalls",
-  "discover.tabSwipe": "Swipe",
   "discover.tabLists": "Llistes",
   // Swipe history strip (multi-level undo cache)
   "discover.historyHeading": "Últimes classificades",
@@ -302,6 +301,9 @@ export const ca: Messages = {
   "discover.filtersReset": "Restableix els filtres",
   "discover.filtersAutoHint": "Els canvis s'apliquen sols.",
   "discover.deckPanelTitle": "Configuració de la baralla",
+  "discover.deckPanelRightTitle": "Data i puntuació",
+  "catalog.sectionExplore": "Explorar",
+  "catalog.sectionsAria": "Seccions del catàleg",
   "discover.deckPanelToggleAria": "Mostra o amaga la configuració de la baralla",
   "discover.deckPanelBansBadge": "{count} filtres actius",
 
@@ -677,7 +679,7 @@ export const ca: Messages = {
   // keyboard shortcuts
   "shortcuts.title": "Dreceres de teclat",
   "shortcuts.close": "Tancar",
-  "shortcuts.nav": "Canviar de pestanya (1-7)",
+  "shortcuts.nav": "Canviar de pestanya (1-6)",
   "shortcuts.refresh": "Actualitzar catàleg i episodis",
   "shortcuts.search": "Cercar al catàleg",
   "shortcuts.help": "Mostrar o amagar aquesta ajuda",

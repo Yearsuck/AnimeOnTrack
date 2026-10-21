@@ -276,7 +276,6 @@ export const es = {
   "discover.chipWatched": "Vista",
   "discover.moreActions": "Más acciones",
   "discover.viewDetails": "Ver detalles",
-  "discover.tabSwipe": "Swipe",
   "discover.tabLists": "Listas",
   // Swipe history strip (multi-level undo cache)
   "discover.historyHeading": "Últimas clasificadas",
@@ -306,6 +305,9 @@ export const es = {
   "discover.filtersReset": "Restablecer filtros",
   "discover.filtersAutoHint": "Los cambios se aplican solos.",
   "discover.deckPanelTitle": "Ajustes del mazo",
+  "discover.deckPanelRightTitle": "Fecha y puntuación",
+  "catalog.sectionExplore": "Explorar",
+  "catalog.sectionsAria": "Secciones del catálogo",
   "discover.deckPanelToggleAria": "Mostrar u ocultar los ajustes del mazo",
   "discover.deckPanelBansBadge": "{count} filtros activos",
 
@@ -681,7 +683,7 @@ export const es = {
   // keyboard shortcuts
   "shortcuts.title": "Atajos de teclado",
   "shortcuts.close": "Cerrar",
-  "shortcuts.nav": "Cambiar de pestaña (1-7)",
+  "shortcuts.nav": "Cambiar de pestaña (1-6)",
   "shortcuts.refresh": "Actualizar catálogo y episodios",
   "shortcuts.search": "Buscar en el catálogo",
   "shortcuts.help": "Mostrar u ocultar esta ayuda",
