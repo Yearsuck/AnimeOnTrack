@@ -106,6 +106,8 @@ export interface WatchSummary {
   episodes_watched: number;
   episodes_total: number;
   episodes_watched_external: number;
+  /** "Ya vistas" titles with no catalog episode count and no real marks (add 0). */
+  titles_without_episode_data: number;
   airing_followed: number;
   pending_to_watch: number;
   backlog_want: number;

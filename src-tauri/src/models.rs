@@ -165,12 +165,19 @@ pub struct WatchSummary {
     #[serde(default)]
     pub distinct_anime: i64,
     pub episodes_watched: i64,
+    /// Completion denominator, on the same base as
+    /// `episodes_watched + episodes_watched_external` (followed, really seen
+    /// or "Ya vistas" franchises; see `Db::get_watch_summary`).
     pub episodes_total: i64,
     /// Episodes attributed to "Ya vistas" (`watched_externally=1`) series via
-    /// the catalog's episode count — only for series with NO real seen
-    /// episode data (real data always wins; see `Db::get_watch_summary`).
+    /// the catalog's episode count — only the per-franchise remainder above
+    /// the real marks (see `Db::get_watch_summary`).
     #[serde(default)]
     pub episodes_watched_external: i64,
+    /// "Ya vistas" franchises with neither a catalog episode count nor any
+    /// real mark: they add 0 episodes and 0 minutes, so the UI flags them.
+    #[serde(default)]
+    pub titles_without_episode_data: i64,
     /// Followed series still airing (`followed=1 AND is_airing=1`) — the
     /// "Siguiendo en emisión" tile.
     #[serde(default)]
