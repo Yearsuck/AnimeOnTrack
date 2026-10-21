@@ -426,14 +426,13 @@ export function SwipeView() {
   }, [decide, undo]);
 
   return (
-    <div className="swipe-layout">
-      <DeckPanel onBansSaved={resetQueue} />
+    <DeckPanel onBansSaved={resetQueue}>
       <div className="swipe-stage">
         <TasteChips />
         {exhausted ? (
           <div className="empty">{t("discover.exhausted")}</div>
         ) : card ? (
-          <div className={`card swipe-card ${outDirection ? `swipe-out-${outDirection}` : ""}`}>
+          <div key={card.url} className={`card swipe-card ${outDirection ? `swipe-out-${outDirection}` : ""}`}>
             <div
               className="poster clickable"
               title={t("discover.openPageTitle")}
@@ -539,6 +538,6 @@ export function SwipeView() {
           </div>
         )}
       </div>
-    </div>
+    </DeckPanel>
   );
 }

@@ -1351,8 +1351,16 @@ progress.scanbar-track::-webkit-progress-value {
   padding-top: 8px;
 }
 .swipe-card {
-  width: 280px;
+  width: min(320px, 100%);
+  box-shadow: var(--shadow-lg);
+  animation: swipe-card-in var(--dur-slow) var(--ease-out);
   transition: opacity var(--dur) var(--ease-out), transform var(--dur) var(--ease-out);
+}
+@keyframes swipe-card-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.97);
+  }
 }
 .swipe-card.swipe-out-discard {
   opacity: 0;
@@ -1447,10 +1455,10 @@ progress.scanbar-track::-webkit-progress-value {
   justify-content: center;
 }
 
-/* ---------- Descubrir: swipe two-column layout + deck settings panel ---------- */
+/* ---------- Descubrir: three-column deck (filters | card | filters) ---------- */
 .swipe-layout {
   display: grid;
-  grid-template-columns: minmax(240px, 280px) 1fr;
+  grid-template-columns: minmax(240px, 300px) minmax(300px, 1fr) minmax(240px, 300px);
   gap: var(--sp-5);
   align-items: start;
 }
@@ -1505,15 +1513,33 @@ progress.scanbar-track::-webkit-progress-value {
   max-height: 220px;
   overflow-y: auto;
 }
-@media (max-width: 900px) {
+/* Under ~1000px there is no room for three columns: the card goes first and
+   the two filter panels stack below it (DOM/focus order is unchanged). */
+@media (max-width: 1000px) {
   .swipe-layout {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .swipe-layout > .swipe-stage {
+    order: -1;
   }
   .deck-panel {
     position: static;
     max-width: 520px;
     margin: 0 auto;
     width: 100%;
+  }
+}
+.deck-panel-left,
+.deck-panel-right {
+  box-shadow: var(--shadow-sm);
+}
+.deck-panel-body {
+  animation: deck-panel-in var(--dur) var(--ease-out);
+}
+@keyframes deck-panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
   }
 }
 
@@ -2498,8 +2524,8 @@ select.lib-filter-select {
 }
 
 /* ---------- Descubrir (view-specific) ---------- */
-.discover-tabs {
-  margin-bottom: var(--sp-5);
+.catalog-sections {
+  flex-shrink: 0;
 }
 .deck-panel-mode {
   display: flex;
