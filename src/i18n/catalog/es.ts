@@ -389,6 +389,16 @@ export const es = {
   "stats.episodeSingular": "episodio",
   "stats.episodePlural": "episodios",
   "stats.genreCardThumbsAria": "{genre} - series destacadas",
+  "stats.genreCardsTabGenres": "Géneros",
+  "stats.genreCardsTabTags": "Etiquetas",
+  "stats.genreCardsSwitchAria": "Ver géneros o etiquetas",
+  "stats.genreCardsHint": "Géneros de AniList (o de la web si la serie no está enlazada), ordenados por episodios vistos.",
+  "stats.genreCardsShows": "{n} series",
+  "stats.genreCardsShowsOne": "{n} serie",
+  "stats.genreCardsShare": "{pct} % de lo visto",
+  "stats.genreCardsShareHelp": "Parte de tus episodios vistos que son de series con este género o etiqueta. Una serie suele tener varios, así que no suman 100 %.",
+  "stats.tagsHint": "Etiquetas de AniList con relevancia de 50 % o más: temas y rasgos más concretos que el género.",
+  "stats.tagsEmpty": "Sin etiquetas todavía. Solo las series enlazadas con AniList tienen etiquetas.",
 
   // StatsGraph.tsx
   "stats.graphEmpty": "Sin series seguidas todavía.",

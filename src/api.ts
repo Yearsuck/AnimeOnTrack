@@ -112,6 +112,8 @@ export const getGenreStats = () => invoke<GenreStat[]>("get_genre_stats");
 
 export const getGenreCards = () => invoke<GenreCard[]>("get_genre_cards");
 
+export const getTagCards = () => invoke<GenreCard[]>("get_tag_cards");
+
 export const getTypeStats = () => invoke<TypeStat[]>("get_type_stats");
 
 export const getWatchSummary = () => invoke<WatchSummary>("get_watch_summary");

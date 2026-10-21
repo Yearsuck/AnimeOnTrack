@@ -90,8 +90,13 @@ export interface GenreCardSeries {
 }
 
 export interface GenreCard {
+  /** The genre, or the AniList tag for `getTagCards`. */
   genre: string;
+  /** Watched episodes across every show carrying this label. */
   count: number;
+  show_count: number;
+  /** count / watched episodes of the whole taste corpus, 0-1 (labels overlap). */
+  share: number;
   top_series: GenreCardSeries[];
 }
 

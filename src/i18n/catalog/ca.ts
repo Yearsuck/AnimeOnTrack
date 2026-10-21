@@ -385,6 +385,16 @@ export const ca: Messages = {
   "stats.episodeSingular": "episodi",
   "stats.episodePlural": "episodis",
   "stats.genreCardThumbsAria": "{genre} - series destacades",
+  "stats.genreCardsTabGenres": "Gèneres",
+  "stats.genreCardsTabTags": "Etiquetes",
+  "stats.genreCardsSwitchAria": "Mostra gèneres o etiquetes",
+  "stats.genreCardsHint": "Gèneres d'AniList (o del web si la sèrie no està enllaçada), ordenats per episodis vistos.",
+  "stats.genreCardsShows": "{n} sèries",
+  "stats.genreCardsShowsOne": "{n} sèrie",
+  "stats.genreCardsShare": "{pct} % del que has vist",
+  "stats.genreCardsShareHelp": "Part dels teus episodis vistos que són de sèries amb aquest gènere o etiqueta. Una sèrie en sol tenir diversos, així que no sumen 100 %.",
+  "stats.tagsHint": "Etiquetes d'AniList amb rellevància del 50 % o més: temes i trets més concrets que el gènere.",
+  "stats.tagsEmpty": "Encara no hi ha etiquetes. Només les sèries enllaçades amb AniList en tenen.",
 
   // StatsGraph.tsx
   "stats.graphEmpty": "Encara no segueixes cap sèrie.",
