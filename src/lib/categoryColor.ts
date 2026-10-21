@@ -6,7 +6,7 @@
 // and samey. This is a curated set of vivid, high-contrast swatches chosen
 // to read well against the app's dark navy surfaces, cycled by hash instead
 // of computed at runtime.
-const PALETTE = [
+export const PALETTE = [
   "#FF6B6B", // red
   "#4ECDC4", // teal
   "#FFA94D", // orange
