@@ -350,6 +350,8 @@ export const en: Messages = {
   "stats.episodesWatchedHelp": "{real} tracked · {external} estimated from \"Already watched\"",
   "stats.distinctAnime": "Anime watched",
   "stats.distinctAnimeHelp": "seasons counted once · includes \"Already watched\"",
+  "stats.titlesWithoutEpisodeData": "{n} \"Already watched\" titles with no known episode count add no episodes or time.",
+  "stats.titlesWithoutEpisodeDataOne": "{n} \"Already watched\" title with no known episode count adds no episodes or time.",
   "stats.followedSeries": "Currently airing (followed)",
   "stats.backlogPending": "Pending to watch",
   "stats.backlogPendingHelp": "followed series with unseen episodes",

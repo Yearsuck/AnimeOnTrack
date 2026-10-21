@@ -158,10 +158,14 @@ export function StatsInsights({
   }, []);
 
   const totalMinutes = insights.estimated_minutes_tracked + insights.estimated_minutes_external;
+  // Same base on both sides: real marks plus the "Ya vistas" estimate,
+  // over a denominator that includes those titles (see get_watch_summary).
+  const episodesCredited = summary.episodes_watched + summary.episodes_watched_external;
   const completionPct =
     summary.episodes_total > 0
-      ? Math.round((summary.episodes_watched / summary.episodes_total) * 100)
+      ? Math.min(100, Math.round((episodesCredited / summary.episodes_total) * 100))
       : 0;
+  const titlesWithoutData = summary.titles_without_episode_data ?? 0;
 
   const topSeriesData = useMemo(
     () => insights.top_series.map((s) => ({ name: s.title, count: s.count })),
@@ -202,7 +206,7 @@ export function StatsInsights({
           <div className="hero-fig hero-fig-lead">
             <dt className="hero-fig-label">{t("stats.episodesWatched")}</dt>
             <dd className="hero-fig-value">
-              {n(summary.episodes_watched + summary.episodes_watched_external)}
+              {n(episodesCredited)}
             </dd>
             <dd className="hero-fig-note">
               {t("stats.episodesWatchedHelp", {
@@ -239,7 +243,7 @@ export function StatsInsights({
               </div>
             </dd>
             <dd className="hero-fig-note">
-              {n(summary.episodes_watched)} / {n(summary.episodes_total)}
+              {n(episodesCredited)} / {n(summary.episodes_total)}
             </dd>
           </div>
 
@@ -249,6 +253,13 @@ export function StatsInsights({
             <dd className="hero-fig-note">{t("stats.distinctAnimeHelp")}</dd>
           </div>
         </dl>
+        {titlesWithoutData > 0 && (
+          <p className="stats-caveat">
+            {t(titlesWithoutData === 1 ? "stats.titlesWithoutEpisodeDataOne" : "stats.titlesWithoutEpisodeData", {
+              n: n(titlesWithoutData),
+            })}
+          </p>
+        )}
 
         <div className="hero-activity">
           <div className="hero-activity-head">

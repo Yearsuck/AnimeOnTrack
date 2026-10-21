@@ -367,6 +367,8 @@ export const es = {
   "stats.episodesWatchedHelp": "{real} con seguimiento real · {external} estimados de «Ya vistas»",
   "stats.distinctAnime": "Animes vistos",
   "stats.distinctAnimeHelp": "temporadas contadas como una · incluye «Ya vistas»",
+  "stats.titlesWithoutEpisodeData": "{n} títulos de «Ya vistas» sin número de episodios conocido no suman episodios ni tiempo.",
+  "stats.titlesWithoutEpisodeDataOne": "{n} título de «Ya vistas» sin número de episodios conocido no suma episodios ni tiempo.",
   "stats.followedSeries": "Siguiendo en emisión",
   "stats.backlogPending": "Pendientes de ver",
   "stats.backlogPendingHelp": "series seguidas con episodios sin ver",
