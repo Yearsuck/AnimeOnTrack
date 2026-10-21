@@ -363,6 +363,8 @@ export const ca: Messages = {
   "stats.episodesWatchedHelp": "{real} amb seguiment real · {external} estimats de «Ja vistes»",
   "stats.distinctAnime": "Animes vistos",
   "stats.distinctAnimeHelp": "temporades comptades com una · inclou «Ja vistes»",
+  "stats.titlesWithoutEpisodeData": "{n} títols de «Ja vistes» sense nombre d'episodis conegut no sumen episodis ni temps.",
+  "stats.titlesWithoutEpisodeDataOne": "{n} títol de «Ja vistes» sense nombre d'episodis conegut no suma episodis ni temps.",
   "stats.followedSeries": "Seguint en emissió",
   "stats.backlogPending": "Pendents de veure",
   "stats.backlogPendingHelp": "sèries seguides amb episodis sense veure",
