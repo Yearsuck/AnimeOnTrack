@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { getCatalogFacets, getDeckBans, getDiscoverNiche, setDeckBans, setDiscoverNiche } from "../../api";
 import { useT } from "../../i18n";
 import { DECK_FORMATS } from "./constants";
@@ -20,7 +20,14 @@ import { DateRangeControl, ScoreRangeControl } from "../../components/filters";
 // `resetQueue`), since SwipeView no longer unmounts when this panel is used
 // (it's embedded, not a separate sub-tab) and would otherwise keep serving
 // up to PREFETCH_TARGET already-fetched cards that predate the new bans.
-export function DeckPanel({ onBansSaved }: { onBansSaved: () => void }) {
+export function DeckPanel({
+  onBansSaved,
+  children,
+}: {
+  onBansSaved: () => void;
+  /** The card stage, rendered between the two panels so DOM/focus order is left filters, card, right filters. */
+  children?: ReactNode;
+}) {
   const t = useT();
   const [discoverMode] = useDiscoverMode();
   const [allGenres, setAllGenres] = useState<string[]>([]);
@@ -124,7 +131,10 @@ export function DeckPanel({ onBansSaved }: { onBansSaved: () => void }) {
     }
 
     setSaved(false);
+    pendingFlushRef.current = () =>
+      setDeckBans([...bannedGenres], [...bannedFormats], hideUpcoming, minStartDate, maxStartDate, minScore);
     const timer = setTimeout(() => {
+      pendingFlushRef.current = null;
       save();
     }, 600);
 
@@ -132,6 +142,18 @@ export function DeckPanel({ onBansSaved }: { onBansSaved: () => void }) {
       clearTimeout(timer);
     };
   }, [bannedGenres, bannedFormats, hideUpcoming, minStartDate, maxStartDate, minScore, save]);
+
+  // Leaving the section (or the tab) inside the 600 ms debounce window used to drop the last
+  // filter change; persist it on unmount. Only the write is flushed: the parent's refill callback
+  // is skipped since the deck it would refill is going away.
+  const pendingFlushRef = useRef<(() => Promise<unknown>) | null>(null);
+  useEffect(() => {
+    return () => {
+      const flush = pendingFlushRef.current;
+      pendingFlushRef.current = null;
+      flush?.().catch((err) => console.error("setDeckBans flush failed", err));
+    };
+  }, []);
 
   function handleResetFilters() {
     setSaved(false);
@@ -165,165 +187,181 @@ export function DeckPanel({ onBansSaved }: { onBansSaved: () => void }) {
     minScore,
   });
 
+  const toggleButton = (title: string, controls: string, withBadge: boolean) => (
+    <button
+      type="button"
+      className="deck-panel-head"
+      aria-expanded={open}
+      aria-controls={controls}
+      aria-label={t("discover.deckPanelToggleAria")}
+      onClick={toggleOpen}
+    >
+      <span className="deck-panel-title">{title}</span>
+      {withBadge && !open && activeBans > 0 && (
+        <span className="deck-panel-badge">{t("discover.deckPanelBansBadge", { count: activeBans })}</span>
+      )}
+      <span className={`deck-panel-chevron${open ? " open" : ""}`} aria-hidden="true">
+        ▾
+      </span>
+    </button>
+  );
+
+  // Three-column deck: LEFT = what to show (mode, kinds, genres, upcoming),
+  // CENTER = the card stage (children), RIGHT = when / how good + save. All
+  // state stays in this one component so the single debounced auto-save still
+  // sees every filter; only the markup is split across two asides. The open
+  // flag is shared: both heads toggle both panels.
   return (
-    <aside className="deck-panel">
-      <button
-        type="button"
-        className="deck-panel-head"
-        aria-expanded={open}
-        aria-controls="deck-panel-body"
-        aria-label={t("discover.deckPanelToggleAria")}
-        onClick={toggleOpen}
-      >
-        <span className="deck-panel-title">{t("discover.deckPanelTitle")}</span>
-        {!open && activeBans > 0 && (
-          <span className="deck-panel-badge">{t("discover.deckPanelBansBadge", { count: activeBans })}</span>
-        )}
-        <span className={`deck-panel-chevron${open ? " open" : ""}`} aria-hidden="true">
-          ▾
-        </span>
-      </button>
-
-      {open && (
-        <div id="deck-panel-body" className="deck-panel-body">
-          <div className="deck-panel-mode">
-            <DiscoverModeToggle />
-          </div>
-
-          {discoverMode === "recommended" && (
-            <div className="deck-panel-niche">
-              <label htmlFor="deck-niche-slider" className="deck-panel-niche-label">
-                {t("niche.label")}
-              </label>
-              <input
-                id="deck-niche-slider"
-                type="range"
-                min="-1"
-                max="1"
-                step="0.25"
-                value={nicheBias}
-                onChange={handleNicheChange}
-                onPointerUp={persistNiche}
-                onKeyUp={persistNiche}
-                onBlur={persistNiche}
-                className="niche-slider"
-              />
-              <div className="deck-panel-niche-captions">
-                <span className="muted text-sm">{t("niche.mainstream")}</span>
-                <span className="muted text-sm">{t("niche.niche")}</span>
-              </div>
-              <p className="muted text-sm deck-panel-niche-hint">
-                {t("niche.hint")}
-              </p>
+    <div className={`swipe-layout${open ? "" : " swipe-layout-collapsed"}`}>
+      <aside className="deck-panel deck-panel-left" aria-label={t("discover.deckPanelTitle")}>
+        {toggleButton(t("discover.deckPanelTitle"), "deck-panel-left-body", true)}
+        {open && (
+          <div id="deck-panel-left-body" className="deck-panel-body">
+            <div className="deck-panel-mode">
+              <DiscoverModeToggle />
             </div>
-          )}
 
-          <p className="muted deck-panel-intro">
-            {t("discover.filtersIntro")}
-          </p>
+            {discoverMode === "recommended" && (
+              <div className="deck-panel-niche">
+                <label htmlFor="deck-niche-slider" className="deck-panel-niche-label">
+                  {t("niche.label")}
+                </label>
+                <input
+                  id="deck-niche-slider"
+                  type="range"
+                  min="-1"
+                  max="1"
+                  step="0.25"
+                  value={nicheBias}
+                  onChange={handleNicheChange}
+                  onPointerUp={persistNiche}
+                  onKeyUp={persistNiche}
+                  onBlur={persistNiche}
+                  className="niche-slider"
+                />
+                <div className="deck-panel-niche-captions">
+                  <span className="muted text-sm">{t("niche.mainstream")}</span>
+                  <span className="muted text-sm">{t("niche.niche")}</span>
+                </div>
+                <p className="muted text-sm deck-panel-niche-hint">{t("niche.hint")}</p>
+              </div>
+            )}
 
-          <h3 className="section-title deck-panel-heading">
-            {t("discover.filtersFormatsHeading")}
-          </h3>
-          <div className="chip-row deck-panel-chips">
-            {DECK_FORMATS.map((f) => (
-              <button
-                key={f}
-                type="button"
-                className={`chip-toggle${bannedFormats.has(f) ? " active" : ""}`}
-                onClick={() => toggle(bannedFormats, setBannedFormats, f)}
-              >
-                {f}
-              </button>
-            ))}
-          </div>
+            <p className="muted deck-panel-intro">{t("discover.filtersIntro")}</p>
 
-          <h3 className="section-title deck-panel-heading">
-            {t("discover.filtersGenresHeading")}
-          </h3>
-          {allGenres.length > 0 && (
-            <div className="chip-row deck-panel-genres deck-panel-chips">
-              {allGenres.map((g) => (
+            <h3 className="section-title deck-panel-heading">
+              {t("discover.filtersFormatsHeading")}
+            </h3>
+            <div className="chip-row deck-panel-chips">
+              {DECK_FORMATS.map((f) => (
                 <button
-                  key={g}
+                  key={f}
                   type="button"
-                  className={`chip-toggle${bannedGenres.has(g) ? " active" : ""}`}
-                  onClick={() => toggle(bannedGenres, setBannedGenres, g)}
+                  className={`chip-toggle${bannedFormats.has(f) ? " active" : ""}`}
+                  aria-pressed={bannedFormats.has(f)}
+                  onClick={() => toggle(bannedFormats, setBannedFormats, f)}
                 >
-                  {g}
+                  {f}
                 </button>
               ))}
             </div>
-          )}
 
-          <h3 className="section-title deck-panel-heading">
-            {t("discover.filtersOtherHeading")}
-          </h3>
-          <div className={`chip-row ${hideUpcoming && !statusDataSynced ? "deck-panel-chips-tight" : "deck-panel-chips"}`}>
-            <button
-              type="button"
-              className={`chip-toggle${hideUpcoming ? " active" : ""}`}
-              onClick={() => {
-                setHideUpcoming((prev) => !prev);
-                setSaved(false);
-              }}
+            <h3 className="section-title deck-panel-heading">
+              {t("discover.filtersGenresHeading")}
+            </h3>
+            {allGenres.length > 0 && (
+              <div className="chip-row deck-panel-genres deck-panel-chips">
+                {allGenres.map((g) => (
+                  <button
+                    key={g}
+                    type="button"
+                    className={`chip-toggle${bannedGenres.has(g) ? " active" : ""}`}
+                    aria-pressed={bannedGenres.has(g)}
+                    onClick={() => toggle(bannedGenres, setBannedGenres, g)}
+                  >
+                    {g}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            <h3 className="section-title deck-panel-heading">
+              {t("discover.filtersOtherHeading")}
+            </h3>
+            <div
+              className={`chip-row ${hideUpcoming && !statusDataSynced ? "deck-panel-chips-tight" : "deck-panel-chips"}`}
             >
-              {t("discover.filtersHideUpcoming")}
-            </button>
-          </div>
-          {hideUpcoming && !statusDataSynced && (
-            <p className="muted text-sm text-danger deck-panel-warn">
-              {t("discover.filtersHideUpcomingNeedsSync")}
-            </p>
-          )}
-
-          <h3 className="section-title deck-panel-heading">
-            {t("discover.filtersDateHeading")}
-          </h3>
-          <DateRangeControl
-            minStartDate={minStartDate}
-            maxStartDate={maxStartDate}
-            onChange={(min, max) => {
-              setMinStartDate(min);
-              setMaxStartDate(max);
-              setSaved(false);
-            }}
-          />
-          <p className="muted text-sm deck-panel-date-hint">
-            {t("discover.filtersDateHint")}
-          </p>
-
-          <h3 className="section-title deck-panel-heading">
-            {t("discover.filtersScoreHeading")}
-          </h3>
-          <ScoreRangeControl
-            minScore={minScore}
-            minOnly={true}
-            onChange={(min) => {
-              setMinScore(min);
-              setSaved(false);
-            }}
-          />
-
-          <div className="row deck-panel-save">
-            <button className="btn btn-primary" onClick={save} disabled={saving}>
-              {saving ? t("discover.filtersSaving") : t("discover.filtersSave")}
-            </button>
-            <button
-              type="button"
-              className="btn"
-              onClick={handleResetFilters}
-              disabled={activeBans === 0 && nicheBias === 0}
-            >
-              {t("discover.filtersReset")}
-            </button>
-            {saved && <span className="muted">{t("discover.filtersSaved")}</span>}
-            {!saving && !saved && (
-              <span className="muted">{t("discover.filtersAutoHint")}</span>
+              <button
+                type="button"
+                className={`chip-toggle${hideUpcoming ? " active" : ""}`}
+                aria-pressed={hideUpcoming}
+                onClick={() => {
+                  setHideUpcoming((prev) => !prev);
+                  setSaved(false);
+                }}
+              >
+                {t("discover.filtersHideUpcoming")}
+              </button>
+            </div>
+            {hideUpcoming && !statusDataSynced && (
+              <p className="muted text-sm text-danger deck-panel-warn">
+                {t("discover.filtersHideUpcomingNeedsSync")}
+              </p>
             )}
           </div>
-        </div>
-      )}
-    </aside>
+        )}
+      </aside>
+
+      {children}
+
+      <aside className="deck-panel deck-panel-right" aria-label={t("discover.deckPanelRightTitle")}>
+        {toggleButton(t("discover.deckPanelRightTitle"), "deck-panel-right-body", false)}
+        {open && (
+          <div id="deck-panel-right-body" className="deck-panel-body">
+            <h3 className="section-title deck-panel-heading">
+              {t("discover.filtersDateHeading")}
+            </h3>
+            <DateRangeControl
+              minStartDate={minStartDate}
+              maxStartDate={maxStartDate}
+              onChange={(min, max) => {
+                setMinStartDate(min);
+                setMaxStartDate(max);
+                setSaved(false);
+              }}
+            />
+            <p className="muted text-sm deck-panel-date-hint">{t("discover.filtersDateHint")}</p>
+
+            <h3 className="section-title deck-panel-heading">
+              {t("discover.filtersScoreHeading")}
+            </h3>
+            <ScoreRangeControl
+              minScore={minScore}
+              minOnly={true}
+              onChange={(min) => {
+                setMinScore(min);
+                setSaved(false);
+              }}
+            />
+
+            <div className="row deck-panel-save">
+              <button className="btn btn-primary" onClick={save} disabled={saving}>
+                {saving ? t("discover.filtersSaving") : t("discover.filtersSave")}
+              </button>
+              <button
+                type="button"
+                className="btn"
+                onClick={handleResetFilters}
+                disabled={activeBans === 0 && nicheBias === 0}
+              >
+                {t("discover.filtersReset")}
+              </button>
+              {saved && <span className="muted">{t("discover.filtersSaved")}</span>}
+              {!saving && !saved && <span className="muted">{t("discover.filtersAutoHint")}</span>}
+            </div>
+          </div>
+        )}
+      </aside>
+    </div>
   );
 }

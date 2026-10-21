@@ -402,12 +402,16 @@ pub struct Partition {
 
 /// The full partition list for an initial/from-scratch sync:
 ///
-/// 1. One pre-modern range (`startDate_lesser: 19400101` — a few hundred
+/// 1. The recent window first: `current_year + 2` down to `current_year - 1`
+///    descending, followed by `NOT_YET_RELEASED`. This ensures that on a fresh
+///    install, currently-airing and upcoming titles populate the catalog within
+///    the first few seconds, allowing "Esta temporada" to display immediately
+///    without waiting for the multi-minute crawl of the entire historical back-catalog.
+/// 2. Modern years from `current_year - 2` down to 2000 descending.
+/// 3. Historical decades from 1990 down to 1940 descending.
+/// 4. One pre-modern range (`startDate_lesser: 19400101` — a few hundred
 ///    titles total).
-/// 2. One partition per decade for 1940-1999, then one per year from 2000
-///    through `current_year + 2` — none approaches the 5000-row cap.
-/// 3. One `NOT_YET_RELEASED` partition (undated upcoming titles).
-/// 4. One final unfiltered `sort: ID` pass, capped at the first 100 pages
+/// 5. One final unfiltered `sort: ID` pass, capped at the first 100 pages
 ///    (the 5000-row cap) — catches undated *non*-upcoming leftovers among
 ///    the oldest ids. Anything past that (undated + not upcoming + id
 ///    beyond the first 5000) is an accepted, documented gap.
@@ -416,28 +420,9 @@ pub struct Partition {
 /// keyed on AniList's own numeric id.
 pub fn build_partitions(current_year: i32) -> Vec<Partition> {
     let mut partitions = Vec::new();
-    partitions.push(Partition {
-        label: "pre-1940".to_string(),
-        filter: PartitionFilter::DateRange {
-            start_date_greater: None,
-            start_date_lesser: Some(19_400_101),
-        },
-        max_pages: None,
-    });
-    // 1940-1999 holds only a few hundred titles per decade, so one partition
-    // per decade (one request of ten pages) instead of sixty near-empty year
-    // partitions that each cost a whole paced request.
-    for decade in (1940..2000).step_by(10) {
-        partitions.push(Partition {
-            label: format!("decade-{decade}"),
-            filter: PartitionFilter::DateRange {
-                start_date_greater: Some((decade as i64 - 1) * 10_000 + 1231),
-                start_date_lesser: Some((decade as i64 + 10) * 10_000 + 101),
-            },
-            max_pages: None,
-        });
-    }
-    for year in 2000..=(current_year + 2) {
+
+    // 1. Recent years window (newest first: current_year + 2 down to current_year - 1)
+    for year in (current_year - 1..=current_year + 2).rev() {
         partitions.push(Partition {
             label: format!("year-{year}"),
             filter: PartitionFilter::DateRange {
@@ -447,16 +432,58 @@ pub fn build_partitions(current_year: i32) -> Vec<Partition> {
             max_pages: None,
         });
     }
+
+    // 2. Upcoming / undated titles
     partitions.push(Partition {
         label: "not-yet-released".to_string(),
         filter: PartitionFilter::NotYetReleased,
         max_pages: None,
     });
+
+    // 3. Remaining modern years: current_year - 2 down to 2000 descending
+    for year in (2000..=(current_year - 2)).rev() {
+        partitions.push(Partition {
+            label: format!("year-{year}"),
+            filter: PartitionFilter::DateRange {
+                start_date_greater: Some((year as i64 - 1) * 10_000 + 1231),
+                start_date_lesser: Some((year as i64 + 1) * 10_000 + 101),
+            },
+            max_pages: None,
+        });
+    }
+
+    // 4. Decades descending from 1990 down to 1940
+    // 1940-1999 holds only a few hundred titles per decade, so one partition
+    // per decade (one request of ten pages) instead of sixty near-empty year
+    // partitions that each cost a whole paced request.
+    for decade in (1940..2000).step_by(10).rev() {
+        partitions.push(Partition {
+            label: format!("decade-{decade}"),
+            filter: PartitionFilter::DateRange {
+                start_date_greater: Some((decade as i64 - 1) * 10_000 + 1231),
+                start_date_lesser: Some((decade as i64 + 10) * 10_000 + 101),
+            },
+            max_pages: None,
+        });
+    }
+
+    // 5. Pre-modern range (startDate_lesser: 19400101)
+    partitions.push(Partition {
+        label: "pre-1940".to_string(),
+        filter: PartitionFilter::DateRange {
+            start_date_greater: None,
+            start_date_lesser: Some(19_400_101),
+        },
+        max_pages: None,
+    });
+
+    // 6. Catch-all pass
     partitions.push(Partition {
         label: "catch-all".to_string(),
         filter: PartitionFilter::Unfiltered,
         max_pages: Some(100),
     });
+
     partitions
 }
 
@@ -830,10 +857,33 @@ mod tests {
     }
 
     #[test]
-    fn build_partitions_starts_with_pre_1940_and_ends_with_catch_all() {
+    fn build_partitions_orders_newest_first_and_ends_with_catch_all() {
         let partitions = build_partitions(2026);
-        assert_eq!(partitions.first().unwrap().label, "pre-1940");
+        assert_eq!(partitions[0].label, "year-2028");
+        assert_eq!(partitions[1].label, "year-2027");
+        assert_eq!(partitions[2].label, "year-2026");
+        assert_eq!(partitions[3].label, "year-2025");
+        assert_eq!(partitions[4].label, "not-yet-released");
+        assert_eq!(partitions[partitions.len() - 2].label, "pre-1940");
         assert_eq!(partitions.last().unwrap().label, "catch-all");
+
+        // Must contain exactly the same set of labels as the historical
+        // oldest-first ordering.
+        let mut old_labels: Vec<String> = Vec::new();
+        old_labels.push("pre-1940".to_string());
+        for decade in (1940..2000).step_by(10) {
+            old_labels.push(format!("decade-{decade}"));
+        }
+        for year in 2000..=2028 {
+            old_labels.push(format!("year-{year}"));
+        }
+        old_labels.push("not-yet-released".to_string());
+        old_labels.push("catch-all".to_string());
+        old_labels.sort();
+
+        let mut new_labels: Vec<String> = partitions.iter().map(|p| p.label.clone()).collect();
+        new_labels.sort();
+        assert_eq!(new_labels, old_labels);
     }
 
     #[test]
@@ -920,8 +970,26 @@ mod tests {
         let inc = incremental_partitions(2026);
         assert!(inc.iter().any(|p| p.label == "year-2025"));
         assert!(inc.iter().any(|p| p.label == "year-2026"));
+        assert!(inc.iter().any(|p| p.label == "year-2027"));
         assert!(inc.iter().any(|p| p.label == "year-2028"));
         assert!(inc.iter().any(|p| p.filter == PartitionFilter::NotYetReleased));
+        assert_eq!(inc.len(), 5);
+        let labels: Vec<&str> = inc.iter().map(|p| p.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            vec!["year-2028", "year-2027", "year-2026", "year-2025", "not-yet-released"]
+        );
+    }
+
+    #[test]
+    fn pending_partitions_with_single_completed_omits_it_and_preserves_order() {
+        let all = build_partitions(2026);
+        let pending = pending_partitions(&all, &["year-2028".to_string()]);
+        assert_eq!(pending.len(), all.len() - 1);
+        assert!(!pending.iter().any(|p| p.label == "year-2028"));
+        let all_except_first: Vec<String> = all[1..].iter().map(|p| p.label.clone()).collect();
+        let pending_labels: Vec<String> = pending.iter().map(|p| p.label.clone()).collect();
+        assert_eq!(pending_labels, all_except_first);
     }
 
     #[test]

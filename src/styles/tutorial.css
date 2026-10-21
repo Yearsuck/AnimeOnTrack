@@ -1,0 +1,135 @@
+/* ---------- First-run tutorial ---------- */
+.tutorial-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--sp-4);
+  background: var(--overlay-strong);
+  animation: tutorial-fade var(--dur-slow) var(--ease-out);
+}
+/* With a ringed tab the ring's huge shadow does the dimming (spotlight). */
+.tutorial-backdrop-spot {
+  background: transparent;
+}
+
+.tutorial-ring {
+  position: fixed;
+  left: 0;
+  top: 0;
+  border-radius: var(--radius);
+  pointer-events: none;
+  box-shadow: 0 0 0 2px var(--accent), 0 0 0 9999px var(--overlay-strong);
+  transition: transform var(--dur-slow) var(--ease-out), width var(--dur-slow) var(--ease-out),
+    height var(--dur-slow) var(--ease-out);
+}
+
+.tutorial-card {
+  position: relative;
+  width: 100%;
+  max-width: 440px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  padding: var(--sp-5);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  animation: tutorial-pop var(--dur-slow) var(--ease-out);
+}
+
+.tutorial-step {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  animation: tutorial-fade var(--dur-slow) var(--ease-out);
+}
+
+.tutorial-art {
+  width: 100%;
+  height: auto;
+  max-height: 120px;
+}
+.tutorial-art .ta-panel { fill: var(--surface-2); }
+.tutorial-art .ta-card { fill: var(--surface-3); }
+.tutorial-art .ta-line { fill: var(--surface-4); }
+.tutorial-art .ta-muted { fill: var(--muted-2); }
+.tutorial-art .ta-accent { fill: var(--accent-solid); }
+.tutorial-art .ta-onaccent { fill: #fff; }
+.tutorial-art .ta-heart { fill: var(--accent); }
+.tutorial-art .ta-ok { fill: var(--accent-dim); stroke: var(--accent); stroke-width: 1.5; }
+.tutorial-art .ta-chip { fill: var(--surface-3); }
+.tutorial-art .ta-chip-on { fill: var(--accent-solid); }
+.tutorial-art .ta-arrow {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.tutorial-title {
+  margin: 0;
+  font-size: var(--fs-xl);
+  font-weight: var(--fw-bold);
+  line-height: var(--lh-tight);
+  color: var(--text);
+}
+.tutorial-body {
+  margin: 0;
+  font-size: var(--fs-md);
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.tutorial-dots {
+  display: flex;
+  justify-content: center;
+  gap: var(--sp-2);
+}
+.tutorial-dot {
+  width: 8px;
+  height: 8px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: var(--surface-4);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), width var(--dur-fast) var(--ease);
+}
+.tutorial-dot.active {
+  width: 22px;
+  background: var(--accent-solid);
+}
+.tutorial-dot:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.tutorial-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+.tutorial-nav {
+  display: flex;
+  gap: var(--sp-2);
+}
+
+@keyframes tutorial-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes tutorial-pop {
+  from { opacity: 0; transform: scale(0.96) translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tutorial-backdrop, .tutorial-card, .tutorial-step { animation: none; }
+  .tutorial-ring, .tutorial-dot { transition: none; }
+}

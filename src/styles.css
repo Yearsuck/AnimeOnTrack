@@ -71,6 +71,9 @@
   --dur: 180ms;
   --dur-slow: 320ms;
 
+  /* Layers that must sit above sticky bars (topbar is 50). */
+  --z-menu: 200;
+
   /* Type scale. Every size the UI uses, so a component never invents its own
      (the screen previously carried 13px, 13.5px, 12.5px and 22px, some of
      them only as inline styles). Tight by web standards on purpose — this is
@@ -826,6 +829,429 @@ textarea.input {
 .lib-section-summary::-webkit-details-marker {
   display: none;
 }
+.lib-section-chevron {
+  flex: none;
+  color: var(--muted);
+  transition: transform var(--dur-fast) var(--ease);
+}
+.lib-section[open] > .lib-section-summary .lib-section-chevron {
+  transform: rotate(90deg);
+}
+.lib-section-summary:focus-visible,
+select:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  box-shadow: var(--focus-ring);
+}
+
+/* ---------- Inputs ---------- */
+.input,
+select.input {
+  width: 100%;
+  min-height: 32px;
+  padding: 0 var(--sp-3);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-family: inherit;
+  font-size: var(--fs-base);
+  outline: none;
+  transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+}
+/* A textarea can't be a single line, so it keeps vertical padding and its own
+   line height. */
+textarea.input {
+  padding: var(--sp-2) var(--sp-3);
+  line-height: var(--lh-base);
+}
+.input::placeholder {
+  color: var(--muted-2);
+}
+.input:hover:not(:focus) {
+  border-color: var(--muted-2);
+}
+.input:focus {
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+}
+.input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.search {
+  position: relative;
+  max-width: 340px;
+  flex: 1;
+}
+.search .input {
+  padding-left: 34px;
+}
+.search .icon {
+  position: absolute;
+  left: 11px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--muted-2);
+}
+
+/* ---------- Filter bar (Catálogo search/filters) ---------- */
+.filter-bar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-5);
+}
+.filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-3);
+}
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+.chip-toggle {
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--muted);
+  padding: 6px 13px;
+  border-radius: var(--radius-round);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.chip-toggle:hover {
+  color: var(--text);
+  background: var(--surface-3);
+}
+.chip-toggle.active {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+.chip-toggle.chip-include.active {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+.chip-toggle.chip-exclude.active {
+  color: var(--danger);
+  border-color: var(--danger);
+  background: var(--danger-dim);
+}
+.chip-state {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
+  line-height: 1;
+}
+
+/* ---------- Layout ---------- */
+.page {
+  padding: 20px;
+  padding-bottom: 40vh;
+  max-width: 1600px;
+  margin: 0 auto;
+}
+.page-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  margin-bottom: var(--sp-5);
+  min-height: 32px;
+}
+.page-title {
+  font-size: var(--fs-xl);
+  font-weight: var(--fw-bold);
+  line-height: var(--lh-tight);
+  letter-spacing: -0.015em;
+  margin: 0;
+}
+/* One-line explanation under a page title. Optional, but when a view uses it
+   the treatment is the same everywhere instead of an inline muted span. */
+.page-subtitle {
+  color: var(--muted);
+  font-size: var(--fs-base);
+  margin: var(--sp-1) 0 0;
+}
+.muted {
+  color: var(--muted);
+}
+/* Generic flex row used to lay out a button/input group inline. Was
+   previously only defined in the unimported App.css, so every `.row` usage
+   across the app (Settings, DeckPanel, Onboarding) silently rendered
+   unstyled — fixed here instead of patched per-view. */
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+.empty {
+  text-align: center;
+  color: var(--muted);
+  font-size: var(--fs-base);
+  padding: var(--sp-8) var(--sp-5);
+}
+
+/* ---------- Loading skeletons ----------
+   A grey block that pulses where content will land, instead of an empty page
+   that suddenly reflows when data arrives. Sized by the caller; the shimmer
+   is shared. Respects prefers-reduced-motion via the global override above. */
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--surface-2) 25%,
+    var(--surface-3) 50%,
+    var(--surface-2) 75%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.4s var(--ease) infinite;
+  border-radius: var(--radius-sm);
+}
+@keyframes skeleton-shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+.skeleton-text {
+  height: 12px;
+  margin-bottom: var(--sp-2);
+}
+.skeleton-title {
+  height: 18px;
+  width: 40%;
+  margin-bottom: var(--sp-3);
+}
+
+/* ---------- Stat tile ----------
+   The dashboard number card, previously assembled from four inline styles
+   per instance in Stats.tsx and StatsInsights.tsx. */
+.stat-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--sp-4);
+  transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+}
+.stat-card:hover {
+  border-color: var(--surface-3);
+  box-shadow: var(--shadow-sm);
+}
+.stat-label {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.stat-value {
+  font-size: var(--fs-2xl);
+  font-weight: var(--fw-bold);
+  line-height: var(--lh-tight);
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  margin-top: var(--sp-1);
+}
+.stat-help {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  margin-top: var(--sp-1);
+}
+
+/* ---------- Poster grid (airing) ---------- */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 18px;
+}
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  transition: transform var(--dur) var(--ease-out), border-color var(--dur-fast) var(--ease),
+    box-shadow var(--dur) var(--ease-out);
+  content-visibility: auto;
+  contain-intrinsic-size: 150px 300px;
+}
+.card:hover {
+  transform: translateY(-5px);
+  border-color: var(--surface-3);
+  box-shadow: var(--shadow-md), 0 0 0 1px var(--accent-dim);
+}
+.poster {
+  position: relative;
+  aspect-ratio: 2 / 3;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+.poster img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.poster .chip {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: var(--overlay-strong);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
+  color: var(--accent);
+  backdrop-filter: blur(4px);
+}
+/* Next-episode countdown ("en 2 h" / "hace 5 h") — same chip treatment as
+   SIGUIENDO but anchored to the opposite corner so both can coexist, and in
+   the neutral text color: it's schedule info, not a followed-state accent. */
+.poster .chip.chip-countdown {
+  left: auto;
+  right: 8px;
+  color: var(--text);
+  font-weight: var(--fw-semibold);
+}
+.card-body {
+  padding: 10px 10px 12px;
+}
+.card-title {
+  font-size: var(--fs-base);
+  font-weight: var(--fw-semibold);
+  line-height: 1.3;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  min-height: 34px;
+  margin-bottom: 8px;
+}
+.follow-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+.follow-btn.on {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* ---------- Pending / episode lists ---------- */
+.series-block {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: var(--sp-4);
+  overflow: hidden;
+}
+/* Last block in a stack owns no trailing margin — the container's own spacing
+   ends the section. Saves the `style={{ marginBottom: 0 }}` overrides that
+   were sprinkled across the stats views. */
+.series-block:last-child {
+  margin-bottom: 0;
+}
+.series-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+}
+.series-head img {
+  width: 110px;
+  height: 156px;
+  object-fit: cover;
+  border-radius: 8px;
+  background: var(--surface-3);
+  box-shadow: var(--shadow-sm);
+  flex-shrink: 0;
+}
+/* Initials tile shown instead of the poster when the cover is missing or blocked: same box as the
+ * <img> above (the generic .poster-fallback is 100% x 100%, which in this flex row would swell and
+ * squeeze the name/count). */
+.series-head .poster-fallback {
+  width: 110px;
+  height: 156px;
+  flex-shrink: 0;
+  border-radius: 8px;
+  box-shadow: var(--shadow-sm);
+}
+.series-head .name {
+  font-weight: var(--fw-bold);
+  font-size: var(--fs-lg);
+  letter-spacing: -0.01em;
+}
+.series-head .count {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+/* Heading for a bordered block or a group of tiles. One weight and size for
+   all of them; several views were reusing `.card-title`, which is the poster
+   card's clamped two-line title and carries a min-height meant for that. */
+.section-title {
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  letter-spacing: -0.01em;
+  margin: 0;
+}
+.ep-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-soft);
+  transition: background var(--dur-fast) var(--ease), opacity var(--dur) var(--ease),
+    transform var(--dur) var(--ease);
+}
+.ep-row:last-child {
+  border-bottom: none;
+}
+.ep-row:hover {
+  background: var(--surface-2);
+}
+/* ---------- Library ---------- */
+/* Status-grouped disclosures ("Viendo" / "Pendientes de empezar" /
+   "Completadas") — <details>/<summary> gives keyboard + screen-reader
+   behavior (Tab reaches it, Enter/Space toggle it) for free. */
+.lib-section {
+  margin-bottom: var(--sp-6);
+}
+.lib-section:not(:last-child) {
+  padding-bottom: var(--sp-5);
+  border-bottom: 1px solid var(--border);
+}
+.lib-section-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  cursor: pointer;
+  list-style: none;
+  padding: var(--sp-2) 0;
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-bold);
+  color: var(--text);
+  user-select: none;
+  border-radius: var(--radius-sm);
+}
+.lib-section-summary::-webkit-details-marker {
+  display: none;
+}
 .lib-section-summary::before {
   content: "▸";
   display: inline-block;
@@ -933,8 +1359,14 @@ textarea.input {
   font-weight: var(--fw-semibold);
   font-size: var(--fs-sm);
   background: var(--surface-2);
-  padding: 2px 9px;
+  padding: var(--sp-1) var(--sp-2);
   border-radius: var(--radius-round);
+  min-width: 24px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.lib-section-summary:hover .lib-section-count {
+  background: var(--surface-3);
 }
 .lib-section .grid {
   margin-top: var(--sp-4);
@@ -946,6 +1378,11 @@ textarea.input {
 .lib-card {
   cursor: pointer;
   text-align: left;
+}
+/* Shadow-only hover (no lift): the card does not move under the pointer. */
+.lib-card:hover {
+  transform: none;
+  box-shadow: var(--shadow-md), 0 0 0 1px var(--accent-dim);
 }
 .lib-card:focus-visible {
   outline: 2px solid var(--accent);
@@ -965,31 +1402,31 @@ textarea.input {
   letter-spacing: 0.5px;
 }
 .lib-progress-text {
-  margin-top: 5px;
+  margin-top: var(--sp-1);
   font-size: var(--fs-xs);
   font-variant-numeric: tabular-nums;
 }
 .lib-play-btn {
   width: 100%;
-  margin-top: 9px;
+  margin-top: var(--sp-2);
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: var(--sp-2);
 }
 
-/* Overflow "⋯" menu on Watching library cards (reclassify actions:
-   unfollow / move to want) — anchored inside .poster, which already has
-   position: relative for the chip corners. */
+/* Overflow menu trigger on cards (Library, Descubrir lists), anchored inside
+   .poster. The list itself is portalled to <body> (see components/Menu.tsx),
+   so it is never clipped by the card/poster overflow. */
 .card-menu-wrap {
   position: absolute;
-  top: 8px;
-  right: 8px;
+  top: var(--sp-2);
+  right: var(--sp-2);
   z-index: 5;
 }
 .card-menu-btn {
-  width: 26px;
-  height: 26px;
+  width: 32px;
+  height: 32px;
   border-radius: var(--radius-round);
   border: 1px solid var(--border);
   background: var(--overlay-strong);
@@ -998,47 +1435,85 @@ textarea.input {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-weight: var(--fw-bold);
-  line-height: 1;
+  padding: 0;
   cursor: pointer;
+  transition: opacity var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease),
+    background var(--dur-fast) var(--ease);
 }
-.card-menu-btn:hover {
+.card-menu-btn:hover,
+.card-menu-btn[aria-expanded="true"] {
   color: var(--accent);
 }
-.card-menu-list {
-  position: absolute;
-  top: 30px;
-  right: 0;
-  min-width: 170px;
+.card-menu-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+/* Library cards: quiet until the card is hovered/focused or the menu is open. */
+.lib-card .card-menu-btn {
+  opacity: 0;
+}
+.lib-card:hover .card-menu-btn,
+.lib-card:focus-within .card-menu-btn,
+.lib-card .card-menu-btn[aria-expanded="true"] {
+  opacity: 1;
+}
+
+.menu-list {
+  position: fixed;
+  z-index: var(--z-menu);
+  min-width: 180px;
+  padding: var(--sp-1);
   background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  box-shadow: var(--shadow-md);
-  overflow: hidden;
-  z-index: 10;
+  box-shadow: var(--shadow-lg);
+  animation: menu-in var(--dur-fast) var(--ease-out);
+  transform-origin: top right;
 }
-.card-menu-item {
-  display: block;
+@keyframes menu-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
   width: 100%;
   text-align: left;
   padding: var(--sp-2) var(--sp-3);
   background: none;
   border: none;
+  border-radius: var(--radius-sm);
   color: var(--text);
   font-family: inherit;
   font-size: var(--fs-sm);
   cursor: pointer;
   transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
-.card-menu-item:hover {
+.menu-item:hover,
+.menu-item:focus-visible {
   background: var(--surface-3);
+  outline: none;
+}
+.menu-item:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+.menu-item-icon {
+  display: inline-flex;
 }
 /* Destructive entry (unfollow / mark-not-watched): red text, red tint on
    hover, so a reversible-but-consequential action reads as one. */
-.card-menu-item.danger {
+.menu-item.danger {
   color: var(--danger);
 }
-.card-menu-item.danger:hover {
+.menu-item.danger:hover,
+.menu-item.danger:focus-visible {
   background: var(--danger-dim);
 }
 
@@ -1351,8 +1826,16 @@ progress.scanbar-track::-webkit-progress-value {
   padding-top: 8px;
 }
 .swipe-card {
-  width: 280px;
+  width: min(320px, 100%);
+  box-shadow: var(--shadow-lg);
+  animation: swipe-card-in var(--dur-slow) var(--ease-out);
   transition: opacity var(--dur) var(--ease-out), transform var(--dur) var(--ease-out);
+}
+@keyframes swipe-card-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.97);
+  }
 }
 .swipe-card.swipe-out-discard {
   opacity: 0;
@@ -1447,10 +1930,10 @@ progress.scanbar-track::-webkit-progress-value {
   justify-content: center;
 }
 
-/* ---------- Descubrir: swipe two-column layout + deck settings panel ---------- */
+/* ---------- Descubrir: three-column deck (filters | card | filters) ---------- */
 .swipe-layout {
   display: grid;
-  grid-template-columns: minmax(240px, 280px) 1fr;
+  grid-template-columns: minmax(240px, 300px) minmax(300px, 1fr) minmax(240px, 300px);
   gap: var(--sp-5);
   align-items: start;
 }
@@ -1505,15 +1988,33 @@ progress.scanbar-track::-webkit-progress-value {
   max-height: 220px;
   overflow-y: auto;
 }
-@media (max-width: 900px) {
+/* Under ~1000px there is no room for three columns: the card goes first and
+   the two filter panels stack below it (DOM/focus order is unchanged). */
+@media (max-width: 1000px) {
   .swipe-layout {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .swipe-layout > .swipe-stage {
+    order: -1;
   }
   .deck-panel {
     position: static;
     max-width: 520px;
     margin: 0 auto;
     width: 100%;
+  }
+}
+.deck-panel-left,
+.deck-panel-right {
+  box-shadow: var(--shadow-sm);
+}
+.deck-panel-body {
+  animation: deck-panel-in var(--dur) var(--ease-out);
+}
+@keyframes deck-panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
   }
 }
 
@@ -2498,8 +2999,8 @@ select.lib-filter-select {
 }
 
 /* ---------- Descubrir (view-specific) ---------- */
-.discover-tabs {
-  margin-bottom: var(--sp-5);
+.catalog-sections {
+  flex-shrink: 0;
 }
 .deck-panel-mode {
   display: flex;

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
   decideCatalogCard,
@@ -64,7 +64,14 @@ const catalogFilterCache = createFilterCache<{
   page: number;
 }>();
 
-export function Catalog({ onChanged }: { onChanged?: () => void }) {
+export function Catalog({
+  onChanged,
+  headExtra,
+}: {
+  onChanged?: () => void;
+  /** Section switch (Explorar / Descubrir / Listas) rendered next to the title. */
+  headExtra?: ReactNode;
+}) {
   const t = useT();
 
   const EPISODE_OPTIONS: { value: string; label: string }[] = useMemo(
@@ -499,6 +506,7 @@ export function Catalog({ onChanged }: { onChanged?: () => void }) {
     <div className="page">
       <div className="page-head">
         <h2 className="page-title">{t("nav.catalog")}</h2>
+        {headExtra}
         <span className="muted">
           {totalSynced !== null
             ? t("catalog.totalSynced", { count: totalSynced })

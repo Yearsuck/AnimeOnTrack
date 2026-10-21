@@ -35,29 +35,22 @@ describe("shortcutFor", () => {
     });
   });
 
-  it("maps digit '4' to descubrir", () => {
+  it("maps digit '4' to catalog", () => {
     expect(shortcutFor(createEvent({ key: "4" }))).toEqual({
-      kind: "navigate",
-      view: "descubrir",
-    });
-  });
-
-  it("maps digit '5' to catalog", () => {
-    expect(shortcutFor(createEvent({ key: "5" }))).toEqual({
       kind: "navigate",
       view: "catalog",
     });
   });
 
-  it("maps digit '6' to stats", () => {
-    expect(shortcutFor(createEvent({ key: "6" }))).toEqual({
+  it("maps digit '5' to stats", () => {
+    expect(shortcutFor(createEvent({ key: "5" }))).toEqual({
       kind: "navigate",
       view: "stats",
     });
   });
 
-  it("maps digit '7' to settings", () => {
-    expect(shortcutFor(createEvent({ key: "7" }))).toEqual({
+  it("maps digit '6' to settings", () => {
+    expect(shortcutFor(createEvent({ key: "6" }))).toEqual({
       kind: "navigate",
       view: "settings",
     });
@@ -133,7 +126,8 @@ describe("shortcutFor", () => {
     expect(shortcutFor(createEvent({ key: "a" }))).toBeNull();
   });
 
-  it("returns null for digits out of range '8' and '0'", () => {
+  it("returns null for digits out of range '7', '8' and '0'", () => {
+    expect(shortcutFor(createEvent({ key: "7" }))).toBeNull();
     expect(shortcutFor(createEvent({ key: "8" }))).toBeNull();
     expect(shortcutFor(createEvent({ key: "0" }))).toBeNull();
     expect(shortcutFor(createEvent({ key: "9" }))).toBeNull();
@@ -164,22 +158,22 @@ describe("shortcutFor", () => {
 });
 
 describe("shouldNavigateToCatalogOnSearch", () => {
-  it("returns false when on descubrir view with listas subview", () => {
-    expect(shouldNavigateToCatalogOnSearch("descubrir", "listas")).toBe(false);
+  it("returns false on the catalog view with the listas section (Listas handles '/')", () => {
+    expect(shouldNavigateToCatalogOnSearch("catalog", "listas")).toBe(false);
   });
 
-  it("returns true when on descubrir view with swipe subview", () => {
-    expect(shouldNavigateToCatalogOnSearch("descubrir", "swipe")).toBe(true);
+  it("returns true on the catalog view with the swipe or explore sections", () => {
+    expect(shouldNavigateToCatalogOnSearch("catalog", "swipe")).toBe(true);
+    expect(shouldNavigateToCatalogOnSearch("catalog", "explore")).toBe(true);
   });
 
-  it("returns true when on descubrir view without subview", () => {
-    expect(shouldNavigateToCatalogOnSearch("descubrir")).toBe(true);
+  it("returns true on the catalog view without a section", () => {
+    expect(shouldNavigateToCatalogOnSearch("catalog")).toBe(true);
   });
 
-  it("returns true on other views even if subview is listas", () => {
+  it("returns true on other views even if the section is listas", () => {
     expect(shouldNavigateToCatalogOnSearch("airing", "listas")).toBe(true);
     expect(shouldNavigateToCatalogOnSearch("library", "listas")).toBe(true);
-    expect(shouldNavigateToCatalogOnSearch("catalog", "listas")).toBe(true);
     expect(shouldNavigateToCatalogOnSearch("pending", "listas")).toBe(true);
   });
 });

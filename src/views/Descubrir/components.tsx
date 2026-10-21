@@ -1,6 +1,5 @@
-import { useRef, useState } from "react";
 import type { Series } from "../../types";
-import { useOutsideClick } from "../../lib/useOutsideClick";
+import { Menu } from "../../components/Menu";
 import { listasInitials } from "./helpers";
 import { resolveCoverUrl, useCoverFailure } from "../../lib/posterFallback";
 
@@ -47,37 +46,13 @@ export function OverflowMenu({
   label: string;
   items: { label: string; onClick: () => void }[];
 }) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-  useOutsideClick(open, ref, () => setOpen(false));
   if (items.length === 0) return null;
   return (
-    <div className="card-menu-wrap" ref={ref}>
-      <button
-        type="button"
-        className="card-menu-btn"
-        aria-label={label}
-        onClick={() => setOpen((v) => !v)}
-      >
-        ⋯
-      </button>
-      {open && (
-        <div className="card-menu-list">
-          {items.map((it, i) => (
-            <button
-              key={i}
-              type="button"
-              className="card-menu-item"
-              onClick={() => {
-                setOpen(false);
-                it.onClick();
-              }}
-            >
-              {it.label}
-            </button>
-          ))}
-        </div>
-      )}
+    <div className="card-menu-wrap">
+      <Menu
+        label={label}
+        items={items.map((it) => ({ label: it.label, onSelect: it.onClick }))}
+      />
     </div>
   );
 }

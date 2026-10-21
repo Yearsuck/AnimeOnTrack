@@ -6,6 +6,15 @@ import { ProgressBar } from "./views/ProgressBar";
 import { WindowControls } from "./views/WindowControls";
 import { ShortcutsOverlay } from "./views/ShortcutsOverlay";
 import { UpdateBanner } from "./views/UpdateBanner";
+import { Tutorial } from "./views/Tutorial";
+import {
+  TUTORIAL_AFTER_SPLASH_MS,
+  readTutorialSeen,
+  shouldAutoShowTutorial,
+  writeTutorialSeen,
+} from "./lib/tutorial";
+import { CatalogSectionSwitch } from "./views/CatalogSectionSwitch";
+import { DEFAULT_CATALOG_SECTION, discoverSubViewFor, type CatalogSection } from "./lib/catalogSection";
 import { shortcutFor, shouldNavigateToCatalogOnSearch } from "./lib/shortcuts";
 import {
   listAiring,
@@ -50,9 +59,36 @@ type View =
   | "airing"
   | "library"
   | "stats"
-  | "descubrir"
   | "catalog"
   | "settings";
+
+/**
+ * Fire-and-forget catalog maintenance, none of which blocks the UI.
+ * Deliberately sequential, not Promise.all: the two AniList-facing
+ * steps are each paced at ~28.6 req/min against a 30/min cap, so
+ * overlapping them would just earn 429s.
+ * Also called right after Onboarding: a brand-new install never reaches the startup call
+ * (listAiring throws first), so without this the catalog would not start syncing until the
+ * next launch and "Esta temporada" would stay empty.
+ */
+async function runCatalogMaintenance() {
+  // Backfills anilist_catalog.start_date so "Esta temporada" can
+  // resolve unfollowed airing shows too. Throttled server-side.
+  await maybeSyncCatalogIncremental().catch(() => {});
+  // Refills the columns that predate the first full catalog crawl
+  // (duration, romaji, studio...). Self-throttling: once no rows are
+  // stale it returns immediately, and an interrupted run simply picks
+  // up where it left off on the next launch.
+  await backfillCatalogMetadata().catch(() => {});
+  // Local and instant, but it needs the backfilled romaji titles to
+  // match well, so it goes right after the backfill.
+  await linkSeriesToCatalog().catch(() => {});
+  // Paced AniList refresh of airing/recent statuses (~20s of
+  // requests, once per 6h): last so it never delays the linking.
+  await refreshCatalogStatus().catch(() => {});
+  // Last: ~1 request per unlinked title, so it never delays the steps above.
+  await linkUnlinkedViaAnilist().catch(() => {});
+}
 
 export default function App() {
   const t = useT();
@@ -79,8 +115,15 @@ export default function App() {
   // switching tabs and back doesn't rebuild the renderer or re-scramble the
   // layout. Lazy: only mounts on first visit, not eagerly at app start.
   const [statsVisited, setStatsVisited] = useState(false);
-  const [descubrirSubView, setDescubrirSubView] = useState<"swipe" | "listas">("swipe");
+  // Catálogo's active sub-section (Explorar / Descubrir / Listas). Kept here,
+  // not in the view, so it survives switching tabs and back.
+  const [catalogSection, setCatalogSection] = useState<CatalogSection>(DEFAULT_CATALOG_SECTION);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [tutorialOpen, setTutorialOpen] = useState(false);
+  const closeTutorial = useCallback(() => {
+    writeTutorialSeen();
+    setTutorialOpen(false);
+  }, []);
 
   const refreshBadge = useCallback(async () => {
     try {
@@ -108,8 +151,9 @@ export default function App() {
     startedRef.current = true;
     (async () => {
       try {
-        await listAiring(); // throws if no source configured
+        const airing = await listAiring(); // throws if no source configured
         setView("pending");
+        void maybeAutoShowTutorial(airing);
         setRefreshing(true);
         const n = await refresh().catch(() => 0);
         setRefreshing(false);
@@ -117,33 +161,31 @@ export default function App() {
         // Pending is already mounted by now (it's the first screen), so it has
         // fetched the *pre*-refresh list — reload it, not just the badge.
         await onPendingDataChanged();
-        // Fire-and-forget catalog maintenance, none of which blocks the UI.
-        // Deliberately sequential, not Promise.all: the two AniList-facing
-        // steps are each paced at ~28.6 req/min against a 30/min cap, so
-        // overlapping them would just earn 429s.
-        (async () => {
-          // Backfills anilist_catalog.start_date so "Esta temporada" can
-          // resolve unfollowed airing shows too. Throttled server-side.
-          await maybeSyncCatalogIncremental().catch(() => {});
-          // Refills the columns that predate the first full catalog crawl
-          // (duration, romaji, studio...). Self-throttling: once no rows are
-          // stale it returns immediately, and an interrupted run simply picks
-          // up where it left off on the next launch.
-          await backfillCatalogMetadata().catch(() => {});
-          // Local and instant, but it needs the backfilled romaji titles to
-          // match well, so it goes right after the backfill.
-          await linkSeriesToCatalog().catch(() => {});
-          // Paced AniList refresh of airing/recent statuses (~20s of
-          // requests, once per 6h): last so it never delays the linking.
-          await refreshCatalogStatus().catch(() => {});
-          // Last: ~1 request per unlinked title, so it never delays the steps above.
-          await linkUnlinkedViaAnilist().catch(() => {});
-        })();
+        void runCatalogMaintenance();
       } catch {
         setView("onboarding");
       }
     })();
   }, [onPendingDataChanged]);
+
+  // A fresh install has a default source, so it skips Onboarding: detect
+  // "fresh profile" from data (nothing followed, pending or in the library).
+  // Existing users with data are silently marked as seen, never nagged.
+  async function maybeAutoShowTutorial(airing: Series[]) {
+    if (readTutorialSeen()) return;
+    try {
+      const [pendingN, library] = await Promise.all([pendingCount(), listLibrary()]);
+      const hasUserData = airing.some((s) => s.followed) || pendingN > 0 || library.length > 0;
+      if (!shouldAutoShowTutorial({ justCompletedOnboarding: false, seen: false, hasUserData })) {
+        if (hasUserData) writeTutorialSeen();
+        return;
+      }
+      // Wait for the startup splash overlay to go away.
+      setTimeout(() => setTutorialOpen(true), TUTORIAL_AFTER_SPLASH_MS);
+    } catch {
+      /* unknown state: do not show */
+    }
+  }
 
   function maybeNotify(n: number) {
     if (
@@ -276,10 +318,11 @@ export default function App() {
           }
           break;
         case "search":
-          if (!shouldNavigateToCatalogOnSearch(view, descubrirSubView)) {
+          if (!shouldNavigateToCatalogOnSearch(view, catalogSection)) {
             break;
           }
           e.preventDefault();
+          setCatalogSection("explore");
           navigate("catalog");
           requestAnimationFrame(() => {
             requestAnimationFrame(() => {
@@ -308,7 +351,7 @@ export default function App() {
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [view, refreshing, shortcutsOpen, selected, descubrirSubView]);
+  }, [view, refreshing, shortcutsOpen, selected, catalogSection]);
 
   // Frameless window: every screen needs *some* draggable strip with the
   // window controls, or the loading/onboarding views (which don't render the
@@ -335,16 +378,32 @@ export default function App() {
           onDone={async () => {
             await refreshBadge();
             setView("airing");
+            void runCatalogMaintenance();
+            // Auto-show rule: only right after Onboarding (a fresh install).
+            // Existing users skip Onboarding, so an update never nags them;
+            // they can replay it from Ajustes.
+            if (shouldAutoShowTutorial({ justCompletedOnboarding: true, seen: readTutorialSeen(), hasUserData: false })) {
+              setTutorialOpen(true);
+            }
           }}
         />
         <ProgressBar />
       </>
     );
 
+  const preloadCatalogSection = (section: CatalogSection) => {
+    if (section === "explore") void loadCatalog();
+    else void loadDescubrir();
+  };
+
+  const goCatalogSection = (section: CatalogSection) => {
+    setCatalogSection(section);
+    navigate("catalog");
+  };
+
   const preloadTab = (id: View) => {
     if (id === "library") void loadLibrary();
-    else if (id === "descubrir") void loadDescubrir();
-    else if (id === "catalog") void loadCatalog();
+    else if (id === "catalog") preloadCatalogSection(catalogSection);
     else if (id === "stats") void loadStats();
     else if (id === "settings") void loadSettings();
   };
@@ -352,6 +411,7 @@ export default function App() {
   const Tab = ({ id, label }: { id: View; label: string }) => (
     <button
       className={`tab ${view === id ? "active" : ""}`}
+      data-tour={id}
       onClick={() => navigate(id)}
       onMouseEnter={() => preloadTab(id)}
       onFocus={() => preloadTab(id)}
@@ -377,7 +437,6 @@ export default function App() {
           <Tab id="pending" label={t("nav.pending")} />
           <Tab id="airing" label={t("nav.airing")} />
           <Tab id="library" label={t("nav.library")} />
-          <Tab id="descubrir" label={t("nav.discover")} />
           <Tab id="catalog" label={t("nav.catalog")} />
           <Tab id="stats" label={t("nav.stats")} />
           <Tab id="settings" label={t("nav.settings")} />
@@ -397,7 +456,7 @@ export default function App() {
               onOpenSeries={setSelected}
               onChanged={onPendingDataChanged}
               refreshSignal={pendingRefreshSignal}
-              onGoDiscover={() => navigate("descubrir")}
+              onGoDiscover={() => goCatalogSection("swipe")}
             />
           </div>
         )}
@@ -415,21 +474,7 @@ export default function App() {
             <Suspense fallback={<div className="empty">{t("common.loading")}</div>}>
               <Library
                 onOpenSeries={setSelected}
-                onGoToListas={() => {
-                  setDescubrirSubView("listas");
-                  navigate("descubrir");
-                }}
-              />
-            </Suspense>
-          </div>
-        )}
-        {view === "descubrir" && (
-          <div className="view-panel" ref={panelRef}>
-            <Suspense fallback={<div className="empty">{t("common.loading")}</div>}>
-              <Descubrir
-                onOpenSeries={setSelected}
-                initialSubView={descubrirSubView}
-                onSubViewChange={setDescubrirSubView}
+                onGoToListas={() => goCatalogSection("listas")}
               />
             </Suspense>
           </div>
@@ -437,7 +482,25 @@ export default function App() {
         {view === "catalog" && (
           <div className="view-panel" ref={panelRef}>
             <Suspense fallback={<div className="empty">{t("common.loading")}</div>}>
-              <Catalog onChanged={onPendingDataChanged} />
+              {(() => {
+                const headExtra = (
+                  <CatalogSectionSwitch
+                    value={catalogSection}
+                    onChange={setCatalogSection}
+                    onHover={preloadCatalogSection}
+                  />
+                );
+                return catalogSection === "explore" ? (
+                  <Catalog onChanged={onPendingDataChanged} headExtra={headExtra} />
+                ) : (
+                  <Descubrir
+                    onOpenSeries={setSelected}
+                    subView={discoverSubViewFor(catalogSection)}
+                    onSwitchToSwipe={() => setCatalogSection("swipe")}
+                    headExtra={headExtra}
+                  />
+                );
+              })()}
             </Suspense>
           </div>
         )}
@@ -462,7 +525,7 @@ export default function App() {
         {view === "settings" && (
           <div className="view-panel" ref={panelRef}>
             <Suspense fallback={<div className="empty">{t("common.loading")}</div>}>
-              <Settings onSiteChanged={onSiteChanged} />
+              <Settings onSiteChanged={onSiteChanged} onReplayTutorial={() => setTutorialOpen(true)} />
             </Suspense>
           </div>
         )}
@@ -486,6 +549,7 @@ export default function App() {
       </div>
       <ShortcutsOverlay open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
       <UpdateBanner />
+      {tutorialOpen && <Tutorial onClose={closeTutorial} />}
     </div>
   );
 }

@@ -1,10 +1,14 @@
-import { useCallback, useEffect, useState } from "react";
+import type { ReactNode } from "react";
 import { useT } from "../../i18n";
 import type { Series } from "../../types";
 import type { SubView } from "./types";
 import { SwipeView } from "./SwipeView";
 import { ListasView } from "./ListasView";
 
+// Descubrir (swipe deck) and Listas, hosted as sub-sections of Catálogo. The
+// active sub-view is owned by App (controlled) and the section switch arrives
+// as `headExtra`, rendered in the page head next to the title.
+//
 // onOpenSeries is the same App.tsx-owned navigation callback Pending/Library/
 // AiringGrid already use to open SeriesDetail. Wiring it into Listas' "Quiero
 // ver" rows is what makes trigger (c) from the design spec ("SeriesDetail
@@ -13,58 +17,26 @@ import { ListasView } from "./ListasView";
 // catalog row had no UI path into SeriesDetail at all.
 export function Descubrir({
   onOpenSeries,
-  initialSubView = "swipe",
-  onSubViewChange,
+  subView,
+  onSwitchToSwipe,
+  headExtra,
 }: {
   onOpenSeries: (s: Series) => void;
-  initialSubView?: SubView;
-  onSubViewChange?: (v: SubView) => void;
+  subView: SubView;
+  onSwitchToSwipe: () => void;
+  headExtra?: ReactNode;
 }) {
   const t = useT();
-  const [subView, setSubView] = useState<SubView>(initialSubView);
-
-  useEffect(() => {
-    setSubView(initialSubView);
-  }, [initialSubView]);
-
-  const handleSetSubView = useCallback(
-    (v: SubView) => {
-      setSubView(v);
-      onSubViewChange?.(v);
-    },
-    [onSubViewChange]
-  );
-
-  const handleSwitchToSwipe = useCallback(() => {
-    handleSetSubView("swipe");
-  }, [handleSetSubView]);
-
   return (
     <div className="page">
       <div className="page-head">
-        <h2 className="page-title">{t("nav.discover")}</h2>
-      </div>
-      <div className="tabs discover-tabs">
-        <button
-          className={`tab ${subView === "swipe" ? "active" : ""}`}
-          onClick={() => handleSetSubView("swipe")}
-        >
-          {t("discover.tabSwipe")}
-        </button>
-        <button
-          className={`tab ${subView === "listas" ? "active" : ""}`}
-          onClick={() => handleSetSubView("listas")}
-        >
-          {t("discover.tabLists")}
-        </button>
+        <h2 className="page-title">{t("nav.catalog")}</h2>
+        {headExtra}
       </div>
 
       {subView === "swipe" && <SwipeView />}
       {subView === "listas" && (
-        <ListasView
-          onOpenSeries={onOpenSeries}
-          onSwitchToSwipe={handleSwitchToSwipe}
-        />
+        <ListasView onOpenSeries={onOpenSeries} onSwitchToSwipe={onSwitchToSwipe} />
       )}
     </div>
   );

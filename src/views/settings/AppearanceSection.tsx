@@ -5,7 +5,7 @@ import { LANGS, useLang, useT } from "../../i18n";
 import { readNotifyPref, writeNotifyPref } from "../../lib/notify";
 import { checkForUpdate, installUpdate, readUpdatePref, writeUpdatePref } from "../../lib/updater";
 
-export function AppearanceSection() {
+export function AppearanceSection({ onReplayTutorial }: { onReplayTutorial?: () => void }) {
   const t = useT();
   const { lang, setLang } = useLang();
   const { theme, setTheme } = useTheme();
@@ -147,6 +147,18 @@ export function AppearanceSection() {
         {updateState.kind === "failed" && <p className="settings-field-hint">{t("update.failed")}</p>}
         <p className="settings-field-hint">{t("settings.updateHint")}</p>
       </div>
+
+      {onReplayTutorial && (
+        <div className="settings-field">
+          <label className="settings-field-label">{t("settings.tutorialLabel")}</label>
+          <div className="row">
+            <button type="button" className="btn" onClick={onReplayTutorial}>
+              {t("settings.tutorialButton")}
+            </button>
+          </div>
+          <p className="settings-field-hint">{t("settings.tutorialHint")}</p>
+        </div>
+      )}
     </div>
   );
 }
