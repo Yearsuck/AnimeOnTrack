@@ -194,84 +194,87 @@ export function StatsInsights({
 
   return (
     <div className="stats-insights">
-      {/* 1. KPI strip at the top: 4 headline numbers */}
-      <section className="kpi-strip" aria-label={t("stats.insightsHeading")}>
-        <div className="kpi-card">
-          <div className="kpi-label">{t("stats.episodesWatched")}</div>
-          <div className="kpi-value">
-            {n(summary.episodes_watched + summary.episodes_watched_external)}
+      {/* 1. Hero band: the lifetime watch log. Totals on top, the year of
+          activity they came from underneath, in one surface. It is the only
+          boxed element on the tab; everything below sits on the page. */}
+      <section className="stats-hero" aria-label={t("stats.insightsHeading")}>
+        <dl className="hero-figs">
+          <div className="hero-fig hero-fig-lead">
+            <dt className="hero-fig-label">{t("stats.episodesWatched")}</dt>
+            <dd className="hero-fig-value">
+              {n(summary.episodes_watched + summary.episodes_watched_external)}
+            </dd>
+            <dd className="hero-fig-note">
+              {t("stats.episodesWatchedHelp", {
+                real: n(summary.episodes_watched),
+                external: n(summary.episodes_watched_external),
+              })}
+            </dd>
           </div>
-          <div className="kpi-help">
-            {t("stats.episodesWatchedHelp", {
-              real: n(summary.episodes_watched),
-              external: n(summary.episodes_watched_external),
-            })}
-          </div>
-        </div>
 
-        <div className="kpi-card">
-          <div className="kpi-label">{t("stats.timeWatched")}</div>
-          <div className="kpi-value">{formatMinutes(t, totalMinutes)}</div>
-          <div className="kpi-help">
-            {t("stats.timeWatchedHelp", {
-              done: n(insights.external_titles_estimated),
-              total: n(insights.external_titles_total),
-            })}
+          <div className="hero-fig">
+            <dt className="hero-fig-label">{t("stats.timeWatched")}</dt>
+            <dd className="hero-fig-value">{formatMinutes(t, totalMinutes)}</dd>
+            <dd className="hero-fig-note">
+              {t("stats.timeWatchedHelp", {
+                done: n(insights.external_titles_estimated),
+                total: n(insights.external_titles_total),
+              })}
+            </dd>
           </div>
-        </div>
 
-        <div className="kpi-card">
-          <div className="kpi-label">{t("stats.completion")}</div>
-          <div className="kpi-value">{completionPct}%</div>
-          <div
-            className="progress"
-            role="progressbar"
-            aria-valuenow={completionPct}
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-label={t("stats.completion")}
-          >
-            <span style={{ width: `${completionPct}%` }} />
+          <div className="hero-fig">
+            <dt className="hero-fig-label">{t("stats.completion")}</dt>
+            <dd className="hero-fig-value hero-fig-value-progress">{completionPct}%</dd>
+            <dd className="hero-fig-progress">
+              <div
+                className="progress"
+                role="progressbar"
+                aria-valuenow={completionPct}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-label={t("stats.completion")}
+              >
+                <span style={{ width: `${completionPct}%` }} />
+              </div>
+            </dd>
+            <dd className="hero-fig-note">
+              {n(summary.episodes_watched)} / {n(summary.episodes_total)}
+            </dd>
           </div>
-          <div className="kpi-help">
-            {n(summary.episodes_watched)} / {n(summary.episodes_total)}
+
+          <div className="hero-fig">
+            <dt className="hero-fig-label">{t("stats.distinctAnime")}</dt>
+            <dd className="hero-fig-value">{n(summary.distinct_anime)}</dd>
+            <dd className="hero-fig-note">{t("stats.distinctAnimeHelp")}</dd>
           </div>
-        </div>
+        </dl>
 
-        <div className="kpi-card">
-          <div className="kpi-label">{t("stats.distinctAnime")}</div>
-          <div className="kpi-value">{n(summary.distinct_anime)}</div>
-          <div className="kpi-help">{t("stats.distinctAnimeHelp")}</div>
-        </div>
-      </section>
-
-      {/* 2. Activity section: full-year heatmap and 30-day chart unified */}
-      <section className="stats-section">
-        <div className="stats-section-head">
-          <h3 className="section-title">{t("stats.activitySection")}</h3>
-          <div className="seg" role="tablist" aria-label={t("stats.activitySection")}>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={activityTab === "year"}
-              className={`seg-btn${activityTab === "year" ? " active" : ""}`}
-              onClick={() => setActivityTab("year")}
-            >
-              {t("stats.activityTabYear")}
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={activityTab === "month"}
-              className={`seg-btn${activityTab === "month" ? " active" : ""}`}
-              onClick={() => setActivityTab("month")}
-            >
-              {t("stats.activityTab30Days")}
-            </button>
+        <div className="hero-activity">
+          <div className="hero-activity-head">
+            <h3 className="section-title">{t("stats.activitySection")}</h3>
+            <div className="seg" role="tablist" aria-label={t("stats.activitySection")}>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activityTab === "year"}
+                className={`seg-btn${activityTab === "year" ? " active" : ""}`}
+                onClick={() => setActivityTab("year")}
+              >
+                {t("stats.activityTabYear")}
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activityTab === "month"}
+                className={`seg-btn${activityTab === "month" ? " active" : ""}`}
+                onClick={() => setActivityTab("month")}
+              >
+                {t("stats.activityTab30Days")}
+              </button>
+            </div>
           </div>
-        </div>
 
-        <div className="stats-card">
           {activityTab === "year" ? (
             <StatsHeatmap />
           ) : (
@@ -286,9 +289,9 @@ export function StatsInsights({
                     />
                   </div>
                   {insights.marks_tracked_since && (
-                    <div className="stats-caveat">
+                    <p className="stats-caveat">
                       {t("stats.marksCaveat", { date: insights.marks_tracked_since })}
-                    </div>
+                    </p>
                   )}
                 </>
               ) : (
@@ -299,49 +302,51 @@ export function StatsInsights({
         </div>
       </section>
 
-      {/* 3. Rankings and insights in a responsive 2-column grid */}
-      <div className="stats-grid-2col">
-        {/* Column 1 */}
-        <div className="stats-col">
-          {/* Library and backlog status */}
-          <section className="stats-card">
-            <h4 className="stats-card-title">{t("stats.librarySection")}</h4>
-            <div className="stats-mini-grid">
-              <div className="stats-mini-stat">
-                <span className="stats-mini-label">{t("stats.followedSeries")}</span>
-                <span className="stats-mini-val">{n(summary.airing_followed)}</span>
-              </div>
-              <div className="stats-mini-stat">
-                <span className="stats-mini-label">{t("stats.backlogPending")}</span>
-                <span className="stats-mini-val">{n(summary.pending_to_watch)}</span>
-                <span className="stats-mini-sub">{t("stats.backlogPendingHelp")}</span>
-              </div>
-              <div className="stats-mini-stat">
-                <span className="stats-mini-label">{t("stats.wishlist")}</span>
-                <span className="stats-mini-val">{n(summary.backlog_want)}</span>
-                <span className="stats-mini-sub">{t("stats.wishlistHelp")}</span>
-              </div>
-              <div className="stats-mini-stat">
-                <span className="stats-mini-label">{t("stats.backlog")}</span>
-                <span className="stats-mini-val">
-                  {(insights.backlog_episodes ?? 0) > 0 || (insights.backlog_minutes ?? 0) > 0
-                    ? formatMinutes(t, insights.backlog_minutes ?? 0)
-                    : t("stats.backlogEmpty")}
-                </span>
-                {(insights.backlog_episodes ?? 0) > 0 && (
-                  <span className="stats-mini-sub">
-                    {t(insights.backlog_episodes === 1 ? "stats.backlogEpisodesOne" : "stats.backlogEpisodes", {
-                      n: n(insights.backlog_episodes),
-                    })}
-                  </span>
-                )}
-              </div>
-            </div>
-          </section>
+      {/* 2. Library ledger: where the list stands right now. Same figure
+          language as the hero, one size down, no surface. */}
+      <section className="stats-ledger" aria-labelledby="stats-ledger-title">
+        <h3 id="stats-ledger-title" className="stats-block-title">
+          {t("stats.librarySection")}
+        </h3>
+        <dl className="ledger-figs">
+          <div className="ledger-fig">
+            <dt className="ledger-fig-label">{t("stats.followedSeries")}</dt>
+            <dd className="ledger-fig-value">{n(summary.airing_followed)}</dd>
+          </div>
+          <div className="ledger-fig">
+            <dt className="ledger-fig-label">{t("stats.backlogPending")}</dt>
+            <dd className="ledger-fig-value">{n(summary.pending_to_watch)}</dd>
+            <dd className="ledger-fig-note">{t("stats.backlogPendingHelp")}</dd>
+          </div>
+          <div className="ledger-fig">
+            <dt className="ledger-fig-label">{t("stats.wishlist")}</dt>
+            <dd className="ledger-fig-value">{n(summary.backlog_want)}</dd>
+            <dd className="ledger-fig-note">{t("stats.wishlistHelp")}</dd>
+          </div>
+          <div className="ledger-fig">
+            <dt className="ledger-fig-label">{t("stats.backlog")}</dt>
+            <dd className="ledger-fig-value">
+              {(insights.backlog_episodes ?? 0) > 0 || (insights.backlog_minutes ?? 0) > 0
+                ? formatMinutes(t, insights.backlog_minutes ?? 0)
+                : t("stats.backlogEmpty")}
+            </dd>
+            {(insights.backlog_episodes ?? 0) > 0 && (
+              <dd className="ledger-fig-note">
+                {t(insights.backlog_episodes === 1 ? "stats.backlogEpisodesOne" : "stats.backlogEpisodes", {
+                  n: n(insights.backlog_episodes),
+                })}
+              </dd>
+            )}
+          </div>
+        </dl>
+      </section>
 
-          {/* Top Series */}
-          <section className="stats-card">
-            <h4 className="stats-card-title">{t("stats.topSeries")}</h4>
+      {/* 3. Rankings (wide column) beside habits (narrow column). The rule
+          between the two columns separates "what you watched" from "how". */}
+      <div className="stats-split">
+        <div className="stats-main">
+          <section className="stats-block">
+            <h3 className="stats-block-title">{t("stats.topSeries")}</h3>
             {topSeriesData.length > 0 ? (
               <BarChart data={topSeriesData} />
             ) : (
@@ -349,85 +354,82 @@ export function StatsInsights({
             )}
           </section>
 
-          {/* Top Studios */}
-          <section className="stats-card">
-            <h4 className="stats-card-title">{t("stats.topStudios")}</h4>
-            {insights.top_studios && insights.top_studios.length > 0 ? (
-              <BarChart data={insights.top_studios.map((s) => ({ name: s.title, count: s.count }))} />
-            ) : (
-              <div className="empty">{t("stats.topStudiosEmpty")}</div>
-            )}
-          </section>
+          <div className="stats-pair">
+            <section className="stats-block">
+              <h3 className="stats-block-title">{t("stats.topStudios")}</h3>
+              {insights.top_studios && insights.top_studios.length > 0 ? (
+                <BarChart data={insights.top_studios.map((s) => ({ name: s.title, count: s.count }))} />
+              ) : (
+                <div className="empty">{t("stats.topStudiosEmpty")}</div>
+              )}
+            </section>
 
-          {/* Discover Funnel */}
-          <section className="stats-card">
-            <div className="stats-card-head">
-              <h4 className="stats-card-title">{t("stats.funnelHeading")}</h4>
-              <ShapeToggle shape={shape} onChange={setShape} />
-            </div>
-            <CategoryBlock data={funnelData} shape={shape} emptyMessage={t("stats.funnelEmpty")} />
-          </section>
+            <section className="stats-block">
+              <h3 className="stats-block-title">{t("stats.eraDistribution")}</h3>
+              {insights.era_distribution && insights.era_distribution.length > 0 ? (
+                <BarChart data={insights.era_distribution.map((e) => ({ name: t("stats.eraDecade", { decade: e.decade }), count: e.count }))} />
+              ) : (
+                <div className="empty">{t("stats.eraEmpty")}</div>
+              )}
+            </section>
+          </div>
+
+          <div className="stats-pair">
+            <section className="stats-block">
+              <div className="stats-block-head">
+                <h3 className="stats-block-title">{t("stats.funnelHeading")}</h3>
+                <ShapeToggle shape={shape} onChange={setShape} />
+              </div>
+              <CategoryBlock data={funnelData} shape={shape} emptyMessage={t("stats.funnelEmpty")} />
+            </section>
+
+            <section className="stats-block">
+              <div className="stats-block-head">
+                <h3 className="stats-block-title">{t("stats.airingVsFinished")}</h3>
+              </div>
+              <CategoryBlock
+                data={airingVsFinishedData}
+                shape={shape}
+                emptyMessage={t("stats.ringsEmpty")}
+              />
+            </section>
+          </div>
         </div>
 
-        {/* Column 2 */}
-        <div className="stats-col">
-          {/* Milestones and habits */}
-          <section className="stats-card">
-            <h4 className="stats-card-title">{t("stats.milestonesSection")}</h4>
-            <div className="stats-mini-grid">
-              <div className="stats-mini-stat">
-                <span className="stats-mini-label">{t("stats.bingeRecord")}</span>
-                <span className="stats-mini-val">
+        <aside className="stats-aside">
+          <section className="stats-block">
+            <h3 className="stats-block-title">{t("stats.milestonesSection")}</h3>
+            <dl className="milestones">
+              <div className="milestone">
+                <dt className="milestone-label">{t("stats.bingeRecord")}</dt>
+                <dd className="milestone-value">
                   {bingeRecord && bingeRecord.day
                     ? t("stats.bingeRecordValue", { count: n(bingeRecord.count), day: axisDay(bingeRecord.day, lang) })
                     : t("stats.bingeRecordEmpty")}
-                </span>
+                </dd>
                 {bingeRecord?.top_series && bingeRecord.top_series.length > 0 && (
-                  <span className="stats-mini-sub">
+                  <dd className="milestone-note">
                     {t("stats.bingeSeries", { series: bingeRecord.top_series.join(", ") })}
-                  </span>
+                  </dd>
                 )}
               </div>
-              <div className="stats-mini-stat">
-                <span className="stats-mini-label">{t("stats.completionSpeed")}</span>
-                <span className="stats-mini-val">
-                  {avgDays !== null ? (
-                    t("stats.completionSpeedValue", { days: avgDays.toFixed(1) })
-                  ) : (
-                    t("stats.completionSpeedEmpty")
-                  )}
-                </span>
+              <div className="milestone">
+                <dt className="milestone-label">{t("stats.completionSpeed")}</dt>
+                <dd className="milestone-value">
+                  {avgDays !== null
+                    ? t("stats.completionSpeedValue", { days: avgDays.toFixed(1) })
+                    : t("stats.completionSpeedEmpty")}
+                </dd>
               </div>
-              <div className="stats-mini-stat">
-                <span className="stats-mini-label">{t("stats.avgEpisodes")}</span>
-                <span className="stats-mini-val">{insights.avg_episodes_per_series.toFixed(1)}</span>
+              <div className="milestone">
+                <dt className="milestone-label">{t("stats.avgEpisodes")}</dt>
+                <dd className="milestone-value">{insights.avg_episodes_per_series.toFixed(1)}</dd>
               </div>
-            </div>
+            </dl>
           </section>
 
-          {/* Era Distribution */}
-          <section className="stats-card">
-            <h4 className="stats-card-title">{t("stats.eraDistribution")}</h4>
-            {insights.era_distribution && insights.era_distribution.length > 0 ? (
-              <BarChart data={insights.era_distribution.map((e) => ({ name: t("stats.eraDecade", { decade: e.decade }), count: e.count }))} />
-            ) : (
-              <div className="empty">{t("stats.eraEmpty")}</div>
-            )}
-          </section>
-
-          {/* Airing vs Finished */}
-          <section className="stats-card">
-            <h4 className="stats-card-title">{t("stats.airingVsFinished")}</h4>
-            <CategoryBlock
-              data={airingVsFinishedData}
-              shape={shape}
-              emptyMessage={t("stats.ringsEmpty")}
-            />
-          </section>
-
-          {/* 24-Hour distribution */}
-          <section className="stats-card">
-            <h4 className="stats-card-title">{t("stats.hourlyHeading")}</h4>
+          <section className="stats-block">
+            <h3 className="stats-block-title">{t("stats.hourlyHeading")}</h3>
             {hourlyDist === null ? null : hasHourly ? (
               <HourlyDistributionChart data={hourlyDist} t={t} />
             ) : (
@@ -435,10 +437,9 @@ export function StatsInsights({
             )}
           </section>
 
-          {/* Analytical Popularity Index (redesigned, no fake slider thumb) */}
           {popularityBias && (
-            <section className="stats-card">
-              <h4 className="stats-card-title">{t("stats.popularityBiasHeading")}</h4>
+            <section className="stats-block">
+              <h3 className="stats-block-title">{t("stats.popularityBiasHeading")}</h3>
               <div className="popbias">
                 <div className="popbias-labels">
                   <span className="popbias-low">{t("stats.popularityBiasLow")}</span>
@@ -456,26 +457,19 @@ export function StatsInsights({
                   aria-label={t("stats.popularityBiasLabel")}
                 >
                   <div className="popbias-track">
-                    <div
-                      className="popbias-fill"
-                      style={{ width: `${popPct}%` }}
-                    />
-                    <div
-                      className="popbias-marker"
-                      style={{ left: `${popPct}%` }}
-                    />
+                    <div className="popbias-fill" style={{ width: `${popPct}%` }} />
+                    <div className="popbias-marker" style={{ left: `${popPct}%` }} />
                   </div>
                 </div>
                 <div className="popbias-sub">{t("stats.popularityBiasLabel")}</div>
-                <div className="stats-caveat">{t("stats.popularityBiasHelp")}</div>
+                <p className="stats-caveat">{t("stats.popularityBiasHelp")}</p>
               </div>
             </section>
           )}
 
-          {/* Dusty Watchlist */}
           {dusty.length > 0 && (
-            <section className="stats-card">
-              <h4 className="stats-card-title">{t("stats.dustyHeading")}</h4>
+            <section className="stats-block">
+              <h3 className="stats-block-title">{t("stats.dustyHeading")}</h3>
               <ul className="dusty-list">
                 {dusty.map((entry) => (
                   <li key={entry.title} className="dusty-item">
@@ -488,7 +482,7 @@ export function StatsInsights({
               </ul>
             </section>
           )}
-        </div>
+        </aside>
       </div>
     </div>
   );
