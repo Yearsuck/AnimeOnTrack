@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { listLibrary, openEpisode, reclassifySeries } from "../api";
 import { useT } from "../i18n";
 import { createFilterCache } from "../lib/createFilterCache";
 import { initials, resolveCoverUrl, useCoverFailure } from "../lib/posterFallback";
-import { useOutsideClick } from "../lib/useOutsideClick";
+import { Menu } from "../components/Menu";
 import type { LibraryItem, Series } from "../types";
 
 type Status = "completed" | "watching" | "plan";
@@ -98,22 +98,14 @@ function LibraryCard({
   const displayCover = resolveCoverUrl(item.series.cover_url);
   const showFallback = !displayCover || imgFailed;
 
-  // Overflow "⋯" menu (Watching cards only) — reclassify actions
+  // Overflow menu (Watching cards only) — reclassify actions
   // (see docs/superpowers/specs/2026-07-11-reversibility-classifications-design.md).
-  const [menuOpen, setMenuOpen] = useState(false);
-  const menuRef = useRef<HTMLDivElement>(null);
-  useOutsideClick(menuOpen, menuRef, () => setMenuOpen(false));
-
-  async function unfollow(e: React.SyntheticEvent) {
-    e.stopPropagation();
-    setMenuOpen(false);
+  async function unfollow() {
     await reclassifySeries(item.series.id, "None");
     onChanged();
   }
 
-  async function moveToWant(e: React.SyntheticEvent) {
-    e.stopPropagation();
-    setMenuOpen(false);
+  async function moveToWant() {
     await reclassifySeries(item.series.id, "Want");
     onChanged();
   }
@@ -172,37 +164,18 @@ function LibraryCard({
       )}
       <div className="poster">
         {effectiveShowMenu && (
-          <div className="card-menu-wrap" ref={menuRef}>
-            <button
-              type="button"
-              className="card-menu-btn"
-              aria-label={t("library.cardMenuAria")}
-              onClick={(e) => {
-                e.stopPropagation();
-                setMenuOpen((v) => !v);
-              }}
-              onKeyDown={(e) => e.stopPropagation()}
-            >
-              ⋯
-            </button>
-            {menuOpen && (
-              <div className="card-menu-list" onClick={(e) => e.stopPropagation()}>
-                {item.watched_externally ? (
-                  <button type="button" className="card-menu-item danger" onClick={unfollow}>
-                    {t("library.markNotWatched")}
-                  </button>
-                ) : (
-                  <>
-                    <button type="button" className="card-menu-item danger" onClick={unfollow}>
-                      {t("library.unfollow")}
-                    </button>
-                    <button type="button" className="card-menu-item" onClick={moveToWant}>
-                      {t("library.moveToWant")}
-                    </button>
-                  </>
-                )}
-              </div>
-            )}
+          <div className="card-menu-wrap">
+            <Menu
+              label={t("library.cardMenuAria")}
+              items={
+                item.watched_externally
+                  ? [{ label: t("library.markNotWatched"), onSelect: unfollow, danger: true }]
+                  : [
+                      { label: t("library.unfollow"), onSelect: unfollow, danger: true },
+                      { label: t("library.moveToWant"), onSelect: moveToWant },
+                    ]
+              }
+            />
           </div>
         )}
         {showFallback ? (
@@ -282,14 +255,16 @@ function LibrarySection({
   selected: Set<number>;
   onToggleSelect: (id: number) => void;
 }) {
-  // An empty section (nothing in this status, or nothing left after the
-  // search filter) is omitted entirely rather than rendered with a
-  // "no results" placeholder — three always-present empty groups would be
-  // noisier than the flat list this view replaces.
+  // An empty section is omitted: the view already renders its own empty and
+  // "no results" states (whole-library and per-filter), so a per-section
+  // placeholder would only duplicate them.
   if (items.length === 0) return null;
   return (
     <details className="lib-section" open={defaultOpen}>
       <summary className="lib-section-summary">
+        <svg className="lib-section-chevron" width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+          <path d="M4 2.5 8 6 4 9.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
         <span className="lib-section-title">{title}</span>
         <span className="lib-section-count">{items.length}</span>
       </summary>
