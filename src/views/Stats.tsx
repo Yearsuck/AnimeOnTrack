@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
   getGenreCards,
+  getTagCards,
   getTypeStats,
   getWatchSummary,
   getWatchInsights,
@@ -31,6 +32,7 @@ export function Stats({
   const [insights, setInsights] = useState<WatchInsights | null>(null);
   const [popularityBias, setPopularityBias] = useState<PopularityBias | null>(null);
   const [genres, setGenres] = useState<GenreCard[]>([]);
+  const [tags, setTags] = useState<GenreCard[]>([]);
   const [types, setTypes] = useState<TypeStat[]>([]);
   const [graph, setGraph] = useState<SeriesGraphNode[]>([]);
   const [library, setLibrary] = useState<LibraryItem[]>([]);
@@ -76,11 +78,12 @@ export function Stats({
   async function load() {
     const seq = ++loadSeq.current;
     try {
-      const [s, i, p, g, t, gr, lib] = await Promise.all([
+      const [s, i, p, g, tg, t, gr, lib] = await Promise.all([
         getWatchSummary(),
         getWatchInsights(),
         getPopularityBias(),
         getGenreCards(),
+        getTagCards(),
         getTypeStats(),
         getStatsGraph(),
         listLibrary().catch(() => []),
@@ -90,6 +93,7 @@ export function Stats({
       setInsights(i);
       setPopularityBias(p);
       setGenres(g);
+      setTags(tg);
       setTypes(t);
       setGraph(gr);
       setLibrary(lib ?? []);
@@ -229,7 +233,7 @@ export function Stats({
           </div>
 
           <div className={view === "generos" ? "tab-panel" : "tab-panel hidden"}>
-            <StatsRings genres={genres} types={types} />
+            <StatsRings genres={genres} tags={tags} types={types} />
           </div>
         </>
       )}
