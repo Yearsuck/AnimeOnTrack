@@ -6,6 +6,13 @@ import { ProgressBar } from "./views/ProgressBar";
 import { WindowControls } from "./views/WindowControls";
 import { ShortcutsOverlay } from "./views/ShortcutsOverlay";
 import { UpdateBanner } from "./views/UpdateBanner";
+import { Tutorial } from "./views/Tutorial";
+import {
+  TUTORIAL_AFTER_SPLASH_MS,
+  readTutorialSeen,
+  shouldAutoShowTutorial,
+  writeTutorialSeen,
+} from "./lib/tutorial";
 import { CatalogSectionSwitch } from "./views/CatalogSectionSwitch";
 import { DEFAULT_CATALOG_SECTION, discoverSubViewFor, type CatalogSection } from "./lib/catalogSection";
 import { shortcutFor, shouldNavigateToCatalogOnSearch } from "./lib/shortcuts";
@@ -112,6 +119,11 @@ export default function App() {
   // not in the view, so it survives switching tabs and back.
   const [catalogSection, setCatalogSection] = useState<CatalogSection>(DEFAULT_CATALOG_SECTION);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [tutorialOpen, setTutorialOpen] = useState(false);
+  const closeTutorial = useCallback(() => {
+    writeTutorialSeen();
+    setTutorialOpen(false);
+  }, []);
 
   const refreshBadge = useCallback(async () => {
     try {
@@ -139,8 +151,9 @@ export default function App() {
     startedRef.current = true;
     (async () => {
       try {
-        await listAiring(); // throws if no source configured
+        const airing = await listAiring(); // throws if no source configured
         setView("pending");
+        void maybeAutoShowTutorial(airing);
         setRefreshing(true);
         const n = await refresh().catch(() => 0);
         setRefreshing(false);
@@ -154,6 +167,25 @@ export default function App() {
       }
     })();
   }, [onPendingDataChanged]);
+
+  // A fresh install has a default source, so it skips Onboarding: detect
+  // "fresh profile" from data (nothing followed, pending or in the library).
+  // Existing users with data are silently marked as seen, never nagged.
+  async function maybeAutoShowTutorial(airing: Series[]) {
+    if (readTutorialSeen()) return;
+    try {
+      const [pendingN, library] = await Promise.all([pendingCount(), listLibrary()]);
+      const hasUserData = airing.some((s) => s.followed) || pendingN > 0 || library.length > 0;
+      if (!shouldAutoShowTutorial({ justCompletedOnboarding: false, seen: false, hasUserData })) {
+        if (hasUserData) writeTutorialSeen();
+        return;
+      }
+      // Wait for the startup splash overlay to go away.
+      setTimeout(() => setTutorialOpen(true), TUTORIAL_AFTER_SPLASH_MS);
+    } catch {
+      /* unknown state: do not show */
+    }
+  }
 
   function maybeNotify(n: number) {
     if (
@@ -347,6 +379,12 @@ export default function App() {
             await refreshBadge();
             setView("airing");
             void runCatalogMaintenance();
+            // Auto-show rule: only right after Onboarding (a fresh install).
+            // Existing users skip Onboarding, so an update never nags them;
+            // they can replay it from Ajustes.
+            if (shouldAutoShowTutorial({ justCompletedOnboarding: true, seen: readTutorialSeen(), hasUserData: false })) {
+              setTutorialOpen(true);
+            }
           }}
         />
         <ProgressBar />
@@ -373,6 +411,7 @@ export default function App() {
   const Tab = ({ id, label }: { id: View; label: string }) => (
     <button
       className={`tab ${view === id ? "active" : ""}`}
+      data-tour={id}
       onClick={() => navigate(id)}
       onMouseEnter={() => preloadTab(id)}
       onFocus={() => preloadTab(id)}
@@ -486,7 +525,7 @@ export default function App() {
         {view === "settings" && (
           <div className="view-panel" ref={panelRef}>
             <Suspense fallback={<div className="empty">{t("common.loading")}</div>}>
-              <Settings onSiteChanged={onSiteChanged} />
+              <Settings onSiteChanged={onSiteChanged} onReplayTutorial={() => setTutorialOpen(true)} />
             </Suspense>
           </div>
         )}
@@ -510,6 +549,7 @@ export default function App() {
       </div>
       <ShortcutsOverlay open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
       <UpdateBanner />
+      {tutorialOpen && <Tutorial onClose={closeTutorial} />}
     </div>
   );
 }
