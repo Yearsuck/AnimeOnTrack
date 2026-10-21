@@ -43,6 +43,7 @@ export const ca: Messages = {
   "airing.filterSeason": "Aquesta temporada",
   "airing.filterWeek": "Aquesta setmana",
   "airing.seasonHint": "Només es mostren sèries amb data d'estrena registrada. Es segueixin o no, es busca la data al Catàleg sincronitzat — si falta, resincronitza el Catàleg des de la seva pestanya",
+  "airing.seasonSyncing": "Sincronitzant el catàleg d'AniList... la llista d'aquesta temporada apareixerà en uns segons.",
   "airing.weekEmpty": "No hi ha res programat aquesta setmana.",
   "airing.dayMon": "Dl",
   "airing.dayTue": "Dt",

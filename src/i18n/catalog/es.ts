@@ -47,6 +47,7 @@ export const es = {
   "airing.filterSeason": "Esta temporada",
   "airing.filterWeek": "Esta semana",
   "airing.seasonHint": "Solo se muestran series con fecha de estreno registrada. Se sigan o no, se busca la fecha en el Catálogo sincronizado — si falta, resincronizá el Catálogo desde su pestaña",
+  "airing.seasonSyncing": "Sincronizando el catálogo de AniList... la lista de esta temporada aparecerá en unos segundos.",
   "airing.weekEmpty": "Nada programado esta semana.",
   "airing.dayMon": "Lun",
   "airing.dayTue": "Mar",
