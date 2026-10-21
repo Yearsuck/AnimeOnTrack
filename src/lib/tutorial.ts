@@ -53,19 +53,12 @@ export function writeTutorialSeen(store: KeyValueStore | null = defaultStore()):
 }
 
 /**
- * Auto-show rule. A brand-new install does not go through Onboarding (a
- * default source exists), so "fresh profile" is detected from data: nothing
- * followed, nothing pending, nothing in the library. Show once when unseen and
- * (fresh profile or just finished Onboarding). Existing users (any data,
- * marker unset) must never see it: the caller silently marks them as seen.
+ * Auto-show rule: everyone who has not seen the tutorial yet gets it once,
+ * including users who update from a build that predates it. The marker is
+ * written when it closes; Ajustes can replay it any time.
  */
-export function shouldAutoShowTutorial(opts: {
-  justCompletedOnboarding: boolean;
-  seen: boolean;
-  hasUserData: boolean;
-}): boolean {
-  if (opts.seen) return false;
-  return opts.justCompletedOnboarding || !opts.hasUserData;
+export function shouldAutoShowTutorial(opts: { seen: boolean }): boolean {
+  return !opts.seen;
 }
 
 /** Wait this long after launch so the tutorial never opens over the splash. */
