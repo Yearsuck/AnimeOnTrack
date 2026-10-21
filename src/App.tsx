@@ -151,9 +151,9 @@ export default function App() {
     startedRef.current = true;
     (async () => {
       try {
-        const airing = await listAiring(); // throws if no source configured
+        await listAiring(); // throws if no source configured
         setView("pending");
-        void maybeAutoShowTutorial(airing);
+        maybeAutoShowTutorial();
         setRefreshing(true);
         const n = await refresh().catch(() => 0);
         setRefreshing(false);
@@ -168,23 +168,12 @@ export default function App() {
     })();
   }, [onPendingDataChanged]);
 
-  // A fresh install has a default source, so it skips Onboarding: detect
-  // "fresh profile" from data (nothing followed, pending or in the library).
-  // Existing users with data are silently marked as seen, never nagged.
-  async function maybeAutoShowTutorial(airing: Series[]) {
-    if (readTutorialSeen()) return;
-    try {
-      const [pendingN, library] = await Promise.all([pendingCount(), listLibrary()]);
-      const hasUserData = airing.some((s) => s.followed) || pendingN > 0 || library.length > 0;
-      if (!shouldAutoShowTutorial({ justCompletedOnboarding: false, seen: false, hasUserData })) {
-        if (hasUserData) writeTutorialSeen();
-        return;
-      }
-      // Wait for the startup splash overlay to go away.
-      setTimeout(() => setTutorialOpen(true), TUTORIAL_AFTER_SPLASH_MS);
-    } catch {
-      /* unknown state: do not show */
-    }
+  // Everyone who has not seen the tutorial gets it once, existing users
+  // updating from a build without it included.
+  function maybeAutoShowTutorial() {
+    if (!shouldAutoShowTutorial({ seen: readTutorialSeen() })) return;
+    // Wait for the startup splash overlay to go away.
+    setTimeout(() => setTutorialOpen(true), TUTORIAL_AFTER_SPLASH_MS);
   }
 
   function maybeNotify(n: number) {
@@ -379,10 +368,8 @@ export default function App() {
             await refreshBadge();
             setView("airing");
             void runCatalogMaintenance();
-            // Auto-show rule: only right after Onboarding (a fresh install).
-            // Existing users skip Onboarding, so an update never nags them;
-            // they can replay it from Ajustes.
-            if (shouldAutoShowTutorial({ justCompletedOnboarding: true, seen: readTutorialSeen(), hasUserData: false })) {
+            // Same once-only rule as the startup path; replayable from Ajustes.
+            if (shouldAutoShowTutorial({ seen: readTutorialSeen() })) {
               setTutorialOpen(true);
             }
           }}
