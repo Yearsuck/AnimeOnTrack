@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { listAiringSeason, setFollowed } from "../api";
 import { useT } from "../i18n";
 import { initials, resolveCoverUrl, useCoverFailure } from "../lib/posterFallback";
-import type { AiringItem, Series } from "../types";
+import type { AiringItem, CatalogSyncProgress, Series } from "../types";
 import { AiringSpotlight } from "./AiringSpotlight";
 
 // A series' cover_url is a data: URI (fetched via webview), a cached local file:
@@ -107,14 +108,110 @@ export function AiringGrid({
 
   const [onlyFollowed, setOnlyFollowed] = useState(false);
   const [viewMode, setViewMode] = useState<AiringViewMode>("all");
+  const [syncing, setSyncing] = useState(false);
+  const throttleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const syncTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastRunRef = useRef<number>(0);
+  const trailingPendingRef = useRef<boolean>(false);
+  const loadSeqRef = useRef<number>(0);
 
   async function load() {
-    setItems(await listAiringSeason());
+    const seq = ++loadSeqRef.current;
+    const data = await listAiringSeason();
+    if (seq === loadSeqRef.current) {
+      setItems(data);
+    }
   }
+
+  const loadRef = useRef(load);
+  loadRef.current = load;
+
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshSignal]);
+
+  // Re-run load() while AniList catalog sync events arrive (throttled to at
+  // most once every ~4 s with a trailing call, and once more when sync finishes)
+  // so "Esta temporada" populates live during the first-run crawl.
+  useEffect(() => {
+    const THROTTLE_MS = 4000;
+    const INACTIVITY_MS = 8000;
+
+    const triggerThrottledLoad = () => {
+      const now = Date.now();
+      const elapsed = now - lastRunRef.current;
+      if (elapsed >= THROTTLE_MS) {
+        if (throttleTimerRef.current) {
+          clearTimeout(throttleTimerRef.current);
+          throttleTimerRef.current = null;
+        }
+        trailingPendingRef.current = false;
+        lastRunRef.current = now;
+        loadRef.current();
+      } else {
+        trailingPendingRef.current = true;
+        if (!throttleTimerRef.current) {
+          const wait = THROTTLE_MS - elapsed;
+          throttleTimerRef.current = setTimeout(() => {
+            throttleTimerRef.current = null;
+            lastRunRef.current = Date.now();
+            trailingPendingRef.current = false;
+            loadRef.current();
+          }, wait);
+        }
+      }
+    };
+
+    let cancelled = false;
+    const un = listen<CatalogSyncProgress>("catalog-sync-progress", (e) => {
+      if (cancelled) return;
+      setSyncing(true);
+
+      if (syncTimeoutRef.current) {
+        clearTimeout(syncTimeoutRef.current);
+      }
+      syncTimeoutRef.current = setTimeout(() => {
+        setSyncing(false);
+        syncTimeoutRef.current = null;
+      }, INACTIVITY_MS);
+
+      // The backend has no explicit 'finished' event: its last emit carries synced === total
+      // (the in-flight estimate is max(21000, synced), so this only holds once it is really over).
+      const isDone = e.payload.total > 0 && e.payload.synced >= e.payload.total;
+
+      if (isDone) {
+        if (syncTimeoutRef.current) {
+          clearTimeout(syncTimeoutRef.current);
+          syncTimeoutRef.current = null;
+        }
+        setSyncing(false);
+
+        if (throttleTimerRef.current) {
+          clearTimeout(throttleTimerRef.current);
+          throttleTimerRef.current = null;
+        }
+        trailingPendingRef.current = false;
+        lastRunRef.current = Date.now();
+        loadRef.current();
+      } else {
+        triggerThrottledLoad();
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      un.then((f) => f());
+      if (throttleTimerRef.current) {
+        clearTimeout(throttleTimerRef.current);
+        throttleTimerRef.current = null;
+      }
+      if (syncTimeoutRef.current) {
+        clearTimeout(syncTimeoutRef.current);
+        syncTimeoutRef.current = null;
+      }
+    };
+  }, []);
 
   async function toggle(e: React.MouseEvent, s: Series) {
     e.stopPropagation();
@@ -216,7 +313,11 @@ export function AiringGrid({
 
       {filtered.length === 0 ? (
         <div className="empty">
-          {viewMode === "week" ? t("airing.weekEmpty") : t("common.noResults")}
+          {viewMode === "week"
+            ? t("airing.weekEmpty")
+            : viewMode === "season" && syncing
+              ? t("airing.seasonSyncing")
+              : t("common.noResults")}
         </div>
       ) : viewMode === "week" ? (
         <div className="week-schedule">

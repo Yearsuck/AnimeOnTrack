@@ -39,6 +39,7 @@ export const en: Messages = {
   "airing.filterSeason": "This season",
   "airing.filterWeek": "This week",
   "airing.seasonHint": "Only shows a known premiere date. Followed or not, the date comes from the synced Catálogo — if it's missing, resync the Catálogo from its tab",
+  "airing.seasonSyncing": "Syncing the AniList catalog... this season's list will appear in a few seconds.",
   "airing.weekEmpty": "Nothing scheduled this week.",
   "airing.dayMon": "Mon",
   "airing.dayTue": "Tue",
