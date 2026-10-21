@@ -55,6 +55,34 @@ type View =
   | "catalog"
   | "settings";
 
+/**
+ * Fire-and-forget catalog maintenance, none of which blocks the UI.
+ * Deliberately sequential, not Promise.all: the two AniList-facing
+ * steps are each paced at ~28.6 req/min against a 30/min cap, so
+ * overlapping them would just earn 429s.
+ * Also called right after Onboarding: a brand-new install never reaches the startup call
+ * (listAiring throws first), so without this the catalog would not start syncing until the
+ * next launch and "Esta temporada" would stay empty.
+ */
+async function runCatalogMaintenance() {
+  // Backfills anilist_catalog.start_date so "Esta temporada" can
+  // resolve unfollowed airing shows too. Throttled server-side.
+  await maybeSyncCatalogIncremental().catch(() => {});
+  // Refills the columns that predate the first full catalog crawl
+  // (duration, romaji, studio...). Self-throttling: once no rows are
+  // stale it returns immediately, and an interrupted run simply picks
+  // up where it left off on the next launch.
+  await backfillCatalogMetadata().catch(() => {});
+  // Local and instant, but it needs the backfilled romaji titles to
+  // match well, so it goes right after the backfill.
+  await linkSeriesToCatalog().catch(() => {});
+  // Paced AniList refresh of airing/recent statuses (~20s of
+  // requests, once per 6h): last so it never delays the linking.
+  await refreshCatalogStatus().catch(() => {});
+  // Last: ~1 request per unlinked title, so it never delays the steps above.
+  await linkUnlinkedViaAnilist().catch(() => {});
+}
+
 export default function App() {
   const t = useT();
   const [view, setView] = useState<View>("loading");
@@ -120,28 +148,7 @@ export default function App() {
         // Pending is already mounted by now (it's the first screen), so it has
         // fetched the *pre*-refresh list — reload it, not just the badge.
         await onPendingDataChanged();
-        // Fire-and-forget catalog maintenance, none of which blocks the UI.
-        // Deliberately sequential, not Promise.all: the two AniList-facing
-        // steps are each paced at ~28.6 req/min against a 30/min cap, so
-        // overlapping them would just earn 429s.
-        (async () => {
-          // Backfills anilist_catalog.start_date so "Esta temporada" can
-          // resolve unfollowed airing shows too. Throttled server-side.
-          await maybeSyncCatalogIncremental().catch(() => {});
-          // Refills the columns that predate the first full catalog crawl
-          // (duration, romaji, studio...). Self-throttling: once no rows are
-          // stale it returns immediately, and an interrupted run simply picks
-          // up where it left off on the next launch.
-          await backfillCatalogMetadata().catch(() => {});
-          // Local and instant, but it needs the backfilled romaji titles to
-          // match well, so it goes right after the backfill.
-          await linkSeriesToCatalog().catch(() => {});
-          // Paced AniList refresh of airing/recent statuses (~20s of
-          // requests, once per 6h): last so it never delays the linking.
-          await refreshCatalogStatus().catch(() => {});
-          // Last: ~1 request per unlinked title, so it never delays the steps above.
-          await linkUnlinkedViaAnilist().catch(() => {});
-        })();
+        void runCatalogMaintenance();
       } catch {
         setView("onboarding");
       }
@@ -339,6 +346,7 @@ export default function App() {
           onDone={async () => {
             await refreshBadge();
             setView("airing");
+            void runCatalogMaintenance();
           }}
         />
         <ProgressBar />
