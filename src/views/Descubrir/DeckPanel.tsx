@@ -131,7 +131,10 @@ export function DeckPanel({
     }
 
     setSaved(false);
+    pendingFlushRef.current = () =>
+      setDeckBans([...bannedGenres], [...bannedFormats], hideUpcoming, minStartDate, maxStartDate, minScore);
     const timer = setTimeout(() => {
+      pendingFlushRef.current = null;
       save();
     }, 600);
 
@@ -139,6 +142,18 @@ export function DeckPanel({
       clearTimeout(timer);
     };
   }, [bannedGenres, bannedFormats, hideUpcoming, minStartDate, maxStartDate, minScore, save]);
+
+  // Leaving the section (or the tab) inside the 600 ms debounce window used to drop the last
+  // filter change; persist it on unmount. Only the write is flushed: the parent's refill callback
+  // is skipped since the deck it would refill is going away.
+  const pendingFlushRef = useRef<(() => Promise<unknown>) | null>(null);
+  useEffect(() => {
+    return () => {
+      const flush = pendingFlushRef.current;
+      pendingFlushRef.current = null;
+      flush?.().catch((err) => console.error("setDeckBans flush failed", err));
+    };
+  }, []);
 
   function handleResetFilters() {
     setSaved(false);
