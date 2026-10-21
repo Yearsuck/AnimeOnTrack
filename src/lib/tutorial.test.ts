@@ -62,19 +62,11 @@ describe("tutorial persistence", () => {
 });
 
 describe("shouldAutoShowTutorial", () => {
-  const base = { justCompletedOnboarding: false, seen: false, hasUserData: false };
-  it("shows for a fresh unseen profile", () => {
-    expect(shouldAutoShowTutorial(base)).toBe(true);
+  it("shows to anyone who has not seen it, existing users included", () => {
+    expect(shouldAutoShowTutorial({ seen: false })).toBe(true);
   });
-  it("does not show a fresh profile twice", () => {
-    expect(shouldAutoShowTutorial({ ...base, seen: true })).toBe(false);
-  });
-  it("never shows for existing users with data", () => {
-    expect(shouldAutoShowTutorial({ ...base, hasUserData: true })).toBe(false);
-  });
-  it("shows right after onboarding when unseen", () => {
-    expect(shouldAutoShowTutorial({ ...base, justCompletedOnboarding: true, hasUserData: true })).toBe(true);
-    expect(shouldAutoShowTutorial({ ...base, justCompletedOnboarding: true, seen: true })).toBe(false);
+  it("never shows twice", () => {
+    expect(shouldAutoShowTutorial({ seen: true })).toBe(false);
   });
 });
 
