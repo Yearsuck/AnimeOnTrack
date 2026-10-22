@@ -25,6 +25,7 @@ function PendingPoster({ title, coverUrl }: { title: string; coverUrl: string | 
 
 
 const REMOVE_MS = 220;
+const COLLAPSED_EPS = 8;
 type PendingSort = "remaining_asc" | "remaining_desc";
 
 export function Pending({
@@ -49,6 +50,15 @@ export function Pending({
   const [items, setItems] = useState<PendingItem[]>([]);
   const [removing, setRemoving] = useState<Set<number>>(new Set());
   const [sort, setSort] = useState<PendingSort>("remaining_asc");
+  const [expanded, setExpanded] = useState<Set<number>>(new Set());
+
+  function toggleExpanded(seriesId: number) {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(seriesId)) next.add(seriesId);
+      return next;
+    });
+  }
 
   const load = useCallback(async () => {
     setItems(await listPending(sort));
@@ -165,9 +175,10 @@ export function Pending({
       ) : (
         [...groups.entries()].map(([seriesId, eps]) => {
           const series = eps[0].series;
-          // Compact block: a thumbnail on the left, the title + episode rows
-          // beside it. The old layout stacked a 156px-tall poster header over
-          // the rows, which left most of every block empty.
+          // Poster on the left, title + a grid of episode tiles beside it.
+          const isOpen = expanded.has(seriesId);
+          const canFold = eps.length > COLLAPSED_EPS;
+          const shown = canFold && !isOpen ? eps.slice(0, COLLAPSED_EPS) : eps;
           return (
             <div key={seriesId} className="series-block pending-block">
               {/* Mouse shortcut only; the title button is the keyboard path to
@@ -190,7 +201,8 @@ export function Pending({
                     {t(eps.length === 1 ? "pending.new" : "pending.newPlural", { count: eps.length })}
                   </span>
                 </button>
-                {eps.map((it) => (
+                <div className="pending-eps">
+                {shown.map((it) => (
                   <div
                     key={it.episode.id}
                     className={`ep-row ${removing.has(it.episode.id) ? "removing" : ""}`}
@@ -216,6 +228,19 @@ export function Pending({
                     </div>
                   </div>
                 ))}
+                </div>
+                {canFold && (
+                  <button
+                    type="button"
+                    className="btn btn-sm pending-more"
+                    aria-expanded={isOpen}
+                    onClick={() => toggleExpanded(seriesId)}
+                  >
+                    {isOpen
+                      ? t("pending.showLess")
+                      : t("pending.showMore", { count: eps.length - COLLAPSED_EPS })}
+                  </button>
+                )}
               </div>
             </div>
           );

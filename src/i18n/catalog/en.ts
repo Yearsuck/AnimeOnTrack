@@ -67,6 +67,8 @@ export const en: Messages = {
   "pending.emptyHint": "Follow an anime in “Airing” and hit Refresh.",
   "pending.new": "{count} new",
   "pending.newPlural": "{count} new",
+  "pending.showMore": "Show {count} more",
+  "pending.showLess": "Show less",
 
   "onboarding.title": "Track your airing anime",
   "onboarding.subtitle": "Enter the site URL to scan for airing anime.",
