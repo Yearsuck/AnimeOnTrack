@@ -76,6 +76,8 @@ export const es = {
   "pending.emptyHint": "Sigue algún anime en “En emisión” y pulsa Actualizar.",
   "pending.new": "{count} nuevo",
   "pending.newPlural": "{count} nuevos",
+  "pending.showMore": "Mostrar {count} más",
+  "pending.showLess": "Mostrar menos",
 
   // Onboarding.tsx
   "onboarding.title": "Sigue tus animes en emisión",

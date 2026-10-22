@@ -72,6 +72,8 @@ export const ca: Messages = {
   "pending.emptyHint": "Segueix algun anime a «En emissió» i prem Actualitza.",
   "pending.new": "{count} nou",
   "pending.newPlural": "{count} nous",
+  "pending.showMore": "Mostra'n {count} més",
+  "pending.showLess": "Mostra menys",
 
   // Onboarding.tsx
   "onboarding.title": "Segueix els teus animes en emissió",
