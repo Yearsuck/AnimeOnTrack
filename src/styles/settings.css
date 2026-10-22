@@ -77,6 +77,23 @@
   min-width: 0;
 }
 
+/* The panel's flex gap already spaces the cards; the card's own
+   margin-bottom (styles.css) doubled it to ~40px between cards. */
+.settings-panel > .settings-section,
+.settings-panel > * > .settings-section {
+  margin-bottom: 0;
+}
+
+/* A disabled primary button (e.g. "Guardar credenciales" with empty fields)
+   rendered as a washed-out red block that still read as the call to action.
+   Disabled reads as neutral, like every other disabled control. */
+.settings-panel .btn-primary:disabled {
+  background: var(--surface-2);
+  border-color: var(--border);
+  color: var(--muted);
+  box-shadow: none;
+}
+
 /* Advanced options disclosure (<details> / <summary>) */
 .settings-details {
   border: 1px solid var(--border);

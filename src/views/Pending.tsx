@@ -165,43 +165,58 @@ export function Pending({
       ) : (
         [...groups.entries()].map(([seriesId, eps]) => {
           const series = eps[0].series;
+          // Compact block: a thumbnail on the left, the title + episode rows
+          // beside it. The old layout stacked a 156px-tall poster header over
+          // the rows, which left most of every block empty.
           return (
-            <div key={seriesId} className="series-block">
-              <div className="series-head clickable" onClick={() => onOpenSeries(series)}>
+            <div key={seriesId} className="series-block pending-block">
+              {/* Mouse shortcut only; the title button is the keyboard path to
+                  the same action, so the thumbnail stays out of the tab order. */}
+              <div
+                className="pending-thumb clickable"
+                aria-hidden="true"
+                onClick={() => onOpenSeries(series)}
+              >
                 <PendingPoster title={series.title} coverUrl={series.cover_url} />
-                <div>
-
-                  <div className="name">{series.title}</div>
-                  <div className="count">
-                    {t(eps.length === 1 ? "pending.new" : "pending.newPlural", { count: eps.length })}
-                  </div>
-                </div>
               </div>
-              {eps.map((it) => (
-                <div
-                  key={it.episode.id}
-                  className={`ep-row ${removing.has(it.episode.id) ? "removing" : ""}`}
+              <div className="pending-main">
+                <button
+                  type="button"
+                  className="pending-head"
+                  onClick={() => onOpenSeries(series)}
                 >
-                  <span className="ep-num">{it.episode.number}</span>
-                  <div className="ep-main">
-                    <div className="ep-title" onClick={() => watch(it)}>
-                      {t("common.episodeNumber", { number: it.episode.number })}
+                  <span className="pending-title">{series.title}</span>
+                  <span className="pending-count">
+                    {t(eps.length === 1 ? "pending.new" : "pending.newPlural", { count: eps.length })}
+                  </span>
+                </button>
+                {eps.map((it) => (
+                  <div
+                    key={it.episode.id}
+                    className={`ep-row ${removing.has(it.episode.id) ? "removing" : ""}`}
+                  >
+                    <span className="ep-num">{it.episode.number}</span>
+                    <div className="ep-main">
+                      <div className="ep-title" onClick={() => watch(it)}>
+                        {t("common.episodeNumber", { number: it.episode.number })}
+                      </div>
+                    </div>
+                    <div className="ep-actions">
+                      <button type="button" className="btn btn-sm" onClick={() => watch(it)}>
+                        {t("common.watch")}
+                      </button>
+                      <button
+                        className={`check ${removing.has(it.episode.id) ? "on" : ""}`}
+                        title={t("common.markSeen")}
+                        aria-label={t("common.markSeen")}
+                        onClick={() => markSeen(it)}
+                      >
+                        ✓
+                      </button>
                     </div>
                   </div>
-                  <div className="ep-actions">
-                    <button className="btn" onClick={() => watch(it)}>
-                      {t("common.watch")}
-                    </button>
-                    <button
-                      className={`check ${removing.has(it.episode.id) ? "on" : ""}`}
-                      title={t("common.markSeen")}
-                      onClick={() => markSeen(it)}
-                    >
-                      ✓
-                    </button>
-                  </div>
-                </div>
-              ))}
+                ))}
+              </div>
             </div>
           );
         })

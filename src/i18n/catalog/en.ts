@@ -30,7 +30,7 @@ export const en: Messages = {
   "errors.generic": "Error: {detail}",
 
   "airing.followingFilter": "★ Following ({count})",
-  "airing.followingChip": "FOLLOWING",
+  "airing.followingChip": "Following",
   "airing.followingBtn": "✓ Following",
   "airing.followBtn": "+ Follow",
   "airing.filterAll": "All",
@@ -174,7 +174,7 @@ export const en: Messages = {
   "library.filterStatus": "Status",
   "library.statusAll": "All",
   "library.filterType": "Type",
-  "library.typeAll": "All",
+  "library.typeAll": "All types",
   "library.typeOther": "Other",
   "library.filterGenre": "Genre",
   "library.genreChipAria": "Genre filter {genre}, state: {state}",
@@ -185,13 +185,16 @@ export const en: Messages = {
   "library.showMoreGenres": "{count} more",
   "library.showLessGenres": "Show less",
   "library.filterStudio": "Studio",
-  "library.studioAll": "All",
+  "library.studioAll": "All studios",
   "library.selectMode": "Select",
   "library.cancelSelect": "Cancel",
   "library.selectedCount": "{count} selected",
   "library.bulkRemove": "Unfollow selected",
   "library.bulkRemoveConfirm": "Unfollow {count} series? Watch progress will be lost.",
   "library.deselectAll": "Deselect all",
+  "library.moreFilters": "More filters",
+  "library.lessFilters": "Fewer filters",
+  "library.clearFilters": "Clear filters",
 
   "seriesDetail.unfollow": "Unfollow",
   "seriesDetail.openPage": "View on AniList ↗",
@@ -497,6 +500,7 @@ export const en: Messages = {
   "download.retry": "Retry",
 
   // storage
+  "storage.heading": "Storage and downloads",
   "storage.desc": "Manage disk space for downloads, covers, database, and orphan files.",
   "storage.usageHeading": "Storage usage",
   "storage.usageDownloads": "Downloads",
