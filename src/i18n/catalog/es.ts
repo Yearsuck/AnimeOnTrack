@@ -160,6 +160,8 @@ export const es = {
   "settings.playerMode": "Modo de apertura",
   "settings.playerWindowed": "Ventana",
   "settings.playerFullscreen": "Ventana a pantalla completa",
+  "settings.playerClean": "Modo reproductor limpio",
+  "settings.playerCleanHelp": "Solo el reproductor y el nombre del anime; sin menús, comentarios ni anuncios.",
   "settings.playerHelp": "Configura en qué monitor se abren los episodios y si deben abrirse en una ventana normal o maximizada a pantalla completa. El pantalla completa real lo activas tú al empezar el episodio.",
 
 

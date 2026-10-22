@@ -4,6 +4,7 @@ mod anilist;
 mod anizip;
 mod backup;
 mod catalog_snapshot;
+mod clean_player;
 mod commands;
 mod dates;
 mod extras_guard;

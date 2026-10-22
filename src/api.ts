@@ -74,8 +74,8 @@ export const listMonitors = () => invoke<MonitorOption[]>("list_monitors");
 
 export const getPlayerSettings = () => invoke<PlayerSettings>("get_player_settings");
 
-export const setPlayerSettings = (monitor: string | null, fullscreen: boolean) =>
-  invoke<void>("set_player_settings", { monitor, fullscreen });
+export const setPlayerSettings = (monitor: string | null, fullscreen: boolean, clean: boolean) =>
+  invoke<void>("set_player_settings", { monitor, fullscreen, clean });
 
 
 export const setSeen = (episodeId: number, seen: boolean) =>

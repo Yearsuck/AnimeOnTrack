@@ -16,11 +16,12 @@ pub async fn open_episode(
     monitor: Option<String>,
     fullscreen: Option<bool>,
 ) -> Result<(), String> {
-    let (eff_monitor, eff_fullscreen) = {
+    let (eff_monitor, eff_fullscreen, eff_clean) = {
         let db = state.db.lock().unwrap();
         let mon = monitor.or_else(|| db.get_player_monitor().ok().flatten());
         let fs = fullscreen.unwrap_or_else(|| db.get_player_fullscreen().unwrap_or(false));
-        (mon, fs)
+        let clean = db.get_player_clean().unwrap_or(true);
+        (mon, fs, clean)
     };
 
     let ep = Episode {
@@ -35,7 +36,7 @@ pub async fn open_episode(
         download_status: None,
     };
     AppWindowPlayer
-        .open_with_options(&app, &ep, eff_monitor.as_deref(), eff_fullscreen)
+        .open_with_options(&app, &ep, eff_monitor.as_deref(), eff_fullscreen, eff_clean)
         .map_err(|e| e.to_string())
 }
 
@@ -73,7 +74,8 @@ pub async fn get_player_settings(state: State<'_, AppState>) -> Result<crate::mo
     let db = state.db.lock().unwrap();
     let monitor = db.get_player_monitor().map_err(|e| e.to_string())?;
     let fullscreen = db.get_player_fullscreen().map_err(|e| e.to_string())?;
-    Ok(crate::models::PlayerSettings { monitor, fullscreen })
+    let clean = db.get_player_clean().map_err(|e| e.to_string())?;
+    Ok(crate::models::PlayerSettings { monitor, fullscreen, clean })
 }
 
 /// Persists player playback preferences (target monitor and fullscreen).
@@ -82,10 +84,12 @@ pub async fn set_player_settings(
     state: State<'_, AppState>,
     monitor: Option<String>,
     fullscreen: bool,
+    clean: bool,
 ) -> Result<(), String> {
     let db = state.db.lock().unwrap();
     db.set_player_monitor(monitor.as_deref()).map_err(|e| e.to_string())?;
     db.set_player_fullscreen(fullscreen).map_err(|e| e.to_string())?;
+    db.set_player_clean(clean).map_err(|e| e.to_string())?;
     Ok(())
 }
 

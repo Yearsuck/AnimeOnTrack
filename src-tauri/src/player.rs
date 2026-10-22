@@ -9,7 +9,7 @@ use tauri_plugin_opener::OpenerExt;
 pub trait EpisodePlayer {
     #[allow(dead_code)]
     fn open(&self, app: &AppHandle, episode: &Episode) -> Result<()> {
-        self.open_with_options(app, episode, None, false)
+        self.open_with_options(app, episode, None, false, false)
     }
 
 
@@ -19,6 +19,7 @@ pub trait EpisodePlayer {
         episode: &Episode,
         target_monitor: Option<&str>,
         fullscreen: bool,
+        clean: bool,
     ) -> Result<()>;
 }
 
@@ -35,6 +36,7 @@ impl EpisodePlayer for BrowserPlayer {
         episode: &Episode,
         _target_monitor: Option<&str>,
         _fullscreen: bool,
+        _clean: bool,
     ) -> Result<()> {
         app.opener().open_url(&episode.url, None::<&str>)?;
         Ok(())
@@ -86,7 +88,8 @@ pub fn resolve_target_monitor(
 /// the user's browser (app WebView2 windows use the app's own user-data
 /// folder, so a distinct cookie/login store). This is the user-viewing path,
 /// deliberately NOT the scraper path: it is **visible**, acquires **no**
-/// `SCRAPE_PERMITS`, and runs **no** host-side `eval()`/HTML extraction — so
+/// `SCRAPE_PERMITS`, and runs no HTML extraction (the optional clean-player mode does run one
+/// host-side style/layout script, see `clean_player`) — so
 /// it never competes with or interferes with `scraper_engine`'s hidden,
 /// permit-gated scrape windows. The user solves any Cloudflare challenge
 /// interactively here.
@@ -105,6 +108,7 @@ impl EpisodePlayer for AppWindowPlayer {
         episode: &Episode,
         target_monitor: Option<&str>,
         fullscreen: bool,
+        clean: bool,
     ) -> Result<()> {
         // Unique label per open → each episode/info link gets its own
         // independent window the user can arrange or close.
@@ -157,6 +161,10 @@ impl EpisodePlayer for AppWindowPlayer {
 
         let _ = win.show();
         let _ = win.set_focus();
+        if clean {
+            // Async, off the main thread; leaves the page untouched on failure.
+            crate::clean_player::spawn_injection(win.clone(), episode.url.clone());
+        }
         Ok(())
     }
 }
