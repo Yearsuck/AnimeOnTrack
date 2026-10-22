@@ -2554,28 +2554,72 @@ progress.scanbar-track::-webkit-progress-value {
   font-weight: var(--fw-medium);
 }
 
-/* ---------- Series detail header ---------- */
+/* ---------- Series detail header ----------
+   Two columns (cover + facts | synopsis) on wide windows so the info never
+   pushes the episode list far down; the synopsis drops under the facts on
+   narrow ones. The AniList banner, when there is one, is the one decorative
+   element: a faded wash behind the header, never behind the episode list. */
 .detail-back {
   margin-bottom: var(--sp-3);
 }
-.detail-head {
-  align-items: flex-start;
+.detail-hero {
+  position: relative;
+  margin-bottom: var(--sp-5);
+}
+.detail-hero.has-banner {
+  padding-top: var(--sp-8);
+}
+.detail-banner {
+  position: absolute;
+  inset: 0 0 auto 0;
+  width: 100%;
+  height: 220px;
+  object-fit: cover;
+  border-radius: var(--radius);
+  opacity: 0.32;
+  -webkit-mask-image: linear-gradient(to bottom, #000 30%, transparent);
+  mask-image: linear-gradient(to bottom, #000 30%, transparent);
+  pointer-events: none;
+  user-select: none;
+}
+.detail-hero-grid {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--sp-5);
+  align-items: start;
 }
 .detail-cover {
-  width: 90px;
-  height: 128px;
+  width: 132px;
+  height: 188px;
   object-fit: cover;
   border-radius: var(--radius-sm);
   background: var(--surface-2);
-  box-shadow: var(--shadow-sm);
-  flex-shrink: 0;
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-md);
 }
 .detail-main {
-  flex: 1;
   min-width: 0;
 }
 .detail-title {
-  margin-bottom: var(--sp-2);
+  margin-bottom: var(--sp-1);
+}
+.detail-alt-title {
+  margin: 0 0 var(--sp-2);
+  font-size: var(--fs-sm);
+}
+.detail-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1) var(--sp-4);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+}
+.detail-links .detail-site-link {
+  color: var(--muted);
+}
+.detail-links .detail-site-link:hover {
+  color: var(--text);
 }
 .detail-meta {
   margin-top: var(--sp-2);
@@ -2584,18 +2628,271 @@ progress.scanbar-track::-webkit-progress-value {
   flex-wrap: wrap;
   gap: var(--sp-1) var(--sp-4);
 }
+.detail-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(118px, 1fr));
+  gap: var(--sp-2) var(--sp-4);
+  margin: var(--sp-3) 0 0;
+}
+.detail-fact dt {
+  font-size: var(--fs-xs);
+  color: var(--muted-2);
+  font-weight: var(--fw-medium);
+}
+.detail-fact dd {
+  margin: 0;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
+}
+.detail-next-air {
+  margin: var(--sp-3) 0 0;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  color: var(--accent);
+}
 .detail-genres {
-  margin-top: var(--sp-2);
+  margin-top: var(--sp-3);
   display: flex;
   flex-wrap: wrap;
   gap: var(--sp-2);
 }
 .detail-progress {
   margin-top: var(--sp-3);
+  max-width: 420px;
 }
 .detail-progress-label {
   margin-bottom: var(--sp-1);
   font-size: var(--fs-sm);
+}
+.detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin-top: var(--sp-4);
+}
+
+/* Synopsis panel */
+.detail-about {
+  grid-column: 1 / -1;
+  min-width: 0;
+  padding: var(--sp-4) var(--sp-5);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.detail-about-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2) var(--sp-3);
+  margin-bottom: var(--sp-3);
+}
+.detail-about-empty {
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+.detail-synopsis {
+  max-width: 68ch;
+  font-size: var(--fs-base);
+  line-height: 1.6;
+  color: var(--text);
+}
+.detail-synopsis p {
+  margin: 0 0 var(--sp-2);
+}
+.detail-synopsis p:last-child {
+  margin-bottom: 0;
+}
+/* ~5 lines, faded out rather than cut mid-word. */
+.detail-synopsis.clamped {
+  max-height: calc(var(--fs-base) * 1.6 * 5);
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, #000 55%, transparent);
+  mask-image: linear-gradient(to bottom, #000 55%, transparent);
+}
+.spoiler-hidden {
+  display: inline-block;
+  padding: 0 var(--sp-2);
+  border-radius: var(--radius-sm);
+  background: var(--surface-3);
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  font-style: italic;
+  line-height: 1.6;
+}
+.spoiler-shown {
+  background: var(--accent-dim);
+  border-radius: 3px;
+}
+.detail-about-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-4);
+  margin-top: var(--sp-2);
+}
+.btn-text {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  cursor: pointer;
+  border-radius: 4px;
+}
+.btn-text:hover {
+  color: var(--accent-hover);
+}
+.btn-text:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+.detail-tags {
+  list-style: none;
+  margin: var(--sp-4) 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1) var(--sp-2);
+}
+.tag.tag-quiet {
+  padding: 2px var(--sp-2);
+  background: transparent;
+  font-size: var(--fs-xs);
+}
+
+@media (min-width: 1100px) {
+  .detail-hero-grid {
+    grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr);
+  }
+  .detail-about {
+    grid-column: auto;
+  }
+}
+@media (max-width: 600px) {
+  .detail-hero-grid {
+    gap: var(--sp-4);
+  }
+  .detail-cover {
+    width: 96px;
+    height: 136px;
+  }
+}
+
+/* "Relacionados": one scrollable row of small posters, prequel first. */
+.detail-related {
+  margin-bottom: var(--sp-5);
+}
+.detail-related .section-title {
+  margin-bottom: var(--sp-3);
+}
+.related-row {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 var(--sp-2);
+  display: flex;
+  gap: var(--sp-3);
+  overflow-x: auto;
+  scroll-snap-type: x proximity;
+}
+.related-card {
+  flex: 0 0 112px;
+  scroll-snap-align: start;
+}
+.related-card-btn {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+.related-card-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.related-cover {
+  position: relative;
+  display: block;
+  width: 100%;
+  aspect-ratio: 5 / 7;
+  margin-bottom: var(--sp-1);
+  overflow: hidden;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+.related-cover img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: transform var(--dur) var(--ease);
+}
+.related-card-btn:hover .related-cover img {
+  transform: scale(1.04);
+}
+.related-cover-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--muted);
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-bold);
+}
+.related-badge {
+  position: absolute;
+  left: var(--sp-1);
+  bottom: var(--sp-1);
+  padding: 1px var(--sp-2);
+  border-radius: var(--radius-round);
+  background: var(--accent-solid);
+  color: var(--on-accent);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+}
+.related-badge.watched {
+  background: var(--success);
+  color: var(--on-success);
+}
+.related-relation {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  color: var(--accent);
+}
+.related-title {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  line-height: var(--lh-tight);
+}
+.related-card-btn:hover .related-title {
+  color: var(--accent);
+}
+.related-meta {
+  font-size: var(--fs-xs);
+  color: var(--muted-2);
+}
+@media (prefers-reduced-motion: reduce) {
+  .related-cover img {
+    transition: none;
+  }
+  .related-card-btn:hover .related-cover img {
+    transform: none;
+  }
 }
 
 /* ---------- Catálogo ---------- */

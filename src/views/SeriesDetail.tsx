@@ -6,9 +6,11 @@ import {
   deleteSeriesDownloads,
   downloadEpisode,
   downloadPending,
+  getAnimeExtras,
   getCatalogInfoForSeries,
   getNextAir,
   getPlayerSettings,
+  getSeriesSiteInfo,
   linkCatalogSeries,
   listEpisodes,
   openEpisode,
@@ -18,22 +20,42 @@ import {
   setSeenCascade,
 } from "../api";
 
-import { useT } from "../i18n";
+import { useT, type MessageKey } from "../i18n";
 import { airCountdown } from "../lib/airCountdown";
+import { aniListTarget, seasonOf, sitePageUrl } from "../lib/anilistLinks";
 import { isUnlinkedCatalogRow } from "../lib/catalogLink";
 import { summarizeDownloads } from "../lib/downloadSummary";
 import { epNum } from "../lib/episodeNumber";
 import { resolveCoverUrl } from "../lib/posterFallback";
-import type { CatalogAnime, Episode, NextAir, Series } from "../types";
+import type { AnimeExtras, CatalogAnime, Episode, NextAir, Series, SeriesSiteInfo } from "../types";
+import { RelatedRow, SeriesAbout } from "./SeriesInfo";
+
+const STATUS_KEYS: Record<string, MessageKey> = {
+  RELEASING: "seriesDetail.status.RELEASING",
+  FINISHED: "seriesDetail.status.FINISHED",
+  NOT_YET_RELEASED: "seriesDetail.status.NOT_YET_RELEASED",
+  CANCELLED: "seriesDetail.status.CANCELLED",
+  HIATUS: "seriesDetail.status.HIATUS",
+};
+
+const SEASON_KEYS: Record<"winter" | "spring" | "summer" | "fall", MessageKey> = {
+  winter: "seriesDetail.season.winter",
+  spring: "seriesDetail.season.spring",
+  summer: "seriesDetail.season.summer",
+  fall: "seriesDetail.season.fall",
+};
 
 export function SeriesDetail({
   series,
   onBack,
   onChanged,
+  onOpenSeries,
 }: {
   series: Series;
   onBack: () => void;
   onChanged: () => void;
+  /** Open another series (a related title the user already has a row for). */
+  onOpenSeries?: (series: Series) => void;
 }) {
   const t = useT();
   const [episodes, setEpisodes] = useState<Episode[]>([]);
@@ -43,6 +65,11 @@ export function SeriesDetail({
   // comes from AniList, not the scraped site — the site only still supplies
   // episode links and the "is it airing" signal (see `listEpisodes` below).
   const [catalogInfo, setCatalogInfo] = useState<CatalogAnime | null>(null);
+  const [catalogLoaded, setCatalogLoaded] = useState(false);
+  const [siteInfo, setSiteInfo] = useState<SeriesSiteInfo | null>(null);
+  const [extras, setExtras] = useState<AnimeExtras | null>(null);
+  const [bannerFailed, setBannerFailed] = useState<string | null>(null);
+  const topRef = useRef<HTMLDivElement>(null);
   const [nextAir, setNextAir] = useState<NextAir | null>(null);
   // Live state of downloads started or running while this screen is open
   // (`download-progress` events); the episode row's own `download_status`
@@ -97,12 +124,60 @@ export function SeriesDetail({
       setLoading(false);
     }
   }
+  // `catalogLoaded` gates the AniList link: until the lookup answers there is
+  // no AniList URL to open, and the series' own (site) URL must never stand in
+  // for it under an AniList label.
   useEffect(() => {
+    let cancelled = false;
     setCatalogInfo(null);
+    setCatalogLoaded(false);
     getCatalogInfoForSeries(series.id)
-      .then(setCatalogInfo)
-      .catch(() => setCatalogInfo(null));
+      .then((info) => {
+        if (!cancelled) setCatalogInfo(info);
+      })
+      .catch(() => {
+        if (!cancelled) setCatalogInfo(null);
+      })
+      .finally(() => {
+        if (!cancelled) setCatalogLoaded(true);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [series.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setSiteInfo(null);
+    // Opening a related title swaps the series in place: start at the top.
+    topRef.current?.scrollIntoView({ block: "start" });
+    getSeriesSiteInfo(series.id)
+      .then((info) => {
+        if (!cancelled) setSiteInfo(info);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [series.id]);
+
+  // AniList description + relations: cached in the DB, fetched once on demand.
+  useEffect(() => {
+    let cancelled = false;
+    setExtras(null);
+    if (!catalogInfo?.id) return;
+    getAnimeExtras(catalogInfo.id)
+      .then((res) => {
+        if (!cancelled) setExtras(res);
+      })
+      .catch((err) => {
+        console.error("getAnimeExtras failed", err);
+        if (!cancelled) setExtras({ description: null, relations: [] });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [catalogInfo?.id]);
 
   useEffect(() => {
     let cancelled = false;
@@ -276,6 +351,52 @@ export function SeriesDetail({
       )
     : "";
 
+  const aniList = aniListTarget(catalogLoaded, catalogInfo?.url, series.title);
+  const sitePage = sitePageUrl(series.url);
+  const banner =
+    catalogInfo?.banner_url && catalogInfo.banner_url !== bannerFailed ? catalogInfo.banner_url : null;
+  // The site's own title when it differs from AniList's (often the Spanish
+  // or romaji name the user knows the show by).
+  const altTitle =
+    catalogInfo && catalogInfo.title.trim().toLowerCase() !== series.title.trim().toLowerCase()
+      ? series.title
+      : null;
+
+  const facts = useMemo(() => {
+    if (!catalogInfo) return [];
+    const out: { label: string; value: string }[] = [];
+    const statusKey = catalogInfo.status ? STATUS_KEYS[catalogInfo.status] : undefined;
+    if (statusKey) out.push({ label: t("seriesDetail.info.status"), value: t(statusKey) });
+    const season = seasonOf(catalogInfo.start_date);
+    if (season) {
+      out.push({
+        label: t("seriesDetail.info.season"),
+        value: t(SEASON_KEYS[season.season], { year: season.year }),
+      });
+    }
+    if (catalogInfo.format) out.push({ label: t("seriesDetail.info.format"), value: catalogInfo.format });
+    if (catalogInfo.episodes != null) {
+      out.push({ label: t("seriesDetail.info.episodes"), value: String(catalogInfo.episodes) });
+    }
+    if (catalogInfo.duration != null && catalogInfo.duration > 0) {
+      out.push({
+        label: t("seriesDetail.info.duration"),
+        value: t("seriesDetail.info.durationValue", { n: catalogInfo.duration }),
+      });
+    }
+    if (catalogInfo.studio) out.push({ label: t("seriesDetail.info.studio"), value: catalogInfo.studio });
+    if (catalogInfo.average_score != null) {
+      out.push({ label: t("seriesDetail.info.score"), value: `${catalogInfo.average_score}/100` });
+    }
+    return out;
+  }, [catalogInfo, t]);
+
+  // Opens inside an app-owned WebView2 window instead of the system browser.
+  function openExternal(e: React.MouseEvent, url: string) {
+    e.preventDefault();
+    openEpisode(url).catch((err) => console.error("openEpisode failed for", url, err));
+  }
+
   const summary = useMemo(() => summarizeDownloads(episodes), [episodes]);
 
   const panelStatus = useMemo(() => {
@@ -326,96 +447,121 @@ export function SeriesDetail({
   }
 
   return (
-    <div className="page">
+    <div className="page" ref={topRef}>
       <button className="btn btn-ghost detail-back" onClick={onBack}>
         {t("common.back")}
       </button>
 
-      <div className="page-head detail-head">
-        {detailCover && (
-          <img className="detail-cover" src={detailCover} alt="" />
+      <header className={`detail-hero${banner ? " has-banner" : ""}`}>
+        {banner && (
+          <img
+            className="detail-banner"
+            src={banner}
+            alt=""
+            aria-hidden="true"
+            onError={() => setBannerFailed(banner)}
+          />
         )}
-        <div className="detail-main">
-          <h2 className="page-title detail-title">{catalogInfo?.title ?? series.title}</h2>
-          <a
-            // The "open page" link points at AniList — the reliable source of
-            // truth for anime info. The pirate site only supplies episodes (the
-            // play buttons below), so it's the fallback only when this show
-            // isn't linked to the catalog. Opens inside an app-owned WebView2
-            // window instead of spawning the system browser.
-            href={catalogInfo?.url ?? series.url}
-            onClick={(e) => {
-              e.preventDefault();
-              const url = catalogInfo?.url ?? series.url;
-              openEpisode(url).catch((err) =>
-                console.error("openEpisode failed for", url, err)
-              );
-            }}
-          >
-            {t("seriesDetail.openPage")}
-          </a>
-          {catalogInfo ? (
-            <div className="muted detail-meta">
-              {catalogInfo.studio && (
-                <span>{t("seriesDetail.info.studio")}: {catalogInfo.studio}</span>
+        <div className="detail-hero-grid">
+          {detailCover && <img className="detail-cover" src={detailCover} alt="" />}
+          <div className="detail-main">
+            <h2 className="page-title detail-title">{catalogInfo?.title ?? series.title}</h2>
+            {altTitle && <p className="muted detail-alt-title">{altTitle}</p>}
+            <div className="detail-links">
+              {/* Only ever anilist.co under an AniList label; nothing while the
+                  catalog lookup is still running. */}
+              {aniList.kind === "open" && (
+                <a href={aniList.url} onClick={(e) => openExternal(e, aniList.url)}>
+                  {t("seriesDetail.openPage")}
+                </a>
               )}
-              {catalogInfo.format && (
-                <span>{t("seriesDetail.info.format")}: {catalogInfo.format}</span>
+              {aniList.kind === "search" && (
+                <a
+                  href={aniList.url}
+                  title={t("seriesDetail.searchAniListHint")}
+                  onClick={(e) => openExternal(e, aniList.url)}
+                >
+                  {t("seriesDetail.searchAniList")}
+                </a>
               )}
-              {catalogInfo.episodes != null && (
-                <span>{t("seriesDetail.info.episodes")}: {catalogInfo.episodes}</span>
-              )}
-              {catalogInfo.average_score != null && (
-                <span>{t("seriesDetail.info.score")}: {catalogInfo.average_score}/100</span>
+              {sitePage && (
+                <a className="detail-site-link" href={sitePage} onClick={(e) => openExternal(e, sitePage)}>
+                  {siteInfo?.site_name
+                    ? t("seriesDetail.openSite", { site: siteInfo.site_name })
+                    : t("seriesDetail.openSiteGeneric")}
+                </a>
               )}
             </div>
-          ) : (
-            <div className="muted detail-meta">{t("seriesDetail.info.notSynced")}</div>
-          )}
-          {nextAir && countdown && (
-            <p className="muted detail-next-air">
-              {t("seriesDetail.nextAir", { episode: nextAir.episode, when })}
-            </p>
-          )}
-          {catalogInfo != null && catalogInfo.genres.length > 0 && (
-            <div className="detail-genres">
-              {catalogInfo.genres.map((g) => (
-                <span key={g} className="tag">
-                  {g}
-                </span>
-              ))}
+            {catalogInfo ? (
+              facts.length > 0 && (
+                <dl className="detail-facts">
+                  {facts.map((f) => (
+                    <div key={f.label} className="detail-fact">
+                      <dt>{f.label}</dt>
+                      <dd>{f.value}</dd>
+                    </div>
+                  ))}
+                </dl>
+              )
+            ) : (
+              catalogLoaded && <div className="muted detail-meta">{t("seriesDetail.info.notSynced")}</div>
+            )}
+            {nextAir && countdown && (
+              <p className="detail-next-air">
+                {t("seriesDetail.nextAir", { episode: nextAir.episode, when })}
+              </p>
+            )}
+            {catalogInfo != null && catalogInfo.genres.length > 0 && (
+              <div className="detail-genres">
+                {catalogInfo.genres.map((g) => (
+                  <span key={g} className="tag">
+                    {g}
+                  </span>
+                ))}
+              </div>
+            )}
+            <div className="detail-progress">
+              <div className="muted detail-progress-label">
+                {t("seriesDetail.seenCount", { seen: seenCount, total: episodes.length })}
+              </div>
+              <div className="progress">
+                <span style={{ width: `${pct}%` }} />
+              </div>
             </div>
-          )}
-          <div className="detail-progress">
-            <div className="muted detail-progress-label">
-              {t("seriesDetail.seenCount", { seen: seenCount, total: episodes.length })}
-            </div>
-            <div className="progress">
-              <span style={{ width: `${pct}%` }} />
+            <div className="detail-actions">
+              {episodes.length > 0 && (
+                <button className="btn" onClick={jumpToCurrent}>
+                  {t("seriesDetail.jumpToCurrent")}
+                </button>
+              )}
+              {episodes.length > 0 && (
+                <button
+                  className={`btn ${playerFullscreen ? "btn-primary" : "btn-ghost"}`}
+                  onClick={togglePlayerFullscreen}
+                  title={t("settings.playerHelp")}
+                >
+                  {playerFullscreen ? `⛶ ${t("settings.playerFullscreen")}` : `🗗 ${t("settings.playerWindowed")}`}
+                </button>
+              )}
+              {series.followed && (
+                <button className="btn btn-ghost" onClick={unfollow}>
+                  {t("seriesDetail.unfollow")}
+                </button>
+              )}
             </div>
           </div>
+          <SeriesAbout
+            key={series.id}
+            siteSynopsis={siteInfo?.synopsis ?? null}
+            siteName={siteInfo?.site_name ?? null}
+            anilistDescription={extras?.description ?? null}
+            anilistLoading={!catalogLoaded || (catalogInfo != null && extras == null)}
+            tags={catalogInfo?.tags ?? []}
+          />
         </div>
-        {episodes.length > 0 && (
-          <button
-            className={`btn ${playerFullscreen ? "btn-primary" : "btn-ghost"}`}
-            onClick={togglePlayerFullscreen}
-            title={t("settings.playerHelp")}
-          >
-            {playerFullscreen ? `⛶ ${t("settings.playerFullscreen")}` : `🗗 ${t("settings.playerWindowed")}`}
-          </button>
-        )}
-        {episodes.length > 0 && (
-          <button className="btn" onClick={jumpToCurrent}>
-            {t("seriesDetail.jumpToCurrent")}
-          </button>
-        )}
+      </header>
 
-        {series.followed && (
-          <button className="btn btn-ghost" onClick={unfollow}>
-            {t("seriesDetail.unfollow")}
-          </button>
-        )}
-      </div>
+      <RelatedRow items={extras?.relations ?? []} onOpenSeries={onOpenSeries} />
 
       {summary.downloadable > 0 && (
         <section className="dl-panel">
