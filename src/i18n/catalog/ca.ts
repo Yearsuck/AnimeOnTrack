@@ -34,7 +34,7 @@ export const ca: Messages = {
 
   // AiringGrid.tsx
   "airing.followingFilter": "★ Seguint ({count})",
-  "airing.followingChip": "SEGUINT",
+  "airing.followingChip": "Seguint",
   "airing.followingBtn": "✓ Seguint",
   "airing.followBtn": "+ Segueix",
   "airing.filterAll": "Totes",
@@ -182,7 +182,7 @@ export const ca: Messages = {
   "library.filterStatus": "Estat",
   "library.statusAll": "Totes",
   "library.filterType": "Tipus",
-  "library.typeAll": "Tots",
+  "library.typeAll": "Tots els tipus",
   "library.typeOther": "Altres",
   "library.filterGenre": "Gènere",
   "library.genreChipAria": "Filtre de gènere {genre}, estat: {state}",
@@ -193,13 +193,16 @@ export const ca: Messages = {
   "library.showMoreGenres": "{count} més",
   "library.showLessGenres": "Mostra menys",
   "library.filterStudio": "Estudi",
-  "library.studioAll": "Tots",
+  "library.studioAll": "Tots els estudis",
   "library.selectMode": "Seleccionar",
   "library.cancelSelect": "Cancel·la",
   "library.selectedCount": "{count} seleccionats",
   "library.bulkRemove": "Deixa de seguir selecció",
   "library.bulkRemoveConfirm": "Deixar de seguir {count} sèries? Es perdre el progrés de visionament.",
   "library.deselectAll": "Desseleccionar-ho tot",
+  "library.moreFilters": "Més filtres",
+  "library.lessFilters": "Menys filtres",
+  "library.clearFilters": "Neteja els filtres",
 
   // SeriesDetail.tsx
   "seriesDetail.unfollow": "Deixa de seguir",
@@ -512,6 +515,7 @@ export const ca: Messages = {
   "download.retry": "Reintenta",
 
   // storage
+  "storage.heading": "Emmagatzematge i baixades",
   "storage.desc": "Gestiona l'espai de disc de descàrregues, portades, base de dades i fitxers orfes.",
   "storage.usageHeading": "Ús d'emmagatzematge",
   "storage.usageDownloads": "Descàrregues",

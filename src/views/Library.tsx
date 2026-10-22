@@ -331,6 +331,25 @@ export function Library({
   // Purely a display cap, not persisted: the catalog carries dozens of
   // genres and showing them all ate the whole filter bar's screen space.
   const [showAllGenres, setShowAllGenres] = useState(false);
+  // "Más filtros" disclosure (genre + studio). Starts open when a cached
+  // genre/studio filter is already narrowing the list, so an active filter
+  // is never hidden behind a closed panel on return to the tab.
+  const [moreOpen, setMoreOpen] = useState(
+    () =>
+      includedGenres.size > 0 || excludedGenres.size > 0 || studioFilter !== "all"
+  );
+  const secondaryActiveCount =
+    includedGenres.size + excludedGenres.size + (studioFilter !== "all" ? 1 : 0);
+  const anyFilterActive =
+    query !== "" || statusFilter !== "all" || typeFilter !== "all" || secondaryActiveCount > 0;
+  function clearAllFilters() {
+    setQuery("");
+    setStatusFilter("all");
+    setTypeFilter("all");
+    setStudioFilter("all");
+    setIncludedGenres(new Set());
+    setExcludedGenres(new Set());
+  }
 
   // Persist filter state to the module-level cache on every change
   useEffect(() => {
@@ -547,21 +566,6 @@ export function Library({
     <div className="page">
       <div className="page-head">
         <h2 className="page-title">{t("nav.library")}</h2>
-        <div className="search">
-          <span className="icon" aria-hidden="true">
-            ⌕
-          </span>
-          <label htmlFor="library-search" className="sr-only">
-            {t("library.searchAriaLabel")}
-          </label>
-          <input
-            id="library-search"
-            className="input"
-            placeholder={t("common.searchPlaceholder")}
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-          />
-        </div>
         <div className="spacer" />
         <span className="muted">
           {t("common.seriesCount", { count: items.length === 0 ? 0 : visibleCount })}
@@ -597,114 +601,144 @@ export function Library({
         </div>
       ) : (
         <>
-          <div className="lib-filter-bar">
-            <span className="muted text-sm">
-              {t("library.filterStatus")}
-            </span>
-            <div className="seg">
-              {(["all", "watching", "plan", "completed"] as StatusFilter[]).map((f) => (
+          {/* Same shape as Catálogo › Explorar: one row of search + the key
+              segmented control + a select + "Más filtros", with the long
+              tail (genre chips, studio) behind the disclosure so it never
+              wraps the primary controls onto extra lines. */}
+          <div className="filter-bar lib-filters">
+            <div className="filter-row">
+              <div className="search">
+                <span className="icon" aria-hidden="true">
+                  ⌕
+                </span>
+                <label htmlFor="library-search" className="sr-only">
+                  {t("library.searchAriaLabel")}
+                </label>
+                <input
+                  id="library-search"
+                  className="input"
+                  placeholder={t("common.searchPlaceholder")}
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                />
+              </div>
+              <div className="seg" role="group" aria-label={t("library.filterStatus")}>
+                {(["all", "watching", "plan", "completed"] as StatusFilter[]).map((f) => (
+                  <button
+                    key={f}
+                    type="button"
+                    className={`seg-btn${statusFilter === f ? " active" : ""}`}
+                    aria-pressed={statusFilter === f}
+                    onClick={() => setStatusFilter(f)}
+                  >
+                    {f === "all"
+                      ? t("library.statusAll")
+                      : f === "watching"
+                        ? t("library.watching")
+                        : f === "plan"
+                          ? t("library.planToWatch")
+                          : t("library.completed")}
+                  </button>
+                ))}
+              </div>
+              <select
+                id="lib-type-select"
+                className="input filter-select"
+                aria-label={t("library.filterType")}
+                value={typeFilter}
+                onChange={(e) => setTypeFilter(e.target.value)}
+              >
+                <option value="all">{t("library.typeAll")}</option>
+                {typeOptions.map((k) => (
+                  <option key={k} value={k}>
+                    {k === "OTROS" ? t("library.typeOther") : k}
+                  </option>
+                ))}
+              </select>
+              {(genreOptions.length > 0 || studioOptions.length > 0) && (
                 <button
-                  key={f}
                   type="button"
-                  className={`seg-btn${statusFilter === f ? " active" : ""}`}
-                  onClick={() => setStatusFilter(f)}
+                  className={`btn btn-secondary filter-toggle-btn${moreOpen ? " active" : ""}`}
+                  onClick={() => setMoreOpen((v) => !v)}
+                  aria-expanded={moreOpen}
+                  aria-controls="lib-more-filters"
                 >
-                  {f === "all"
-                    ? t("library.statusAll")
-                    : f === "watching"
-                      ? t("library.watching")
-                      : f === "plan"
-                        ? t("library.planToWatch")
-                        : t("library.completed")}
+                  {moreOpen ? t("library.lessFilters") : t("library.moreFilters")}
+                  {secondaryActiveCount > 0 && (
+                    <span className="filter-active-badge">{secondaryActiveCount}</span>
+                  )}
                 </button>
-              ))}
+              )}
+              {anyFilterActive && (
+                <button type="button" className="btn btn-ghost" onClick={clearAllFilters}>
+                  {t("library.clearFilters")}
+                </button>
+              )}
             </div>
 
-            <label className="sr-only" htmlFor="lib-type-select">
-              {t("library.filterType")}
-            </label>
-            <span className="muted text-sm">
-              {t("library.filterType")}
-            </span>
-            <select
-              id="lib-type-select"
-              className="input lib-filter-select"
-              value={typeFilter}
-              onChange={(e) => setTypeFilter(e.target.value)}
-            >
-              <option value="all">{t("library.typeAll")}</option>
-              {typeOptions.map((k) => (
-                <option key={k} value={k}>
-                  {k === "OTROS" ? t("library.typeOther") : k}
-                </option>
-              ))}
-            </select>
-
-            {genreOptions.length > 0 && (
-              <>
-                <label className="sr-only">{t("library.filterGenre")}</label>
-                <span className="muted text-sm">
-                  {t("library.filterGenre")}
-                </span>
-                <div className="chip-row" role="group" aria-label={t("library.filterGenre")}>
-                  {visibleGenreOptions.map((g) => {
-                    const state = getGenreState(g);
-                    return (
-                      <button
-                        key={g}
-                        type="button"
-                        className={`chip-toggle${state !== "neutral" ? " active" : ""}${state === "include" ? " chip-include" : ""}${state === "exclude" ? " chip-exclude" : ""}`}
-                        onClick={() => toggleGenre(g)}
-                        aria-pressed={state !== "neutral"}
-                        aria-label={t("library.genreChipAria", { genre: g, state: t(`library.genreState.${state}`) })}
-                      >
-                        {state === "include" && <span className="chip-state" aria-hidden="true">+</span>}
-                        {state === "exclude" && <span className="chip-state" aria-hidden="true">−</span>}
-                        {g}
-                      </button>
-                    );
-                  })}
-                </div>
-                {hiddenGenreCount > 0 && (
-                  <button type="button" className="btn btn-sm btn-ghost" onClick={() => setShowAllGenres(true)}>
-                    {t("library.showMoreGenres", { count: hiddenGenreCount })}
-                  </button>
+            {moreOpen && (
+              <div className="filter-collapsible-panel" id="lib-more-filters">
+                {studioOptions.length > 0 && (
+                  <div className="filter-collapsible-row">
+                    <label className="filter-label" htmlFor="lib-studio-select">
+                      {t("library.filterStudio")}
+                    </label>
+                    <select
+                      id="lib-studio-select"
+                      className="input filter-select"
+                      value={studioFilter}
+                      onChange={(e) => setStudioFilter(e.target.value)}
+                    >
+                      <option value="all">{t("library.studioAll")}</option>
+                      {studioOptions.map((s) => (
+                        <option key={s} value={s}>
+                          {s}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                 )}
-                {showAllGenres && genreOptions.length > GENRE_VISIBLE_CAP && (
-                  <button type="button" className="btn btn-sm btn-ghost" onClick={() => setShowAllGenres(false)}>
-                    {t("library.showLessGenres")}
-                  </button>
+                {genreOptions.length > 0 && (
+                  <div className="filter-group">
+                    <span className="filter-label" id="lib-genre-label">
+                      {t("library.filterGenre")}
+                    </span>                    <div className="chip-row" role="group" aria-labelledby="lib-genre-label">
+                      {visibleGenreOptions.map((g) => {
+                        const state = getGenreState(g);
+                        return (
+                          <button
+                            key={g}
+                            type="button"
+                            className={`chip-toggle${state !== "neutral" ? " active" : ""}${state === "include" ? " chip-include" : ""}${state === "exclude" ? " chip-exclude" : ""}`}
+                            onClick={() => toggleGenre(g)}
+                            aria-pressed={state !== "neutral"}
+                            aria-label={t("library.genreChipAria", { genre: g, state: t(`library.genreState.${state}`) })}
+                          >
+                            {state === "include" && <span className="chip-state" aria-hidden="true">+</span>}
+                            {state === "exclude" && <span className="chip-state" aria-hidden="true">−</span>}
+                            {g}
+                          </button>
+                        );
+                      })}
+                      {hiddenGenreCount > 0 && (
+                        <button type="button" className="btn btn-sm btn-ghost" onClick={() => setShowAllGenres(true)}>
+                          {t("library.showMoreGenres", { count: hiddenGenreCount })}
+                        </button>
+                      )}
+                      {showAllGenres && genreOptions.length > GENRE_VISIBLE_CAP && (
+                        <button type="button" className="btn btn-sm btn-ghost" onClick={() => setShowAllGenres(false)}>
+                          {t("library.showLessGenres")}
+                        </button>
+                      )}
+                      {(includedGenres.size > 0 || excludedGenres.size > 0) && (
+                        <button type="button" className="btn btn-sm btn-ghost" onClick={clearGenreFilters}>
+                          {t("library.clearGenreFilters")}
+                        </button>
+                      )}
+                    </div>
+                  </div>
                 )}
-                {(includedGenres.size > 0 || excludedGenres.size > 0) && (
-                  <button type="button" className="btn btn-sm btn-ghost" onClick={clearGenreFilters}>
-                    {t("library.clearGenreFilters")}
-                  </button>
-                )}
-              </>
-            )}
-
-            {studioOptions.length > 0 && (
-              <>
-                <label className="sr-only" htmlFor="lib-studio-select">
-                  {t("library.filterStudio")}
-                </label>
-                <span className="muted text-sm">
-                  {t("library.filterStudio")}
-                </span>
-                <select
-                  id="lib-studio-select"
-                  className="input lib-filter-select"
-                  value={studioFilter}
-                  onChange={(e) => setStudioFilter(e.target.value)}
-                >
-                  <option value="all">{t("library.studioAll")}</option>
-                  {studioOptions.map((s) => (
-                    <option key={s} value={s}>
-                      {s}
-                    </option>
-                  ))}
-                </select>
-              </>
+              </div>
             )}
           </div>
 

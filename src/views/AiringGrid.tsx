@@ -77,6 +77,56 @@ function getWeekdayName(day: number, t: ReturnType<typeof useT>): string {
   return t(WEEKDAY_KEYS[day]);
 }
 
+// One poster card, shared by the grid and the week schedule. A div with
+// role=button (not a <button>) because it holds the real follow <button>;
+// Enter/Space open the series like Biblioteca's cards do, and the follow
+// button stops its own keydown so Enter on it does not also open the detail.
+function AiringCard({
+  series: s,
+  onOpen,
+  onToggle,
+}: {
+  series: Series;
+  onOpen: (s: Series) => void;
+  onToggle: (e: React.SyntheticEvent, s: Series) => void;
+}) {
+  const t = useT();
+  const countdown = countdownLabel(s.next_episode_at, t);
+  return (
+    <div
+      className="card card-clickable"
+      role="button"
+      tabIndex={0}
+      title={s.title}
+      onClick={() => onOpen(s)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onOpen(s);
+        }
+      }}
+    >
+      <div className="poster">
+        {s.followed && <span className="chip">{t("airing.followingChip")}</span>}
+        {countdown && <span className="chip chip-countdown">{countdown}</span>}
+        <AiringPoster title={s.title} coverUrl={s.cover_url} />
+      </div>
+      <div className="card-body">
+        <div className="card-title">{s.title}</div>
+        <button
+          type="button"
+          className={`btn follow-btn ${s.followed ? "on" : ""}`}
+          aria-pressed={s.followed}
+          onClick={(e) => onToggle(e, s)}
+          onKeyDown={(e) => e.stopPropagation()}
+        >
+          {s.followed ? t("airing.followingBtn") : t("airing.followBtn")}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 type AiringViewMode = "all" | "season" | "week";
 
 export function AiringGrid({
@@ -213,7 +263,7 @@ export function AiringGrid({
     };
   }, []);
 
-  async function toggle(e: React.MouseEvent, s: Series) {
+  async function toggle(e: React.SyntheticEvent, s: Series) {
     e.stopPropagation();
     await setFollowed(s.id, !s.followed);
     await load();
@@ -292,7 +342,9 @@ export function AiringGrid({
           </button>
         </div>
         <button
-          className={`btn ${onlyFollowed ? "btn-success" : "btn-ghost"}`}
+          type="button"
+          className={`btn ${onlyFollowed ? "btn-toggle-on" : "btn-ghost"}`}
+          aria-pressed={onlyFollowed}
           onClick={() => setOnlyFollowed((v) => !v)}
         >
           {t("airing.followingFilter", { count: followedCount })}
@@ -336,24 +388,7 @@ export function AiringGrid({
                   <h3 className="week-day-header">{getWeekdayName(day, t)}</h3>
                   <div className="week-day-grid">
                     {dayItems.map(({ series: s }) => (
-                      <div key={s.id} className="card" onClick={() => onOpenSeries(s)}>
-                        <div className="poster">
-                          {s.followed && <span className="chip">{t("airing.followingChip")}</span>}
-                          {countdownLabel(s.next_episode_at, t) && (
-                            <span className="chip chip-countdown">{countdownLabel(s.next_episode_at, t)}</span>
-                          )}
-                          <AiringPoster title={s.title} coverUrl={s.cover_url} />
-                        </div>
-                        <div className="card-body">
-                          <div className="card-title">{s.title}</div>
-                          <button
-                            className={`btn follow-btn ${s.followed ? "on" : ""}`}
-                            onClick={(e) => toggle(e, s)}
-                          >
-                            {s.followed ? t("airing.followingBtn") : t("airing.followBtn")}
-                          </button>
-                        </div>
-                      </div>
+                      <AiringCard key={s.id} series={s} onOpen={onOpenSeries} onToggle={toggle} />
                     ))}
                   </div>
                 </div>
@@ -364,24 +399,7 @@ export function AiringGrid({
       ) : (
         <div className="grid">
           {filtered.map(({ series: s }) => (
-            <div key={s.id} className="card" onClick={() => onOpenSeries(s)}>
-              <div className="poster">
-                {s.followed && <span className="chip">{t("airing.followingChip")}</span>}
-                {countdownLabel(s.next_episode_at, t) && (
-                  <span className="chip chip-countdown">{countdownLabel(s.next_episode_at, t)}</span>
-                )}
-                <AiringPoster title={s.title} coverUrl={s.cover_url} />
-              </div>
-              <div className="card-body">
-                <div className="card-title">{s.title}</div>
-                <button
-                  className={`btn follow-btn ${s.followed ? "on" : ""}`}
-                  onClick={(e) => toggle(e, s)}
-                >
-                  {s.followed ? t("airing.followingBtn") : t("airing.followBtn")}
-                </button>
-              </div>
-            </div>
+            <AiringCard key={s.id} series={s} onOpen={onOpenSeries} onToggle={toggle} />
           ))}
         </div>
       )}

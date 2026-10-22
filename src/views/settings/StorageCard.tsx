@@ -165,7 +165,7 @@ export function StorageCard() {
 
   return (
     <div className="settings-section">
-      <h3 className="settings-section-title">{t("download.settingsHeading")}</h3>
+      <h3 className="settings-section-title">{t("storage.heading")}</h3>
       <p className="settings-section-desc">{t("storage.desc")}</p>
 
       {/* Storage usage breakdown */}

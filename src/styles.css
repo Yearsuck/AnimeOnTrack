@@ -1252,16 +1252,8 @@ textarea.input {
 .lib-section-summary::-webkit-details-marker {
   display: none;
 }
-.lib-section-summary::before {
-  content: "▸";
-  display: inline-block;
-  color: var(--muted);
-  font-size: var(--fs-sm);
-  transition: transform var(--dur-fast) var(--ease);
-}
-.lib-section[open] > .lib-section-summary::before {
-  transform: rotate(90deg);
-}
+/* The disclosure chevron is the inline SVG `.lib-section-chevron` (rotated
+   above); a `::before` "▸" here used to draw a second one next to it. */
 .lib-section-summary:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
@@ -1294,6 +1286,12 @@ textarea.input {
 .seg-btn.active {
   background: var(--accent-dim);
   color: var(--accent);
+}
+/* A segmented control sitting in a filter row matches the 32px inputs,
+   selects and buttons next to it (30px + the 1px border top and bottom). */
+.filter-row .seg-btn,
+.page-head .seg-btn {
+  min-height: 30px;
 }
 /* Catalog multi-select + batch */
 .batch-bar {
@@ -2745,11 +2743,107 @@ select.settings-select {
 }
 
 /* ---------- Library (view-specific) ---------- */
-select.lib-filter-select {
-  max-width: 150px;
+/* Studio names run long ("Production I.G", "Kyoto Animation"); cap the
+   select so it cannot push the panel wider than the genre chips. */
+.lib-filters select.filter-select {
+  max-width: 240px;
 }
 .lib-empty-compact {
   padding: var(--sp-3) 0;
+}
+
+/* ---------- Pendientes (view-specific) ----------
+   One compact block per show: a small poster thumbnail on the left, the
+   title and its episode rows beside it. */
+.pending-block {
+  display: flex;
+  align-items: flex-start;
+}
+.pending-thumb {
+  flex: none;
+  padding: var(--sp-3) 0 var(--sp-3) var(--sp-4);
+}
+.pending-thumb img,
+.pending-thumb .poster-fallback {
+  display: flex;
+  width: 56px;
+  height: 80px;
+  object-fit: cover;
+  border-radius: var(--radius-sm);
+  background: var(--surface-3);
+  box-shadow: var(--shadow-sm);
+  font-size: var(--fs-md);
+}
+.pending-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  padding-bottom: var(--sp-1);
+}
+.pending-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  width: 100%;
+  min-width: 0;
+  padding: var(--sp-3) var(--sp-4) var(--sp-1);
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.pending-head:hover .pending-title {
+  color: var(--accent);
+}
+.pending-head:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  border-radius: var(--radius-sm);
+}
+.pending-title {
+  min-width: 0;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: color var(--dur-fast) var(--ease);
+}
+.pending-count {
+  flex: none;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+.pending-main .ep-row {
+  padding: var(--sp-2) var(--sp-4);
+}
+
+/* A card that opens on Enter/Space (div[role=button] holding a real button)
+   gets the same focus ring as every other control. */
+.card-clickable {
+  cursor: pointer;
+}
+.card-clickable:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  box-shadow: var(--focus-ring);
+}
+
+/* A plain button acting as an on/off filter ("★ Siguiendo (17)"): on reads
+   like every other active filter in the app (accent tint), not green. */
+.btn.btn-toggle-on {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.btn.btn-toggle-on:hover:not(:disabled) {
+  background: var(--accent-dim);
+  border-color: var(--accent);
 }
 
 /* ---------- Airing ---------- */
@@ -2858,22 +2952,20 @@ select.lib-filter-select {
   align-items: center;
   gap: var(--sp-2);
 }
+/* Same chip as the poster cards' "Siguiendo" / "TV" / countdown chips, so the
+   hero and the grid under it speak one badge language. */
 .spotlight-badge {
   font-size: var(--fs-xs);
-  font-weight: var(--fw-bold);
-  padding: 2px 8px;
-  border-radius: var(--radius-round);
-  letter-spacing: 0.3px;
-}
-.spotlight-badge.badge-season {
-  background: rgba(255, 255, 255, 0.15);
+  font-weight: var(--fw-semibold);
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: var(--overlay-strong);
   color: var(--text);
   backdrop-filter: blur(4px);
 }
 .spotlight-badge.badge-score {
-  background: var(--accent);
-  color: #fff;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+  color: var(--accent);
+  font-weight: var(--fw-bold);
 }
 .spotlight-title {
   font-size: var(--fs-2xl);

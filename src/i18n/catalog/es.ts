@@ -38,7 +38,7 @@ export const es = {
 
   // AiringGrid.tsx
   "airing.followingFilter": "★ Siguiendo ({count})",
-  "airing.followingChip": "SIGUIENDO",
+  "airing.followingChip": "Siguiendo",
   "airing.followingBtn": "✓ Siguiendo",
   "airing.followBtn": "+ Seguir",
   "airing.filterAll": "Todas",
@@ -186,7 +186,7 @@ export const es = {
   "library.filterStatus": "Estado",
   "library.statusAll": "Todas",
   "library.filterType": "Tipo",
-  "library.typeAll": "Todos",
+  "library.typeAll": "Todos los tipos",
   "library.typeOther": "Otros",
   "library.filterGenre": "Género",
   "library.genreChipAria": "Filtro de género {genre}, estado: {state}",
@@ -197,13 +197,16 @@ export const es = {
   "library.showMoreGenres": "{count} más",
   "library.showLessGenres": "Mostrar menos",
   "library.filterStudio": "Estudio",
-  "library.studioAll": "Todos",
+  "library.studioAll": "Todos los estudios",
   "library.selectMode": "Seleccionar",
   "library.cancelSelect": "Cancelar",
   "library.selectedCount": "{count} seleccionados",
   "library.bulkRemove": "Dejar de seguir selección",
   "library.bulkRemoveConfirm": "¿Dejar de seguir {count} series? Se perderá el progreso de visionado.",
   "library.deselectAll": "Deseleccionar todo",
+  "library.moreFilters": "Más filtros",
+  "library.lessFilters": "Menos filtros",
+  "library.clearFilters": "Limpiar filtros",
 
   // SeriesDetail.tsx
   "seriesDetail.unfollow": "Dejar de seguir",
@@ -516,6 +519,7 @@ export const es = {
   "download.retry": "Reintentar",
 
   // storage
+  "storage.heading": "Almacenamiento y descargas",
   "storage.desc": "Gestiona el espacio en disco de descargas, portadas, base de datos y archivos huérfanos.",
   "storage.usageHeading": "Uso de almacenamiento",
   "storage.usageDownloads": "Descargas",

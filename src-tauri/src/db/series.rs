@@ -1114,25 +1114,13 @@ impl Db {
         }
 
         // Bulk-fetch genres for the representative rows only (one statement, not
-        // an N+1 per-series query — see the library-filters design doc).
+        // an N+1 per-series query — see the library-filters design doc). Real
+        // genres only (AniList genres, or site labels mapped onto them), the
+        // same vocabulary as the stats: `series_effective_genres` also carries
+        // AniList tags and raw site labels, which made the genre filter a
+        // ~360-chip mix of "Acción"/"Action"/"Age Gap"/"Achromatic".
         let ids: Vec<i64> = reps.iter().map(|r| r.member.series.id).collect();
-        let mut genres_by_series: std::collections::HashMap<i64, Vec<String>> =
-            std::collections::HashMap::new();
-        if !ids.is_empty() {
-            let placeholders = vec!["?"; ids.len()].join(",");
-            let sql = format!(
-                "SELECT series_id, genre FROM series_effective_genres WHERE series_id IN ({}) ORDER BY genre",
-                placeholders
-            );
-            let mut gstmt = self.conn.prepare(&sql)?;
-            let params = rusqlite::params_from_iter(ids.iter());
-            let grows = gstmt
-                .query_map(params, |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            for (series_id, genre) in grows {
-                genres_by_series.entry(series_id).or_default().push(genre);
-            }
-        }
+        let mut genres_by_series = self.real_genres_batch(&ids)?;
 
         let mut out = Vec::with_capacity(reps.len());
         for r in reps {
@@ -2505,11 +2493,54 @@ mod tests {
         let items = db.list_library(src).unwrap();
         let item1 = items.iter().find(|it| it.series.id == sid1).unwrap();
         assert_eq!(item1.kind.as_deref(), Some("TV"));
-        assert_eq!(item1.genres, vec!["Accion".to_string(), "Comedia".to_string()]);
+        // Site labels come back mapped onto AniList's genre names.
+        assert_eq!(item1.genres, vec!["Action".to_string(), "Comedy".to_string()]);
 
         let item2 = items.iter().find(|it| it.series.id == sid2).unwrap();
         assert_eq!(item2.kind, None);
         assert!(item2.genres.is_empty());
+    }
+
+    /// The library genre filter offers real genres only: AniList genres for a
+    /// linked row (never its tags), and for an unlinked row the site labels
+    /// that map onto a real genre ("Acción" -> "Action"); unmapped site labels
+    /// ("Shounen") are dropped. Same mapping as the stats genre cards.
+    #[test]
+    fn list_library_genres_are_real_genres_not_tags_or_raw_site_labels() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+
+        let mut anime = catalog_anime_with_popularity(700, "Linked", &["Action", "Drama"], Some(1000));
+        anime.tags = vec![
+            crate::anilist::CatalogTag { name: "Age Gap".into(), rank: 90 },
+            crate::anilist::CatalogTag { name: "Achromatic".into(), rank: 60 },
+        ];
+        db.upsert_catalog_anime(&anime, 0).unwrap();
+        let linked = crate::models::Series {
+            id: 0, slug: "linked".into(), title: "Linked".into(),
+            url: "u1".into(), cover_url: None, is_airing: false, followed: false, next_episode_at: None, site_episode_count: None,
+        };
+        let sid_linked = db.upsert_series(src, &linked).unwrap();
+        db.set_followed(sid_linked, true).unwrap();
+        db.set_anilist_id(sid_linked, 700).unwrap();
+
+        let unlinked = crate::models::Series {
+            id: 0, slug: "unlinked".into(), title: "Unlinked".into(),
+            url: "u2".into(), cover_url: None, is_airing: false, followed: false, next_episode_at: None, site_episode_count: None,
+        };
+        let sid_unlinked = db.upsert_series(src, &unlinked).unwrap();
+        db.set_followed(sid_unlinked, true).unwrap();
+        db.insert_series_genres(
+            sid_unlinked,
+            &["Acción".to_string(), "Action".to_string(), "Shounen".to_string(), "Fantasía".to_string()],
+        )
+        .unwrap();
+
+        let items = db.list_library(src).unwrap();
+        let linked_item = items.iter().find(|it| it.series.id == sid_linked).unwrap();
+        assert_eq!(linked_item.genres, vec!["Action".to_string(), "Drama".to_string()]);
+        let unlinked_item = items.iter().find(|it| it.series.id == sid_unlinked).unwrap();
+        assert_eq!(unlinked_item.genres, vec!["Action".to_string(), "Fantasy".to_string()]);
     }
 
     #[test]
