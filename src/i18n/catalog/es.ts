@@ -209,6 +209,16 @@ export const es = {
   "library.moreFilters": "Más filtros",
   "library.lessFilters": "Menos filtros",
   "library.clearFilters": "Limpiar filtros",
+  "library.tabPlan": "Por empezar",
+  "library.sortLabel": "Ordenar",
+  "library.sortRecent": "Recientes",
+  "library.sortTitle": "Título",
+  "library.sortProgress": "Progreso",
+  "library.sortPending": "Episodios pendientes",
+  "library.emptyWatching": "No estás viendo nada ahora mismo. Empieza una serie de «Por empezar».",
+  "library.emptyPlan": "Nada por empezar. Las series que guardes aparecerán aquí.",
+  "library.emptyCompleted": "Aún no has completado ninguna serie.",
+  "library.epPill": "Ep {number}",
 
   // SeriesDetail.tsx
   "seriesDetail.unfollow": "Dejar de seguir",

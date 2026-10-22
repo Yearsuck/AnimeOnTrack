@@ -806,37 +806,12 @@ textarea.input {
 /* Status-grouped disclosures ("Viendo" / "Pendientes de empezar" /
    "Completadas") — <details>/<summary> gives keyboard + screen-reader
    behavior (Tab reaches it, Enter/Space toggle it) for free. */
-.lib-section {
-  margin-bottom: var(--sp-6);
-}
-.lib-section:not(:last-child) {
-  padding-bottom: var(--sp-5);
-  border-bottom: 1px solid var(--border);
-}
-.lib-section-summary {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  cursor: pointer;
-  list-style: none;
-  padding: var(--sp-2) 0;
-  font-size: var(--fs-lg);
-  font-weight: var(--fw-bold);
-  color: var(--text);
-  user-select: none;
-  border-radius: var(--radius-sm);
-}
-.lib-section-summary::-webkit-details-marker {
-  display: none;
-}
-.lib-section-chevron {
-  flex: none;
-  color: var(--muted);
-  transition: transform var(--dur-fast) var(--ease);
-}
-.lib-section[open] > .lib-section-summary .lib-section-chevron {
-  transform: rotate(90deg);
-}
+
+
+
+
+
+
 .lib-section-summary:focus-visible,
 select:focus-visible,
 a:focus-visible {
@@ -1229,35 +1204,13 @@ textarea.input {
 /* Status-grouped disclosures ("Viendo" / "Pendientes de empezar" /
    "Completadas") — <details>/<summary> gives keyboard + screen-reader
    behavior (Tab reaches it, Enter/Space toggle it) for free. */
-.lib-section {
-  margin-bottom: var(--sp-6);
-}
-.lib-section:not(:last-child) {
-  padding-bottom: var(--sp-5);
-  border-bottom: 1px solid var(--border);
-}
-.lib-section-summary {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  cursor: pointer;
-  list-style: none;
-  padding: var(--sp-2) 0;
-  font-size: var(--fs-lg);
-  font-weight: var(--fw-bold);
-  color: var(--text);
-  user-select: none;
-  border-radius: var(--radius-sm);
-}
-.lib-section-summary::-webkit-details-marker {
-  display: none;
-}
+
+
+
+
 /* The disclosure chevron is the inline SVG `.lib-section-chevron` (rotated
    above); a `::before` "▸" here used to draw a second one next to it. */
-.lib-section-summary:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
+
 .lib-filter-bar {
   display: flex;
   flex-wrap: wrap;
@@ -1352,23 +1305,9 @@ textarea.input {
   justify-content: center;
   z-index: 2;
 }
-.lib-section-count {
-  color: var(--muted);
-  font-weight: var(--fw-semibold);
-  font-size: var(--fs-sm);
-  background: var(--surface-2);
-  padding: var(--sp-1) var(--sp-2);
-  border-radius: var(--radius-round);
-  min-width: 24px;
-  text-align: center;
-  font-variant-numeric: tabular-nums;
-}
-.lib-section-summary:hover .lib-section-count {
-  background: var(--surface-3);
-}
-.lib-section .grid {
-  margin-top: var(--sp-4);
-}
+
+
+
 
 /* Card is a div[role=button], not a real <button>, because it contains a
    real nested <button> (the play action) — button-in-button is invalid
@@ -1399,19 +1338,8 @@ textarea.input {
   font-size: var(--fs-2xl);
   letter-spacing: 0.5px;
 }
-.lib-progress-text {
-  margin-top: var(--sp-1);
-  font-size: var(--fs-xs);
-  font-variant-numeric: tabular-nums;
-}
-.lib-play-btn {
-  width: 100%;
-  margin-top: var(--sp-2);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--sp-2);
-}
+
+
 
 /* Overflow menu trigger on cards (Library, Descubrir lists), anchored inside
    .poster. The list itself is portalled to <body> (see components/Menu.tsx),
@@ -2382,11 +2310,7 @@ progress.scanbar-track::-webkit-progress-value {
 
 /* Undefined until now: Library rendered <span class="lib-section-title"> with
    no rule, relying on inherited styling. Give it the shared heading. */
-.lib-section-title {
-  font-size: var(--fs-md);
-  font-weight: var(--fw-semibold);
-  letter-spacing: -0.01em;
-}
+
 
 /* ---------- Stats · compact 30-day activity chart ---------- */
 /* Replaces a 30-row horizontal BarChart that dominated the page. One thin
@@ -2750,6 +2674,24 @@ select.settings-select {
 }
 .lib-empty-compact {
   padding: var(--sp-3) 0;
+}
+/* Status tabs are the view's primary navigation: they take the row's free
+   space first so search/selects wrap below them, never the other way round. */
+.lib-tabs {
+  flex: none;
+}
+/* Next-episode marker on the poster corner: always visible, the card's height
+   never changes (the play button is the hover/focus overlay in .poster-action). */
+.poster .chip.lib-ep-pill {
+  background: var(--accent-solid);
+  color: var(--on-accent);
+  font-variant-numeric: tabular-nums;
+}
+.lib-progress {
+  margin-top: var(--sp-1);
+}
+.lib-empty-cta {
+  margin-top: var(--sp-3);
 }
 
 /* ---------- Pendientes (view-specific) ----------

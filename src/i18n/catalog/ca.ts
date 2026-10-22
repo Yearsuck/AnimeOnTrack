@@ -205,6 +205,16 @@ export const ca: Messages = {
   "library.moreFilters": "Més filtres",
   "library.lessFilters": "Menys filtres",
   "library.clearFilters": "Neteja els filtres",
+  "library.tabPlan": "Per començar",
+  "library.sortLabel": "Ordena",
+  "library.sortRecent": "Recents",
+  "library.sortTitle": "Títol",
+  "library.sortProgress": "Progrés",
+  "library.sortPending": "Episodis pendents",
+  "library.emptyWatching": "Ara mateix no estàs mirant res. Comença una sèrie de «Per començar».",
+  "library.emptyPlan": "Res per començar. Les sèries que desis apareixeran aquí.",
+  "library.emptyCompleted": "Encara no has completat cap sèrie.",
+  "library.epPill": "Ep {number}",
 
   // SeriesDetail.tsx
   "seriesDetail.unfollow": "Deixa de seguir",
