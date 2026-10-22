@@ -165,12 +165,19 @@ pub struct WatchSummary {
     #[serde(default)]
     pub distinct_anime: i64,
     pub episodes_watched: i64,
+    /// Completion denominator, on the same base as
+    /// `episodes_watched + episodes_watched_external` (followed, really seen
+    /// or "Ya vistas" franchises; see `Db::get_watch_summary`).
     pub episodes_total: i64,
     /// Episodes attributed to "Ya vistas" (`watched_externally=1`) series via
-    /// the catalog's episode count — only for series with NO real seen
-    /// episode data (real data always wins; see `Db::get_watch_summary`).
+    /// the catalog's episode count — only the per-franchise remainder above
+    /// the real marks (see `Db::get_watch_summary`).
     #[serde(default)]
     pub episodes_watched_external: i64,
+    /// "Ya vistas" franchises with neither a catalog episode count nor any
+    /// real mark: they add 0 episodes and 0 minutes, so the UI flags them.
+    #[serde(default)]
+    pub titles_without_episode_data: i64,
     /// Followed series still airing (`followed=1 AND is_airing=1`) — the
     /// "Siguiendo en emisión" tile.
     #[serde(default)]
@@ -199,8 +206,15 @@ pub struct GenreCardSeries {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GenreCard {
+    /// The genre — or, for `get_tag_cards`, the AniList tag — this card is about.
     pub genre: String,
+    /// Watched episodes across every show carrying this label.
     pub count: i64,
+    /// How many (canonical) shows carry this label.
+    pub show_count: i64,
+    /// `count` over the watched episodes of the whole taste corpus (each show
+    /// once), 0.0-1.0. Labels overlap, so shares do not sum to 1.
+    pub share: f64,
     pub top_series: Vec<GenreCardSeries>,
 }
 

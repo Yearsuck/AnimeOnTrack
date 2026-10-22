@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useT } from "../i18n";
 import { categoryColor } from "../lib/categoryColor";
-import { resolveCoverUrl } from "../lib/posterFallback";
+import { resolveCoverUrl, useCoverFailure } from "../lib/posterFallback";
 import { useStatsShape, type Shape } from "../lib/statsShape";
 import type { GenreCard, GenreCardSeries } from "../types";
 import { useFormatNumber } from "../lib/formatNumber";
@@ -164,62 +164,67 @@ export function ShapeToggle({ shape, onChange }: { shape: Shape; onChange: (s: S
   );
 }
 
-// ---- Genre Cards ----------------------------------------------------------
-// Ranked genre cards with top series thumbnails. Inspired by dango's Insights
-// page. Each card shows: rank number, genre name, episode count, and up to 4
-// mini poster thumbnails of the top shows in that genre sorted by episodes
-// watched. Reuses the existing cover image loading pattern from Library.tsx.
-function GenreCardComponent({
-  rank,
-  card,
-}: {
-  rank: number;
-  card: GenreCard;
-}) {
+// ---- Genre / tag cards ----------------------------------------------------
+// Ranked cards with a few cover thumbnails, one list for AniList genres and one
+// for AniList tags (`getTagCards`), behind a "Géneros | Etiquetas" switch. Each
+// card shows rank, label, episodes watched, how many series and the share of all
+// watched episodes. The backend picks covers so the biggest show only leads the
+// highest-ranked card it belongs to (see `rank_cards` in db/stats.rs) instead
+// of opening every card.
+function CardThumb({ series, label }: { series: GenreCardSeries; label: string }) {
+  const [failed, markFailed] = useCoverFailure(series.cover_url);
+  const src = failed ? null : resolveCoverUrl(series.cover_url);
+  return (
+    <div className="genrecard-thumb" role="listitem" title={series.title}>
+      {src ? (
+        <img src={src} alt="" loading="lazy" onError={markFailed} />
+      ) : (
+        <div
+          className="genrecard-thumb-fallback"
+          aria-hidden="true"
+          style={{ background: categoryColor(label) }}
+        >
+          {series.title
+            .split(" ")
+            .map((w) => w[0])
+            .slice(0, 2)
+            .join("")
+            .toUpperCase()}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function GenreCardComponent({ rank, card }: { rank: number; card: GenreCard }) {
   const t = useT();
   const n = useFormatNumber();
   const epLabel = card.count === 1 ? t("stats.episodeSingular") : t("stats.episodePlural");
+  const shows =
+    card.show_count === 1
+      ? t("stats.genreCardsShowsOne", { n: n(card.show_count) })
+      : t("stats.genreCardsShows", { n: n(card.show_count) });
+  const pct = Math.round(card.share * 100);
   return (
     <article className="genrecard" role="listitem">
       <div className="genrecard-rank">{rank}</div>
       <div className="genrecard-body">
         <div className="genrecard-header">
-          <h4 className="genrecard-genre">{card.genre}</h4>
+          <h4 className="genrecard-genre" title={card.genre}>{card.genre}</h4>
           <span className="genrecard-count">{n(card.count)} {epLabel}</span>
+        </div>
+        <div className="genrecard-meta">
+          <span>{shows}</span>
+          <span aria-hidden="true">·</span>
+          <span title={t("stats.genreCardsShareHelp")}>{t("stats.genreCardsShare", { pct: n(pct) })}</span>
+        </div>
+        <div className="genrecard-share" aria-hidden="true">
+          <div className="genrecard-share-fill" style={{ width: `${pct}%`, background: categoryColor(card.genre) }} />
         </div>
         {card.top_series.length > 0 && (
           <div className="genrecard-thumbs" role="list" aria-label={t("stats.genreCardThumbsAria", { genre: card.genre })}>
-            {card.top_series.slice(0, 4).map((series: GenreCardSeries) => (
-              <div key={series.title} className="genrecard-thumb" role="listitem">
-                {series.cover_url ? (
-                  <img
-                    src={resolveCoverUrl(series.cover_url) ?? undefined}
-                    alt=""
-                    loading="lazy"
-                    onError={(e) => {
-                      const target = e.currentTarget as HTMLImageElement;
-                      target.style.display = "none";
-                      const fallback = target.nextElementSibling as HTMLElement;
-                      if (fallback) fallback.style.display = "flex";
-                    }}
-                  />
-                ) : null}
-                <div
-                  className="genrecard-thumb-fallback"
-                  aria-hidden="true"
-                  style={{
-                    display: series.cover_url ? "none" : "flex",
-                    background: categoryColor(card.genre),
-                  }}
-                >
-                  {series.title
-                    .split(" ")
-                    .map((w) => w[0])
-                    .slice(0, 2)
-                    .join("")
-                    .toUpperCase()}
-                </div>
-              </div>
+            {card.top_series.map((series) => (
+              <CardThumb key={series.title} series={series} label={card.genre} />
             ))}
           </div>
         )}
@@ -228,16 +233,11 @@ function GenreCardComponent({
   );
 }
 
-export function GenreCards({
-  genres,
-}: {
-  genres: GenreCard[];
-}) {
+export function GenreCards({ genres, emptyMessage }: { genres: GenreCard[]; emptyMessage?: string }) {
   const t = useT();
   if (genres.length === 0) {
-    return <div className="empty">{t("stats.ringsEmpty")}</div>;
+    return <div className="empty">{emptyMessage ?? t("stats.ringsEmpty")}</div>;
   }
-
   return (
     <div className="genrecards-grid" role="list">
       {genres.map((card, idx) => (
@@ -247,34 +247,70 @@ export function GenreCards({
   );
 }
 
+type LabelKind = "genres" | "tags";
+
+function LabelKindSwitch({ kind, onChange }: { kind: LabelKind; onChange: (k: LabelKind) => void }) {
+  const t = useT();
+  const options: { id: LabelKind; label: string }[] = [
+    { id: "genres", label: t("stats.genreCardsTabGenres") },
+    { id: "tags", label: t("stats.genreCardsTabTags") },
+  ];
+  return (
+    <div className="seg" role="tablist" aria-label={t("stats.genreCardsSwitchAria")}>
+      {options.map((o) => (
+        <button
+          key={o.id}
+          type="button"
+          role="tab"
+          aria-selected={kind === o.id}
+          className={`seg-btn${kind === o.id ? " active" : ""}`}
+          onClick={() => onChange(o.id)}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export function StatsRings({
   genres,
+  tags,
   types,
 }: {
   genres: GenreCard[];
+  tags: GenreCard[];
   types: { kind: string; count: number }[];
 }) {
   const t = useT();
   const [shape, setShape] = useStatsShape();
+  const [kind, setKind] = useState<LabelKind>("genres");
 
   const typeData = toData(types, "kind");
 
   return (
     <>
-      <div className="section-toolbar">
-        <ShapeToggle shape={shape} onChange={setShape} />
-      </div>
-
       <div className="series-block">
-        <div className="series-head">
-          <h3 className="section-title">{t("stats.byGenre")}</h3>
+        <div className="series-head stats-cards-head">
+          <h3 className="section-title">
+            {kind === "genres" ? t("stats.genreCardsTabGenres") : t("stats.genreCardsTabTags")}
+          </h3>
+          <div className="spacer" />
+          <LabelKindSwitch kind={kind} onChange={setKind} />
         </div>
-        <GenreCards genres={genres} />
+        <p className="stats-cards-hint">{kind === "genres" ? t("stats.genreCardsHint") : t("stats.tagsHint")}</p>
+        {kind === "genres" ? (
+          <GenreCards key="genres" genres={genres} />
+        ) : (
+          <GenreCards key="tags" genres={tags} emptyMessage={t("stats.tagsEmpty")} />
+        )}
       </div>
 
       <div className="series-block">
-        <div className="series-head">
+        <div className="series-head stats-cards-head">
           <h3 className="section-title">{t("stats.byType")}</h3>
+          <div className="spacer" />
+          <ShapeToggle shape={shape} onChange={setShape} />
         </div>
         <CategoryBlock data={typeData} shape={shape} emptyMessage={t("stats.ringsEmpty")} />
       </div>
