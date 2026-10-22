@@ -2,16 +2,40 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { listLibrary, openEpisode, reclassifySeries } from "../api";
 import { useT } from "../i18n";
 import { createFilterCache } from "../lib/createFilterCache";
-import { initials, resolveCoverUrl, useCoverFailure } from "../lib/posterFallback";
 import { Menu } from "../components/Menu";
+import { PosterCard } from "../components/PosterCard";
 import type { LibraryItem, Series } from "../types";
 
 type Status = "completed" | "watching" | "plan";
-// Airing filter for the Viendo section.
+// Airing / finished filter (lives under "Más filtros"; applies to every tab).
 type AiringFilter = "all" | "airing" | "finished";
-// Estado filter — "all" shows every section (current default behavior); a
-// specific value hides the other sections entirely.
+// The single primary navigation: one tab per derived status, plus "all".
 type StatusFilter = "all" | Status;
+type SortKey = "recent" | "title" | "progress" | "pending";
+const SORT_KEYS: SortKey[] = ["recent", "title", "progress", "pending"];
+const STATUS_KEYS: StatusFilter[] = ["watching", "plan", "completed", "all"];
+const STATUS_ORDER: Record<Status, number> = { watching: 0, plan: 1, completed: 2 };
+const TAB_STORAGE_KEY = "aot.library.tab";
+const SORT_STORAGE_KEY = "aot.library.sort";
+
+// localStorage can throw or be empty (private window, blocked data): the view
+// must render fine without it.
+function readStored<T extends string>(key: string, allowed: readonly T[], fallback: T): T {
+  try {
+    const v = localStorage.getItem(key);
+    if (v && (allowed as readonly string[]).includes(v)) return v as T;
+  } catch {
+    /* ignore */
+  }
+  return fallback;
+}
+function writeStored(key: string, value: string) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    /* ignore */
+  }
+}
 
 // series.kind is dirty scraped free text: real type badges under a Spanish
 // alias ("Pelicula") mixed in with the site's quality/version tags
@@ -69,10 +93,31 @@ function byTitle(a: LibraryItem, b: LibraryItem): number {
   return a.series.title.localeCompare(b.series.title);
 }
 
+function progressRatio(it: LibraryItem): number {
+  if (it.watched_externally && it.total_episodes === 0) return 1;
+  return it.total_episodes ? it.seen_episodes / it.total_episodes : 0;
+}
+
+function pendingCount(it: LibraryItem): number {
+  return Math.max(0, it.total_episodes - it.seen_episodes);
+}
+
+// Most progress first; ties fall back to recency.
+function comparatorFor(sort: SortKey): (a: LibraryItem, b: LibraryItem) => number {
+  switch (sort) {
+    case "title":
+      return byTitle;
+    case "progress":
+      return (a, b) => progressRatio(b) - progressRatio(a) || byRecentWatched(a, b);
+    case "pending":
+      return (a, b) => pendingCount(b) - pendingCount(a) || byRecentWatched(a, b);
+    default:
+      return byRecentWatched;
+  }
+}
+
 function LibraryCard({
   item,
-  showAction,
-  showMenu,
   onOpenSeries,
   onChanged,
   selectMode,
@@ -80,8 +125,6 @@ function LibraryCard({
   onToggleSelect,
 }: {
   item: LibraryItem;
-  showAction: boolean;
-  showMenu: boolean;
   onOpenSeries: (s: Series) => void;
   onChanged: () => void;
   selectMode: boolean;
@@ -89,16 +132,8 @@ function LibraryCard({
   onToggleSelect: (id: number) => void;
 }) {
   const t = useT();
-  // cover_url is a data: URI only for followed series whose cover was
-  // fetched; otherwise it's a remote (Cloudflare-blocked) URL the WebView
-  // can't actually load, or null. Both must degrade to the text fallback —
-  // null up-front, a broken remote URL via onError — so the grid never
-  // shows a broken <img>.
-  const [imgFailed, markImgFailed] = useCoverFailure(item.series.cover_url);
-  const displayCover = resolveCoverUrl(item.series.cover_url);
-  const showFallback = !displayCover || imgFailed;
 
-  // Overflow menu (Watching cards only) — reclassify actions
+  // Overflow menu — reclassify actions
   // (see docs/superpowers/specs/2026-07-11-reversibility-classifications-design.md).
   async function unfollow() {
     await reclassifySeries(item.series.id, "None");
@@ -110,180 +145,85 @@ function LibraryCard({
     onChanged();
   }
 
-  const pct = item.total_episodes
-    ? Math.round((item.seen_episodes / item.total_episodes) * 100)
-    : 0;
-
-  // The card is a div[role=button] rather than a real <button> because it
-  // must contain a real nested <button> (the play action) — nesting
-  // <button> inside <button> is invalid HTML. Enter and Space are wired by
-  // hand to match native button semantics.
-  function handleKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
-    if (e.key === "Enter" || e.key === " ") {
-      e.preventDefault();
-      if (selectMode) {
-        onToggleSelect(item.series.id);
-      } else {
-        onOpenSeries(item.series);
-      }
-    }
-  }
-
-  // Stop propagation on both click and keydown: a keydown on the nested
-  // button still bubbles to the card's onKeyDown even though the button's
-  // own Enter/Space handling stays internal, so without stopping it here
-  // Enter on this button would open the detail view *and* play the episode
-  // (the bubbling bug that already bit AiringGrid's follow button and
-  // Descubrir's poster click — commit 909c64d).
-  function playNext(e: React.SyntheticEvent) {
-    e.stopPropagation();
-    if (item.next_episode) openEpisode(item.next_episode.url);
-  }
-
-  // The Completed section normally passes showMenu={false} (nothing to
-  // reclassify from "done"), but a watched-externally card ("Ya lo vi" from
-  // the catalog) still needs an undo path — it's a manual mark, not a
-  // derived state — so it always gets a (single-item) menu regardless of
-  // the section's showMenu prop.
-  const effectiveShowMenu = showMenu || item.watched_externally;
+  // Menu: "watching" cards, plus watched-externally cards ("Ya lo vi" from the
+  // catalog), which are a manual mark and so always need an undo path.
+  // "Plan" and derived-completed cards have nothing to reclassify from.
+  const showMenu = statusOf(item) === "watching" || item.watched_externally;
   const isSelected = selected.has(item.series.id);
+  const next = item.next_episode;
+  const noEpisodes = item.watched_externally && item.total_episodes === 0;
+  const pct = noEpisodes
+    ? 100
+    : item.total_episodes
+      ? Math.round((item.seen_episodes / item.total_episodes) * 100)
+      : 0;
+
+  // The play button sits in PosterCard's action slot, which already stops
+  // click/keys from reaching the card, so Enter on it never also opens the
+  // series.
+  function playNext() {
+    if (next) openEpisode(next.url);
+  }
 
   return (
-    <div
-      className={`card lib-card${selectMode ? " card-selectable" : ""}${isSelected ? " selected" : ""}`}
-      role="button"
-      tabIndex={0}
-      onClick={() => selectMode ? onToggleSelect(item.series.id) : onOpenSeries(item.series)}
-      onKeyDown={handleKeyDown}
+    <PosterCard
       title={item.series.title}
-    >
-      {selectMode && isSelected && (
-        <span className="card-select-check" aria-hidden="true">
-          ✓
-        </span>
-      )}
-      <div className="poster">
-        {effectiveShowMenu && (
-          <div className="card-menu-wrap">
-            <Menu
-              label={t("library.cardMenuAria")}
-              items={
-                item.watched_externally
-                  ? [{ label: t("library.markNotWatched"), onSelect: unfollow, danger: true }]
-                  : [
-                      { label: t("library.unfollow"), onSelect: unfollow, danger: true },
-                      { label: t("library.moveToWant"), onSelect: moveToWant },
-                    ]
-              }
-            />
-          </div>
-        )}
-        {showFallback ? (
-          <div className="poster-fallback" aria-hidden="true">
-            {initials(item.series.title)}
-          </div>
-        ) : (
-          <img
-            src={displayCover!}
-            alt=""
-            loading="lazy"
-            onError={markImgFailed}
-          />
-
-        )}
-      </div>
-      <div className="card-body">
-        <div className="card-title">{item.series.title}</div>
-        {item.watched_externally && item.total_episodes === 0 ? (
-          <div className="lib-progress-text muted">{t("library.watchedExternally")}</div>
-        ) : (
-          <>
-            <div
-              className="progress"
-              role="progressbar"
-              aria-valuenow={item.seen_episodes}
-              aria-valuemin={0}
-              aria-valuemax={item.total_episodes}
-              aria-label={t("library.progressAria", {
-                title: item.series.title,
-                seen: item.seen_episodes,
-                total: item.total_episodes,
-              })}
-            >
-              <span style={{ width: `${pct}%` }} />
+      coverUrl={item.series.cover_url}
+      genres={item.genres}
+      meta={noEpisodes ? t("library.watchedExternally") : `${item.seen_episodes} / ${item.total_episodes}`}
+      selectable={selectMode}
+      selected={selectMode && isSelected}
+      onActivate={() => (selectMode ? onToggleSelect(item.series.id) : onOpenSeries(item.series))}
+      corner={
+        <>
+          {next && <span className="chip lib-ep-pill">{t("library.epPill", { number: next.number })}</span>}
+          {showMenu && !selectMode && (
+            <div className="card-menu-wrap">
+              <Menu
+                label={t("library.cardMenuAria")}
+                items={
+                  item.watched_externally
+                    ? [{ label: t("library.markNotWatched"), onSelect: unfollow, danger: true }]
+                    : [
+                        { label: t("library.unfollow"), onSelect: unfollow, danger: true },
+                        { label: t("library.moveToWant"), onSelect: moveToWant },
+                      ]
+                }
+              />
             </div>
-            <div className="lib-progress-text muted">
-              {item.seen_episodes} / {item.total_episodes}
-            </div>
-          </>
-        )}
-        {showAction && item.next_episode && (
-          <button
-            type="button"
-            className="btn btn-primary lib-play-btn"
-            onClick={playNext}
-            onKeyDown={(e) => e.stopPropagation()}
-          >
-            {t("library.playNext", { number: item.next_episode.number })}
+          )}
+        </>
+      }
+      action={
+        next ? (
+          <button type="button" className="btn btn-primary btn-sm" onClick={playNext}>
+            {t("library.playNext", { number: next.number })}
           </button>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function LibrarySection({
-  title,
-  items,
-  defaultOpen,
-  showAction,
-  showMenu,
-  onOpenSeries,
-  onChanged,
-  selectMode,
-  selected,
-  onToggleSelect,
-}: {
-  title: string;
-  items: LibraryItem[];
-  defaultOpen: boolean;
-  showAction: boolean;
-  showMenu: boolean;
-  onOpenSeries: (s: Series) => void;
-  onChanged: () => void;
-  selectMode: boolean;
-  selected: Set<number>;
-  onToggleSelect: (id: number) => void;
-}) {
-  // An empty section is omitted: the view already renders its own empty and
-  // "no results" states (whole-library and per-filter), so a per-section
-  // placeholder would only duplicate them.
-  if (items.length === 0) return null;
-  return (
-    <details className="lib-section" open={defaultOpen}>
-      <summary className="lib-section-summary">
-        <svg className="lib-section-chevron" width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
-          <path d="M4 2.5 8 6 4 9.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
-        <span className="lib-section-title">{title}</span>
-        <span className="lib-section-count">{items.length}</span>
-      </summary>
-      <div className="grid">
-        {items.map((it) => (
-          <LibraryCard
-            key={it.series.id}
-            item={it}
-            showAction={showAction}
-            showMenu={showMenu}
-            onOpenSeries={onOpenSeries}
-            onChanged={onChanged}
-            selectMode={selectMode}
-            selected={selected}
-            onToggleSelect={onToggleSelect}
-          />
-        ))}
-      </div>
-    </details>
+        ) : undefined
+      }
+      footer={
+        noEpisodes ? (
+          <div className="progress lib-progress" aria-hidden="true">
+            <span style={{ width: `${pct}%` }} />
+          </div>
+        ) : (
+          <div
+            className="progress lib-progress"
+            role="progressbar"
+            aria-valuenow={item.seen_episodes}
+            aria-valuemin={0}
+            aria-valuemax={item.total_episodes}
+            aria-label={t("library.progressAria", {
+              title: item.series.title,
+              seen: item.seen_episodes,
+              total: item.total_episodes,
+            })}
+          >
+            <span style={{ width: `${pct}%` }} />
+          </div>
+        )
+      }
+    />
   );
 }
 
@@ -323,7 +263,12 @@ export function Library({
     return () => clearTimeout(timer);
   }, [query]);
   const [airingFilter, setAiringFilter] = useState<AiringFilter>(() => libraryFilterCache.current?.airingFilter ?? "all");
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>(() => libraryFilterCache.current?.statusFilter ?? "all");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>(
+    () => libraryFilterCache.current?.statusFilter ?? readStored(TAB_STORAGE_KEY, STATUS_KEYS, "watching")
+  );
+  const [sort, setSort] = useState<SortKey>(() => readStored(SORT_STORAGE_KEY, SORT_KEYS, "recent"));
+  useEffect(() => writeStored(TAB_STORAGE_KEY, statusFilter), [statusFilter]);
+  useEffect(() => writeStored(SORT_STORAGE_KEY, sort), [sort]);
   const [typeFilter, setTypeFilter] = useState<string>(() => libraryFilterCache.current?.typeFilter ?? "all");
   const [includedGenres, setIncludedGenres] = useState<Set<string>>(() => libraryFilterCache.current?.includedGenres ?? new Set());
   const [excludedGenres, setExcludedGenres] = useState<Set<string>>(() => libraryFilterCache.current?.excludedGenres ?? new Set());
@@ -336,15 +281,18 @@ export function Library({
   // is never hidden behind a closed panel on return to the tab.
   const [moreOpen, setMoreOpen] = useState(
     () =>
-      includedGenres.size > 0 || excludedGenres.size > 0 || studioFilter !== "all"
+      includedGenres.size > 0 || excludedGenres.size > 0 || studioFilter !== "all" || airingFilter !== "all"
   );
   const secondaryActiveCount =
-    includedGenres.size + excludedGenres.size + (studioFilter !== "all" ? 1 : 0);
-  const anyFilterActive =
-    query !== "" || statusFilter !== "all" || typeFilter !== "all" || secondaryActiveCount > 0;
+    includedGenres.size +
+    excludedGenres.size +
+    (studioFilter !== "all" ? 1 : 0) +
+    (airingFilter !== "all" ? 1 : 0);
+  // The status tab is navigation, not a filter, so it is not counted here.
+  const anyFilterActive = query !== "" || typeFilter !== "all" || secondaryActiveCount > 0;
   function clearAllFilters() {
     setQuery("");
-    setStatusFilter("all");
+    setAiringFilter("all");
     setTypeFilter("all");
     setStudioFilter("all");
     setIncludedGenres(new Set());
@@ -495,39 +443,37 @@ export function Library({
     });
   }, [items, debouncedQuery, typeFilter, includedGenres, excludedGenres, studioFilter]);
 
-  // All "watching" items (before the airing filter) — drives whether the
-  // filter control is shown at all.
-  const watchingAll = useMemo(
-    () => filtered.filter((it) => statusOf(it) === "watching"),
-    [filtered]
-  );
-  const watching = useMemo(() => {
-    const w =
+  // The airing/finished filter (under "Más filtros") applies to every tab.
+  const scoped = useMemo(
+    () =>
       airingFilter === "all"
-        ? watchingAll
-        : airingFilter === "airing"
-          ? watchingAll.filter((it) => it.series.is_airing)
-          : watchingAll.filter((it) => !it.series.is_airing);
-    return [...w].sort(byRecentWatched);
-  }, [watchingAll, airingFilter]);
-  const plan = useMemo(
-    () => filtered.filter((it) => statusOf(it) === "plan").sort(byTitle),
-    [filtered]
-  );
-  const completed = useMemo(
-    () => filtered.filter((it) => statusOf(it) === "completed").sort(byRecentWatched),
-    [filtered]
+        ? filtered
+        : filtered.filter((it) => (airingFilter === "airing") === it.series.is_airing),
+    [filtered, airingFilter]
   );
 
-  // Estado scopes which sections render at all; "all" keeps every section
-  // (current default behavior).
-  const showWatching = statusFilter === "all" || statusFilter === "watching";
-  const showPlan = statusFilter === "all" || statusFilter === "plan";
-  const showCompleted = statusFilter === "all" || statusFilter === "completed";
-  const visibleCount =
-    (showWatching ? watching.length : 0) +
-    (showPlan ? plan.length : 0) +
-    (showCompleted ? completed.length : 0);
+  // Tab counts follow the other filters, so a tab never promises rows the
+  // grid will not show.
+  const counts = useMemo(() => {
+    const c = { watching: 0, plan: 0, completed: 0, all: scoped.length };
+    for (const it of scoped) c[statusOf(it)] += 1;
+    return c;
+  }, [scoped]);
+
+  // "Todas" is one flat grid: grouped by status (watching, plan, completed)
+  // with the chosen sort applied inside each group, except for a non-default
+  // sort, which orders the whole list.
+  const visible = useMemo(() => {
+    const cmp = comparatorFor(sort);
+    const list = scoped.filter((it) => statusFilter === "all" || statusOf(it) === statusFilter);
+    if (statusFilter === "all" && sort === "recent") {
+      return list.sort(
+        (a, b) => STATUS_ORDER[statusOf(a)] - STATUS_ORDER[statusOf(b)] || cmp(a, b)
+      );
+    }
+    return list.sort(cmp);
+  }, [scoped, statusFilter, sort]);
+  const visibleCount = visible.length;
 
   function getGenreState(genre: string): "neutral" | "include" | "exclude" {
     if (includedGenres.has(genre)) return "include";
@@ -622,8 +568,8 @@ export function Library({
                   onChange={(e) => setQuery(e.target.value)}
                 />
               </div>
-              <div className="seg" role="group" aria-label={t("library.filterStatus")}>
-                {(["all", "watching", "plan", "completed"] as StatusFilter[]).map((f) => (
+              <div className="seg lib-tabs" role="group" aria-label={t("library.filterStatus")}>
+                {STATUS_KEYS.map((f) => (
                   <button
                     key={f}
                     type="button"
@@ -636,8 +582,9 @@ export function Library({
                       : f === "watching"
                         ? t("library.watching")
                         : f === "plan"
-                          ? t("library.planToWatch")
+                          ? t("library.tabPlan")
                           : t("library.completed")}
+                    <span className="seg-count">{counts[f]}</span>
                   </button>
                 ))}
               </div>
@@ -655,7 +602,27 @@ export function Library({
                   </option>
                 ))}
               </select>
-              {(genreOptions.length > 0 || studioOptions.length > 0) && (
+              <select
+                className="input filter-select"
+                aria-label={t("library.sortLabel")}
+                value={sort}
+                onChange={(e) => setSort(e.target.value as SortKey)}
+              >
+                {SORT_KEYS.map((k) => (
+                  <option key={k} value={k}>
+                    {t(
+                      k === "recent"
+                        ? "library.sortRecent"
+                        : k === "title"
+                          ? "library.sortTitle"
+                          : k === "progress"
+                            ? "library.sortProgress"
+                            : "library.sortPending"
+                    )}
+                  </option>
+                ))}
+              </select>
+              {(
                 <button
                   type="button"
                   className={`btn btn-secondary filter-toggle-btn${moreOpen ? " active" : ""}`}
@@ -678,6 +645,28 @@ export function Library({
 
             {moreOpen && (
               <div className="filter-collapsible-panel" id="lib-more-filters">
+                <div className="filter-collapsible-row">
+                  <span className="filter-label" id="lib-airing-label">
+                    {t("library.filterLabel")}
+                  </span>
+                  <div className="seg" role="group" aria-labelledby="lib-airing-label">
+                    {(["all", "airing", "finished"] as AiringFilter[]).map((f) => (
+                      <button
+                        key={f}
+                        type="button"
+                        className={`seg-btn${airingFilter === f ? " active" : ""}`}
+                        aria-pressed={airingFilter === f}
+                        onClick={() => setAiringFilter(f)}
+                      >
+                        {f === "all"
+                          ? t("library.filterAll")
+                          : f === "airing"
+                            ? t("library.filterAiring")
+                            : t("library.filterFinished")}
+                      </button>
+                    ))}
+                  </div>
+                </div>
                 {studioOptions.length > 0 && (
                   <div className="filter-collapsible-row">
                     <label className="filter-label" htmlFor="lib-studio-select">
@@ -742,8 +731,26 @@ export function Library({
             )}
           </div>
 
-          {filtered.length === 0 || visibleCount === 0 ? (
-            <div className="empty">{t("common.noResults")}</div>
+          {visibleCount === 0 ? (
+            <div className="empty">
+              {anyFilterActive || statusFilter === "all"
+                ? t("common.noResults")
+                : t(
+                    statusFilter === "watching"
+                      ? "library.emptyWatching"
+                      : statusFilter === "plan"
+                        ? "library.emptyPlan"
+                        : "library.emptyCompleted"
+                  )}
+              {statusFilter === "plan" && !anyFilterActive && onGoToListas && (
+                <>
+                  <br />
+                  <button type="button" className="btn btn-primary btn-sm lib-empty-cta" onClick={onGoToListas}>
+                    {t("library.backlogBannerBtn")}
+                  </button>
+                </>
+              )}
+            </div>
           ) : (
             <>
               {selected.size > 0 && (
@@ -779,41 +786,22 @@ export function Library({
                   </button>
                 </div>
               )}
-              {showWatching && watchingAll.length > 0 && (
-                <div className="lib-filter-bar">
-                  <span className="muted text-sm">
-                    {t("library.filterLabel")}
-                  </span>
-                  <div className="seg">
-                    {(["all", "airing", "finished"] as AiringFilter[]).map((f) => (
-                      <button
-                        key={f}
-                        type="button"
-                        className={`seg-btn${airingFilter === f ? " active" : ""}`}
-                        onClick={() => setAiringFilter(f)}
-                      >
-                        {f === "all"
-                          ? t("library.filterAll")
-                          : f === "airing"
-                            ? t("library.filterAiring")
-                            : t("library.filterFinished")}
-                      </button>
-                    ))}
+              {statusFilter === "plan" && onGoToListas && (
+                <div className="backlog-shortcut-banner">
+                  <div className="backlog-shortcut-text">
+                    <span className="backlog-shortcut-title">{t("library.backlogBannerTitle")}</span>
+                    <span className="muted text-sm">{t("library.backlogBannerDesc")}</span>
                   </div>
+                  <button type="button" className="btn btn-primary btn-sm" onClick={onGoToListas}>
+                    {t("library.backlogBannerBtn")} →
+                  </button>
                 </div>
               )}
-              {showWatching &&
-                (watchingAll.length > 0 && watching.length === 0 ? (
-                  <div className="empty lib-empty-compact">
-                    {t("library.filterNoResults")}
-                  </div>
-                ) : (
-                  <LibrarySection
-                    title={t("library.watching")}
-                    items={watching}
-                    defaultOpen
-                    showAction
-                    showMenu
+              <div className="grid">
+                {visible.map((it) => (
+                  <LibraryCard
+                    key={it.series.id}
+                    item={it}
                     onOpenSeries={onOpenSeries}
                     onChanged={load}
                     selectMode={selectMode}
@@ -821,55 +809,7 @@ export function Library({
                     onToggleSelect={toggleSelect}
                   />
                 ))}
-              {showPlan && (
-                <>
-                  {onGoToListas && (
-                    <div className="backlog-shortcut-banner">
-                      <div className="backlog-shortcut-text">
-                        <span className="backlog-shortcut-title">
-                          {t("library.backlogBannerTitle") || "¿Buscas tu lista de «Quiero ver»?"}
-                        </span>
-                        <span className="muted text-sm">
-                          {t("library.backlogBannerDesc") || "Gestiona los animes guardados desde Descubrir para empezarlos a ver."}
-                        </span>
-                      </div>
-                      <button
-                        type="button"
-                        className="btn btn-primary btn-sm"
-                        onClick={onGoToListas}
-                      >
-                        {t("library.backlogBannerBtn") || "Abrir «Quiero ver»"} →
-                      </button>
-                    </div>
-                  )}
-                  <LibrarySection
-                    title={t("library.planToWatch")}
-                    items={plan}
-                    defaultOpen
-                    showAction
-                    showMenu={false}
-                    onOpenSeries={onOpenSeries}
-                    onChanged={load}
-                    selectMode={selectMode}
-                    selected={selected}
-                    onToggleSelect={toggleSelect}
-                  />
-                </>
-              )}
-              {showCompleted && (
-                <LibrarySection
-                  title={t("library.completed")}
-                  items={completed}
-                  defaultOpen={false}
-                  showAction={false}
-                  showMenu={false}
-                  onOpenSeries={onOpenSeries}
-                  onChanged={load}
-                  selectMode={selectMode}
-                  selected={selected}
-                  onToggleSelect={toggleSelect}
-                />
-              )}
+              </div>
             </>
           )}
         </>
