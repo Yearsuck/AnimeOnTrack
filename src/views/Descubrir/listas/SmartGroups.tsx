@@ -11,6 +11,8 @@ export interface SmartGroupsProps {
   };
 }
 
+// Quick filters as ordinary filter chips (`.chip-toggle`), with the count in
+// the same pill the segmented controls use.
 export function SmartGroups({
   quickFilter,
   onToggleQuickFilter,
@@ -25,20 +27,19 @@ export function SmartGroups({
   ];
 
   return (
-    <div className="listas-smart-groups" role="toolbar" aria-label={t("discover.listas.smartAiring")}>
-      <span className="listas-smart-label">⚡</span>
+    <div className="chip-row" role="toolbar" aria-label={t("discover.listas.quickFiltersAria")}>
       {groups.map((grp) => {
         const active = quickFilter === grp.key;
         return (
           <button
             key={grp.key}
             type="button"
-            className={`listas-smart-chip${active ? " active" : ""}`}
+            className={`chip-toggle${active ? " active" : ""}`}
             onClick={() => onToggleQuickFilter(grp.key)}
             aria-pressed={active}
           >
-            <span>{grp.label}</span>
-            <span className="listas-smart-count">{grp.count}</span>
+            {grp.label}
+            <span className="seg-count">{grp.count}</span>
           </button>
         );
       })}

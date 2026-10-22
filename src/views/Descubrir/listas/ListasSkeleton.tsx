@@ -18,13 +18,14 @@ export function ListasSkeleton({ viewMode }: { viewMode: ViewMode }) {
   }
 
   return (
-    <div className="listas-skeleton-grid" aria-busy="true">
+    // Same grid and card box as the loaded cards, so nothing reflows on arrival.
+    <div className="grid" aria-busy="true">
       {Array.from({ length: 8 }).map((_, i) => (
-        <div key={i} className="listas-skeleton-card">
-          <div className="listas-skeleton-poster" />
-          <div className="listas-skeleton-lines">
-            <div className="listas-skeleton-line listas-skeleton-line-80" />
-            <div className="listas-skeleton-line listas-skeleton-line-50" />
+        <div key={i} className="card">
+          <div className="poster skeleton" />
+          <div className="card-body">
+            <div className="skeleton skeleton-text listas-skeleton-line-80" />
+            <div className="skeleton skeleton-text listas-skeleton-line-50" />
           </div>
         </div>
       ))}

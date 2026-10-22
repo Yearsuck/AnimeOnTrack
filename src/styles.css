@@ -2098,28 +2098,6 @@ progress.scanbar-track::-webkit-progress-value {
 }
 
 /* ---------- Descubrir · Listas (redesigned cards) ---------- */
-.listas-toolbar {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-3);
-  flex-wrap: wrap;
-  margin-bottom: var(--sp-3);
-}
-.listas-seg {
-  margin-bottom: 16px;
-}
-.listas-seg-count {
-  margin-left: 6px;
-  opacity: 0.7;
-  font-size: var(--fs-xs);
-  font-weight: var(--fw-bold);
-  font-variant-numeric: tabular-nums;
-}
-.listas-grid {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
 .listas-card {
   display: flex;
   align-items: center;
@@ -2659,6 +2637,62 @@ select.filter-select {
   display: flex;
   justify-content: center;
   margin-top: var(--sp-6);
+}
+/* One poster card for Explorar and Listas (components/PosterCard.tsx).
+   Interactive like Mi biblioteca's cards: shadow-only hover, no lift, so the
+   card does not move under the pointer. */
+.poster-card {
+  cursor: pointer;
+}
+.poster-card:hover {
+  transform: none;
+  box-shadow: var(--shadow-md), 0 0 0 1px var(--accent-dim);
+}
+.poster-card:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+/* The ⋯ menu stays quiet until the card is hovered/focused or it is open. */
+.poster-card .card-menu-btn {
+  opacity: 0;
+}
+.poster-card:hover .card-menu-btn,
+.poster-card:focus-within .card-menu-btn,
+.poster-card .card-menu-btn[aria-expanded="true"] {
+  opacity: 1;
+}
+/* The card's main action (Listas: "Empezar a ver"…), revealed at the poster
+   foot on hover or keyboard focus. */
+.poster-action {
+  position: absolute;
+  left: var(--sp-2);
+  right: var(--sp-2);
+  bottom: var(--sp-2);
+  display: flex;
+  z-index: 3;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+.poster-action .btn {
+  flex: 1;
+}
+.poster-card:hover .poster-action,
+.poster-card:focus-within .poster-action {
+  opacity: 1;
+  pointer-events: auto;
+}
+/* Count inside a segmented button or filter chip ("Quiero ver 205"). */
+.seg-count {
+  margin-left: var(--sp-1);
+  opacity: 0.7;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
+  font-variant-numeric: tabular-nums;
+}
+.seg-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 /* ---------- Utilities ----------

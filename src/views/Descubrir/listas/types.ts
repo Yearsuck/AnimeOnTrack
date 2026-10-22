@@ -27,7 +27,6 @@ export interface ListasFilterState {
 }
 
 export const VIEW_MODE_STORAGE_KEY = "aot_listas_view_mode";
-export const AVAILABLE_FORMATS = ["TV", "MOVIE", "OVA", "ONA", "SPECIAL"] as const;
 export const MIN_SCORE_OPTIONS = [50, 60, 70, 80, 90] as const;
 
 export type { ListTab };

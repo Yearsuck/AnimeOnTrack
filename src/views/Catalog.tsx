@@ -11,7 +11,8 @@ import {
 } from "../api";
 import { useT } from "../i18n";
 import { createFilterCache } from "../lib/createFilterCache";
-import { resolveCoverUrl } from "../lib/posterFallback";
+import { formatLabel, sortFormats } from "../lib/formatLabel";
+import { PosterCard, posterMetaLine, stopCardEvent } from "../components/PosterCard";
 import { startSeriesSequentially, summarizeStart } from "../lib/startWatchingQueue";
 import type { CatalogAnime, CatalogFacets, CatalogFilter, CatalogSyncProgress } from "../types";
 import {
@@ -513,7 +514,8 @@ export function Catalog({
             : t("catalog.subtitle")}
         </span>
         <div className="spacer" />
-        <button className="btn btn-primary" onClick={runSync} disabled={syncing}>
+        {/* Maintenance, not the page's main action: secondary, not red. */}
+        <button type="button" className="btn" onClick={runSync} disabled={syncing}>
           {syncing ? t("catalog.syncing") : t("catalog.syncButton")}
         </button>
       </div>
@@ -563,9 +565,9 @@ export function Catalog({
             onChange={(e) => setFormat(e.target.value)}
           >
             <option value="">{t("catalog.anyFormat")}</option>
-            {facets.formats.map((f) => (
+            {sortFormats(facets.formats).map((f) => (
               <option key={f} value={f}>
-                {f}
+                {formatLabel(t, f)}
               </option>
             ))}
           </select>
@@ -696,13 +698,17 @@ export function Catalog({
           )}
           <div className="grid">
             {items.map((a) => (
-              <div
+              <PosterCard
                 key={a.id}
-                className={`card card-selectable${selected.has(a.id) ? " selected" : ""}`}
-                onClick={() => toggleSelect(a)}
-              >
-                <div className="poster">
-                  {a.format && <span className="chip">{a.format}</span>}
+                title={a.title}
+                coverUrl={a.cover_url}
+                format={a.format}
+                genres={a.genres}
+                meta={posterMetaLine(t, { episodes: a.episodes, score: a.average_score })}
+                selectable
+                selected={selected.has(a.id)}
+                onActivate={() => toggleSelect(a)}
+                corner={
                   <button
                     type="button"
                     className="card-info-btn"
@@ -712,30 +718,12 @@ export function Catalog({
                       e.stopPropagation();
                       openEpisode(a.url).catch((err) => console.error("open failed", err));
                     }}
+                    onKeyDown={stopCardEvent}
                   >
                     ℹ
                   </button>
-                  {selected.has(a.id) && (
-                    <span className="card-select-check" aria-hidden="true">
-                      ✓
-                    </span>
-                  )}
-                  {a.cover_url ? <img src={resolveCoverUrl(a.cover_url)!} alt={a.title} loading="lazy" /> : null}
-                </div>
-
-                <div className="card-body">
-                  <div className="card-title">{a.title}</div>
-                  <div className="muted card-sub">
-                    {a.genres.slice(0, 3).join(", ") || "—"}
-                  </div>
-                  <div className="muted card-sub">
-                    {a.episodes
-                      ? t("catalog.episodesCount", { count: a.episodes })
-                      : t("catalog.episodesUnknown")}
-                    {a.average_score ? ` · ${a.average_score}%` : ""}
-                  </div>
-                </div>
-              </div>
+                }
+              />
             ))}
           </div>
 

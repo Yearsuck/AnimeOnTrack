@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useState } from "react";
 import { norm } from "../helpers";
+import { sortFormats } from "../../../lib/formatLabel";
 import type { ListasEntry, ListasFilterState, QuickFilter, SortKey, StatusFilter } from "./types";
 
 const INITIAL_FILTER_STATE: ListasFilterState = {
@@ -25,16 +26,9 @@ export function useListasFilter(entries: ListasEntry[]) {
     setFilterState((prev) => ({ ...prev, sortBy }));
   }, []);
 
-  const toggleFormat = useCallback((format: string) => {
-    setFilterState((prev) => {
-      const exists = prev.selectedFormats.includes(format);
-      return {
-        ...prev,
-        selectedFormats: exists
-          ? prev.selectedFormats.filter((f) => f !== format)
-          : [...prev.selectedFormats, format],
-      };
-    });
+  // One format at a time, from a select — the same control Explorar uses.
+  const setFormat = useCallback((format: string) => {
+    setFilterState((prev) => ({ ...prev, selectedFormats: format ? [format] : [] }));
   }, []);
 
   const setStatus = useCallback((status: StatusFilter) => {
@@ -92,6 +86,12 @@ export function useListasFilter(entries: ListasEntry[]) {
       .map(([g]) => g);
     return { availableGenres: all, topGenres: top };
   }, [entries]);
+
+  // Formats actually present in this list (AniList codes, incl. TV_SHORT/MUSIC).
+  const availableFormats = useMemo(
+    () => sortFormats(entries.flatMap((e) => (e.meta?.format ? [e.meta.format] : []))),
+    [entries]
+  );
 
   // Compute smart group counts
   const smartCounts = useMemo(() => {
@@ -249,7 +249,7 @@ export function useListasFilter(entries: ListasEntry[]) {
     filterState,
     setQuery,
     setSortBy,
-    toggleFormat,
+    setFormat,
     setStatus,
     toggleGenre,
     setMinScore,
@@ -258,6 +258,7 @@ export function useListasFilter(entries: ListasEntry[]) {
     toggleQuickFilter,
     resetFilters,
     availableGenres,
+    availableFormats,
     topGenres,
     smartCounts,
     activeFilterCount,

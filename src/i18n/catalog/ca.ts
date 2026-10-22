@@ -336,7 +336,6 @@ export const ca: Messages = {
   "catalog.emptyNotSynced":
     "Encara no hi ha res sincronitzat. Prem «Sincronitza el catàleg complet» per baixar el catàleg d'AniList.",
   "catalog.episodesCount": "{count} episodis",
-  "catalog.episodesUnknown": "Episodis: ?",
   "catalog.loadMore": "Carrega'n més",
   "catalog.infoTitle": "Mostra la informació (AniList)",
   "catalog.selectedCount": "{count} seleccionats",
@@ -584,6 +583,16 @@ export const ca: Messages = {
   "catalog.lessFilters": "Menys filtres",
   "catalog.scoreRangeLabel": "Puntuació",
   "catalog.dateRangeLabel": "Data d'estrena",
+  // Catálogo coherence (Explorar + Listas share one poster card and filter bar)
+  "catalog.episodesOne": "1 episodi",
+  "discover.listas.quickFiltersAria": "Filtres ràpids",
+  "format.TV": "TV",
+  "format.TV_SHORT": "Curt",
+  "format.MOVIE": "Pel·lícula",
+  "format.OVA": "OVA",
+  "format.ONA": "ONA",
+  "format.SPECIAL": "Especial",
+  "format.MUSIC": "Musical",
   "discover.filtersScoreHeading": "Puntuació mínima",
 
   // listas (v0.6.5)
@@ -605,8 +614,6 @@ export const ca: Messages = {
   "discover.listas.minScoreVal": "{score}+",
   "discover.listas.yearFrom": "Any des de",
   "discover.listas.yearTo": "Any fins a",
-  "discover.listas.filterFormats": "Formats",
-  "discover.listas.filterGenres": "Gèneres",
   "discover.listas.activeFiltersCount": "{count} filtres actius",
   "discover.listas.clearAllFilters": "Neteja filtres",
   "discover.listas.smartAiring": "Emetent-se ara",
