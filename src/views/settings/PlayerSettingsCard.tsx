@@ -9,6 +9,7 @@ export function PlayerSettingsCard() {
   const [monitors, setMonitors] = useState<MonitorOption[]>([]);
   const [targetMonitor, setTargetMonitor] = useState<string>("");
   const [fullscreen, setFullscreen] = useState(false);
+  const [clean, setClean] = useState(true);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -17,6 +18,7 @@ export function PlayerSettingsCard() {
         setMonitors(mons);
         setTargetMonitor(settings.monitor ?? "");
         setFullscreen(settings.fullscreen);
+        setClean(settings.clean);
       })
       .catch((err) => console.error("Error loading player settings:", err))
       .finally(() => setLoading(false));
@@ -25,7 +27,7 @@ export function PlayerSettingsCard() {
   const handleMonitorChange = async (val: string) => {
     setTargetMonitor(val);
     try {
-      await setPlayerSettings(val.trim() === "" ? null : val, fullscreen);
+      await setPlayerSettings(val.trim() === "" ? null : val, fullscreen, clean);
     } catch (err) {
       console.error("Failed to save monitor setting:", err);
     }
@@ -34,9 +36,18 @@ export function PlayerSettingsCard() {
   const handleFullscreenChange = async (fs: boolean) => {
     setFullscreen(fs);
     try {
-      await setPlayerSettings(targetMonitor.trim() === "" ? null : targetMonitor, fs);
+      await setPlayerSettings(targetMonitor.trim() === "" ? null : targetMonitor, fs, clean);
     } catch (err) {
       console.error("Failed to save fullscreen setting:", err);
+    }
+  };
+
+  const handleCleanChange = async (next: boolean) => {
+    setClean(next);
+    try {
+      await setPlayerSettings(targetMonitor.trim() === "" ? null : targetMonitor, fullscreen, next);
+    } catch (err) {
+      console.error("Failed to save clean player setting:", err);
     }
   };
 
@@ -87,6 +98,22 @@ export function PlayerSettingsCard() {
             onClick={() => handleFullscreenChange(true)}
           >
             ⛶ {t("settings.playerFullscreen")}
+          </button>
+        </div>
+      </div>
+
+      <div className="settings-field">
+        <label className="settings-field-label">{t("settings.playerClean")}</label>
+        <p className="settings-section-desc">{t("settings.playerCleanHelp")}</p>
+        <div className="row">
+          <button
+            type="button"
+            className={`chip-toggle ${clean ? "active" : ""}`}
+            aria-pressed={clean}
+            onClick={() => handleCleanChange(!clean)}
+          >
+            {clean ? "✓ " : ""}
+            {t("settings.playerClean")}
           </button>
         </div>
       </div>

@@ -4,8 +4,10 @@ mod anilist;
 mod anizip;
 mod backup;
 mod catalog_snapshot;
+mod clean_player;
 mod commands;
 mod dates;
+mod extras_guard;
 mod db;
 mod diff;
 mod domain_breaker;
@@ -161,6 +163,7 @@ pub fn run() {
                 episode_fallback_running: std::sync::atomic::AtomicBool::new(false),
                 catalog_sync_running: std::sync::atomic::AtomicBool::new(false),
                 backup_running: std::sync::atomic::AtomicBool::new(false),
+                extras_guard: extras_guard::ExtrasGuard::default(),
             });
 
             // Start the main-thread liveness watchdog. It posts a tiny
@@ -250,6 +253,8 @@ pub fn run() {
             commands::link_unlinked_via_anilist,
             commands::import_library_to_active_site,
             commands::get_catalog_info_for_series,
+            commands::get_series_site_info,
+            commands::get_anime_extras,
             commands::discover_catalog_card,
             commands::discover_catalog_cards,
             commands::decide_catalog_card,

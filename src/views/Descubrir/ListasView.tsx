@@ -32,6 +32,13 @@ export function ListasView({
   const [limit, setLimit] = useState(PAGE_SIZE);
   const [activeTab, setActiveTab] = useState<ListTab>("want");
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  // Checkboxes and the batch bar only exist while selecting (Mi biblioteca's
+  // pattern); otherwise a card click opens the series.
+  const [selectMode, setSelectMode] = useState(false);
+  const handleSelectModeChange = useCallback((on: boolean) => {
+    setSelectMode(on);
+    if (!on) setSelectedIds(new Set());
+  }, []);
 
   // View mode persistence in localStorage
   const [viewMode, setViewMode] = useState<ViewMode>(() => {
@@ -76,7 +83,7 @@ export function ListasView({
     filterState,
     setQuery,
     setSortBy,
-    toggleFormat,
+    setFormat,
     setStatus,
     toggleGenre,
     setMinScore,
@@ -85,6 +92,7 @@ export function ListasView({
     toggleQuickFilter,
     resetFilters,
     availableGenres,
+    availableFormats,
     topGenres,
     smartCounts,
     activeFilterCount,
@@ -94,6 +102,7 @@ export function ListasView({
   const handleTabChange = useCallback((tab: ListTab) => {
     setActiveTab(tab);
     setSelectedIds(new Set());
+    setSelectMode(false);
     resetFilters();
   }, [resetFilters]);
 
@@ -147,21 +156,16 @@ export function ListasView({
         }}
         viewMode={viewMode}
         onViewModeChange={handleViewModeChange}
+        selectMode={selectMode}
+        onSelectModeChange={handleSelectModeChange}
+        canSelect={filteredEntries.length > 0}
       />
-
-      {activeTab === "want" && (
-        <SmartGroups
-          quickFilter={filterState.quickFilter}
-          onToggleQuickFilter={toggleQuickFilter}
-          counts={smartCounts}
-        />
-      )}
 
       <ListasToolbar
         filterState={filterState}
         onQueryChange={setQuery}
         onSortChange={setSortBy}
-        onToggleFormat={toggleFormat}
+        onFormatChange={setFormat}
         onStatusChange={setStatus}
         onToggleGenre={toggleGenre}
         onMinScoreChange={setMinScore}
@@ -169,9 +173,32 @@ export function ListasView({
         onYearToChange={setYearTo}
         onClearFilters={resetFilters}
         activeFilterCount={activeFilterCount}
+        availableFormats={availableFormats}
         availableGenres={availableGenres}
         topGenres={topGenres}
+        resultCount={filteredEntries.length}
+        quickFilters={
+          activeTab === "want" ? (
+            <SmartGroups
+              quickFilter={filterState.quickFilter}
+              onToggleQuickFilter={toggleQuickFilter}
+              counts={smartCounts}
+            />
+          ) : null
+        }
       />
+
+      {selectMode && (
+        <BulkActionBar
+          activeTab={activeTab}
+          selectedIds={selectedIds}
+          visibleEntries={filteredEntries}
+          onSelectAllVisible={selectAllVisible}
+          onDeselectAll={deselectAll}
+          onRetainSelection={(ids) => setSelectedIds(new Set(ids))}
+          onChanged={reload}
+        />
+      )}
 
       {loading ? (
         <ListasSkeleton viewMode={viewMode} />
@@ -189,12 +216,13 @@ export function ListasView({
           onClearFilters={resetFilters}
         />
       ) : viewMode === "grid" ? (
-        <div className="listas-cards-grid">
+        <div className="grid">
           {shownEntries.map((entry) => (
             <ListasCard
               key={entry.series.id}
               entry={entry}
               activeTab={activeTab}
+              selectMode={selectMode}
               isSelected={selectedIds.has(entry.series.id)}
               onToggleSelect={() => toggleSelect(entry.series.id)}
               onOpenSeries={onOpenSeries}
@@ -209,6 +237,7 @@ export function ListasView({
               key={entry.series.id}
               entry={entry}
               activeTab={activeTab}
+              selectMode={selectMode}
               isSelected={selectedIds.has(entry.series.id)}
               onToggleSelect={() => toggleSelect(entry.series.id)}
               onOpenSeries={onOpenSeries}
@@ -226,15 +255,6 @@ export function ListasView({
         </div>
       )}
 
-      <BulkActionBar
-        activeTab={activeTab}
-        selectedIds={selectedIds}
-        visibleEntries={filteredEntries}
-        onSelectAllVisible={selectAllVisible}
-        onDeselectAll={deselectAll}
-        onRetainSelection={(ids) => setSelectedIds(new Set(ids))}
-        onChanged={reload}
-      />
     </div>
   );
 }

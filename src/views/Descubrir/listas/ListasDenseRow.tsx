@@ -10,6 +10,8 @@ import {
 import { useT } from "../../../i18n";
 import { isUnlinkedCatalogRow } from "../../../lib/catalogLink";
 import { initials, resolveCoverUrl, useCoverFailure } from "../../../lib/posterFallback";
+import { formatLabel } from "../../../lib/formatLabel";
+import { posterMetaLine } from "../../../components/PosterCard";
 import type { Series } from "../../../types";
 import { OverflowMenu } from "../components";
 import type { ListTab, ListasEntry } from "./types";
@@ -17,6 +19,7 @@ import type { ListTab, ListasEntry } from "./types";
 export interface ListasDenseRowProps {
   entry: ListasEntry;
   activeTab: ListTab;
+  selectMode: boolean;
   isSelected: boolean;
   onToggleSelect: () => void;
   onOpenSeries: (s: Series) => void;
@@ -26,6 +29,7 @@ export interface ListasDenseRowProps {
 export function ListasDenseRow({
   entry,
   activeTab,
+  selectMode,
   isSelected,
   onToggleSelect,
   onOpenSeries,
@@ -74,20 +78,26 @@ export function ListasDenseRow({
     ? new Date(meta.start_date * 1000).getUTCFullYear()
     : null;
 
-  const episodeCount = meta?.episodes ?? series.site_episode_count;
+  const metaLine = posterMetaLine(t, {
+    episodes: meta?.episodes ?? series.site_episode_count,
+    airing: meta?.status === "RELEASING" || series.is_airing,
+    score: meta?.score,
+  });
 
   return (
     <div className={`listas-dense-row-item${isSelected ? " selected" : ""}`}>
-      {/* Selection checkbox */}
-      <button
-        type="button"
-        className={`listas-select-checkbox-btn${isSelected ? " checked" : ""}`}
-        onClick={onToggleSelect}
-        aria-label={t("discover.listas.selectItemAria", { title: series.title })}
-        aria-pressed={isSelected}
-      >
-        {isSelected ? "✓" : ""}
-      </button>
+      {/* Selection checkbox: only while selecting, like Mi biblioteca. */}
+      {selectMode && (
+        <button
+          type="button"
+          className={`listas-select-checkbox-btn${isSelected ? " checked" : ""}`}
+          onClick={onToggleSelect}
+          aria-label={t("discover.listas.selectItemAria", { title: series.title })}
+          aria-pressed={isSelected}
+        >
+          {isSelected ? "✓" : ""}
+        </button>
+      )}
 
       {/* Thumbnail */}
       <div
@@ -128,24 +138,12 @@ export function ListasDenseRow({
             {series.title}
           </button>
 
-          {meta?.score != null && (
-            <span className="listas-score-badge">★ {meta.score}%</span>
-          )}
-
-          {meta?.format && (
-            <span className="listas-format-badge">{meta.format}</span>
-          )}
-
-          {(meta?.status === "RELEASING" || series.is_airing) && (
-            <span className="listas-chip listas-chip-airing">
-              {t("airing.airingNow") || "En emisión"}
-            </span>
-          )}
+          {meta?.format && <span className="listas-format-badge">{formatLabel(t, meta.format)}</span>}
         </div>
 
         <div className="listas-dense-details">
           {year != null && <span>{year}</span>}
-          {episodeCount != null && <span>{episodeCount} eps</span>}
+          {metaLine && <span>{metaLine}</span>}
           {meta?.genres && meta.genres.length > 0 && (
             <span className="muted-2">{meta.genres.slice(0, 4).join(", ")}</span>
           )}
@@ -216,13 +214,6 @@ export function ListasDenseRow({
           items={[
             ...(activeTab === "want"
               ? [
-                  {
-                    label: t("discover.moveToWant"),
-                    onClick: async () => {
-                      await setBacklogStatus(series.id, "want");
-                      onChanged();
-                    },
-                  },
                   {
                     label: t("discover.removeFromList"),
                     onClick: async () => {

@@ -529,6 +529,7 @@ export default function App() {
                 series={selected}
                 onBack={() => setSelected(null)}
                 onChanged={onPendingDataChanged}
+                onOpenSeries={setSelected}
               />
             </Suspense>
           </div>

@@ -137,6 +137,8 @@ pub struct AppState {
     /// file, and both create one — leaving two files in Drive that never
     /// converge again.
     pub backup_running: std::sync::atomic::AtomicBool,
+    /// Failure memory + in-flight dedupe for `get_anime_extras`.
+    pub extras_guard: crate::extras_guard::ExtrasGuard,
 }
 
 /// How many recent swipe decisions `swipe_history` remembers.

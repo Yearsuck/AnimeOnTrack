@@ -762,7 +762,10 @@ pub async fn fetch_by_ids_multi(ids: &[i64]) -> Result<Vec<CatalogAnime>> {
 async fn post_graphql(body: serde_json::Value, context: &str) -> Result<(serde_json::Value, Option<i64>)> {
     const MAX_RETRIES: u32 = 5;
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|e| anyhow!("could not build the AniList HTTP client ({context}): {e}"))?;
     let mut attempt = 0u32;
     loop {
         let resp = client
@@ -813,6 +816,128 @@ async fn post_graphql(body: serde_json::Value, context: &str) -> Result<(serde_j
             .cloned()
             .ok_or_else(|| anyhow!("AniList response had no data ({context})"))?;
         return Ok((data, rate_remaining));
+    }
+}
+
+/// One related title of an anime, as AniList's `relations` edge reports it —
+/// every relation type (prequel, side story, spin-off...), unlike the
+/// catalog sync, which only keeps PREQUEL/SEQUEL edges for its own logic.
+/// Only ANIME nodes are kept: manga/novel sources cannot be opened here.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RelatedMedia {
+    pub id: i64,
+    pub relation_type: String,
+    pub title: String,
+    pub cover_url: Option<String>,
+    pub format: Option<String>,
+    pub year: Option<i64>,
+}
+
+/// Detail-view data the catalog sync does not carry: the description (raw
+/// AniList markup — `<br>`, `<i>`, `~!spoiler!~` — sanitised by the
+/// frontend, which never renders it as HTML) and the full relation list.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MediaExtras {
+    pub description: Option<String>,
+    pub relations: Vec<RelatedMedia>,
+}
+
+const MEDIA_EXTRAS_QUERY: &str = "query ($id: Int) { Media(id: $id, type: ANIME) { id description(asHtml: false) relations { edges { relationType node { id type format title { romaji english } coverImage { medium } startDate { year } } } } } }";
+
+/// Read a `{ Media: ... }` response into `MediaExtras`. `Ok(None)` when
+/// AniList has no such media (`Media: null`).
+pub(crate) fn parse_media_extras(data: serde_json::Value) -> Result<Option<MediaExtras>> {
+    #[derive(Deserialize)]
+    struct Data {
+        #[serde(rename = "Media")]
+        media: Option<Media>,
+    }
+    #[derive(Deserialize)]
+    struct Media {
+        #[serde(default)]
+        description: Option<String>,
+        #[serde(default)]
+        relations: Option<Rels>,
+    }
+    #[derive(Deserialize)]
+    struct Rels {
+        #[serde(default)]
+        edges: Option<Vec<Option<Edge>>>,
+    }
+    #[derive(Deserialize)]
+    struct Edge {
+        #[serde(rename = "relationType", default)]
+        relation_type: Option<String>,
+        #[serde(default)]
+        node: Option<Node>,
+    }
+    #[derive(Deserialize)]
+    struct Node {
+        #[serde(default)]
+        id: Option<i64>,
+        #[serde(rename = "type", default)]
+        node_type: Option<String>,
+        #[serde(default)]
+        format: Option<String>,
+        #[serde(default)]
+        title: Option<MediaTitle>,
+        #[serde(rename = "coverImage", default)]
+        cover_image: Option<Medium>,
+        #[serde(rename = "startDate", default)]
+        start_date: Option<Year>,
+    }
+    #[derive(Deserialize)]
+    struct Medium {
+        #[serde(default)]
+        medium: Option<String>,
+    }
+    #[derive(Deserialize)]
+    struct Year {
+        #[serde(default)]
+        year: Option<i64>,
+    }
+
+    let data: Data = serde_json::from_value(data).map_err(|e| anyhow!("AniList media extras had an unexpected shape: {e}"))?;
+    let Some(media) = data.media else { return Ok(None) };
+    let mut relations: Vec<RelatedMedia> = Vec::new();
+    for edge in media.relations.and_then(|r| r.edges).into_iter().flatten().flatten() {
+        let (Some(relation_type), Some(node)) = (edge.relation_type, edge.node) else { continue };
+        let Some(id) = node.id.filter(|id| *id > 0) else { continue };
+        if node.node_type.as_deref() != Some("ANIME") {
+            continue;
+        }
+        if relations.iter().any(|r| r.id == id && r.relation_type == relation_type) {
+            continue;
+        }
+        let title = node
+            .title
+            .and_then(|t| t.english.or(t.romaji))
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty())
+            .unwrap_or_default();
+        relations.push(RelatedMedia {
+            id,
+            relation_type,
+            title,
+            cover_url: node.cover_image.and_then(|c| c.medium),
+            format: node.format,
+            year: node.start_date.and_then(|d| d.year),
+        });
+    }
+    let description = media.description.map(|d| d.trim().to_string()).filter(|d| !d.is_empty());
+    Ok(Some(MediaExtras { description, relations }))
+}
+
+/// On-demand, single-title fetch for the series detail view. One request per
+/// opened title (cached by the caller), through the shared 429 handling.
+pub async fn fetch_media_extras(id: i64) -> Result<Option<MediaExtras>> {
+    let body = serde_json::json!({ "query": MEDIA_EXTRAS_QUERY, "variables": { "id": id } });
+    match post_graphql(body, &format!("media extras {id}")).await {
+        Ok((data, _)) => parse_media_extras(data),
+        // AniList answers an unknown id with a "Not Found." error rather than
+        // `Media: null`; that is a definitive "no such title", not a failure.
+        Err(e) if e.to_string().contains("Not Found") => Ok(None),
+        Err(e) => Err(e),
     }
 }
 
@@ -1374,5 +1499,44 @@ mod tests {
     fn one_request_carries_at_most_ten_pages_of_fifty() {
         assert_eq!(PAGES_PER_REQUEST, 10);
         assert_eq!(MAX_IDS_PER_REQUEST * PAGES_PER_REQUEST as usize, 500);
+    }
+
+    #[test]
+    fn media_extras_keep_every_anime_relation_type_and_drop_non_anime_nodes() {
+        let data = serde_json::json!({ "Media": {
+            "id": 1,
+            "description": "  A story.<br><br>~!Twist!~  ",
+            "relations": { "edges": [
+                { "relationType": "SEQUEL", "node": { "id": 2, "type": "ANIME", "format": "TV",
+                  "title": { "romaji": "Dai Ni", "english": "Part Two" },
+                  "coverImage": { "medium": "https://img/2" }, "startDate": { "year": 2021 } } },
+                { "relationType": "SIDE_STORY", "node": { "id": 3, "type": "ANIME", "format": "OVA",
+                  "title": { "romaji": "Gaiden", "english": null }, "coverImage": null, "startDate": { "year": null } } },
+                { "relationType": "ADAPTATION", "node": { "id": 4, "type": "MANGA", "title": { "romaji": "Manga" } } },
+                { "relationType": "SEQUEL", "node": { "id": 2, "type": "ANIME", "title": { "romaji": "Dup" } } },
+                { "relationType": "PREQUEL", "node": null },
+                null
+            ] }
+        }});
+        let extras = parse_media_extras(data).unwrap().expect("media present");
+        assert_eq!(extras.description.as_deref(), Some("A story.<br><br>~!Twist!~"));
+        assert_eq!(
+            extras.relations,
+            vec![
+                RelatedMedia { id: 2, relation_type: "SEQUEL".into(), title: "Part Two".into(),
+                    cover_url: Some("https://img/2".into()), format: Some("TV".into()), year: Some(2021) },
+                RelatedMedia { id: 3, relation_type: "SIDE_STORY".into(), title: "Gaiden".into(),
+                    cover_url: None, format: Some("OVA".into()), year: None },
+            ]
+        );
+    }
+
+    #[test]
+    fn media_extras_null_media_is_none_and_blank_description_is_none() {
+        assert_eq!(parse_media_extras(serde_json::json!({ "Media": null })).unwrap(), None);
+        let e = parse_media_extras(serde_json::json!({ "Media": { "description": "   ", "relations": null } }))
+            .unwrap()
+            .unwrap();
+        assert_eq!(e, MediaExtras { description: None, relations: vec![] });
     }
 }

@@ -25,6 +25,7 @@ import { HistoryRow } from "./HistoryRow";
 import { TasteChips } from "./TasteChips";
 import { useLinkQueue } from "./useLinkQueue";
 import { resolveCoverUrl } from "../../lib/posterFallback";
+import { formatLabel } from "../../lib/formatLabel";
 
 
 export function SwipeView() {
@@ -443,7 +444,7 @@ export function SwipeView() {
                 );
               }}
             >
-              <span className="chip">{card.kind}</span>
+              {card.kind && <span className="chip">{formatLabel(t, card.kind)}</span>}
               {(() => {
                 const src = resolveCoverUrl(card.poster_url);
                 return src ? <img src={src} alt={card.title} /> : null;

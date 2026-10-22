@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { getCatalogFacets, getDeckBans, getDiscoverNiche, setDeckBans, setDiscoverNiche } from "../../api";
 import { useT } from "../../i18n";
 import { DECK_FORMATS } from "./constants";
+import { formatLabel } from "../../lib/formatLabel";
 import { DiscoverModeToggle } from "./DiscoverModeToggle";
 import { useDiscoverMode } from "../../discoverMode";
 import { getInitialDeckPanelOpen, persistDeckPanelOpen } from "./helpers";
@@ -261,7 +262,7 @@ export function DeckPanel({
                   aria-pressed={bannedFormats.has(f)}
                   onClick={() => toggle(bannedFormats, setBannedFormats, f)}
                 >
-                  {f}
+                  {formatLabel(t, f)}
                 </button>
               ))}
             </div>

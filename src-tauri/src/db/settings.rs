@@ -125,6 +125,16 @@ impl Db {
         self.set_setting("player_fullscreen", if fullscreen { "true" } else { "false" })
     }
 
+    /// User preference: strip the episode page down to the player + title bar
+    /// (`clean_player`). Defaults to `true` when never set.
+    pub fn get_player_clean(&self) -> Result<bool> {
+        Ok(self.get_setting("player_clean")?.as_deref() != Some("false"))
+    }
+
+    pub fn set_player_clean(&self, clean: bool) -> Result<()> {
+        self.set_setting("player_clean", if clean { "true" } else { "false" })
+    }
+
 
     /// Record "this series' episode list was actually fetched just now" —
     /// gates the FINISHED_RECHECK interval for followed series absent from
@@ -453,6 +463,16 @@ mod tests {
         db.set_deck_max_start_date(None).unwrap();
         assert_eq!(db.get_deck_min_start_date().unwrap(), None);
         assert_eq!(db.get_deck_max_start_date().unwrap(), None);
+    }
+
+    #[test]
+    fn player_clean_defaults_on_and_round_trips() {
+        let db = Db::open(":memory:").unwrap();
+        assert!(db.get_player_clean().unwrap());
+        db.set_player_clean(false).unwrap();
+        assert!(!db.get_player_clean().unwrap());
+        db.set_player_clean(true).unwrap();
+        assert!(db.get_player_clean().unwrap());
     }
 
     #[test]

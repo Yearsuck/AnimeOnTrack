@@ -533,6 +533,8 @@ pub struct MonitorOption {
 pub struct PlayerSettings {
     pub monitor: Option<String>,
     pub fullscreen: bool,
+    /// Clean-player mode: hide everything but the player and a title bar.
+    pub clean: bool,
 }
 
 /// Extended metadata for Discover list entries, joining series with catalog data.

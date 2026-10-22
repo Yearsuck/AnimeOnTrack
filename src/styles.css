@@ -806,37 +806,12 @@ textarea.input {
 /* Status-grouped disclosures ("Viendo" / "Pendientes de empezar" /
    "Completadas") — <details>/<summary> gives keyboard + screen-reader
    behavior (Tab reaches it, Enter/Space toggle it) for free. */
-.lib-section {
-  margin-bottom: var(--sp-6);
-}
-.lib-section:not(:last-child) {
-  padding-bottom: var(--sp-5);
-  border-bottom: 1px solid var(--border);
-}
-.lib-section-summary {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  cursor: pointer;
-  list-style: none;
-  padding: var(--sp-2) 0;
-  font-size: var(--fs-lg);
-  font-weight: var(--fw-bold);
-  color: var(--text);
-  user-select: none;
-  border-radius: var(--radius-sm);
-}
-.lib-section-summary::-webkit-details-marker {
-  display: none;
-}
-.lib-section-chevron {
-  flex: none;
-  color: var(--muted);
-  transition: transform var(--dur-fast) var(--ease);
-}
-.lib-section[open] > .lib-section-summary .lib-section-chevron {
-  transform: rotate(90deg);
-}
+
+
+
+
+
+
 .lib-section-summary:focus-visible,
 select:focus-visible,
 a:focus-visible {
@@ -1229,43 +1204,13 @@ textarea.input {
 /* Status-grouped disclosures ("Viendo" / "Pendientes de empezar" /
    "Completadas") — <details>/<summary> gives keyboard + screen-reader
    behavior (Tab reaches it, Enter/Space toggle it) for free. */
-.lib-section {
-  margin-bottom: var(--sp-6);
-}
-.lib-section:not(:last-child) {
-  padding-bottom: var(--sp-5);
-  border-bottom: 1px solid var(--border);
-}
-.lib-section-summary {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  cursor: pointer;
-  list-style: none;
-  padding: var(--sp-2) 0;
-  font-size: var(--fs-lg);
-  font-weight: var(--fw-bold);
-  color: var(--text);
-  user-select: none;
-  border-radius: var(--radius-sm);
-}
-.lib-section-summary::-webkit-details-marker {
-  display: none;
-}
-.lib-section-summary::before {
-  content: "▸";
-  display: inline-block;
-  color: var(--muted);
-  font-size: var(--fs-sm);
-  transition: transform var(--dur-fast) var(--ease);
-}
-.lib-section[open] > .lib-section-summary::before {
-  transform: rotate(90deg);
-}
-.lib-section-summary:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
+
+
+
+
+/* The disclosure chevron is the inline SVG `.lib-section-chevron` (rotated
+   above); a `::before` "▸" here used to draw a second one next to it. */
+
 .lib-filter-bar {
   display: flex;
   flex-wrap: wrap;
@@ -1294,6 +1239,12 @@ textarea.input {
 .seg-btn.active {
   background: var(--accent-dim);
   color: var(--accent);
+}
+/* A segmented control sitting in a filter row matches the 32px inputs,
+   selects and buttons next to it (30px + the 1px border top and bottom). */
+.filter-row .seg-btn,
+.page-head .seg-btn {
+  min-height: 30px;
 }
 /* Catalog multi-select + batch */
 .batch-bar {
@@ -1354,23 +1305,9 @@ textarea.input {
   justify-content: center;
   z-index: 2;
 }
-.lib-section-count {
-  color: var(--muted);
-  font-weight: var(--fw-semibold);
-  font-size: var(--fs-sm);
-  background: var(--surface-2);
-  padding: var(--sp-1) var(--sp-2);
-  border-radius: var(--radius-round);
-  min-width: 24px;
-  text-align: center;
-  font-variant-numeric: tabular-nums;
-}
-.lib-section-summary:hover .lib-section-count {
-  background: var(--surface-3);
-}
-.lib-section .grid {
-  margin-top: var(--sp-4);
-}
+
+
+
 
 /* Card is a div[role=button], not a real <button>, because it contains a
    real nested <button> (the play action) — button-in-button is invalid
@@ -1401,19 +1338,8 @@ textarea.input {
   font-size: var(--fs-2xl);
   letter-spacing: 0.5px;
 }
-.lib-progress-text {
-  margin-top: var(--sp-1);
-  font-size: var(--fs-xs);
-  font-variant-numeric: tabular-nums;
-}
-.lib-play-btn {
-  width: 100%;
-  margin-top: var(--sp-2);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--sp-2);
-}
+
+
 
 /* Overflow menu trigger on cards (Library, Descubrir lists), anchored inside
    .poster. The list itself is portalled to <body> (see components/Menu.tsx),
@@ -2098,28 +2024,6 @@ progress.scanbar-track::-webkit-progress-value {
 }
 
 /* ---------- Descubrir · Listas (redesigned cards) ---------- */
-.listas-toolbar {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-3);
-  flex-wrap: wrap;
-  margin-bottom: var(--sp-3);
-}
-.listas-seg {
-  margin-bottom: 16px;
-}
-.listas-seg-count {
-  margin-left: 6px;
-  opacity: 0.7;
-  font-size: var(--fs-xs);
-  font-weight: var(--fw-bold);
-  font-variant-numeric: tabular-nums;
-}
-.listas-grid {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
 .listas-card {
   display: flex;
   align-items: center;
@@ -2406,11 +2310,7 @@ progress.scanbar-track::-webkit-progress-value {
 
 /* Undefined until now: Library rendered <span class="lib-section-title"> with
    no rule, relying on inherited styling. Give it the shared heading. */
-.lib-section-title {
-  font-size: var(--fs-md);
-  font-weight: var(--fw-semibold);
-  letter-spacing: -0.01em;
-}
+
 
 /* ---------- Stats · compact 30-day activity chart ---------- */
 /* Replaces a 30-row horizontal BarChart that dominated the page. One thin
@@ -2578,28 +2478,72 @@ progress.scanbar-track::-webkit-progress-value {
   font-weight: var(--fw-medium);
 }
 
-/* ---------- Series detail header ---------- */
+/* ---------- Series detail header ----------
+   Two columns (cover + facts | synopsis) on wide windows so the info never
+   pushes the episode list far down; the synopsis drops under the facts on
+   narrow ones. The AniList banner, when there is one, is the one decorative
+   element: a faded wash behind the header, never behind the episode list. */
 .detail-back {
   margin-bottom: var(--sp-3);
 }
-.detail-head {
-  align-items: flex-start;
+.detail-hero {
+  position: relative;
+  margin-bottom: var(--sp-5);
+}
+.detail-hero.has-banner {
+  padding-top: var(--sp-8);
+}
+.detail-banner {
+  position: absolute;
+  inset: 0 0 auto 0;
+  width: 100%;
+  height: 220px;
+  object-fit: cover;
+  border-radius: var(--radius);
+  opacity: 0.32;
+  -webkit-mask-image: linear-gradient(to bottom, #000 30%, transparent);
+  mask-image: linear-gradient(to bottom, #000 30%, transparent);
+  pointer-events: none;
+  user-select: none;
+}
+.detail-hero-grid {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--sp-5);
+  align-items: start;
 }
 .detail-cover {
-  width: 90px;
-  height: 128px;
+  width: 132px;
+  height: 188px;
   object-fit: cover;
   border-radius: var(--radius-sm);
   background: var(--surface-2);
-  box-shadow: var(--shadow-sm);
-  flex-shrink: 0;
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-md);
 }
 .detail-main {
-  flex: 1;
   min-width: 0;
 }
 .detail-title {
-  margin-bottom: var(--sp-2);
+  margin-bottom: var(--sp-1);
+}
+.detail-alt-title {
+  margin: 0 0 var(--sp-2);
+  font-size: var(--fs-sm);
+}
+.detail-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1) var(--sp-4);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+}
+.detail-links .detail-site-link {
+  color: var(--muted);
+}
+.detail-links .detail-site-link:hover {
+  color: var(--text);
 }
 .detail-meta {
   margin-top: var(--sp-2);
@@ -2608,18 +2552,271 @@ progress.scanbar-track::-webkit-progress-value {
   flex-wrap: wrap;
   gap: var(--sp-1) var(--sp-4);
 }
+.detail-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(118px, 1fr));
+  gap: var(--sp-2) var(--sp-4);
+  margin: var(--sp-3) 0 0;
+}
+.detail-fact dt {
+  font-size: var(--fs-xs);
+  color: var(--muted-2);
+  font-weight: var(--fw-medium);
+}
+.detail-fact dd {
+  margin: 0;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
+}
+.detail-next-air {
+  margin: var(--sp-3) 0 0;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  color: var(--accent);
+}
 .detail-genres {
-  margin-top: var(--sp-2);
+  margin-top: var(--sp-3);
   display: flex;
   flex-wrap: wrap;
   gap: var(--sp-2);
 }
 .detail-progress {
   margin-top: var(--sp-3);
+  max-width: 420px;
 }
 .detail-progress-label {
   margin-bottom: var(--sp-1);
   font-size: var(--fs-sm);
+}
+.detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin-top: var(--sp-4);
+}
+
+/* Synopsis panel */
+.detail-about {
+  grid-column: 1 / -1;
+  min-width: 0;
+  padding: var(--sp-4) var(--sp-5);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.detail-about-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2) var(--sp-3);
+  margin-bottom: var(--sp-3);
+}
+.detail-about-empty {
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+.detail-synopsis {
+  max-width: 68ch;
+  font-size: var(--fs-base);
+  line-height: 1.6;
+  color: var(--text);
+}
+.detail-synopsis p {
+  margin: 0 0 var(--sp-2);
+}
+.detail-synopsis p:last-child {
+  margin-bottom: 0;
+}
+/* ~5 lines, faded out rather than cut mid-word. */
+.detail-synopsis.clamped {
+  max-height: calc(var(--fs-base) * 1.6 * 5);
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, #000 55%, transparent);
+  mask-image: linear-gradient(to bottom, #000 55%, transparent);
+}
+.spoiler-hidden {
+  display: inline-block;
+  padding: 0 var(--sp-2);
+  border-radius: var(--radius-sm);
+  background: var(--surface-3);
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  font-style: italic;
+  line-height: 1.6;
+}
+.spoiler-shown {
+  background: var(--accent-dim);
+  border-radius: 3px;
+}
+.detail-about-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-4);
+  margin-top: var(--sp-2);
+}
+.btn-text {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  cursor: pointer;
+  border-radius: 4px;
+}
+.btn-text:hover {
+  color: var(--accent-hover);
+}
+.btn-text:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+.detail-tags {
+  list-style: none;
+  margin: var(--sp-4) 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1) var(--sp-2);
+}
+.tag.tag-quiet {
+  padding: 2px var(--sp-2);
+  background: transparent;
+  font-size: var(--fs-xs);
+}
+
+@media (min-width: 1100px) {
+  .detail-hero-grid {
+    grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr);
+  }
+  .detail-about {
+    grid-column: auto;
+  }
+}
+@media (max-width: 600px) {
+  .detail-hero-grid {
+    gap: var(--sp-4);
+  }
+  .detail-cover {
+    width: 96px;
+    height: 136px;
+  }
+}
+
+/* "Relacionados": one scrollable row of small posters, prequel first. */
+.detail-related {
+  margin-bottom: var(--sp-5);
+}
+.detail-related .section-title {
+  margin-bottom: var(--sp-3);
+}
+.related-row {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 var(--sp-2);
+  display: flex;
+  gap: var(--sp-3);
+  overflow-x: auto;
+  scroll-snap-type: x proximity;
+}
+.related-card {
+  flex: 0 0 112px;
+  scroll-snap-align: start;
+}
+.related-card-btn {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+.related-card-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.related-cover {
+  position: relative;
+  display: block;
+  width: 100%;
+  aspect-ratio: 5 / 7;
+  margin-bottom: var(--sp-1);
+  overflow: hidden;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+.related-cover img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: transform var(--dur) var(--ease);
+}
+.related-card-btn:hover .related-cover img {
+  transform: scale(1.04);
+}
+.related-cover-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--muted);
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-bold);
+}
+.related-badge {
+  position: absolute;
+  left: var(--sp-1);
+  bottom: var(--sp-1);
+  padding: 1px var(--sp-2);
+  border-radius: var(--radius-round);
+  background: var(--accent-solid);
+  color: var(--on-accent);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+}
+.related-badge.watched {
+  background: var(--success);
+  color: var(--on-success);
+}
+.related-relation {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  color: var(--accent);
+}
+.related-title {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  line-height: var(--lh-tight);
+}
+.related-card-btn:hover .related-title {
+  color: var(--accent);
+}
+.related-meta {
+  font-size: var(--fs-xs);
+  color: var(--muted-2);
+}
+@media (prefers-reduced-motion: reduce) {
+  .related-cover img {
+    transition: none;
+  }
+  .related-card-btn:hover .related-cover img {
+    transform: none;
+  }
 }
 
 /* ---------- Catálogo ---------- */
@@ -2659,6 +2856,62 @@ select.filter-select {
   display: flex;
   justify-content: center;
   margin-top: var(--sp-6);
+}
+/* One poster card for Explorar and Listas (components/PosterCard.tsx).
+   Interactive like Mi biblioteca's cards: shadow-only hover, no lift, so the
+   card does not move under the pointer. */
+.poster-card {
+  cursor: pointer;
+}
+.poster-card:hover {
+  transform: none;
+  box-shadow: var(--shadow-md), 0 0 0 1px var(--accent-dim);
+}
+.poster-card:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+/* The ⋯ menu stays quiet until the card is hovered/focused or it is open. */
+.poster-card .card-menu-btn {
+  opacity: 0;
+}
+.poster-card:hover .card-menu-btn,
+.poster-card:focus-within .card-menu-btn,
+.poster-card .card-menu-btn[aria-expanded="true"] {
+  opacity: 1;
+}
+/* The card's main action (Listas: "Empezar a ver"…), revealed at the poster
+   foot on hover or keyboard focus. */
+.poster-action {
+  position: absolute;
+  left: var(--sp-2);
+  right: var(--sp-2);
+  bottom: var(--sp-2);
+  display: flex;
+  z-index: 3;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+.poster-action .btn {
+  flex: 1;
+}
+.poster-card:hover .poster-action,
+.poster-card:focus-within .poster-action {
+  opacity: 1;
+  pointer-events: auto;
+}
+/* Count inside a segmented button or filter chip ("Quiero ver 205"). */
+.seg-count {
+  margin-left: var(--sp-1);
+  opacity: 0.7;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
+  font-variant-numeric: tabular-nums;
+}
+.seg-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 /* ---------- Utilities ----------
@@ -2711,11 +2964,173 @@ select.settings-select {
 }
 
 /* ---------- Library (view-specific) ---------- */
-select.lib-filter-select {
-  max-width: 150px;
+/* Studio names run long ("Production I.G", "Kyoto Animation"); cap the
+   select so it cannot push the panel wider than the genre chips. */
+.lib-filters select.filter-select {
+  max-width: 240px;
 }
 .lib-empty-compact {
   padding: var(--sp-3) 0;
+}
+/* Status tabs are the view's primary navigation: they take the row's free
+   space first so search/selects wrap below them, never the other way round. */
+.lib-tabs {
+  flex: none;
+}
+/* Next-episode marker on the poster corner: always visible, the card's height
+   never changes (the play button is the hover/focus overlay in .poster-action). */
+.poster .chip.lib-ep-pill {
+  background: var(--accent-solid);
+  color: var(--on-accent);
+  font-variant-numeric: tabular-nums;
+}
+.lib-progress {
+  margin-top: var(--sp-1);
+}
+.lib-empty-cta {
+  margin-top: var(--sp-3);
+}
+
+/* ---------- Pendientes (view-specific) ----------
+   One block per show: a 2:3 poster on the left (sets the minimum height), the
+   title header and a responsive grid of compact episode tiles beside it. */
+.pending-block {
+  display: flex;
+  align-items: stretch;
+  gap: var(--sp-4);
+  padding: var(--sp-4);
+}
+.pending-thumb {
+  flex: none;
+  width: 120px;
+  align-self: flex-start;
+}
+.pending-thumb img,
+.pending-thumb .poster-fallback {
+  display: flex;
+  width: 120px;
+  height: 180px;
+  object-fit: cover;
+  border-radius: var(--radius-sm);
+  background: var(--surface-3);
+  box-shadow: var(--shadow-sm);
+  font-size: var(--fs-xl);
+}
+.pending-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-height: 180px;
+}
+.pending-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.pending-head:hover .pending-title {
+  color: var(--accent);
+}
+.pending-head:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+.pending-title {
+  min-width: 0;
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: color var(--dur-fast) var(--ease);
+}
+.pending-count {
+  flex: none;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+.pending-eps {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: var(--sp-2);
+  align-content: start;
+}
+.pending-eps .ep-row {
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+.pending-eps .ep-row:last-child {
+  border-bottom: 1px solid var(--border-soft);
+}
+.pending-eps .ep-row:hover {
+  background: var(--surface-3);
+}
+.pending-eps .ep-row.removing {
+  opacity: 0;
+}
+.pending-more {
+  align-self: flex-start;
+}
+@media (max-width: 560px) {
+  .pending-block {
+    gap: var(--sp-3);
+    padding: var(--sp-3);
+  }
+  .pending-thumb,
+  .pending-thumb img,
+  .pending-thumb .poster-fallback {
+    width: 84px;
+  }
+  .pending-thumb img,
+  .pending-thumb .poster-fallback {
+    height: 126px;
+  }
+  .pending-main {
+    min-height: 126px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pending-eps .ep-row {
+    transition: none;
+  }
+}
+
+/* A card that opens on Enter/Space (div[role=button] holding a real button)
+   gets the same focus ring as every other control. */
+.card-clickable {
+  cursor: pointer;
+}
+.card-clickable:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  box-shadow: var(--focus-ring);
+}
+
+/* A plain button acting as an on/off filter ("★ Siguiendo (17)"): on reads
+   like every other active filter in the app (accent tint), not green. */
+.btn.btn-toggle-on {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.btn.btn-toggle-on:hover:not(:disabled) {
+  background: var(--accent-dim);
+  border-color: var(--accent);
 }
 
 /* ---------- Airing ---------- */
@@ -2824,22 +3239,20 @@ select.lib-filter-select {
   align-items: center;
   gap: var(--sp-2);
 }
+/* Same chip as the poster cards' "Siguiendo" / "TV" / countdown chips, so the
+   hero and the grid under it speak one badge language. */
 .spotlight-badge {
   font-size: var(--fs-xs);
-  font-weight: var(--fw-bold);
-  padding: 2px 8px;
-  border-radius: var(--radius-round);
-  letter-spacing: 0.3px;
-}
-.spotlight-badge.badge-season {
-  background: rgba(255, 255, 255, 0.15);
+  font-weight: var(--fw-semibold);
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: var(--overlay-strong);
   color: var(--text);
   backdrop-filter: blur(4px);
 }
 .spotlight-badge.badge-score {
-  background: var(--accent);
-  color: #fff;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+  color: var(--accent);
+  font-weight: var(--fw-bold);
 }
 .spotlight-title {
   font-size: var(--fs-2xl);
