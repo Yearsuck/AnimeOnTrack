@@ -654,8 +654,9 @@ async fn fetch_cover_image_inner(app: &AppHandle, label: &str, image_url: &str) 
 /// Execute `script` in the webview via WebView2's `ExecuteScript` and return
 /// its JSON-encoded result string. Works on external pages because it is
 /// driven from the host, not from page JS. If `script`'s value is (or
-/// resolves from) a promise, ExecuteScript awaits it before returning.
-async fn eval(window: &WebviewWindow, script: &str, timeout_secs: u64) -> Result<String> {
+/// resolves from) a promise, ExecuteScript does NOT await it: it serializes
+/// to `null`, so scripts must be synchronous.
+pub(crate) async fn eval(window: &WebviewWindow, script: &str, timeout_secs: u64) -> Result<String> {
     let (tx, rx) = tokio::sync::oneshot::channel::<std::result::Result<String, String>>();
     let script = script.to_string();
 

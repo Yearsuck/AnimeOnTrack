@@ -363,6 +363,7 @@ export interface MonitorOption {
 export interface PlayerSettings {
   monitor: string | null;
   fullscreen: boolean;
+  clean: boolean;
 }
 
 export interface ListEntryMeta {
