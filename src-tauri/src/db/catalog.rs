@@ -1228,6 +1228,23 @@ impl Db {
                 return Ok(Some(id));
             }
         }
+        // The same show on another site (or another row of this one) may be
+        // linked even though this row is not — e.g. the fuzzy linker matched
+        // the twin, or this site titles it in a way no catalog title matches.
+        // `canonical_group_keys` is the library's own identity bridge, so a
+        // row that groups with a linked twin shows that twin's AniList data.
+        if let Some(key) = self.canonical_group_keys()?.get(&series_id) {
+            if let Some(al) = key.strip_prefix("al:").and_then(|n| n.parse::<i64>().ok()) {
+                let exists = self
+                    .conn
+                    .query_row("SELECT 1 FROM anilist_catalog WHERE id=?1", [al], |_| Ok(()))
+                    .optional()?
+                    .is_some();
+                if exists {
+                    return Ok(Some(al));
+                }
+            }
+        }
         Ok(self.catalog_ids_by_normalized_title()?.get(&crate::matching::normalize_title(&title)).copied())
     }
 
@@ -3619,6 +3636,25 @@ mod tests {
 
         let info = db.catalog_info_for_series(sid).unwrap().expect("title match");
         assert_eq!(info.url, "https://anilist.co/anime/71");
+    }
+
+    #[test]
+    fn catalog_info_for_series_uses_a_linked_sibling_on_another_site() {
+        // The same show on two sites: one row was linked (e.g. by the fuzzy
+        // linker), the other is unlinked and its title does not match any
+        // catalog title — it must still resolve through its canonical twin
+        // instead of reading as "not on AniList".
+        let db = Db::open(":memory:").unwrap();
+        db.upsert_catalog_anime(&mk_catalog_anime(70, "Sousou no Frieren", "https://anilist.co/anime/70"), 0).unwrap();
+        let a = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        let b = db.upsert_source("TioAnime", "b", "tioanime").unwrap();
+        let linked = db.upsert_series(a, &mk_airing("frieren-a", "Frieren: Beyond Journey's End", None)).unwrap();
+        db.set_anilist_id(linked, 70).unwrap();
+        let unlinked = db.upsert_series(b, &mk_airing("frieren-b", "Frieren: Beyond Journey's End", None)).unwrap();
+
+        let info = db.catalog_info_for_series(unlinked).unwrap().expect("resolved via sibling");
+        assert_eq!(info.id, 70);
+        assert_eq!(info.url, "https://anilist.co/anime/70");
     }
 
     #[test]

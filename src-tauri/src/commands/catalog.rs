@@ -47,6 +47,80 @@ pub async fn get_catalog_info_for_series(
     db.catalog_info_for_series(series_id).map_err(|e| e.to_string())
 }
 
+#[derive(Serialize)]
+pub struct SeriesSiteInfo {
+    /// Display name of the site this row was scraped from.
+    pub site_name: Option<String>,
+    /// The site's own synopsis (usually Spanish), when a scrape captured it.
+    pub synopsis: Option<String>,
+}
+
+/// Site-side facts for the detail view: which site the row belongs to (for
+/// an honestly labelled "open on <site>" link) and its synopsis. Local only.
+#[tauri::command]
+pub async fn get_series_site_info(state: State<'_, AppState>, series_id: i64) -> Result<SeriesSiteInfo, String> {
+    let db = state.db.lock().unwrap();
+    Ok(SeriesSiteInfo {
+        site_name: db.series_site_name(series_id).map_err(|e| e.to_string())?,
+        synopsis: db.series_synopsis(series_id).map_err(|e| e.to_string())?,
+    })
+}
+
+#[derive(Serialize)]
+pub struct AnimeExtras {
+    /// Raw AniList description markup; the frontend renders it as plain text.
+    pub description: Option<String>,
+    pub relations: Vec<crate::db::extras::RelatedAnime>,
+}
+
+/// How long a fetched description/relation list is trusted. Both change
+/// rarely (a new sequel announcement is the usual reason).
+const MEDIA_EXTRAS_MAX_AGE_SECS: i64 = 30 * 24 * 3600;
+
+/// AniList description + related titles for the detail view. Served from the
+/// `anilist_media_extras` cache; one on-demand AniList request when the entry
+/// is missing or older than `MEDIA_EXTRAS_MAX_AGE_SECS`. The db lock is never
+/// held across the request; a failed request falls back to the stale cache
+/// and to the PREQUEL/SEQUEL edges the catalog sync already stored.
+#[tauri::command]
+pub async fn get_anime_extras(state: State<'_, AppState>, anilist_id: i64) -> Result<AnimeExtras, String> {
+    if anilist_id <= 0 {
+        return Ok(AnimeExtras { description: None, relations: Vec::new() });
+    }
+    let now = chrono::Utc::now().timestamp();
+    let cached = state.db.lock().unwrap().cached_media_extras(anilist_id).map_err(|e| e.to_string())?;
+    let extras = match cached {
+        Some((extras, fetched_at)) if now - fetched_at < MEDIA_EXTRAS_MAX_AGE_SECS => Some(extras),
+        // A recent failure or a request already in flight for this id: serve
+        // what is cached instead of starting another request chain.
+        stale if !state.extras_guard.try_begin(anilist_id, now) => stale.map(|(extras, _)| extras),
+        stale => {
+            let result = crate::anilist::fetch_media_extras(anilist_id).await;
+            state.extras_guard.finish(anilist_id, chrono::Utc::now().timestamp(), result.is_err());
+            match result {
+                Ok(fetched) => {
+                    let db = state.db.lock().unwrap();
+                    if let Err(e) = db.store_media_extras(anilist_id, fetched.as_ref(), now) {
+                        eprintln!("[anilist] caching extras for {anilist_id} failed: {e}");
+                    }
+                    fetched
+                }
+                Err(e) => {
+                    eprintln!("[anilist] extras for {anilist_id} unavailable: {e}");
+                    stale.map(|(extras, _)| extras)
+                }
+            }
+        }
+    };
+    let (description, fetched_relations) = match extras {
+        Some(e) => (e.description, e.relations),
+        None => (None, Vec::new()),
+    };
+    let db = state.db.lock().unwrap();
+    let relations = db.related_anime(anilist_id, &fetched_relations).map_err(|e| e.to_string())?;
+    Ok(AnimeExtras { description, relations })
+}
+
 #[derive(serde::Serialize)]
 pub struct NextAir {
     pub episode: i64,

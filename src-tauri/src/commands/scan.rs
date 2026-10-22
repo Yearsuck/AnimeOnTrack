@@ -165,6 +165,9 @@ pub async fn backfill_series_genre_if_missing(
         if let Some(kind) = &detail.kind {
             let _ = db.set_kind(series.id, kind);
         }
+        if let Some(text) = &detail.synopsis {
+            let _ = db.set_series_synopsis(series.id, text);
+        }
     }
     true
 }
@@ -657,6 +660,9 @@ fn effective_check_age(checked: Option<i64>, failed: Option<i64>) -> Option<i64>
     }
 }
 
+/// Episodes, working mirror, page path and the page's synopsis (if parsed).
+type FetchedSeries = (Vec<Episode>, String, String, Option<String>);
+
 /// Fetch one series' episode list across mirrors. `None` means "skip, keep
 /// cached data" (malformed stored URL, or every mirror failed/mismatched) —
 /// same not-an-error semantics `refresh()`'s loop always had here.
@@ -665,7 +671,7 @@ async fn fetch_series_episodes(
     mirrors: &[String],
     a: &dyn SiteAdapter,
     series_url: &str,
-) -> Option<(Vec<Episode>, String, String)> {
+) -> Option<FetchedSeries> {
     let path = match url::Url::parse(series_url) {
         Ok(u) => format!("{}{}", u.path(), u.query().map(|q| format!("?{q}")).unwrap_or_default()),
         Err(_) => return None,
@@ -675,11 +681,14 @@ async fn fetch_series_episodes(
     })
     .await
     {
-        Ok((_scraped, mut eps, working_mirror)) => {
+        Ok((scraped, mut eps, working_mirror)) => {
             for e in &mut eps {
                 e.url = rebase_to_mirror(&e.url, &working_mirror);
             }
-            Some((eps, working_mirror, path))
+            // The series page is already in hand: keep its synopsis for the
+            // detail view (no extra request). Parse failures just mean none.
+            let synopsis = a.parse_series_detail(&scraped.html).ok().and_then(|d| d.synopsis);
+            Some((eps, working_mirror, path, synopsis))
         }
         Err(_) => None,
     }
@@ -778,7 +787,7 @@ async fn run_episode_backfill(app: AppHandle) -> Result<(), String> {
     };
 
     for s in needing {
-        let Some((eps, working_mirror, path)) =
+        let Some((eps, working_mirror, path, synopsis)) =
             fetch_series_episodes(&app, &mirrors, a.as_ref(), &s.url).await
         else {
             continue;
@@ -795,6 +804,9 @@ async fn run_episode_backfill(app: AppHandle) -> Result<(), String> {
             let db = state.db.lock().unwrap();
             let new_url = format!("{working_mirror}{path}");
             let new_url = (new_url != s.url).then_some(new_url.as_str());
+            if let Some(text) = &synopsis {
+                let _ = db.set_series_synopsis(s.id, text);
+            }
             if !apply_backfill_writes(&db, s.id, s.anilist_id, &s.slug, new_url, &eps)? {
                 eprintln!(
                     "[backfill] series {} ({}) identity changed after fetch, skipping write",
@@ -1053,7 +1065,7 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
         // REFRESH_CONCURRENCY; the trailing arm is the sequential fallback
         // for a final short chunk (and would also cover a raised ceiling
         // correctly, just without the parallelism).
-        let fetched: Vec<Option<(Vec<Episode>, String, String)>> = match chunk {
+        let fetched: Vec<Option<FetchedSeries>> = match chunk {
             [s0, s1, s2, s3] => {
                 let (r0, r1, r2, r3) = tokio::join!(
                     fetch_series_episodes(&app, &mirrors, a.as_ref(), &s0.url),
@@ -1088,7 +1100,7 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
         };
 
         for (s, result) in chunk.iter().zip(fetched) {
-            let Some((eps, working_mirror, path)) = result else {
+            let Some((eps, working_mirror, path, synopsis)) = result else {
                 let _ = state.db.lock().unwrap().set_last_fetch_failed_at(s.id);
                 continue;
             };
@@ -1110,6 +1122,9 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
                 // transaction instead of a loop of individually committed
                 // statements.
                 total_new += db.apply_episode_diff(s.id, new_url, &eps).map_err(|e| e.to_string())?;
+                if let Some(text) = &synopsis {
+                    let _ = db.set_series_synopsis(s.id, text);
+                }
 
                 // Apply-once cross-site progress carry-over: if this series'
                 // follow was carried from another site, mark every episode up
