@@ -325,7 +325,6 @@ export const en: Messages = {
   "catalog.emptyNotSynced":
     'Nothing synced yet. Hit "Sync full catalog" to download the AniList catalog.',
   "catalog.episodesCount": "{count} episodes",
-  "catalog.episodesUnknown": "Episodes: ?",
   "catalog.loadMore": "Load more",
   "catalog.infoTitle": "View info (AniList)",
   "catalog.selectedCount": "{count} selected",
@@ -569,6 +568,16 @@ export const en: Messages = {
   "catalog.lessFilters": "Fewer filters",
   "catalog.scoreRangeLabel": "Score",
   "catalog.dateRangeLabel": "Release date",
+  // Catálogo coherence (Explorar + Listas share one poster card and filter bar)
+  "catalog.episodesOne": "1 episode",
+  "discover.listas.quickFiltersAria": "Quick filters",
+  "format.TV": "TV",
+  "format.TV_SHORT": "Short",
+  "format.MOVIE": "Movie",
+  "format.OVA": "OVA",
+  "format.ONA": "ONA",
+  "format.SPECIAL": "Special",
+  "format.MUSIC": "Music",
   "discover.filtersScoreHeading": "Minimum score",
 
   // listas (v0.6.5)
@@ -590,8 +599,6 @@ export const en: Messages = {
   "discover.listas.minScoreVal": "{score}+",
   "discover.listas.yearFrom": "From year",
   "discover.listas.yearTo": "To year",
-  "discover.listas.filterFormats": "Formats",
-  "discover.listas.filterGenres": "Genres",
   "discover.listas.activeFiltersCount": "{count} active filters",
   "discover.listas.clearAllFilters": "Clear filters",
   "discover.listas.smartAiring": "Airing now",

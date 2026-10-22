@@ -34,8 +34,8 @@ export function BulkActionBar({
   const [progressMsg, setProgressMsg] = useState<string | null>(null);
   const [failureMsg, setFailureMsg] = useState<string | null>(null);
 
-  if (selectedIds.size === 0) return null;
-
+  // Rendered by ListasView only while selection mode is on, so "Seleccionar
+  // visibles" is reachable before anything is picked.
   const count = selectedIds.size;
   const allVisibleSelected =
     visibleEntries.length > 0 &&
@@ -86,61 +86,59 @@ export function BulkActionBar({
   };
 
   return (
-    <div className="listas-sticky-bulk-bar" role="toolbar" aria-label={t("discover.listas.bulkSelected", { count })}>
-      <div className="listas-bulk-info">
-        <span className="listas-bulk-count-badge">
-          {t("discover.listas.bulkSelected", { count })}
-        </span>
-        <button
-          type="button"
-          className="btn btn-sm btn-ghost"
-          onClick={allVisibleSelected ? onDeselectAll : onSelectAllVisible}
-          disabled={processing}
-        >
-          {allVisibleSelected
-            ? t("discover.listas.deselectAll")
-            : t("discover.listas.selectAllVisible")}
-        </button>
-      </div>
+    // Same pinned bar as Explorar's and Mi biblioteca's selection (`.batch-bar`).
+    <div className="batch-bar" role="toolbar" aria-label={t("discover.listas.bulkSelected", { count })}>
+      <span className="muted">{t("discover.listas.bulkSelected", { count })}</span>
+      <button
+        type="button"
+        className="btn btn-ghost"
+        onClick={allVisibleSelected ? onDeselectAll : onSelectAllVisible}
+        disabled={processing}
+      >
+        {allVisibleSelected
+          ? t("discover.listas.deselectAll")
+          : t("discover.listas.selectAllVisible")}
+      </button>
 
-      {progressMsg && <span className="muted text-xs">{progressMsg}</span>}
+      {progressMsg && <span className="muted text-sm">{progressMsg}</span>}
       {failureMsg && !progressMsg && (
-        <span className="text-xs text-danger" role="alert">
+        <span className="text-sm text-danger" role="alert">
           {failureMsg}
         </span>
       )}
 
+      <div className="spacer" />
       <div className="listas-bulk-buttons">
         {activeTab === "want" && (
           <>
             <button
               type="button"
-              className="btn btn-sm btn-primary"
-              disabled={processing}
+              className="btn btn-primary"
+              disabled={processing || count === 0}
               onClick={() => runBatch((id) => startWatching(id))}
             >
               {t("discover.listas.bulkStartWatching")}
             </button>
             <button
               type="button"
-              className="btn btn-sm"
-              disabled={processing}
+              className="btn"
+              disabled={processing || count === 0}
               onClick={() => runBatch((id) => setBacklogStatus(id, "discarded"))}
             >
               {t("discover.listas.bulkMoveToDiscarded")}
             </button>
             <button
               type="button"
-              className="btn btn-sm"
-              disabled={processing}
+              className="btn"
+              disabled={processing || count === 0}
               onClick={() => runBatch((id) => reclassifySeries(id, "WatchedExternally"))}
             >
               {t("discover.listas.bulkMoveToWatched")}
             </button>
             <button
               type="button"
-              className="btn btn-sm btn-ghost"
-              disabled={processing}
+              className="btn btn-ghost"
+              disabled={processing || count === 0}
               onClick={() =>
                 runBatch(
                   (id) => reclassifySeries(id, "None"),
@@ -157,16 +155,16 @@ export function BulkActionBar({
           <>
             <button
               type="button"
-              className="btn btn-sm btn-primary"
-              disabled={processing}
+              className="btn btn-primary"
+              disabled={processing || count === 0}
               onClick={() => runBatch((id) => promoteDiscarded(id))}
             >
               {t("discover.listas.bulkMoveToWant")}
             </button>
             <button
               type="button"
-              className="btn btn-sm btn-danger"
-              disabled={processing}
+              className="btn btn-danger"
+              disabled={processing || count === 0}
               onClick={() =>
                 runBatch(
                   (id) => deleteSeries(id),
@@ -183,16 +181,16 @@ export function BulkActionBar({
           <>
             <button
               type="button"
-              className="btn btn-sm btn-primary"
-              disabled={processing}
+              className="btn btn-primary"
+              disabled={processing || count === 0}
               onClick={() => runBatch((id) => reclassifySeries(id, "Want"))}
             >
               {t("discover.listas.bulkMoveToWant")}
             </button>
             <button
               type="button"
-              className="btn btn-sm"
-              disabled={processing}
+              className="btn"
+              disabled={processing || count === 0}
               onClick={() => runBatch((id) => reclassifySeries(id, "None"))}
             >
               {t("discover.listas.bulkMarkUnwatched")}
