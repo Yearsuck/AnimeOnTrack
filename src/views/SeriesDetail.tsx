@@ -95,10 +95,14 @@ export function SeriesDetail({
   const linkTriedRef = useRef<number | null>(null);
 
   const [playerFullscreen, setPlayerFullscreen] = useState(false);
+  const [playerClean, setPlayerClean] = useState(true);
 
   useEffect(() => {
     getPlayerSettings()
-      .then((s) => setPlayerFullscreen(s.fullscreen))
+      .then((s) => {
+        setPlayerFullscreen(s.fullscreen);
+        setPlayerClean(s.clean);
+      })
       .catch(() => {});
   }, []);
 
@@ -107,9 +111,20 @@ export function SeriesDetail({
     setPlayerFullscreen(next);
     try {
       const current = await getPlayerSettings();
-      await setPlayerSettings(current.monitor, next);
+      await setPlayerSettings(current.monitor, next, current.clean);
     } catch (err) {
       console.error("Failed to update player fullscreen:", err);
+    }
+  };
+
+  const togglePlayerClean = async () => {
+    const next = !playerClean;
+    setPlayerClean(next);
+    try {
+      const current = await getPlayerSettings();
+      await setPlayerSettings(current.monitor, current.fullscreen, next);
+    } catch (err) {
+      console.error("Failed to update clean player:", err);
     }
   };
 
@@ -541,6 +556,16 @@ export function SeriesDetail({
                   title={t("settings.playerHelp")}
                 >
                   {playerFullscreen ? `⛶ ${t("settings.playerFullscreen")}` : `🗗 ${t("settings.playerWindowed")}`}
+                </button>
+              )}
+              {episodes.length > 0 && (
+                <button
+                  className={`btn ${playerClean ? "btn-primary" : "btn-ghost"}`}
+                  onClick={togglePlayerClean}
+                  aria-pressed={playerClean}
+                  title={t("settings.playerCleanHelp")}
+                >
+                  {t("settings.playerClean")}
                 </button>
               )}
               {series.followed && (

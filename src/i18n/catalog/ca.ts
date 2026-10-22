@@ -156,6 +156,8 @@ export const ca: Messages = {
   "settings.playerMode": "Mode d'obertura",
   "settings.playerWindowed": "Finestra",
   "settings.playerFullscreen": "Finestra a pantalla completa",
+  "settings.playerClean": "Mode reproductor net",
+  "settings.playerCleanHelp": "Només el reproductor i el nom de l'anime; sense menús, comentaris ni anuncis.",
   "settings.playerHelp": "Configura a quin monitor s'obren els episodis i si s'obren en una finestra normal o maximitzada a pantalla completa. La pantalla completa real l'actives tu en començar l'episodi.",
 
 
