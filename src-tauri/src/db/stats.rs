@@ -692,32 +692,50 @@ impl Db {
     /// tags, which stay in that view for Descubrir's affinity but read as a
     /// hairball of 15+ "genres" per show here (see `stats_tags`).
     fn stats_genres(&self, series_id: i64) -> Result<Vec<String>> {
-        let mut stmt = self.conn.prepare_cached(
-            "SELECT cg.genre, 1
+        Ok(self.real_genres_batch(&[series_id])?.remove(&series_id).unwrap_or_default())
+    }
+
+    /// `stats_genres` for many series rows in one statement: id -> sorted,
+    /// de-duplicated real genres (every requested id present, possibly empty).
+    /// Also backs the Biblioteca genre filter, so the library and the stats
+    /// offer the same genre vocabulary.
+    pub(crate) fn real_genres_batch(&self, series_ids: &[i64]) -> Result<HashMap<i64, Vec<String>>> {
+        let mut map: HashMap<i64, Vec<String>> = series_ids.iter().map(|&id| (id, Vec::new())).collect();
+        if series_ids.is_empty() {
+            return Ok(map);
+        }
+        let placeholders = (1..=series_ids.len()).map(|i| format!("?{i}")).collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "SELECT s.id, cg.genre, 1
              FROM series s
              JOIN anilist_catalog_genres cg ON cg.anilist_id = s.anilist_id
-             WHERE s.id = ?1
+             WHERE s.id IN ({placeholders})
              UNION
-             SELECT sg.genre, 0
+             SELECT sg.series_id, sg.genre, 0
              FROM series_genres sg
              JOIN series s ON s.id = sg.series_id
-             WHERE sg.series_id = ?1
+             WHERE sg.series_id IN ({placeholders})
                AND (s.anilist_id IS NULL
-                    OR NOT EXISTS (SELECT 1 FROM anilist_catalog_genres WHERE anilist_id = s.anilist_id))",
-        )?;
+                    OR NOT EXISTS (SELECT 1 FROM anilist_catalog_genres WHERE anilist_id = s.anilist_id))"
+        );
+        let mut stmt = self.conn.prepare_cached(&sql)?;
         let rows = stmt
-            .query_map([series_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? == 1)))?
+            .query_map(rusqlite::params_from_iter(series_ids.iter()), |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)? == 1))
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        let mut out: Vec<String> = Vec::new();
-        for (raw, from_anilist) in rows {
+        for (id, raw, from_anilist) in rows {
             if let Some(label) = stats_genre_label(raw, from_anilist) {
+                let out = map.entry(id).or_default();
                 if !out.contains(&label) {
                     out.push(label);
                 }
             }
         }
-        out.sort();
-        Ok(out)
+        for v in map.values_mut() {
+            v.sort();
+        }
+        Ok(map)
     }
 
     /// AniList tags (rank >= `STATS_TAG_MIN_RANK`) of one linked series row.
