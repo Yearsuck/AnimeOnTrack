@@ -160,6 +160,9 @@ fn apply_promote_discarded_writes(
         if let Some(kind) = &detail.kind {
             db.set_kind(series_id, kind).map_err(|e| e.to_string())?;
         }
+        if let Some(text) = &detail.synopsis {
+            db.set_series_synopsis(series_id, text).map_err(|e| e.to_string())?;
+        }
     }
     db.set_backlog_status(series_id, Some("want")).map_err(|e| e.to_string())?;
     Ok(true)

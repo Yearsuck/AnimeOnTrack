@@ -1,5 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  AnimeExtras,
+  SeriesSiteInfo,
   Series,
   AiringItem,
   BingeRecord,
@@ -257,6 +259,12 @@ export const refreshCatalogStatus = () =>
 
 export const getCatalogInfoForSeries = (seriesId: number) =>
   invoke<CatalogAnime | null>("get_catalog_info_for_series", { seriesId });
+
+export const getSeriesSiteInfo = (seriesId: number) =>
+  invoke<SeriesSiteInfo>("get_series_site_info", { seriesId });
+
+export const getAnimeExtras = (anilistId: number) =>
+  invoke<AnimeExtras>("get_anime_extras", { anilistId });
 
 export const exportCatalogSnapshot = () => invoke<string>("export_catalog_snapshot");
 

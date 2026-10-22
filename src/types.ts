@@ -264,6 +264,50 @@ export interface CatalogAnime {
    *  with multiple mains only keep the first — an approximation, not
    *  exhaustive credit data. */
   studio: string | null;
+  title_romaji?: string | null;
+  title_english?: string | null;
+  /** AniList's vocabulary: RELEASING / FINISHED / NOT_YET_RELEASED /
+   *  CANCELLED / HIATUS. */
+  status?: string | null;
+  /** Minutes per episode. */
+  duration?: number | null;
+  /** Premiere date, unix seconds (midnight UTC). */
+  start_date?: number | null;
+  next_airing_at?: number | null;
+  next_episode?: number | null;
+  tags?: CatalogTag[];
+}
+
+export interface CatalogTag {
+  name: string;
+  rank: number;
+}
+
+export interface SeriesSiteInfo {
+  site_name: string | null;
+  /** The site's own synopsis (usually Spanish). */
+  synopsis: string | null;
+}
+
+export interface RelatedAnime {
+  anilist_id: number;
+  /** AniList relation type as-is (PREQUEL, SEQUEL, SIDE_STORY, ...). */
+  relation_type: string;
+  title: string;
+  cover_url: string | null;
+  format: string | null;
+  year: number | null;
+  url: string;
+  /** The user's own row for this title, to open it here; null if none. */
+  series: Series | null;
+  followed: boolean;
+  watched: boolean;
+}
+
+export interface AnimeExtras {
+  /** Raw AniList markup — always go through parseDescription. */
+  description: string | null;
+  relations: RelatedAnime[];
 }
 
 export interface CatalogPage {

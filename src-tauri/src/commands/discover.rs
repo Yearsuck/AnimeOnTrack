@@ -137,6 +137,9 @@ pub async fn decide_swipe(
             let sid = db.upsert_series(src, &series).map_err(|e| e.to_string())?;
             db.set_kind(sid, detail.kind.as_deref().unwrap_or(&card.kind)).map_err(|e| e.to_string())?;
             db.insert_series_genres(sid, &detail.genres).map_err(|e| e.to_string())?;
+            if let Some(text) = &detail.synopsis {
+                db.set_series_synopsis(sid, text).map_err(|e| e.to_string())?;
+            }
             db.set_backlog_status(sid, Some("want")).map_err(|e| e.to_string())?;
             sid
         }
@@ -152,6 +155,9 @@ pub async fn decide_swipe(
             db.set_followed(sid, true).map_err(|e| e.to_string())?;
             db.set_kind(sid, detail.kind.as_deref().unwrap_or(&card.kind)).map_err(|e| e.to_string())?;
             db.insert_series_genres(sid, &detail.genres).map_err(|e| e.to_string())?;
+            if let Some(text) = &detail.synopsis {
+                db.set_series_synopsis(sid, text).map_err(|e| e.to_string())?;
+            }
             for mut e in eps {
                 e.series_id = sid;
                 e.seen = true;

@@ -494,6 +494,21 @@ impl Db {
         ensure_column(&self.conn, "series", "cover_failed_at", "TEXT")?;
         ensure_column(&self.conn, "series", "cover_fail_count", "INTEGER NOT NULL DEFAULT 0")?;
 
+        // Series detail view. `series.synopsis`: the site's own synopsis
+        // (usually Spanish), captured whenever its page is parsed anyway.
+        // `anilist_media_extras`: on-demand cache of AniList's description
+        // and full relation list (JSON) per title, kept out of
+        // `anilist_catalog` so a catalog upsert never has to preserve it.
+        ensure_column(&self.conn, "series", "synopsis", "TEXT")?;
+        self.conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS anilist_media_extras (
+                anilist_id INTEGER PRIMARY KEY,
+                description TEXT,
+                relations_json TEXT NOT NULL DEFAULT '[]',
+                fetched_at INTEGER NOT NULL
+            );",
+        )?;
+
         // One-shot: `sync_seen_progress_across_sites` used to stamp
         // `sync_watermark_applied` with the requested cross-site ceiling
         // instead of what a cascade could actually reach on a row whose own
@@ -643,6 +658,7 @@ mod sources;
 mod settings;
 mod episodes;
 mod catalog;
+pub(crate) mod extras;
 pub(crate) mod stats;
 mod airing;
 mod series;
