@@ -11,17 +11,27 @@ import {
 } from "../api";
 import { useT } from "../i18n";
 import { createFilterCache } from "../lib/createFilterCache";
-import { formatLabel, sortFormats } from "../lib/formatLabel";
+import { formatLabel } from "../lib/formatLabel";
 import { PosterCard, posterMetaLine, stopCardEvent } from "../components/PosterCard";
+import { Menu } from "../components/Menu";
 import { startSeriesSequentially, summarizeStart } from "../lib/startWatchingQueue";
 import type { CatalogAnime, CatalogFacets, CatalogFilter, CatalogSyncProgress } from "../types";
+import type { MessageKey } from "../i18n";
+import { SortSelect } from "../components/filters";
 import {
-  DateRangeControl,
-  ScoreRangeControl,
-  SortSelect,
-  StatusSelect,
-} from "../components/filters";
+  activeFilterChips,
+  countdownParts,
+  isBrowseFilter,
+  isBrowseMode,
+  pickThisWeek,
+  type CatalogFilterState,
+  type FilterChipKey,
+} from "./catalog/browse";
+import { CatalogHero, useCountdownText, useNowSecs } from "./catalog/CatalogHero";
+import { CatalogShelf, clearShelfCache } from "./catalog/CatalogShelf";
+import { FilterDrawer } from "./catalog/FilterDrawer";
 import "../styles/filters.css";
+import "../styles/catalog.css";
 
 // decide_catalog_card args for a catalog row. CatalogAnime.id is AniList's
 // own numeric id (the catalog PK), which is exactly the anilistId the
@@ -40,11 +50,42 @@ function decideArgs(a: CatalogAnime, decision: "Want" | "Seen") {
 
 const RESTORE_PAGE_CAP = 4;
 
+// Browse-mode shelves. Module constants so a re-render hands each shelf the
+// same filter object.
+const AIRING_FILTER: CatalogFilter = { status: "RELEASING" };
+const UPCOMING_FILTER: CatalogFilter = { status: "NOT_YET_RELEASED" };
+const TOP_RATED_FILTER: CatalogFilter = { sort: "score_desc" };
+const FINISHED_FILTER: CatalogFilter = { status: "FINISHED" };
+
+const STATUS_LABEL: Record<string, MessageKey> = {
+  RELEASING: "filters.statusReleasing",
+  FINISHED: "filters.statusFinished",
+  NOT_YET_RELEASED: "filters.statusNotYetReleased",
+  CANCELLED: "filters.statusCancelled",
+  HIATUS: "filters.statusHiatus",
+};
+
+const SORT_LABEL: Record<string, MessageKey> = {
+  popularity: "filters.sortPopularity",
+  score_desc: "filters.sortScoreDesc",
+  score_asc: "filters.sortScoreAsc",
+  newest: "filters.sortNewest",
+  oldest: "filters.sortOldest",
+  title: "filters.sortTitle",
+};
+
+/** What the info button did before the in-app sheet: open the AniList page. */
+function openOnAniList(a: CatalogAnime) {
+  openEpisode(a.url).catch((err) => console.error("open failed", err));
+}
+
 const EMPTY_FACETS: CatalogFacets = { genres: [], formats: [], studios: [] };
 
 // Module-level cache for catalog facets so tab switching does not re-run the
 // ~150ms SQLite scan across all ~22k titles on every remount.
 let cachedFacets: CatalogFacets | null = null;
+// Same for browse mode's airing rows (hero + first shelf).
+let airingCache: CatalogAnime[] | null = null;
 
 // Survives unmount/remount of this view (tab switch in App.tsx).
 const catalogFilterCache = createFilterCache<{
@@ -68,8 +109,11 @@ const catalogFilterCache = createFilterCache<{
 export function Catalog({
   onChanged,
   headExtra,
+  onInfo,
 }: {
   onChanged?: () => void;
+  /** Opens a title's details; defaults to its AniList page. */
+  onInfo?: (a: CatalogAnime) => void;
   /** Section switch (Explorar / Descubrir / Listas) rendered next to the title. */
   headExtra?: ReactNode;
 }) {
@@ -96,6 +140,16 @@ export function Catalog({
   const [syncing, setSyncing] = useState(false);
   const [syncProgress, setSyncProgress] = useState<CatalogSyncProgress | null>(null);
   const syncingRef = useRef(false);
+  const [moreFailed, setMoreFailed] = useState(false);
+  // Focus moves into the drawer only when the user opens it, not when it is
+  // restored open on returning to the tab.
+  const [drawerFocus, setDrawerFocus] = useState(false);
+  // Browse mode's airing rows feed both the hero and the first shelf.
+  const [airing, setAiring] = useState<CatalogAnime[] | null>(() => airingCache);
+  const [airingFailed, setAiringFailed] = useState(false);
+  useEffect(() => {
+    airingCache = airing;
+  }, [airing]);
 
   const [facets, setFacets] = useState<CatalogFacets>(() => cachedFacets ?? EMPTY_FACETS);
   const [searchInput, setSearchInput] = useState(() => catalogFilterCache.current?.searchInput ?? "");
@@ -299,27 +353,6 @@ export function Catalog({
     ]
   );
 
-  const secondaryActiveCount = useMemo(
-    () =>
-      (minScore !== null || maxScore !== null ? 1 : 0) +
-      (minStartDate !== null || maxStartDate !== null ? 1 : 0) +
-      (status !== "" ? 1 : 0) +
-      (sort !== "" && sort !== "popularity" ? 1 : 0) +
-      (studio !== "" ? 1 : 0) +
-      (episodes !== "" ? 1 : 0) +
-      (hideWatched ? 1 : 0),
-    [minScore, maxScore, minStartDate, maxStartDate, status, sort, studio, episodes, hideWatched]
-  );
-
-  const anyFilterActive = useMemo(
-    () =>
-      search !== "" ||
-      selectedGenres.length > 0 ||
-      format !== "" ||
-      secondaryActiveCount > 0,
-    [search, selectedGenres.length, format, secondaryActiveCount]
-  );
-
   // Monotonic id for the newest in-flight load, same guard Stats.tsx uses.
   // Several triggers can overlap — a "Cargar más" click, the debounced
   // search settling, a filter select, a finished sync — and without this the
@@ -348,6 +381,7 @@ export function Catalog({
       const seq = ++loadSeq.current;
       setLoading(true);
       setError(null);
+      setMoreFailed(false);
       try {
         const acc: CatalogAnime[] = [];
         let reached = 1;
@@ -387,6 +421,7 @@ export function Catalog({
     const seq = ++loadSeq.current;
     setLoading(true);
     setError(null);
+    setMoreFailed(false);
     try {
       const result = await getAnimeCatalog(targetPage, filter);
       if (seq !== loadSeq.current) return;
@@ -398,6 +433,9 @@ export function Catalog({
     } catch (e) {
       if (seq !== loadSeq.current) return;
       setError(t("errors.generic", { detail: String(e) }));
+      // Stops the infinite-scroll sentinel from retrying in a loop; the
+      // "Cargar más" button is the manual retry.
+      setMoreFailed(true);
     } finally {
       if (seq === loadSeq.current) setLoading(false);
     }
@@ -424,7 +462,9 @@ export function Catalog({
   useEffect(() => {
     const isRemount = lastFilterRef.current === filter;
     lastFilterRef.current = filter;
-    loadThrough(isRemount ? restorePageRef.current : 1);
+    // Browse mode only needs the totals from page 1; walking the restored
+    // pages would read rows nobody sees.
+    loadThrough(isRemount && !isBrowseFilter(filter) ? restorePageRef.current : 1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filter]);
 
@@ -464,6 +504,9 @@ export function Catalog({
           setFacets(data);
         })
         .catch((e) => console.error("get_catalog_facets failed after sync", e));
+      clearShelfCache();
+      setAiring(null);
+      setAiringFailed(false);
       await loadThrough(1);
     } catch (e) {
       setError(t("errors.generic", { detail: String(e) }));
@@ -503,28 +546,186 @@ export function Catalog({
     setMaxStartDate(max);
   }, []);
 
+  const filterState: CatalogFilterState = {
+    search,
+    selectedGenres,
+    format,
+    minScore,
+    maxScore,
+    minStartDate,
+    maxStartDate,
+    status,
+    sort,
+    episodes,
+    studio,
+    hideWatched,
+  };
+  const browse = isBrowseMode(filterState);
+
+  const chips = activeFilterChips(filterState, {
+    format: (f) => formatLabel(t, f),
+    status: (s) => (s in STATUS_LABEL ? t(STATUS_LABEL[s]) : s),
+    sort: (s) => t("catalog.sortChip", { sort: s in SORT_LABEL ? t(SORT_LABEL[s]) : s }),
+    episodes: (e) => EPISODE_OPTIONS.find((o) => o.value === e)?.label ?? e,
+    score: (min, max) =>
+      max === null
+        ? t("catalog.scoreChipMin", { min: min ?? 0 })
+        : t("catalog.scoreChipRange", { min: min ?? 0, max }),
+    date: (min, max) =>
+      t("catalog.dateChip", {
+        from: min !== null ? new Date(min * 1000).getUTCFullYear() : "…",
+        to: max !== null ? new Date(max * 1000).getUTCFullYear() : "…",
+      }),
+    hideWatched: t("catalog.hideWatched"),
+  });
+
+  function removeChip(key: FilterChipKey) {
+    switch (key.kind) {
+      case "genre":
+        setSelectedGenres((prev) => prev.filter((g) => g !== key.genre));
+        break;
+      case "format":
+        setFormat("");
+        break;
+      case "score":
+        handleScoreChange(null, null);
+        break;
+      case "date":
+        handleDateChange(null, null);
+        break;
+      case "status":
+        setStatus("");
+        break;
+      case "sort":
+        setSort("popularity");
+        break;
+      case "episodes":
+        setEpisodes("");
+        break;
+      case "studio":
+        setStudio("");
+        break;
+      case "hideWatched":
+        setHideWatched(false);
+        break;
+    }
+  }
+
+  // One read for the hero and the first shelf, only while browse is on screen.
+  const hasCatalog = (totalSynced ?? 0) > 0;
+  useEffect(() => {
+    if (!browse || !hasCatalog || airing !== null || airingFailed) return;
+    let alive = true;
+    getAnimeCatalog(1, AIRING_FILTER)
+      .then((p) => {
+        if (alive) setAiring(p.items);
+      })
+      .catch((e) => {
+        console.error("catalog airing shelf failed", e);
+        // The shelf then fetches on its own and shows its error state.
+        if (alive) setAiringFailed(true);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [browse, hasCatalog, airing, airingFailed]);
+  // Ticks every 30 s so the shelf badges agree with the hero's countdowns.
+  const nowSecs = useNowSecs();
+  const thisWeek = useMemo(() => (airing ? pickThisWeek(airing, nowSecs) : []), [airing, nowSecs]);
+
+  // The batch bar lives in results mode only: a selection must not linger
+  // invisibly while browsing and come back on the next search.
+  useEffect(() => {
+    if (browse) setSelected(new Map());
+  }, [browse]);
+  const countdownText = useCountdownText();
+
+  async function wantOne(a: CatalogAnime) {
+    setBatching(true);
+    try {
+      await decideCatalogCard(decideArgs(a, "Want"));
+      setBatchMsg(t("catalog.wantOneDone", { title: a.title }));
+    } catch (e) {
+      setBatchMsg(t("errors.generic", { detail: String(e) }));
+    } finally {
+      setBatching(false);
+    }
+  }
+
+  const viewTopRef = useRef<HTMLDivElement>(null);
+  function seeAll(apply: () => void) {
+    apply();
+    viewTopRef.current?.scrollIntoView({ block: "start" });
+  }
+
+  // Infinite scroll: a sentinel under the grid pulls the next page when it
+  // nears the viewport. The "Cargar más" button stays as the fallback (and
+  // for keyboard users).
+  const sentinelRef = useRef<HTMLDivElement>(null);
+  const loadMoreRef = useRef(loadMore);
+  loadMoreRef.current = loadMore;
+  const canLoadMore = !browse && hasNextPage && !loading && !moreFailed && items.length > 0;
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el || !canLoadMore) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) loadMoreRef.current();
+      },
+      { rootMargin: "600px 0px" }
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [canLoadMore]);
+
+  const info = onInfo ?? openOnAniList;
+
   return (
-    <div className="page">
-      <div className="page-head">
+    <div className="page cat-page" ref={viewTopRef}>
+      <div className="page-head cat-head">
         <h2 className="page-title">{t("nav.catalog")}</h2>
         {headExtra}
-        <span className="muted">
-          {totalSynced !== null
-            ? t("catalog.totalSynced", { count: totalSynced })
-            : t("catalog.subtitle")}
-        </span>
-        <div className="spacer" />
-        {/* Maintenance, not the page's main action: secondary, not red. */}
-        <button type="button" className="btn" onClick={runSync} disabled={syncing}>
-          {syncing ? t("catalog.syncing") : t("catalog.syncButton")}
-        </button>
+        <div className="cat-head-tools">
+          <div className="search cat-search">
+            <span className="icon">⌕</span>
+            <input
+              data-shortcut-search
+              className="input"
+              type="search"
+              aria-label={t("catalog.searchAria")}
+              placeholder={
+                totalSynced
+                  ? t("catalog.searchPlaceholderCount", { count: totalSynced })
+                  : t("catalog.searchPlaceholder")
+              }
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+            />
+          </div>
+          {!browse && <SortSelect value={sort} onChange={setSort} />}
+          <button
+            type="button"
+            className={`btn cat-filter-btn${secondaryOpen ? " active" : ""}`}
+            onClick={() => {
+              setDrawerFocus(!secondaryOpen);
+              setSecondaryOpen((prev) => !prev);
+            }}
+            aria-expanded={secondaryOpen}
+            aria-controls="cat-filter-drawer"
+          >
+            {t("catalog.filters")}
+            {chips.length > 0 && <span className="filter-active-badge">{chips.length}</span>}
+          </button>
+          <Menu
+            label={t("catalog.moreActions")}
+            items={[{ label: syncing ? t("catalog.syncing") : t("catalog.syncButton"), onSelect: runSync }]}
+          />
+        </div>
       </div>
 
       {syncing && (
         <div className="series-block catalog-sync">
-          <div className="muted catalog-sync-label">
-            {t("catalog.syncInfo")}
-          </div>
+          <div className="muted catalog-sync-label">{t("catalog.syncInfo")}</div>
           {syncProgress && (
             <progress
               className="scanbar-track"
@@ -534,9 +735,7 @@ export function Catalog({
             />
           )}
           {syncProgress && (
-            <div className="muted catalog-sync-note">
-              {t("catalog.syncedCount", { count: syncProgress.synced })}
-            </div>
+            <div className="muted catalog-sync-note">{t("catalog.syncedCount", { count: syncProgress.synced })}</div>
           )}
         </div>
       )}
@@ -547,195 +746,193 @@ export function Catalog({
         </div>
       )}
 
-      <div className="filter-bar">
-        <div className="filter-row">
-          <div className="search">
-            <span className="icon">⌕</span>
-            <input
-              data-shortcut-search
-              className="input"
-              placeholder={t("catalog.searchPlaceholder")}
-              value={searchInput}
-              onChange={(e) => setSearchInput(e.target.value)}
-            />
-          </div>
-          <select
-            className="input filter-select"
-            value={format}
-            onChange={(e) => setFormat(e.target.value)}
-          >
-            <option value="">{t("catalog.anyFormat")}</option>
-            {sortFormats(facets.formats).map((f) => (
-              <option key={f} value={f}>
-                {formatLabel(t, f)}
-              </option>
-            ))}
-          </select>
-          <button
-            type="button"
-            className={`btn btn-secondary filter-toggle-btn${secondaryOpen ? " active" : ""}`}
-            onClick={() => setSecondaryOpen((prev) => !prev)}
-            aria-expanded={secondaryOpen}
-          >
-            {secondaryOpen ? t("catalog.lessFilters") : t("catalog.moreFilters")}
-            {secondaryActiveCount > 0 && (
-              <span className="filter-active-badge">{secondaryActiveCount}</span>
-            )}
-          </button>
-          {anyFilterActive && (
-            <button className="btn btn-ghost" onClick={clearFilters}>
-              {t("catalog.clearFilters")}
-            </button>
+      <div className={`cat-layout${secondaryOpen ? " with-drawer" : ""}`}>
+        <div className="cat-main">
+          {!browse && (
+            <div className="cat-active">
+              {totalMatching !== null && (
+                <span className="cat-count">{t("catalog.resultsCount", { count: totalMatching })}</span>
+              )}
+              {chips.map((c) => (
+                <button
+                  key={c.id}
+                  type="button"
+                  className="cat-chip"
+                  onClick={() => removeChip(c.key)}
+                  aria-label={t("catalog.removeFilter", { label: c.label })}
+                >
+                  {c.label}
+                  <span aria-hidden="true" className="cat-chip-x">
+                    ✕
+                  </span>
+                </button>
+              ))}
+              <button type="button" className="btn btn-ghost btn-sm" onClick={clearFilters}>
+                {t("catalog.backToBrowse")}
+              </button>
+            </div>
           )}
-          <div className="spacer" />
-          {anyFilterActive && totalMatching !== null && (
-            <span className="muted">{t("catalog.resultsCount", { count: totalMatching })}</span>
+
+          {batchMsg && <p className="muted catalog-count">{batchMsg}</p>}
+
+          {items.length === 0 && loading ? (
+            <div className="empty">{t("common.loading")}</div>
+          ) : totalSynced === 0 ? (
+            <div className="empty">{t("catalog.emptyNotSynced")}</div>
+          ) : browse ? (
+            <div className="cat-browse">
+              {thisWeek.length > 0 && (
+                <CatalogHero
+                  items={thisWeek}
+                  busy={batching}
+                  onStart={(a) => runStartWatching([a])}
+                  onWant={wantOne}
+                  onInfo={info}
+                />
+              )}
+              <CatalogShelf
+                title={t("catalog.shelfAiring")}
+                filter={AIRING_FILTER}
+                items={airingFailed ? undefined : airing}
+                badgeFor={(a) => {
+                  const when = countdownText(countdownParts(a.next_airing_at, nowSecs));
+                  return a.next_episode != null && when
+                    ? t("catalog.railEpisodeIn", { ep: a.next_episode, when })
+                    : null;
+                }}
+                onOpen={info}
+                onSeeAll={() => seeAll(() => setStatus("RELEASING"))}
+              />
+              <CatalogShelf
+                title={t("catalog.shelfUpcoming")}
+                hint={t("catalog.shelfUpcomingHint")}
+                filter={UPCOMING_FILTER}
+                onOpen={info}
+                onSeeAll={() => seeAll(() => setStatus("NOT_YET_RELEASED"))}
+              />
+              <CatalogShelf
+                title={t("catalog.shelfTopRated")}
+                filter={TOP_RATED_FILTER}
+                badgeFor={(a) => (a.average_score ? `${a.average_score}%` : null)}
+                onOpen={info}
+                onSeeAll={() => seeAll(() => setSort("score_desc"))}
+              />
+              <CatalogShelf
+                title={t("catalog.shelfClassics")}
+                hint={t("catalog.shelfClassicsHint")}
+                filter={FINISHED_FILTER}
+                onOpen={info}
+                onSeeAll={() => seeAll(() => setStatus("FINISHED"))}
+              />
+              {facets.genres.length > 0 && (
+                <section className="cat-genres" aria-labelledby="cat-genres-title">
+                  <h2 id="cat-genres-title" className="cat-shelf-title">
+                    {t("catalog.byGenre")}
+                  </h2>
+                  <div className="cat-genre-grid">
+                    {facets.genres.map((g) => (
+                      <button key={g} type="button" className="cat-genre" onClick={() => seeAll(() => toggleGenre(g))}>
+                        {g}
+                      </button>
+                    ))}
+                  </div>
+                </section>
+              )}
+            </div>
+          ) : items.length === 0 ? (
+            <div className="empty">{t("catalog.noResultsFiltered")}</div>
+          ) : (
+            <>
+              {selected.size > 0 && (
+                <div className="batch-bar">
+                  <span className="muted">{t("catalog.selectedCount", { count: selected.size })}</span>
+                  <div className="spacer" />
+                  <button className="btn btn-primary" onClick={batchStart} disabled={batching}>
+                    {t("catalog.batchStart")}
+                  </button>
+                  <button className="btn" onClick={batchWant} disabled={batching}>
+                    {t("catalog.batchWant")}
+                  </button>
+                  <button className="btn" onClick={batchSeen} disabled={batching}>
+                    {t("catalog.batchSeen")}
+                  </button>
+                  <button className="btn btn-ghost" onClick={() => setSelected(new Map())} disabled={batching}>
+                    {t("catalog.deselectAll")}
+                  </button>
+                </div>
+              )}
+              <div className="grid">
+                {items.map((a) => (
+                  <PosterCard
+                    key={a.id}
+                    title={a.title}
+                    coverUrl={a.cover_url}
+                    format={a.format}
+                    genres={a.genres}
+                    meta={posterMetaLine(t, { episodes: a.episodes, score: a.average_score })}
+                    selectable
+                    selected={selected.has(a.id)}
+                    onActivate={() => toggleSelect(a)}
+                    corner={
+                      <button
+                        type="button"
+                        className="card-info-btn"
+                        title={t("catalog.infoTitle")}
+                        aria-label={t("catalog.infoTitle")}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          info(a);
+                        }}
+                        onKeyDown={stopCardEvent}
+                      >
+                        ℹ
+                      </button>
+                    }
+                  />
+                ))}
+              </div>
+
+              <div ref={sentinelRef} className="cat-sentinel" aria-hidden="true" />
+              {hasNextPage ? (
+                <div className="catalog-more">
+                  <button className="btn btn-ghost" onClick={loadMore} disabled={loading}>
+                    {loading ? t("common.loading") : t("catalog.loadMore")}
+                  </button>
+                </div>
+              ) : (
+                <p className="muted cat-end">{t("catalog.allLoaded", { count: items.length })}</p>
+              )}
+            </>
           )}
         </div>
 
-        {facets.genres.length > 0 && (
-          <div className="chip-row">
-            {facets.genres.map((g) => (
-              <button
-                key={g}
-                type="button"
-                className={`chip-toggle${selectedGenres.includes(g) ? " active" : ""}`}
-                onClick={() => toggleGenre(g)}
-              >
-                {g}
-              </button>
-            ))}
-          </div>
-        )}
-
         {secondaryOpen && (
-          <div className="filter-collapsible-panel">
-            <div className="filter-collapsible-row">
-              <SortSelect value={sort} onChange={setSort} />
-              <StatusSelect value={status} onChange={setStatus} />
-              <select
-                className="input filter-select"
-                value={studio}
-                onChange={(e) => setStudio(e.target.value)}
-              >
-                <option value="">{t("catalog.anyStudio")}</option>
-                {facets.studios.map((s) => (
-                  <option key={s} value={s}>
-                    {s}
-                  </option>
-                ))}
-              </select>
-              <select
-                className="input filter-select"
-                value={episodes}
-                onChange={(e) => setEpisodes(e.target.value)}
-              >
-                {EPISODE_OPTIONS.map((o) => (
-                  <option key={o.value} value={o.value}>
-                    {o.label}
-                  </option>
-                ))}
-              </select>
-              <button
-                type="button"
-                className={`chip-toggle${hideWatched ? " active" : ""}`}
-                onClick={() => setHideWatched((v) => !v)}
-                aria-pressed={hideWatched}
-                title={t("catalog.hideWatchedTooltip")}
-              >
-                {hideWatched ? "✓ " : ""}{t("catalog.hideWatched")}
-              </button>
-            </div>
-
-            <div className="filter-collapsible-row">
-              <ScoreRangeControl
-                minScore={minScore}
-                maxScore={maxScore}
-                onChange={handleScoreChange}
-                label={t("catalog.scoreRangeLabel")}
-              />
-              <DateRangeControl
-                minStartDate={minStartDate}
-                maxStartDate={maxStartDate}
-                onChange={handleDateChange}
-                label={t("catalog.dateRangeLabel")}
-              />
-            </div>
-          </div>
+          <FilterDrawer
+            facets={facets}
+            episodeOptions={EPISODE_OPTIONS}
+            selectedGenres={selectedGenres}
+            toggleGenre={toggleGenre}
+            status={status}
+            setStatus={setStatus}
+            format={format}
+            setFormat={setFormat}
+            studio={studio}
+            setStudio={setStudio}
+            episodes={episodes}
+            setEpisodes={setEpisodes}
+            minScore={minScore}
+            maxScore={maxScore}
+            onScoreChange={handleScoreChange}
+            minStartDate={minStartDate}
+            maxStartDate={maxStartDate}
+            onDateChange={handleDateChange}
+            hideWatched={hideWatched}
+            setHideWatched={setHideWatched}
+            autoFocus={drawerFocus}
+            onClose={() => setSecondaryOpen(false)}
+          />
         )}
       </div>
-
-      {items.length === 0 && loading ? (
-        <div className="empty">{t("common.loading")}</div>
-      ) : items.length === 0 && anyFilterActive ? (
-        <div className="empty">{t("catalog.noResultsFiltered")}</div>
-      ) : items.length === 0 ? (
-        <div className="empty">{t("catalog.emptyNotSynced")}</div>
-      ) : (
-        <>
-          {selected.size > 0 && (
-            <div className="batch-bar">
-              <span className="muted">{t("catalog.selectedCount", { count: selected.size })}</span>
-              <div className="spacer" />
-              <button className="btn btn-primary" onClick={batchStart} disabled={batching}>
-                {t("catalog.batchStart")}
-              </button>
-              <button className="btn" onClick={batchWant} disabled={batching}>
-                {t("catalog.batchWant")}
-              </button>
-              <button className="btn" onClick={batchSeen} disabled={batching}>
-                {t("catalog.batchSeen")}
-              </button>
-              <button className="btn btn-ghost" onClick={() => setSelected(new Map())} disabled={batching}>
-                {t("catalog.deselectAll")}
-              </button>
-            </div>
-          )}
-          {batchMsg && (
-            <p className="muted catalog-count">
-              {batchMsg}
-            </p>
-          )}
-          <div className="grid">
-            {items.map((a) => (
-              <PosterCard
-                key={a.id}
-                title={a.title}
-                coverUrl={a.cover_url}
-                format={a.format}
-                genres={a.genres}
-                meta={posterMetaLine(t, { episodes: a.episodes, score: a.average_score })}
-                selectable
-                selected={selected.has(a.id)}
-                onActivate={() => toggleSelect(a)}
-                corner={
-                  <button
-                    type="button"
-                    className="card-info-btn"
-                    title={t("catalog.infoTitle")}
-                    aria-label={t("catalog.infoTitle")}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      openEpisode(a.url).catch((err) => console.error("open failed", err));
-                    }}
-                    onKeyDown={stopCardEvent}
-                  >
-                    ℹ
-                  </button>
-                }
-              />
-            ))}
-          </div>
-
-          {hasNextPage && (
-            <div className="catalog-more">
-              <button className="btn btn-primary" onClick={loadMore} disabled={loading}>
-                {loading ? t("common.loading") : t("catalog.loadMore")}
-              </button>
-            </div>
-          )}
-        </>
-      )}
     </div>
   );
 }
