@@ -15,6 +15,7 @@ import {
 } from "./lib/tutorial";
 import { CatalogSectionSwitch } from "./views/CatalogSectionSwitch";
 import { DEFAULT_CATALOG_SECTION, discoverSubViewFor, type CatalogSection } from "./lib/catalogSection";
+import { installSlidingIndicators, tabDirection } from "./lib/slidingIndicator";
 import { shortcutFor, shouldNavigateToCatalogOnSearch } from "./lib/shortcuts";
 import {
   listAiring,
@@ -51,6 +52,8 @@ const Settings = lazy(() => loadSettings().then((m) => ({ default: m.Settings })
 
 const loadSeriesDetail = () => import("./views/SeriesDetail");
 const SeriesDetail = lazy(() => loadSeriesDetail().then((m) => ({ default: m.SeriesDetail })));
+
+const TAB_ORDER: readonly string[] = ["pending", "airing", "library", "catalog", "stats", "settings"];
 
 type View =
   | "loading"
@@ -226,8 +229,13 @@ export default function App() {
   // in styles.css) and restore it.
   const scrollPositions = useRef<Partial<Record<View, number>>>({});
   const panelRef = useRef<HTMLDivElement | null>(null);
+  // Which way the incoming tab slides in from (see .view-enter in styles.css).
+  const [navDir, setNavDir] = useState<"fwd" | "back">("fwd");
+  // Sliding pill behind the nav tabs and every .seg control (no per-caller code).
+  useEffect(() => installSlidingIndicators(), []);
   function navigate(next: View) {
     if (panelRef.current) scrollPositions.current[view] = panelRef.current.scrollTop;
+    setNavDir(tabDirection(TAB_ORDER, view, next));
     setSelected(null);
     setView(next);
   }
@@ -436,9 +444,9 @@ export default function App() {
       </div>
       <ProgressBar />
 
-      <div className="view-stack">
+      <div className="view-stack" data-dir={navDir}>
         {view === "pending" && (
-          <div className="view-panel" ref={panelRef}>
+          <div className="view-panel view-enter" ref={panelRef}>
             <Pending
               onOpenSeries={setSelected}
               onChanged={onPendingDataChanged}
@@ -448,7 +456,7 @@ export default function App() {
           </div>
         )}
         {view === "airing" && (
-          <div className="view-panel" ref={panelRef}>
+          <div className="view-panel view-enter" ref={panelRef}>
             <AiringGrid
               onOpenSeries={setSelected}
               refreshSignal={airingRefreshSignal}
@@ -457,7 +465,7 @@ export default function App() {
           </div>
         )}
         {view === "library" && (
-          <div className="view-panel" ref={panelRef}>
+          <div className="view-panel view-enter" ref={panelRef}>
             <Suspense fallback={<div className="empty">{t("common.loading")}</div>}>
               <Library
                 onOpenSeries={setSelected}
@@ -467,7 +475,7 @@ export default function App() {
           </div>
         )}
         {view === "catalog" && (
-          <div className="view-panel" ref={panelRef}>
+          <div className="view-panel view-enter" ref={panelRef}>
             <Suspense fallback={<div className="empty">{t("common.loading")}</div>}>
               {(() => {
                 const headExtra = (
@@ -492,7 +500,7 @@ export default function App() {
           </div>
         )}
         {statsVisited && (
-          <div className="view-panel" hidden={view !== "stats"}>
+          <div className="view-panel view-enter" hidden={view !== "stats"}>
             <Suspense fallback={<div className="empty">{t("common.loading")}</div>}>
               <Stats
                 active={view === "stats"}
@@ -510,7 +518,7 @@ export default function App() {
           </div>
         )}
         {view === "settings" && (
-          <div className="view-panel" ref={panelRef}>
+          <div className="view-panel view-enter" ref={panelRef}>
             <Suspense fallback={<div className="empty">{t("common.loading")}</div>}>
               <Settings onSiteChanged={onSiteChanged} onReplayTutorial={() => setTutorialOpen(true)} />
             </Suspense>
