@@ -28,6 +28,7 @@ import { summarizeDownloads } from "../lib/downloadSummary";
 import { epNum } from "../lib/episodeNumber";
 import { launchEpisode } from "../lib/launchEpisode";
 import { resolveCoverUrl } from "../lib/posterFallback";
+import { arrivedViaMorph } from "../lib/viewTransition";
 import type { AnimeExtras, CatalogAnime, Episode, NextAir, Series, SeriesSiteInfo } from "../types";
 import { CheckMark } from "../components/CheckMark";
 import { RelatedRow, SeriesAbout } from "./SeriesInfo";
@@ -60,6 +61,8 @@ export function SeriesDetail({
   onOpenSeries?: (series: Series) => void;
 }) {
   const t = useT();
+  // Arrived through the poster morph: the cover skips its own entrance.
+  const [viaMorph] = useState(arrivedViaMorph);
   const [episodes, setEpisodes] = useState<Episode[]>([]);
   const [loading, setLoading] = useState(true);
   const [linking, setLinking] = useState(false);
@@ -491,7 +494,9 @@ export function SeriesDetail({
           />
         )}
         <div className="detail-hero-grid">
-          {detailCover && <img className="detail-cover" src={detailCover} alt="" />}
+          {detailCover && (
+            <img className="detail-cover" src={detailCover} alt="" data-morph={viaMorph ? "" : undefined} />
+          )}
           <div className="detail-main">
             <h2 className="page-title detail-title">{catalogInfo?.title ?? series.title}</h2>
             {altTitle && <p className="muted detail-alt-title">{altTitle}</p>}
