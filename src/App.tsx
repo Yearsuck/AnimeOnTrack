@@ -7,6 +7,7 @@ import { WindowControls } from "./views/WindowControls";
 import { ShortcutsOverlay } from "./views/ShortcutsOverlay";
 import { UpdateBanner } from "./views/UpdateBanner";
 import { Tutorial } from "./views/Tutorial";
+import { LaunchHost } from "./components/LaunchOverlay";
 import {
   TUTORIAL_AFTER_SPLASH_MS,
   readTutorialSeen,
@@ -545,6 +546,7 @@ export default function App() {
       </div>
       <ShortcutsOverlay open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
       <UpdateBanner />
+      <LaunchHost />
       {tutorialOpen && <Tutorial onClose={closeTutorial} />}
     </div>
   );

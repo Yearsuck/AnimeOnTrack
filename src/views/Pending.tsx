@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
-import { listPending, openEpisode, playDownload, setSeenCascade } from "../api";
+import { listPending, playDownload, setSeenCascade } from "../api";
+import { launchEpisode } from "../lib/launchEpisode";
 import { useT } from "../i18n";
 import type { PendingItem, Series } from "../types";
 import { initials, resolveCoverUrl, useCoverFailure } from "../lib/posterFallback";
+import { CheckMark } from "../components/CheckMark";
 import { watchTarget } from "../lib/watchTarget";
 
 // A series' cover_url on the Pendientes list can be a remote URL still waiting
@@ -71,7 +73,7 @@ export function Pending({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [load, refreshSignal]);
 
-  async function watch(it: PendingItem) {
+  async function watch(it: PendingItem, origin: Element) {
     if (watchTarget(it.episode) === "download") {
       try {
         await playDownload(it.episode.id);
@@ -80,7 +82,13 @@ export function Pending({
         console.error("playDownload failed, opening site:", e);
       }
     }
-    await openEpisode(it.episode.url);
+    await launchEpisode({
+      url: it.episode.url,
+      origin,
+      title: it.series.title,
+      episode: it.episode.number,
+      cover: resolveCoverUrl(it.series.cover_url),
+    });
   }
 
   function markSeen(it: PendingItem) {
@@ -209,12 +217,12 @@ export function Pending({
                   >
                     <span className="ep-num">{it.episode.number}</span>
                     <div className="ep-main">
-                      <div className="ep-title" onClick={() => watch(it)}>
+                      <div className="ep-title" onClick={(e) => watch(it, e.currentTarget)}>
                         {t("common.episodeNumber", { number: it.episode.number })}
                       </div>
                     </div>
                     <div className="ep-actions">
-                      <button type="button" className="btn btn-sm" onClick={() => watch(it)}>
+                      <button type="button" className="btn btn-sm" onClick={(e) => watch(it, e.currentTarget)}>
                         {t("common.watch")}
                       </button>
                       <button
@@ -223,7 +231,7 @@ export function Pending({
                         aria-label={t("common.markSeen")}
                         onClick={() => markSeen(it)}
                       >
-                        ✓
+                        <CheckMark />
                       </button>
                     </div>
                   </div>
