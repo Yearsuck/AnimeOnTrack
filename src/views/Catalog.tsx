@@ -5,13 +5,13 @@ import {
   getAnimeCatalog,
   getCatalogFacets,
   linkCatalogSeries,
-  openEpisode,
   startWatching,
   syncAnimeCatalog,
 } from "../api";
 import { useT } from "../i18n";
 import { createFilterCache } from "../lib/createFilterCache";
 import { formatLabel } from "../lib/formatLabel";
+import { useFormatNumber } from "../lib/formatNumber";
 import { PosterCard, posterMetaLine, stopCardEvent } from "../components/PosterCard";
 import { Menu } from "../components/Menu";
 import { startSeriesSequentially, summarizeStart } from "../lib/startWatchingQueue";
@@ -30,6 +30,7 @@ import {
 import { CatalogHero, useCountdownText, useNowSecs } from "./catalog/CatalogHero";
 import { CatalogShelf, clearShelfCache } from "./catalog/CatalogShelf";
 import { FilterDrawer } from "./catalog/FilterDrawer";
+import { useAnimeSheet } from "./AnimeSheet";
 import "../styles/filters.css";
 import "../styles/catalog.css";
 
@@ -74,10 +75,6 @@ const SORT_LABEL: Record<string, MessageKey> = {
   title: "filters.sortTitle",
 };
 
-/** What the info button did before the in-app sheet: open the AniList page. */
-function openOnAniList(a: CatalogAnime) {
-  openEpisode(a.url).catch((err) => console.error("open failed", err));
-}
 
 const EMPTY_FACETS: CatalogFacets = { genres: [], formats: [], studios: [] };
 
@@ -109,15 +106,13 @@ const catalogFilterCache = createFilterCache<{
 export function Catalog({
   onChanged,
   headExtra,
-  onInfo,
 }: {
   onChanged?: () => void;
-  /** Opens a title's details; defaults to its AniList page. */
-  onInfo?: (a: CatalogAnime) => void;
   /** Section switch (Explorar / Descubrir / Listas) rendered next to the title. */
   headExtra?: ReactNode;
 }) {
   const t = useT();
+  const formatNumber = useFormatNumber();
 
   const EPISODE_OPTIONS: { value: string; label: string }[] = useMemo(
     () => [
@@ -678,10 +673,22 @@ export function Catalog({
     return () => io.disconnect();
   }, [canLoadMore]);
 
-  const info = onInfo ?? openOnAniList;
+  // The info sheet's actions are the same single-title flows the hero and
+  // the batch bar use. Its cards are full CatalogAnime rows.
+  const sheet = useAnimeSheet({
+    onStart: (a) => runStartWatching([a as CatalogAnime]),
+    onWant: (a) => wantOne(a as CatalogAnime),
+    onSeen: async (a) => {
+      const id = await decideCatalogCard(decideArgs(a as CatalogAnime, "Seen"));
+      await linkCatalogSeries(id);
+      setBatchMsg(t("catalog.batchSeenDone", { count: 1 }));
+    },
+  });
+  const info = sheet.open;
 
   return (
     <div className="page cat-page" ref={viewTopRef}>
+      {sheet.element}
       <div className="page-head cat-head">
         <h2 className="page-title">{t("nav.catalog")}</h2>
         {headExtra}
@@ -695,7 +702,7 @@ export function Catalog({
               aria-label={t("catalog.searchAria")}
               placeholder={
                 totalSynced
-                  ? t("catalog.searchPlaceholderCount", { count: totalSynced })
+                  ? t("catalog.searchPlaceholderCount", { count: formatNumber(totalSynced) })
                   : t("catalog.searchPlaceholder")
               }
               value={searchInput}

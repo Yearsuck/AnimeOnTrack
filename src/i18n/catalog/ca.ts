@@ -406,7 +406,7 @@ export const ca: Messages = {
     "Encara no hi ha res sincronitzat. Prem «Sincronitza el catàleg complet» per baixar el catàleg d'AniList.",
   "catalog.episodesCount": "{count} episodis",
   "catalog.loadMore": "Carrega'n més",
-  "catalog.infoTitle": "Mostra la informació (AniList)",
+  "catalog.infoTitle": "Fitxa i tràiler",
   "catalog.selectedCount": "{count} seleccionats",
   "catalog.batchWant": "Vull veure",
   "catalog.batchSeen": "Ja vistos",

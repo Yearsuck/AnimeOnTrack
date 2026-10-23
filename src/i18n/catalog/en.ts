@@ -395,7 +395,7 @@ export const en: Messages = {
     'Nothing synced yet. Hit "Sync full catalog" to download the AniList catalog.',
   "catalog.episodesCount": "{count} episodes",
   "catalog.loadMore": "Load more",
-  "catalog.infoTitle": "View info (AniList)",
+  "catalog.infoTitle": "Details and trailer",
   "catalog.selectedCount": "{count} selected",
   "catalog.batchWant": "Want to watch",
   "catalog.batchSeen": "Already seen",

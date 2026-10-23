@@ -410,7 +410,7 @@ export const es = {
     'Nada sincronizado todavía. Dale a "Sincronizar catálogo completo" para descargar el catálogo de AniList.',
   "catalog.episodesCount": "{count} episodios",
   "catalog.loadMore": "Cargar más",
-  "catalog.infoTitle": "Ver información (AniList)",
+  "catalog.infoTitle": "Ficha y tráiler",
   "catalog.selectedCount": "{count} seleccionados",
   "catalog.batchWant": "Quiero ver",
   "catalog.batchSeen": "Ya vistos",
