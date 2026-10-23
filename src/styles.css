@@ -3895,3 +3895,189 @@ select.settings-select {
   }
 }
 
+
+/* ====================================================================
+   Motion polish: sliding indicators, view enter, press feedback, menus,
+   reveal. Last in the file on purpose: it refines the base rules above
+   (and the duplicated chip/card blocks) without touching each of them.
+   Only transform/opacity are animated, except the indicator's width and
+   the reveal's grid-template-rows, both on small isolated boxes.
+   ==================================================================== */
+:root {
+  --press-scale: 0.97;
+  --menu-scale: 0.94;
+  --dur-xfast: 90ms;
+}
+
+/* ---- Sliding active pill (top nav + every .seg). The variables are set by
+   lib/slidingIndicator.ts; until the first measure ([data-ind] absent) the
+   per-item .active background keeps working. ---- */
+.tabs,
+.seg {
+  position: relative;
+}
+.tabs .tab,
+.seg .seg-btn {
+  position: relative;
+  z-index: 1;
+}
+.tabs::before,
+.seg::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: var(--ind-w, 0px);
+  transform: translateX(var(--ind-x, 0px));
+  background: var(--accent-dim);
+  opacity: 0;
+  pointer-events: none;
+  z-index: 0;
+}
+.tabs::before {
+  border-radius: var(--radius-sm);
+}
+.tabs[data-ind]::before,
+.seg[data-ind]::before {
+  opacity: 1;
+}
+.tabs[data-ind="idle"]::before,
+.seg[data-ind="idle"]::before {
+  opacity: 0;
+}
+.tabs[data-ind="on"]::before,
+.seg[data-ind="on"]::before {
+  transition: transform var(--dur) var(--ease-out), width var(--dur) var(--ease-out),
+    opacity var(--dur-fast) var(--ease);
+}
+.tabs[data-ind] .tab.active,
+.tabs[data-ind] .tab.active:hover,
+.seg[data-ind] .seg-btn.active {
+  background: transparent;
+}
+.tab,
+.seg-btn {
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease),
+    transform var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease);
+}
+
+/* ---- Tab content enter: the newly shown view fades in and drifts ~14px
+   from the side it sits on in the nav (data-dir on .view-stack). backwards
+   fill only: a lingering transform would trap position:fixed children. ---- */
+.view-stack {
+  --view-dx: 14px;
+}
+.view-stack[data-dir="back"] {
+  --view-dx: -14px;
+}
+.view-enter {
+  animation: view-in var(--dur) var(--ease-out) backwards;
+}
+@keyframes view-in {
+  from {
+    opacity: 0;
+    transform: translateX(var(--view-dx));
+  }
+}
+
+/* ---- Press feedback ---- */
+.btn:active:not(:disabled),
+.chip-toggle:active,
+.tab:active,
+.seg-btn:active {
+  transform: scale(var(--press-scale));
+}
+.chip-toggle {
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease);
+}
+
+/* ---- Overflow menu (components/Menu.tsx): scales from the trigger; the
+   inline transform-origin is the button centre. Exit mirrors the entrance
+   and the list is inert while leaving. ---- */
+.menu-list {
+  animation: menu-in var(--dur-fast) var(--ease-out);
+}
+.menu-list[data-state="closed"] {
+  animation: menu-out var(--dur-xfast) var(--ease-out) forwards;
+  pointer-events: none;
+}
+@keyframes menu-in {
+  from {
+    opacity: 0;
+    transform: scale(var(--menu-scale));
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@keyframes menu-out {
+  from {
+    opacity: 1;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(var(--menu-scale));
+  }
+}
+
+/* ---- Reveal: a block mounted on demand grows open (0fr -> 1fr) while it
+   fades in. Wrap as .reveal > .reveal-inner > content. Enter only. ---- */
+.reveal {
+  display: grid;
+  grid-template-rows: 1fr;
+}
+.reveal.reveal-anim {
+  animation: reveal-in var(--dur-slow) var(--ease-out) backwards;
+}
+.reveal > .reveal-inner {
+  min-height: 0;
+}
+/* Clip only while the reveal runs (0fr needs it), so popovers/focus rings
+   inside are not cut off afterwards. */
+.reveal.reveal-anim > .reveal-inner {
+  overflow: hidden;
+}
+@keyframes reveal-in {
+  from {
+    grid-template-rows: 0fr;
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .view-enter,
+  .reveal.reveal-anim {
+    animation: none;
+  }
+  .tabs[data-ind="on"]::before,
+  .seg[data-ind="on"]::before {
+    transition: none;
+  }
+  .btn:active:not(:disabled),
+  .chip-toggle:active,
+  .tab:active,
+  .seg-btn:active {
+    transform: none;
+  }
+  .menu-list {
+    animation: menu-fade var(--dur-fast) linear;
+  }
+  .menu-list[data-state="closed"] {
+    animation: menu-fade-out var(--dur-xfast) linear forwards;
+  }
+}
+@keyframes menu-fade {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes menu-fade-out {
+  to {
+    opacity: 0;
+  }
+}

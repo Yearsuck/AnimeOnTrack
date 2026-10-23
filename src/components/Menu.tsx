@@ -23,36 +23,57 @@ export function Menu({
   className?: string;
 }) {
   const [open, setOpen] = useState(false);
-  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+  // `mounted` outlives `open` by the exit animation, so the list can scale
+  // out toward its button instead of vanishing. While it is leaving it is
+  // inert (pointer-events:none in CSS) and `open` is already false.
+  const [mounted, setMounted] = useState(false);
+  const [pos, setPos] = useState<{ top: number; left: number; origin: string } | null>(null);
   const btnRef = useRef<HTMLButtonElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
   const close = useCallback((refocus: boolean) => {
     setOpen(false);
-    setPos(null);
     if (refocus) btnRef.current?.focus();
   }, []);
 
   // Measure the (hidden) list once rendered, then place it.
   useLayoutEffect(() => {
-    if (!open || !btnRef.current || !listRef.current) return;
+    if (!open) return;
+    setMounted(true);
+    if (!btnRef.current || !listRef.current) return;
     const r = btnRef.current.getBoundingClientRect();
-    const m = listRef.current.getBoundingClientRect();
-    setPos(
-      computeMenuPosition(
-        r,
-        { width: m.width, height: m.height },
-        { width: window.innerWidth, height: window.innerHeight }
-      )
+    // Layout size, not getBoundingClientRect: the list is mid scale-in here.
+    const m = { width: listRef.current.offsetWidth, height: listRef.current.offsetHeight };
+    const p = computeMenuPosition(
+      r,
+      { width: m.width, height: m.height },
+      { width: window.innerWidth, height: window.innerHeight }
     );
-  }, [open]);
+    // Grow from the trigger: origin = the button's centre in the list's own
+    // coordinates (so a menu flipped above/left of the button still scales
+    // out of it).
+    const ox = Math.round(r.left + r.width / 2 - p.left);
+    const oy = Math.round(r.top + r.height / 2 - p.top);
+    setPos({ top: p.top, left: p.left, origin: `${ox}px ${oy}px` });
+  }, [open, mounted]);
 
   const placed = pos !== null;
   useEffect(() => {
-    if (open && placed) {
+    if (open && placed && mounted) {
       listRef.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
     }
-  }, [open, placed]);
+  }, [open, placed, mounted]);
+
+  // Safety net: if the exit animation never reports (e.g. animations
+  // disabled), unmount anyway.
+  useEffect(() => {
+    if (open || !mounted) return;
+    const id = window.setTimeout(() => {
+      setMounted(false);
+      setPos(null);
+    }, 250);
+    return () => window.clearTimeout(id);
+  }, [open, mounted]);
 
   useEffect(() => {
     if (!open) return;
@@ -120,17 +141,25 @@ export function Menu({
       >
         <DotsIcon />
       </button>
-      {open &&
+      {mounted &&
         createPortal(
           <div
             ref={listRef}
             className="menu-list"
             role="menu"
             aria-label={label}
+            data-state={open ? "open" : "closed"}
             style={{
               top: pos?.top ?? 0,
               left: pos?.left ?? 0,
               visibility: pos ? "visible" : "hidden",
+              transformOrigin: pos?.origin,
+            }}
+            onAnimationEnd={(e) => {
+              if (!open && e.animationName.startsWith("menu-")) {
+                setMounted(false);
+                setPos(null);
+              }
             }}
             onClick={(e) => e.stopPropagation()}
             onKeyDown={onListKeyDown}
