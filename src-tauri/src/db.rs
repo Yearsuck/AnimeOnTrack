@@ -508,6 +508,9 @@ impl Db {
                 fetched_at INTEGER NOT NULL
             );",
         )?;
+        // Trailer reference as JSON. SQL NULL = never asked (an old row, so
+        // the next open refetches); the string "null" = asked, none found.
+        ensure_column(&self.conn, "anilist_media_extras", "trailer_json", "TEXT")?;
 
         // One-shot: `sync_seen_progress_across_sites` used to stamp
         // `sync_watermark_applied` with the requested cross-site ceiling
