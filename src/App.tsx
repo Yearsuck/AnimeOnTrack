@@ -15,8 +15,15 @@ import {
   writeTutorialSeen,
 } from "./lib/tutorial";
 import { CatalogSectionSwitch } from "./views/CatalogSectionSwitch";
-import { DEFAULT_CATALOG_SECTION, discoverSubViewFor, type CatalogSection } from "./lib/catalogSection";
+import {
+  CATALOG_SECTIONS,
+  DEFAULT_CATALOG_SECTION,
+  discoverSubViewFor,
+  type CatalogSection,
+} from "./lib/catalogSection";
 import { installSlidingIndicators, tabDirection } from "./lib/slidingIndicator";
+import { installInteractionTracker, posterOfLastInteraction, transitionTo } from "./lib/viewTransition";
+import { pop } from "./lib/motion";
 import { shortcutFor, shouldNavigateToCatalogOnSearch } from "./lib/shortcuts";
 import {
   listAiring,
@@ -51,7 +58,14 @@ const Stats = lazy(() => loadStats().then((m) => ({ default: m.Stats })));
 const loadSettings = () => import("./views/Settings");
 const Settings = lazy(() => loadSettings().then((m) => ({ default: m.Settings })));
 
-const loadSeriesDetail = () => import("./views/SeriesDetail");
+// Once the module has loaded, render the component directly: React.lazy would
+// still suspend on its first render inside the view transition's flushSync.
+let loadedSeriesDetail: (typeof import("./views/SeriesDetail"))["SeriesDetail"] | null = null;
+const loadSeriesDetail = () =>
+  import("./views/SeriesDetail").then((m) => {
+    loadedSeriesDetail = m.SeriesDetail;
+    return m;
+  });
 const SeriesDetail = lazy(() => loadSeriesDetail().then((m) => ({ default: m.SeriesDetail })));
 
 const TAB_ORDER: readonly string[] = ["pending", "airing", "library", "catalog", "stats", "settings"];
@@ -103,7 +117,56 @@ export default function App() {
   // unmounted and its scroll position needs no restoring at all: it was
   // simply never disturbed.
   const [selected, setSelected] = useState<Series | null>(null);
+  const DetailView = loadedSeriesDetail ?? SeriesDetail;
+  const selectedRef = useRef(selected);
+  selectedRef.current = selected;
+  // The poster the detail was opened from, so closing can morph the cover back.
+  const openerRef = useRef<Element | null>(null);
+  // Warm the detail chunk on the press that will open it.
+  useEffect(() => installInteractionTracker(() => void loadSeriesDetail().catch(() => {})), []);
+  // Open/close go through a view transition (poster <-> detail cover morph);
+  // without support or with reduced motion it is a plain state change.
+  const openSeries = useCallback(async (s: Series, opts?: { morph?: boolean }) => {
+    // Opening a related series from inside a detail: no card to morph from.
+    const from = selectedRef.current || opts?.morph === false ? null : posterOfLastInteraction();
+    // The detail must be renderable synchronously inside the transition, or the
+    // morph would have no target: wait for the chunk first (instant once cached).
+    if (!loadedSeriesDetail) await loadSeriesDetail().catch(() => {});
+    openerRef.current = from;
+    transitionTo(() => setSelected(s), { from, opens: Boolean(loadedSeriesDetail) });
+  }, []);
+  const closingRef = useRef(false);
+  const closeSeries = useCallback(() => {
+    // A second Escape/click while the first close is in flight is ignored.
+    if (!selectedRef.current || closingRef.current) return;
+    closingRef.current = true;
+    const opener = openerRef.current;
+    transitionTo(() => setSelected(null), {
+      findTo: () => (opener?.isConnected ? opener : null),
+      after: () => {
+        openerRef.current = null;
+        closingRef.current = false;
+      },
+    });
+  }, []);
   const [pending, setPending] = useState(0);
+  // Pendientes badge: a quick pop when the count changes (not on the first load).
+  const badgeRef = useRef<HTMLSpanElement | null>(null);
+  const prevPending = useRef(0);
+  // Set by refreshBadge: false only for the very first count load (the startup
+  // count landing is not something to celebrate, even when it is 0 -> N later).
+  const popOk = useRef(false);
+  const countLoaded = useRef(false);
+  useEffect(() => {
+    if (prevPending.current === pending) return;
+    prevPending.current = pending;
+    if (popOk.current) pop(badgeRef.current);
+  }, [pending]);
+  // Short window after a tab switch / first load in which grids stagger their
+  // first cards in (CSS: [data-fresh]); and after a Catálogo section switch the
+  // direction its content slides from (CSS: [data-sdir]).
+  const [fresh, setFresh] = useState(true);
+  const [sectionDir, setSectionDir] = useState<"fwd" | "back" | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [airingRefreshSignal, setAiringRefreshSignal] = useState(0);
   // Pendientes' equivalent of `airingRefreshSignal`: bumping it makes the
@@ -131,7 +194,10 @@ export default function App() {
 
   const refreshBadge = useCallback(async () => {
     try {
-      setPending(await pendingCount());
+      const n = await pendingCount();
+      popOk.current = countLoaded.current;
+      countLoaded.current = true;
+      setPending(n);
     } catch {
       /* no source yet */
     }
@@ -234,9 +300,28 @@ export default function App() {
   const [navDir, setNavDir] = useState<"fwd" | "back">("fwd");
   // Sliding pill behind the nav tabs and every .seg control (no per-caller code).
   useEffect(() => installSlidingIndicators(), []);
+  useEffect(() => {
+    setFresh(true);
+    const id = setTimeout(() => setFresh(false), 1200);
+    return () => clearTimeout(id);
+  }, [view]);
+  const sectionTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(sectionTimer.current), []);
+  // Section switch inside Catálogo: remember which way it moved so the new
+  // content can slide in from that side; cleared once the entrance is over.
+  function changeSection(next: CatalogSection) {
+    if (next === catalogSection) return;
+    clearTimeout(sectionTimer.current);
+    setSectionDir(tabDirection(CATALOG_SECTIONS, catalogSection, next));
+    setCatalogSection(next);
+    sectionTimer.current = setTimeout(() => setSectionDir(null), 500);
+  }
   function navigate(next: View) {
     if (panelRef.current) scrollPositions.current[view] = panelRef.current.scrollTop;
     setNavDir(tabDirection(TAB_ORDER, view, next));
+    openerRef.current = null;
+    clearTimeout(sectionTimer.current);
+    setSectionDir(null);
     setSelected(null);
     setView(next);
   }
@@ -339,7 +424,7 @@ export default function App() {
             setShortcutsOpen(false);
           } else if (selected) {
             e.preventDefault();
-            setSelected(null);
+            closeSeries();
           }
           break;
       }
@@ -349,7 +434,7 @@ export default function App() {
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [view, refreshing, shortcutsOpen, selected, catalogSection]);
+  }, [view, refreshing, shortcutsOpen, selected, catalogSection, closeSeries]);
 
   // Frameless window: every screen needs *some* draggable strip with the
   // window controls, or the loading/onboarding views (which don't render the
@@ -404,8 +489,12 @@ export default function App() {
     else if (id === "settings") void loadSettings();
   };
 
-  const Tab = ({ id, label }: { id: View; label: string }) => (
+  // A plain render helper, not a component: a component type declared in the
+  // render body is new every render and would remount the tabs (and the badge,
+  // whose pop animation lives on the element).
+  const tab = (id: View, label: string) => (
     <button
+      key={id}
       className={`tab ${view === id ? "active" : ""}`}
       data-tour={id}
       onClick={() => navigate(id)}
@@ -413,7 +502,11 @@ export default function App() {
       onFocus={() => preloadTab(id)}
     >
       {label}
-      {id === "pending" && pending > 0 && <span className="badge">{pending}</span>}
+      {id === "pending" && pending > 0 && (
+        <span className="badge" ref={badgeRef}>
+          {pending}
+        </span>
+      )}
     </button>
   );
 
@@ -430,12 +523,12 @@ export default function App() {
           AnimeOnTrack
         </div>
         <div className="tabs">
-          <Tab id="pending" label={t("nav.pending")} />
-          <Tab id="airing" label={t("nav.airing")} />
-          <Tab id="library" label={t("nav.library")} />
-          <Tab id="catalog" label={t("nav.catalog")} />
-          <Tab id="stats" label={t("nav.stats")} />
-          <Tab id="settings" label={t("nav.settings")} />
+          {tab("pending", t("nav.pending"))}
+          {tab("airing", t("nav.airing"))}
+          {tab("library", t("nav.library"))}
+          {tab("catalog", t("nav.catalog"))}
+          {tab("stats", t("nav.stats"))}
+          {tab("settings", t("nav.settings"))}
         </div>
         <div className="spacer" data-tauri-drag-region />
         <button className="btn btn-primary" onClick={doRefresh} disabled={refreshing}>
@@ -445,11 +538,16 @@ export default function App() {
       </div>
       <ProgressBar />
 
-      <div className="view-stack" data-dir={navDir}>
+      <div
+        className="view-stack"
+        data-dir={navDir}
+        data-fresh={fresh ? "" : undefined}
+        data-sdir={sectionDir ?? undefined}
+      >
         {view === "pending" && (
           <div className="view-panel view-enter" ref={panelRef}>
             <Pending
-              onOpenSeries={setSelected}
+              onOpenSeries={openSeries}
               onChanged={onPendingDataChanged}
               refreshSignal={pendingRefreshSignal}
               onGoDiscover={() => goCatalogSection("swipe")}
@@ -459,7 +557,7 @@ export default function App() {
         {view === "airing" && (
           <div className="view-panel view-enter" ref={panelRef}>
             <AiringGrid
-              onOpenSeries={setSelected}
+              onOpenSeries={openSeries}
               refreshSignal={airingRefreshSignal}
               onChanged={onPendingDataChanged}
             />
@@ -469,7 +567,7 @@ export default function App() {
           <div className="view-panel view-enter" ref={panelRef}>
             <Suspense fallback={<div className="empty">{t("common.loading")}</div>}>
               <Library
-                onOpenSeries={setSelected}
+                onOpenSeries={openSeries}
                 onGoToListas={() => goCatalogSection("listas")}
               />
             </Suspense>
@@ -482,7 +580,7 @@ export default function App() {
                 const headExtra = (
                   <CatalogSectionSwitch
                     value={catalogSection}
-                    onChange={setCatalogSection}
+                    onChange={changeSection}
                     onHover={preloadCatalogSection}
                   />
                 );
@@ -490,9 +588,9 @@ export default function App() {
                   <Catalog onChanged={onPendingDataChanged} headExtra={headExtra} />
                 ) : (
                   <Descubrir
-                    onOpenSeries={setSelected}
+                    onOpenSeries={openSeries}
                     subView={discoverSubViewFor(catalogSection)}
-                    onSwitchToSwipe={() => setCatalogSection("swipe")}
+                    onSwitchToSwipe={() => changeSection("swipe")}
                     headExtra={headExtra}
                   />
                 );
@@ -510,7 +608,7 @@ export default function App() {
                   listLibrary()
                     .then((items) => {
                       const hit = items.find((i) => i.series.id === id);
-                      if (hit) setSelected(hit.series);
+                      if (hit) openSeries(hit.series, { morph: false });
                     })
                     .catch((err) => console.error("open series from graph failed", err));
                 }}
@@ -534,11 +632,11 @@ export default function App() {
                 underneath, so closing the overlay reveals the real state
                 instead of the rows it just cleared. */}
             <Suspense fallback={<div className="empty">{t("common.loading")}</div>}>
-              <SeriesDetail
+              <DetailView
                 series={selected}
-                onBack={() => setSelected(null)}
+                onBack={closeSeries}
                 onChanged={onPendingDataChanged}
-                onOpenSeries={setSelected}
+                onOpenSeries={openSeries}
               />
             </Suspense>
           </div>
