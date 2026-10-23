@@ -48,12 +48,18 @@ export function CatalogHero({
   busy: boolean;
   onStart: (a: CatalogAnime) => void;
   onWant: (a: CatalogAnime) => void;
-  onInfo: (a: CatalogAnime) => void;
+  onInfo: (a: CatalogAnime, origin?: Element) => void;
 }) {
   const t = useT();
   const now = useNowSecs();
   const countdownText = useCountdownText();
   const [pickedId, setPickedId] = useState<number | null>(null);
+  // Banner being replaced: kept underneath until the new one has faded in.
+  const [outgoing, setOutgoing] = useState<string | null>(null);
+  // Cover/text swap class stays on once the rail was used (it only matters when
+  // the keyed elements remount); the new banner only fades in once it loaded.
+  const [swapped, setSwapped] = useState(false);
+  const [readyId, setReadyId] = useState<number | null>(null);
   const hero = items.find((a) => a.id === pickedId) ?? items[0];
   if (!hero) return null;
 
@@ -72,11 +78,24 @@ export function CatalogHero({
 
   return (
     <section className="cat-hero" aria-label={t("catalog.heroAria")}>
-      {bannerSrc && <img className="cat-hero-banner" src={bannerSrc} alt="" />}
+      {bannerSrc && outgoing && outgoing !== bannerSrc && <img className="cat-hero-banner" src={outgoing} alt="" aria-hidden="true" />}
+      {bannerSrc && (
+        <img
+          key={`banner-${hero.id}`}
+          className={`cat-hero-banner${
+            outgoing === null ? "" : readyId === hero.id ? " cat-hero-banner-in" : " cat-hero-banner-wait"
+          }`}
+          src={bannerSrc}
+          alt=""
+          onLoad={() => setReadyId(hero.id)}
+          onError={() => setOutgoing(null)}
+          onAnimationEnd={() => setOutgoing(null)}
+        />
+      )}
       <div className="cat-hero-scrim" aria-hidden="true" />
       <div className="cat-hero-main">
-        {coverSrc && <img className="cat-hero-cover" src={coverSrc} alt="" />}
-        <div className="cat-hero-text">
+        {coverSrc && <img key={`cover-${hero.id}`} className={`cat-hero-cover${swapped ? " cat-hero-swap" : ""}`} src={coverSrc} alt="" />}
+        <div key={`text-${hero.id}`} className={`cat-hero-text${swapped ? " cat-hero-swap" : ""}`}>
           <p className="cat-hero-live">
             <span className="cat-hero-dot" aria-hidden="true" />
             {t("catalog.heroAiring")}
@@ -97,7 +116,7 @@ export function CatalogHero({
             <button type="button" className="btn cat-hero-btn" disabled={busy} onClick={() => onWant(hero)}>
               {t("catalog.heroWant")}
             </button>
-            <button type="button" className="btn btn-ghost cat-hero-btn-ghost" onClick={() => onInfo(hero)}>
+            <button type="button" className="btn btn-ghost cat-hero-btn-ghost" onClick={(e) => onInfo(hero, e.currentTarget)}>
               {t("catalog.heroInfo")}
             </button>
           </div>
@@ -115,7 +134,13 @@ export function CatalogHero({
                 type="button"
                 className={`cat-hero-rail-item${a.id === hero.id ? " active" : ""}`}
                 aria-pressed={a.id === hero.id}
-                onClick={() => setPickedId(a.id)}
+                onClick={() => {
+                  if (a.id === hero.id) return;
+                  const next = a.banner_url || a.cover_url;
+                  setOutgoing(next && bannerSrc ? bannerSrc : null);
+                  setSwapped(true);
+                  setPickedId(a.id);
+                }}
               >
                 {src ? <img src={src} alt="" /> : <span className="cat-hero-rail-ph" aria-hidden="true" />}
                 <span className="cat-hero-rail-text">

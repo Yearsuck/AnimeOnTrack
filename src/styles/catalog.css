@@ -30,6 +30,8 @@
 
 /* ---------- Layout: content + optional drawer ---------- */
 .cat-layout {
+  /* clip (not hidden) keeps the drawer's position: sticky working */
+  overflow-x: clip;
   display: flex;
   align-items: flex-start;
   gap: var(--sp-5);
@@ -69,6 +71,40 @@
   object-fit: cover;
   object-position: center 30%;
 }
+/* Picking another title in the rail: the new banner fades in over the old one
+   (kept underneath until it ends); cover and text settle in with a tiny rise.
+   opacity + transform only. */
+.cat-hero-banner-in {
+  animation: cat-hero-fade var(--dur-slow) var(--ease-out) both;
+}
+.cat-hero-banner-wait {
+  opacity: 0;
+}
+.cat-hero-swap {
+  animation: cat-hero-rise var(--dur-slow) var(--ease-out) both;
+}
+.cat-hero-text.cat-hero-swap {
+  animation-delay: 50ms;
+}
+@keyframes cat-hero-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes cat-hero-rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
 .cat-hero-scrim {
   position: absolute;
   inset: 0;
@@ -431,6 +467,19 @@
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--surface);
+  /* Slides in from the right on mount; the grid beside it re-flows at once
+     (no layout animation), only the drawer itself moves. */
+  animation: cat-drawer-in var(--dur-slow) var(--ease-out) both;
+}
+@keyframes cat-drawer-in {
+  from {
+    opacity: 0;
+    transform: translateX(12px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 .cat-drawer-head {
   display: flex;
@@ -467,6 +516,14 @@
 }
 .cat-drawer-hide {
   align-self: flex-start;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cat-drawer,
+  .cat-hero-swap {
+    animation-name: cat-hero-fade;
+    animation-duration: var(--dur);
+  }
 }
 
 @media (max-width: 960px) {

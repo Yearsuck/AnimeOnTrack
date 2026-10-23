@@ -2264,6 +2264,42 @@ progress.scanbar-track::-webkit-progress-value {
 .detail-back {
   margin-bottom: var(--sp-3);
 }
+/* Entrance: one sequence, cover -> title/facts -> synopsis (all inside the header, so conditional blocks below never replay it), each
+   step 60 ms after the last. opacity + transform only; plays once on mount. */
+.detail-cover {
+  animation: detail-in var(--dur-slow) var(--ease-out) both;
+}
+.detail-main {
+  animation: detail-in var(--dur-slow) var(--ease-out) 60ms both;
+}
+.detail-hero .detail-about {
+  animation: detail-in var(--dur-slow) var(--ease-out) 120ms both;
+}
+@keyframes detail-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .detail-cover,
+  .detail-main,
+  .detail-hero .detail-about {
+    animation-name: detail-fade;
+  }
+  @keyframes detail-fade {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+}
 .detail-hero {
   position: relative;
   margin-bottom: var(--sp-5);
