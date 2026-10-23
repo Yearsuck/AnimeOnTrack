@@ -71,6 +71,7 @@ pub struct AnimeExtras {
     /// Raw AniList description markup; the frontend renders it as plain text.
     pub description: Option<String>,
     pub relations: Vec<crate::db::extras::RelatedAnime>,
+    pub trailer: Option<crate::anilist::Trailer>,
 }
 
 /// How long a fetched description/relation list is trusted. Both change
@@ -85,7 +86,7 @@ const MEDIA_EXTRAS_MAX_AGE_SECS: i64 = 30 * 24 * 3600;
 #[tauri::command]
 pub async fn get_anime_extras(state: State<'_, AppState>, anilist_id: i64) -> Result<AnimeExtras, String> {
     if anilist_id <= 0 {
-        return Ok(AnimeExtras { description: None, relations: Vec::new() });
+        return Ok(AnimeExtras { description: None, relations: Vec::new(), trailer: None });
     }
     let now = chrono::Utc::now().timestamp();
     let cached = state.db.lock().unwrap().cached_media_extras(anilist_id).map_err(|e| e.to_string())?;
@@ -112,13 +113,13 @@ pub async fn get_anime_extras(state: State<'_, AppState>, anilist_id: i64) -> Re
             }
         }
     };
-    let (description, fetched_relations) = match extras {
-        Some(e) => (e.description, e.relations),
-        None => (None, Vec::new()),
+    let (description, fetched_relations, trailer) = match extras {
+        Some(e) => (e.description, e.relations, e.trailer),
+        None => (None, Vec::new(), None),
     };
     let db = state.db.lock().unwrap();
     let relations = db.related_anime(anilist_id, &fetched_relations).map_err(|e| e.to_string())?;
-    Ok(AnimeExtras { description, relations })
+    Ok(AnimeExtras { description, relations, trailer })
 }
 
 #[derive(serde::Serialize)]

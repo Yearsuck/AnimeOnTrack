@@ -187,7 +187,7 @@ export function SeriesDetail({
       })
       .catch((err) => {
         console.error("getAnimeExtras failed", err);
-        if (!cancelled) setExtras({ description: null, relations: [] });
+        if (!cancelled) setExtras({ description: null, relations: [], trailer: null });
       });
     return () => {
       cancelled = true;

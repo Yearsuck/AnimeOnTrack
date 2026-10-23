@@ -840,9 +840,29 @@ pub struct RelatedMedia {
 pub struct MediaExtras {
     pub description: Option<String>,
     pub relations: Vec<RelatedMedia>,
+    pub trailer: Option<Trailer>,
 }
 
-const MEDIA_EXTRAS_QUERY: &str = "query ($id: Int) { Media(id: $id, type: ANIME) { id description(asHtml: false) relations { edges { relationType node { id type format title { romaji english } coverImage { medium } startDate { year } } } } } }";
+/// AniList's trailer reference. `site` is lowercased `youtube` or
+/// `dailymotion` and `id` only holds `[A-Za-z0-9_-]`: both end up in an
+/// iframe URL on the frontend, so `parse_trailer` rejects anything else.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Trailer {
+    pub site: String,
+    pub id: String,
+}
+
+pub(crate) fn parse_trailer(site: Option<String>, id: Option<String>) -> Option<Trailer> {
+    let site = site?.trim().to_lowercase();
+    let id = id?.trim().to_string();
+    if site != "youtube" && site != "dailymotion" {
+        return None;
+    }
+    let valid = !id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    valid.then_some(Trailer { site, id })
+}
+
+const MEDIA_EXTRAS_QUERY: &str = "query ($id: Int) { Media(id: $id, type: ANIME) { id description(asHtml: false) trailer { id site } relations { edges { relationType node { id type format title { romaji english } coverImage { medium } startDate { year } } } } } }";
 
 /// Read a `{ Media: ... }` response into `MediaExtras`. `Ok(None)` when
 /// AniList has no such media (`Media: null`).
@@ -858,6 +878,15 @@ pub(crate) fn parse_media_extras(data: serde_json::Value) -> Result<Option<Media
         description: Option<String>,
         #[serde(default)]
         relations: Option<Rels>,
+        #[serde(default)]
+        trailer: Option<RawTrailer>,
+    }
+    #[derive(Deserialize)]
+    struct RawTrailer {
+        #[serde(default)]
+        id: Option<String>,
+        #[serde(default)]
+        site: Option<String>,
     }
     #[derive(Deserialize)]
     struct Rels {
@@ -925,7 +954,8 @@ pub(crate) fn parse_media_extras(data: serde_json::Value) -> Result<Option<Media
         });
     }
     let description = media.description.map(|d| d.trim().to_string()).filter(|d| !d.is_empty());
-    Ok(Some(MediaExtras { description, relations }))
+    let trailer = media.trailer.and_then(|t| parse_trailer(t.site, t.id));
+    Ok(Some(MediaExtras { description, relations, trailer }))
 }
 
 /// On-demand, single-title fetch for the series detail view. One request per
@@ -1537,6 +1567,26 @@ mod tests {
         let e = parse_media_extras(serde_json::json!({ "Media": { "description": "   ", "relations": null } }))
             .unwrap()
             .unwrap();
-        assert_eq!(e, MediaExtras { description: None, relations: vec![] });
+        assert_eq!(e, MediaExtras { description: None, relations: vec![], trailer: None });
+    }
+
+    #[test]
+    fn media_extras_keep_a_valid_trailer_and_drop_bad_ones() {
+        let parse = |trailer: serde_json::Value| {
+            parse_media_extras(serde_json::json!({ "Media": { "trailer": trailer } })).unwrap().unwrap().trailer
+        };
+        assert_eq!(
+            parse(serde_json::json!({ "id": "abc_-123", "site": "YouTube" })),
+            Some(Trailer { site: "youtube".into(), id: "abc_-123".into() })
+        );
+        assert_eq!(
+            parse(serde_json::json!({ "id": "x9", "site": "dailymotion" })),
+            Some(Trailer { site: "dailymotion".into(), id: "x9".into() })
+        );
+        assert_eq!(parse(serde_json::json!({ "id": "abc\"><script>", "site": "youtube" })), None);
+        assert_eq!(parse(serde_json::json!({ "id": "", "site": "youtube" })), None);
+        assert_eq!(parse(serde_json::json!({ "id": "a".repeat(65), "site": "youtube" })), None);
+        assert_eq!(parse(serde_json::json!({ "id": "abc", "site": "vimeo" })), None);
+        assert_eq!(parse(serde_json::json!(null)), None);
     }
 }

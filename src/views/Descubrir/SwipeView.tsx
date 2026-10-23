@@ -26,6 +26,7 @@ import { TasteChips } from "./TasteChips";
 import { useLinkQueue } from "./useLinkQueue";
 import { resolveCoverUrl } from "../../lib/posterFallback";
 import { formatLabel } from "../../lib/formatLabel";
+import { useAnimeSheet } from "../AnimeSheet";
 
 
 export function SwipeView() {
@@ -426,8 +427,20 @@ export function SwipeView() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [decide, undo]);
 
+  // The sheet acts on the card on screen (it stays current while the sheet is open).
+  const sheet = useAnimeSheet({
+    // Only when the sheet still shows the card on screen.
+    onWant: (a) => {
+      if (card && anilistIdFromUrl(card.url) === a.id) decide("Want", "want");
+    },
+    onSeen: (a) => {
+      if (card && anilistIdFromUrl(card.url) === a.id) decide("Seen", "seen");
+    },
+  });
+
   return (
     <DeckPanel onBansSaved={resetQueue}>
+      {sheet.element}
       <div className="swipe-stage">
         <TasteChips />
         {exhausted ? (
@@ -439,9 +452,19 @@ export function SwipeView() {
               title={t("discover.openPageTitle")}
               onClick={(e) => {
                 e.stopPropagation();
-                openEpisode(card.url).catch((err) =>
-                  console.error("openEpisode failed for", card.url, err)
-                );
+                const id = anilistIdFromUrl(card.url);
+                if (id != null) {
+                  sheet.open({
+                    id,
+                    title: card.title,
+                    cover_url: card.poster_url,
+                    url: card.url,
+                    format: card.kind || null,
+                    genres: card.matched_genre ? [card.matched_genre] : [],
+                  });
+                } else {
+                  openEpisode(card.url).catch((err) => console.error("openEpisode failed for", card.url, err));
+                }
               }}
             >
               {card.kind && <span className="chip">{formatLabel(t, card.kind)}</span>}
