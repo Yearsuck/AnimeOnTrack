@@ -26,9 +26,9 @@ export const norm = (s: string) => s.toLowerCase().normalize("NFD").replace(/[̀
 
 export function getInitialDeckPanelOpen(): boolean {
   try {
-    return localStorage.getItem(DECK_PANEL_STORAGE_KEY) !== "closed";
+    return localStorage.getItem(DECK_PANEL_STORAGE_KEY) === "open";
   } catch {
-    return true;
+    return false;
   }
 }
 
