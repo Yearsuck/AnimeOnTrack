@@ -8,6 +8,7 @@ import { useDiscoverMode } from "../../discoverMode";
 import { getInitialDeckPanelOpen, persistDeckPanelOpen } from "./helpers";
 import { countActiveFilters, DECK_DEFAULTS } from "./deckReset";
 import { DateRangeControl, ScoreRangeControl } from "../../components/filters";
+import "../../styles/catalog.css";
 
 // Deck settings panel — lives inside SwipeView (see the design spec at
 // docs/superpowers/specs/2026-07-13-discover-swipe-sidepanel-design.md).
@@ -21,13 +22,20 @@ import { DateRangeControl, ScoreRangeControl } from "../../components/filters";
 // `resetQueue`), since SwipeView no longer unmounts when this panel is used
 // (it's embedded, not a separate sub-tab) and would otherwise keep serving
 // up to PREFETCH_TARGET already-fetched cards that predate the new bans.
+/** What the deck stage can ask of its settings panel. */
+export interface DeckApi {
+  openSettings: () => void;
+  /** How many filters currently narrow the deck. */
+  activeBans: number;
+}
+
 export function DeckPanel({
   onBansSaved,
   children,
 }: {
   onBansSaved: () => void;
-  /** The card stage, rendered between the two panels so DOM/focus order is left filters, card, right filters. */
-  children?: ReactNode;
+  /** The deck stage, given a handle to open the settings drawer. */
+  children: (api: DeckApi) => ReactNode;
 }) {
   const t = useT();
   const [discoverMode] = useDiscoverMode();
@@ -171,12 +179,9 @@ export function DeckPanel({
     });
   }
 
-  function toggleOpen() {
-    setOpen((prev) => {
-      const next = !prev;
-      persistDeckPanelOpen(next);
-      return next;
-    });
+  function setDrawer(next: boolean) {
+    setOpen(next);
+    persistDeckPanelOpen(next);
   }
 
   const activeBans = countActiveFilters({
@@ -188,72 +193,86 @@ export function DeckPanel({
     minScore,
   });
 
-  const toggleButton = (title: string, controls: string, withBadge: boolean) => (
-    <button
-      type="button"
-      className="deck-panel-head"
-      aria-expanded={open}
-      aria-controls={controls}
-      aria-label={t("discover.deckPanelToggleAria")}
-      onClick={toggleOpen}
-    >
-      <span className="deck-panel-title">{title}</span>
-      {withBadge && !open && activeBans > 0 && (
-        <span className="deck-panel-badge">{t("discover.deckPanelBansBadge", { count: activeBans })}</span>
-      )}
-      <span className={`deck-panel-chevron${open ? " open" : ""}`} aria-hidden="true">
-        ▾
-      </span>
-    </button>
-  );
+  const api: DeckApi = { openSettings: () => setDrawer(true), activeBans };
 
-  // Three-column deck: LEFT = what to show (mode, kinds, genres, upcoming),
-  // CENTER = the card stage (children), RIGHT = when / how good + save. All
-  // state stays in this one component so the single debounced auto-save still
-  // sees every filter; only the markup is split across two asides. The open
-  // flag is shared: both heads toggle both panels.
+  // Deck settings live in one side drawer next to the stage, opened from the
+  // toolbar (or from the empty deck's "Ajustar mazo"). All state stays in
+  // this one component so the single debounced auto-save still sees every
+  // filter.
   return (
-    <div className={`swipe-layout${open ? "" : " swipe-layout-collapsed"}`}>
-      <aside className="deck-panel deck-panel-left" aria-label={t("discover.deckPanelTitle")}>
-        {toggleButton(t("discover.deckPanelTitle"), "deck-panel-left-body", true)}
-        {open && (
-          <div id="deck-panel-left-body" className="deck-panel-body">
-            <div className="deck-panel-mode">
-              <DiscoverModeToggle />
-            </div>
+    <div className="disc-layout">
+      <div className="disc-main">
+        <div className="disc-toolbar">
+          <DiscoverModeToggle />
+          <button
+            type="button"
+            className={`btn cat-filter-btn${open ? " active" : ""}`}
+            aria-expanded={open}
+            aria-controls="deck-drawer"
+            onClick={() => setDrawer(!open)}
+          >
+            {t("discover.deckSettings")}
+            {activeBans > 0 && <span className="filter-active-badge">{activeBans}</span>}
+          </button>
+        </div>
+        {children(api)}
+      </div>
 
-            {discoverMode === "recommended" && (
-              <div className="deck-panel-niche">
-                <label htmlFor="deck-niche-slider" className="deck-panel-niche-label">
-                  {t("niche.label")}
-                </label>
-                <input
-                  id="deck-niche-slider"
-                  type="range"
-                  min="-1"
-                  max="1"
-                  step="0.25"
-                  value={nicheBias}
-                  onChange={handleNicheChange}
-                  onPointerUp={persistNiche}
-                  onKeyUp={persistNiche}
-                  onBlur={persistNiche}
-                  className="niche-slider"
-                />
-                <div className="deck-panel-niche-captions">
-                  <span className="muted text-sm">{t("niche.mainstream")}</span>
-                  <span className="muted text-sm">{t("niche.niche")}</span>
-                </div>
-                <p className="muted text-sm deck-panel-niche-hint">{t("niche.hint")}</p>
+      {open && (
+        <aside
+          id="deck-drawer"
+          className="cat-drawer disc-drawer"
+          aria-label={t("discover.deckSettings")}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") {
+              e.stopPropagation();
+              setDrawer(false);
+            }
+          }}
+        >
+          <div className="cat-drawer-head">
+            <h2 className="cat-drawer-title">{t("discover.deckSettings")}</h2>
+            <div className="spacer" />
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              onClick={() => setDrawer(false)}
+              aria-label={t("discover.deckSettingsClose")}
+            >
+              ✕
+            </button>
+          </div>
+
+          {discoverMode === "recommended" && (
+            <div className="deck-panel-niche">
+              <label htmlFor="deck-niche-slider" className="cat-drawer-legend">
+                {t("niche.label")}
+              </label>
+              <input
+                id="deck-niche-slider"
+                type="range"
+                min="-1"
+                max="1"
+                step="0.25"
+                value={nicheBias}
+                onChange={handleNicheChange}
+                onPointerUp={persistNiche}
+                onKeyUp={persistNiche}
+                onBlur={persistNiche}
+                className="niche-slider"
+              />
+              <div className="deck-panel-niche-captions">
+                <span className="muted text-sm">{t("niche.mainstream")}</span>
+                <span className="muted text-sm">{t("niche.niche")}</span>
               </div>
-            )}
+            </div>
+          )}
 
-            <p className="muted deck-panel-intro">{t("discover.filtersIntro")}</p>
+          <p className="muted text-sm">{t("discover.filtersIntro")}</p>
 
-            <h3 className="section-title deck-panel-heading">
-              {t("discover.filtersFormatsHeading")}
-            </h3>
-            <div className="chip-row deck-panel-chips">
+          <fieldset className="cat-drawer-group">
+            <legend className="cat-drawer-legend">{t("discover.filtersFormatsHeading")}</legend>
+            <div className="chip-row">
               {DECK_FORMATS.map((f) => (
                 <button
                   key={f}
@@ -266,12 +285,12 @@ export function DeckPanel({
                 </button>
               ))}
             </div>
+          </fieldset>
 
-            <h3 className="section-title deck-panel-heading">
-              {t("discover.filtersGenresHeading")}
-            </h3>
-            {allGenres.length > 0 && (
-              <div className="chip-row deck-panel-genres deck-panel-chips">
+          {allGenres.length > 0 && (
+            <fieldset className="cat-drawer-group">
+              <legend className="cat-drawer-legend">{t("discover.filtersGenresHeading")}</legend>
+              <div className="chip-row">
                 {allGenres.map((g) => (
                   <button
                     key={g}
@@ -284,85 +303,66 @@ export function DeckPanel({
                   </button>
                 ))}
               </div>
-            )}
+            </fieldset>
+          )}
 
-            <h3 className="section-title deck-panel-heading">
-              {t("discover.filtersOtherHeading")}
-            </h3>
-            <div
-              className={`chip-row ${hideUpcoming && !statusDataSynced ? "deck-panel-chips-tight" : "deck-panel-chips"}`}
+          <div className="cat-drawer-group">
+            <button
+              type="button"
+              className={`chip-toggle${hideUpcoming ? " active" : ""}`}
+              aria-pressed={hideUpcoming}
+              onClick={() => {
+                setHideUpcoming((prev) => !prev);
+                setSaved(false);
+              }}
             >
-              <button
-                type="button"
-                className={`chip-toggle${hideUpcoming ? " active" : ""}`}
-                aria-pressed={hideUpcoming}
-                onClick={() => {
-                  setHideUpcoming((prev) => !prev);
-                  setSaved(false);
-                }}
-              >
-                {t("discover.filtersHideUpcoming")}
-              </button>
-            </div>
+              {t("discover.filtersHideUpcoming")}
+            </button>
             {hideUpcoming && !statusDataSynced && (
               <p className="muted text-sm text-danger deck-panel-warn">
                 {t("discover.filtersHideUpcomingNeedsSync")}
               </p>
             )}
           </div>
-        )}
-      </aside>
 
-      {children}
-
-      <aside className="deck-panel deck-panel-right" aria-label={t("discover.deckPanelRightTitle")}>
-        {toggleButton(t("discover.deckPanelRightTitle"), "deck-panel-right-body", false)}
-        {open && (
-          <div id="deck-panel-right-body" className="deck-panel-body">
-            <h3 className="section-title deck-panel-heading">
-              {t("discover.filtersDateHeading")}
-            </h3>
+          <div className="cat-drawer-group">
             <DateRangeControl
               minStartDate={minStartDate}
               maxStartDate={maxStartDate}
+              label={t("discover.filtersDateHeading")}
               onChange={(min, max) => {
                 setMinStartDate(min);
                 setMaxStartDate(max);
                 setSaved(false);
               }}
             />
-            <p className="muted text-sm deck-panel-date-hint">{t("discover.filtersDateHint")}</p>
-
-            <h3 className="section-title deck-panel-heading">
-              {t("discover.filtersScoreHeading")}
-            </h3>
-            <ScoreRangeControl
-              minScore={minScore}
-              minOnly={true}
-              onChange={(min) => {
-                setMinScore(min);
-                setSaved(false);
-              }}
-            />
-
-            <div className="row deck-panel-save">
-              <button className="btn btn-primary" onClick={save} disabled={saving}>
-                {saving ? t("discover.filtersSaving") : t("discover.filtersSave")}
-              </button>
-              <button
-                type="button"
-                className="btn"
-                onClick={handleResetFilters}
-                disabled={activeBans === 0 && nicheBias === 0}
-              >
-                {t("discover.filtersReset")}
-              </button>
-              {saved && <span className="muted">{t("discover.filtersSaved")}</span>}
-              {!saving && !saved && <span className="muted">{t("discover.filtersAutoHint")}</span>}
-            </div>
           </div>
-        )}
-      </aside>
+
+          <ScoreRangeControl
+            minScore={minScore}
+            minOnly={true}
+            label={t("discover.filtersScoreHeading")}
+            onChange={(min) => {
+              setMinScore(min);
+              setSaved(false);
+            }}
+          />
+
+          <div className="disc-drawer-foot">
+            <button
+              type="button"
+              className="btn"
+              onClick={handleResetFilters}
+              disabled={activeBans === 0 && nicheBias === 0}
+            >
+              {t("discover.filtersReset")}
+            </button>
+            <span className="muted text-sm">
+              {saving ? t("discover.filtersSaving") : saved ? t("discover.filtersSaved") : t("discover.filtersAutoHint")}
+            </span>
+          </div>
+        </aside>
+      )}
     </div>
   );
 }

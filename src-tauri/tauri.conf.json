@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "AnimeOnTrack",
-  "version": "0.19.0",
+  "version": "0.20.0",
   "identifier": "com.animeontrack.app",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -22,7 +22,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' data: asset: https://asset.localhost http://asset.localhost https://*.anilist.co; media-src 'self' asset: https://asset.localhost http://asset.localhost; style-src 'self' 'unsafe-inline'; connect-src 'self' ipc: http://ipc.localhost",
+      "csp": "default-src 'self'; img-src 'self' data: asset: https://asset.localhost http://asset.localhost https://*.anilist.co https://i.ytimg.com; media-src 'self' asset: https://asset.localhost http://asset.localhost; style-src 'self' 'unsafe-inline'; connect-src 'self' ipc: http://ipc.localhost; frame-src https://www.youtube-nocookie.com https://www.dailymotion.com;",
       "assetProtocol": {
         "enable": true,
         "scope": [

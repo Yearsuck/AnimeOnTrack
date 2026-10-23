@@ -43,6 +43,7 @@ export function PosterCard({
   onActivate,
   corner,
   action,
+  badge,
   footer,
 }: {
   title: string;
@@ -56,6 +57,8 @@ export function PosterCard({
   onActivate: () => void;
   corner?: ReactNode;
   action?: ReactNode;
+  /** A short label pinned to the poster's bottom-left (countdown, score). */
+  badge?: ReactNode;
   footer?: ReactNode;
 }) {
   const t = useT();
@@ -91,6 +94,7 @@ export function PosterCard({
         ) : (
           <img src={src!} alt="" loading="lazy" onError={markFailed} />
         )}
+        {badge && <span className="poster-badge">{badge}</span>}
         {selected && (
           <span className="card-select-check" aria-hidden="true">
             ✓

@@ -9,7 +9,9 @@ import { useListasData } from "./listas/useListasData";
 import { useListasFilter } from "./listas/useListasFilter";
 import { ListasHeader } from "./listas/ListasHeader";
 import { SmartGroups } from "./listas/SmartGroups";
-import { ListasToolbar } from "./listas/ListasToolbar";
+import { ListasFilterDrawer, ListasToolbar } from "./listas/ListasToolbar";
+import { StartPicks } from "./listas/StartPicks";
+import { pickStartToday } from "./listas/pickStart";
 import { ListasCard } from "./listas/ListasCard";
 import { ListasDenseRow } from "./listas/ListasDenseRow";
 import { BulkActionBar } from "./listas/BulkActionBar";
@@ -35,6 +37,7 @@ export function ListasView({
   // Checkboxes and the batch bar only exist while selecting (Mi biblioteca's
   // pattern); otherwise a card click opens the series.
   const [selectMode, setSelectMode] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(false);
   const handleSelectModeChange = useCallback((on: boolean) => {
     setSelectMode(on);
     if (!on) setSelectedIds(new Set());
@@ -93,7 +96,6 @@ export function ListasView({
     resetFilters,
     availableGenres,
     availableFormats,
-    topGenres,
     smartCounts,
     activeFilterCount,
     filteredEntries,
@@ -140,6 +142,16 @@ export function ListasView({
     });
   }, [filteredEntries]);
   const shownEntries = useMemo(() => filteredEntries.slice(0, limit), [filteredEntries, limit]);
+
+  // "Para empezar hoy" only on the untouched Quiero ver list: under a search
+  // or a filter the user is already choosing.
+  const startPicks = useMemo(
+    () =>
+      activeTab === "want" && activeFilterCount === 0 && !filterState.query && currentEntries.length >= 4
+        ? pickStartToday(currentEntries)
+        : [],
+    [activeTab, activeFilterCount, filterState.query, currentEntries]
+  );
   const remaining = filteredEntries.length - shownEntries.length;
 
   return (
@@ -173,10 +185,9 @@ export function ListasView({
         onYearToChange={setYearTo}
         onClearFilters={resetFilters}
         activeFilterCount={activeFilterCount}
-        availableFormats={availableFormats}
-        availableGenres={availableGenres}
-        topGenres={topGenres}
         resultCount={filteredEntries.length}
+        drawerOpen={drawerOpen}
+        onToggleDrawer={() => setDrawerOpen((v) => !v)}
         quickFilters={
           activeTab === "want" ? (
             <SmartGroups
@@ -187,6 +198,12 @@ export function ListasView({
           ) : null
         }
       />
+
+      <div className={`cat-layout${drawerOpen ? " with-drawer" : ""}`}>
+      <div className="cat-main">
+      {!selectMode && (
+        <StartPicks picks={startPicks} onOpenSeries={onOpenSeries} onChanged={reload} />
+      )}
 
       {selectMode && (
         <BulkActionBar
@@ -254,6 +271,23 @@ export function ListasView({
           </button>
         </div>
       )}
+      </div>
+
+      {drawerOpen && (
+        <ListasFilterDrawer
+          filterState={filterState}
+          onFormatChange={setFormat}
+          onStatusChange={setStatus}
+          onToggleGenre={toggleGenre}
+          onMinScoreChange={setMinScore}
+          onYearFromChange={setYearFrom}
+          onYearToChange={setYearTo}
+          availableFormats={availableFormats}
+          availableGenres={availableGenres}
+          onClose={() => setDrawerOpen(false)}
+        />
+      )}
+      </div>
 
     </div>
   );

@@ -4,6 +4,7 @@ import { useT } from "../i18n";
 import { createFilterCache } from "../lib/createFilterCache";
 import { Menu } from "../components/Menu";
 import { PosterCard } from "../components/PosterCard";
+import { Reveal } from "../components/Reveal";
 import type { LibraryItem, Series } from "../types";
 
 type Status = "completed" | "watching" | "plan";
@@ -644,90 +645,92 @@ export function Library({
             </div>
 
             {moreOpen && (
-              <div className="filter-collapsible-panel" id="lib-more-filters">
-                <div className="filter-collapsible-row">
-                  <span className="filter-label" id="lib-airing-label">
-                    {t("library.filterLabel")}
-                  </span>
-                  <div className="seg" role="group" aria-labelledby="lib-airing-label">
-                    {(["all", "airing", "finished"] as AiringFilter[]).map((f) => (
-                      <button
-                        key={f}
-                        type="button"
-                        className={`seg-btn${airingFilter === f ? " active" : ""}`}
-                        aria-pressed={airingFilter === f}
-                        onClick={() => setAiringFilter(f)}
-                      >
-                        {f === "all"
-                          ? t("library.filterAll")
-                          : f === "airing"
-                            ? t("library.filterAiring")
-                            : t("library.filterFinished")}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                {studioOptions.length > 0 && (
+              <Reveal>
+                <div className="filter-collapsible-panel" id="lib-more-filters">
                   <div className="filter-collapsible-row">
-                    <label className="filter-label" htmlFor="lib-studio-select">
-                      {t("library.filterStudio")}
-                    </label>
-                    <select
-                      id="lib-studio-select"
-                      className="input filter-select"
-                      value={studioFilter}
-                      onChange={(e) => setStudioFilter(e.target.value)}
-                    >
-                      <option value="all">{t("library.studioAll")}</option>
-                      {studioOptions.map((s) => (
-                        <option key={s} value={s}>
-                          {s}
-                        </option>
+                    <span className="filter-label" id="lib-airing-label">
+                      {t("library.filterLabel")}
+                    </span>
+                    <div className="seg" role="group" aria-labelledby="lib-airing-label">
+                      {(["all", "airing", "finished"] as AiringFilter[]).map((f) => (
+                        <button
+                          key={f}
+                          type="button"
+                          className={`seg-btn${airingFilter === f ? " active" : ""}`}
+                          aria-pressed={airingFilter === f}
+                          onClick={() => setAiringFilter(f)}
+                        >
+                          {f === "all"
+                            ? t("library.filterAll")
+                            : f === "airing"
+                              ? t("library.filterAiring")
+                              : t("library.filterFinished")}
+                        </button>
                       ))}
-                    </select>
-                  </div>
-                )}
-                {genreOptions.length > 0 && (
-                  <div className="filter-group">
-                    <span className="filter-label" id="lib-genre-label">
-                      {t("library.filterGenre")}
-                    </span>                    <div className="chip-row" role="group" aria-labelledby="lib-genre-label">
-                      {visibleGenreOptions.map((g) => {
-                        const state = getGenreState(g);
-                        return (
-                          <button
-                            key={g}
-                            type="button"
-                            className={`chip-toggle${state !== "neutral" ? " active" : ""}${state === "include" ? " chip-include" : ""}${state === "exclude" ? " chip-exclude" : ""}`}
-                            onClick={() => toggleGenre(g)}
-                            aria-pressed={state !== "neutral"}
-                            aria-label={t("library.genreChipAria", { genre: g, state: t(`library.genreState.${state}`) })}
-                          >
-                            {state === "include" && <span className="chip-state" aria-hidden="true">+</span>}
-                            {state === "exclude" && <span className="chip-state" aria-hidden="true">−</span>}
-                            {g}
-                          </button>
-                        );
-                      })}
-                      {hiddenGenreCount > 0 && (
-                        <button type="button" className="btn btn-sm btn-ghost" onClick={() => setShowAllGenres(true)}>
-                          {t("library.showMoreGenres", { count: hiddenGenreCount })}
-                        </button>
-                      )}
-                      {showAllGenres && genreOptions.length > GENRE_VISIBLE_CAP && (
-                        <button type="button" className="btn btn-sm btn-ghost" onClick={() => setShowAllGenres(false)}>
-                          {t("library.showLessGenres")}
-                        </button>
-                      )}
-                      {(includedGenres.size > 0 || excludedGenres.size > 0) && (
-                        <button type="button" className="btn btn-sm btn-ghost" onClick={clearGenreFilters}>
-                          {t("library.clearGenreFilters")}
-                        </button>
-                      )}
                     </div>
                   </div>
-                )}
-              </div>
+                  {studioOptions.length > 0 && (
+                    <div className="filter-collapsible-row">
+                      <label className="filter-label" htmlFor="lib-studio-select">
+                        {t("library.filterStudio")}
+                      </label>
+                      <select
+                        id="lib-studio-select"
+                        className="input filter-select"
+                        value={studioFilter}
+                        onChange={(e) => setStudioFilter(e.target.value)}
+                      >
+                        <option value="all">{t("library.studioAll")}</option>
+                        {studioOptions.map((s) => (
+                          <option key={s} value={s}>
+                            {s}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                  {genreOptions.length > 0 && (
+                    <div className="filter-group">
+                      <span className="filter-label" id="lib-genre-label">
+                        {t("library.filterGenre")}
+                      </span>                    <div className="chip-row" role="group" aria-labelledby="lib-genre-label">
+                        {visibleGenreOptions.map((g) => {
+                          const state = getGenreState(g);
+                          return (
+                            <button
+                              key={g}
+                              type="button"
+                              className={`chip-toggle${state !== "neutral" ? " active" : ""}${state === "include" ? " chip-include" : ""}${state === "exclude" ? " chip-exclude" : ""}`}
+                              onClick={() => toggleGenre(g)}
+                              aria-pressed={state !== "neutral"}
+                              aria-label={t("library.genreChipAria", { genre: g, state: t(`library.genreState.${state}`) })}
+                            >
+                              {state === "include" && <span className="chip-state" aria-hidden="true">+</span>}
+                              {state === "exclude" && <span className="chip-state" aria-hidden="true">−</span>}
+                              {g}
+                            </button>
+                          );
+                        })}
+                        {hiddenGenreCount > 0 && (
+                          <button type="button" className="btn btn-sm btn-ghost" onClick={() => setShowAllGenres(true)}>
+                            {t("library.showMoreGenres", { count: hiddenGenreCount })}
+                          </button>
+                        )}
+                        {showAllGenres && genreOptions.length > GENRE_VISIBLE_CAP && (
+                          <button type="button" className="btn btn-sm btn-ghost" onClick={() => setShowAllGenres(false)}>
+                            {t("library.showLessGenres")}
+                          </button>
+                        )}
+                        {(includedGenres.size > 0 || excludedGenres.size > 0) && (
+                          <button type="button" className="btn btn-sm btn-ghost" onClick={clearGenreFilters}>
+                            {t("library.clearGenreFilters")}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </Reveal>
             )}
           </div>
 

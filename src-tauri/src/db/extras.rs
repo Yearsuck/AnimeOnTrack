@@ -111,32 +111,46 @@ impl Db {
 
     /// Cached AniList extras and when they were fetched (unix seconds).
     pub fn cached_media_extras(&self, anilist_id: i64) -> Result<Option<(MediaExtras, i64)>> {
-        let row: Option<(Option<String>, String, i64)> = self
+        type Row = (Option<String>, String, i64, Option<String>);
+        let row: Option<Row> = self
             .conn
             .query_row(
-                "SELECT description, relations_json, fetched_at FROM anilist_media_extras WHERE anilist_id=?1",
+                "SELECT description, relations_json, fetched_at, trailer_json FROM anilist_media_extras WHERE anilist_id=?1",
                 [anilist_id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
             .optional()?;
-        Ok(row.map(|(description, json, fetched_at)| {
+        Ok(row.map(|(description, json, fetched_at, trailer_json)| {
             let relations: Vec<RelatedMedia> = serde_json::from_str(&json).unwrap_or_default();
-            (MediaExtras { description, relations }, fetched_at)
+            // A row written before the trailer column existed was never asked
+            // about trailers: report it as infinitely old so it is refetched
+            // (the stale copy still serves if that fails).
+            let (trailer, fetched_at) = match trailer_json {
+                // Re-validated on read: the value ends up in an iframe URL and a
+                // restored backup is as untrusted as the network.
+                Some(j) => {
+                    let stored: Option<crate::anilist::Trailer> = serde_json::from_str(&j).unwrap_or(None);
+                    (stored.and_then(|t| crate::anilist::parse_trailer(Some(t.site), Some(t.id))), fetched_at)
+                }
+                None => (None, 0),
+            };
+            (MediaExtras { description, relations, trailer }, fetched_at)
         }))
     }
 
     /// Cache a fetch result. `None` (AniList has no such title) is stored as
     /// an empty entry so the next open does not ask again.
     pub fn store_media_extras(&self, anilist_id: i64, extras: Option<&MediaExtras>, now: i64) -> Result<()> {
-        let (description, relations) = match extras {
-            Some(e) => (e.description.clone(), serde_json::to_string(&e.relations)?),
-            None => (None, "[]".to_string()),
+        let (description, relations, trailer) = match extras {
+            Some(e) => (e.description.clone(), serde_json::to_string(&e.relations)?, serde_json::to_string(&e.trailer)?),
+            None => (None, "[]".to_string(), "null".to_string()),
         };
         self.conn.execute(
-            "INSERT INTO anilist_media_extras(anilist_id, description, relations_json, fetched_at) VALUES(?1, ?2, ?3, ?4)
+            "INSERT INTO anilist_media_extras(anilist_id, description, relations_json, fetched_at, trailer_json) VALUES(?1, ?2, ?3, ?4, ?5)
              ON CONFLICT(anilist_id) DO UPDATE SET description=excluded.description,
-                relations_json=excluded.relations_json, fetched_at=excluded.fetched_at",
-            (anilist_id, description, relations, now),
+                relations_json=excluded.relations_json, fetched_at=excluded.fetched_at,
+                trailer_json=excluded.trailer_json",
+            (anilist_id, description, relations, now, trailer),
         )?;
         Ok(())
     }
@@ -251,6 +265,7 @@ impl Db {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::anilist::Trailer;
     use crate::db::test_support::*;
 
     fn rel(id: i64, t: &str, title: &str) -> RelatedMedia {
@@ -288,14 +303,49 @@ mod tests {
     fn media_extras_cache_round_trips_and_caches_a_miss() {
         let db = Db::open(":memory:").unwrap();
         assert_eq!(db.cached_media_extras(5).unwrap(), None);
-        let e = MediaExtras { description: Some("Desc".into()), relations: vec![rel(6, "SEQUEL", "Six")] };
+        let e = MediaExtras {
+            description: Some("Desc".into()),
+            relations: vec![rel(6, "SEQUEL", "Six")],
+            trailer: Some(Trailer { site: "youtube".into(), id: "abc123".into() }),
+        };
         db.store_media_extras(5, Some(&e), 100).unwrap();
         assert_eq!(db.cached_media_extras(5).unwrap(), Some((e, 100)));
         db.store_media_extras(5, None, 200).unwrap();
         assert_eq!(
             db.cached_media_extras(5).unwrap(),
-            Some((MediaExtras { description: None, relations: vec![] }, 200))
+            Some((MediaExtras { description: None, relations: vec![], trailer: None }, 200))
         );
+    }
+
+    #[test]
+    fn media_extras_row_without_trailer_answer_is_stale_but_a_confirmed_none_is_not() {
+        let db = Db::open(":memory:").unwrap();
+        // A confirmed "no trailer" is stored as the JSON string "null" and keeps its age.
+        let none = MediaExtras { description: Some("D".into()), relations: vec![], trailer: None };
+        db.store_media_extras(7, Some(&none), 500).unwrap();
+        let stored: Option<String> =
+            db.conn.query_row("SELECT trailer_json FROM anilist_media_extras WHERE anilist_id=7", [], |r| r.get(0)).unwrap();
+        assert_eq!(stored.as_deref(), Some("null"));
+        assert_eq!(db.cached_media_extras(7).unwrap(), Some((none, 500)));
+        // A row from before the column existed (SQL NULL) reads as fetched at 0, so it is refetched.
+        db.conn
+            .execute(
+                "INSERT INTO anilist_media_extras(anilist_id, description, relations_json, fetched_at) VALUES(8, 'Old', '[]', 900)",
+                [],
+            )
+            .unwrap();
+        assert_eq!(
+            db.cached_media_extras(8).unwrap(),
+            Some((MediaExtras { description: Some("Old".into()), relations: vec![], trailer: None }, 0))
+        );
+        // A stored trailer is re-validated on read (a restored backup is untrusted).
+        db.conn
+            .execute(
+                "INSERT INTO anilist_media_extras(anilist_id, description, relations_json, fetched_at, trailer_json) VALUES(9, NULL, '[]', 900, '{\"site\":\"youtube\",\"id\":\"../x?y\"}')",
+                [],
+            )
+            .unwrap();
+        assert_eq!(db.cached_media_extras(9).unwrap().unwrap().0.trailer, None);
     }
 
     #[test]

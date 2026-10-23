@@ -193,6 +193,8 @@ export interface SwipeCard {
   poster_url: string | null;
   kind: string;
   matched_genre: string | null;
+  /** The catalog row the deck picked this card from (facts, genres, banner). */
+  catalog?: CatalogAnime | null;
 }
 
 export type SwipeDecision = "Seen" | "Want" | "Discard";
@@ -308,6 +310,13 @@ export interface AnimeExtras {
   /** Raw AniList markup — always go through parseDescription. */
   description: string | null;
   relations: RelatedAnime[];
+  /** Validated by the backend; only youtube / dailymotion. */
+  trailer: Trailer | null;
+}
+
+export interface Trailer {
+  site: "youtube" | "dailymotion";
+  id: string;
 }
 
 export interface CatalogPage {

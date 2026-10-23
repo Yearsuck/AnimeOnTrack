@@ -71,20 +71,10 @@ export function useListasFilter(entries: ListasEntry[]) {
   }, []);
 
   // Compute available genres and their frequencies
-  const { availableGenres, topGenres } = useMemo(() => {
-    const counts: Record<string, number> = {};
-    for (const entry of entries) {
-      const list = entry.meta?.genres ?? [];
-      for (const g of list) {
-        counts[g] = (counts[g] || 0) + 1;
-      }
-    }
-    const all = Object.keys(counts).sort((a, b) => a.localeCompare(b));
-    const top = Object.entries(counts)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 10)
-      .map(([g]) => g);
-    return { availableGenres: all, topGenres: top };
+  const availableGenres = useMemo(() => {
+    const all = new Set<string>();
+    for (const entry of entries) for (const g of entry.meta?.genres ?? []) all.add(g);
+    return [...all].sort((a, b) => a.localeCompare(b));
   }, [entries]);
 
   // Formats actually present in this list (AniList codes, incl. TV_SHORT/MUSIC).
@@ -259,7 +249,6 @@ export function useListasFilter(entries: ListasEntry[]) {
     resetFilters,
     availableGenres,
     availableFormats,
-    topGenres,
     smartCounts,
     activeFilterCount,
     filteredEntries,
