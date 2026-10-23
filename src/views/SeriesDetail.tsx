@@ -26,8 +26,11 @@ import { aniListTarget, seasonOf, sitePageUrl } from "../lib/anilistLinks";
 import { isUnlinkedCatalogRow } from "../lib/catalogLink";
 import { summarizeDownloads } from "../lib/downloadSummary";
 import { epNum } from "../lib/episodeNumber";
+import { launchEpisode } from "../lib/launchEpisode";
 import { resolveCoverUrl } from "../lib/posterFallback";
+import { arrivedViaMorph } from "../lib/viewTransition";
 import type { AnimeExtras, CatalogAnime, Episode, NextAir, Series, SeriesSiteInfo } from "../types";
+import { CheckMark } from "../components/CheckMark";
 import { RelatedRow, SeriesAbout } from "./SeriesInfo";
 
 const STATUS_KEYS: Record<string, MessageKey> = {
@@ -58,6 +61,8 @@ export function SeriesDetail({
   onOpenSeries?: (series: Series) => void;
 }) {
   const t = useT();
+  // Arrived through the poster morph: the cover skips its own entrance.
+  const [viaMorph] = useState(arrivedViaMorph);
   const [episodes, setEpisodes] = useState<Episode[]>([]);
   const [loading, setLoading] = useState(true);
   const [linking, setLinking] = useState(false);
@@ -311,6 +316,17 @@ export function SeriesDetail({
   // scroll position never jumps), then persist in the background. Marking an
   // episode seen also marks every earlier one seen; marking unseen also
   // un-marks every later one — watching stays gap-free.
+  function watchEpisode(ep: Episode, origin: Element) {
+    void launchEpisode({
+      url: ep.url,
+      origin,
+      title: series.title,
+      episode: ep.number,
+      cover: detailCover,
+      site: siteInfo?.site_name ?? null,
+    });
+  }
+
   function toggleSeen(ep: Episode) {
     const n = epNum(ep.number);
     const nextSeen = !ep.seen;
@@ -478,7 +494,9 @@ export function SeriesDetail({
           />
         )}
         <div className="detail-hero-grid">
-          {detailCover && <img className="detail-cover" src={detailCover} alt="" />}
+          {detailCover && (
+            <img className="detail-cover" src={detailCover} alt="" data-morph={viaMorph ? "" : undefined} />
+          )}
           <div className="detail-main">
             <h2 className="page-title detail-title">{catalogInfo?.title ?? series.title}</h2>
             {altTitle && <p className="muted detail-alt-title">{altTitle}</p>}
@@ -679,7 +697,7 @@ export function SeriesDetail({
               >
                 <span className="ep-num">{ep.number}</span>
                 <div className="ep-main">
-                  <div className="ep-title" onClick={() => openEpisode(ep.url)}>
+                  <div className="ep-title" onClick={(e) => watchEpisode(ep, e.currentTarget)}>
                     {t("common.episodeNumber", { number: ep.number })}
                   </div>
                   {ep.download_status === "failed" && (
@@ -754,7 +772,7 @@ export function SeriesDetail({
                       ⬇
                     </button>
                   )}
-                  <button type="button" className="btn" onClick={() => openEpisode(ep.url)}>
+                  <button type="button" className="btn" onClick={(e) => watchEpisode(ep, e.currentTarget)}>
                     {t("common.watch")}
                   </button>
                   <button
@@ -763,7 +781,7 @@ export function SeriesDetail({
                     title={ep.seen ? t("common.markUnseen") : t("common.markSeen")}
                     onClick={() => toggleSeen(ep)}
                   >
-                    ✓
+                    <CheckMark />
                   </button>
                   {ep.download_status === "downloading" && typeof dl[ep.id]?.percent === "number" && (
                     <div className="dl-progress">

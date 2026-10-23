@@ -3824,3 +3824,164 @@ select.settings-select {
     opacity: 0;
   }
 }
+
+/* ---- Seen toggle: the fill pops in from the middle of the ring (scale +
+   opacity on a pseudo-element, so rapid toggling retargets instead of
+   restarting) and the tick draws in via stroke-dashoffset. Un-marking plays
+   the same transitions backwards. Replaces the one-shot keyframe pop, which
+   also replayed on every already-seen row at mount. ---- */
+.check {
+  position: relative;
+  isolation: isolate;
+}
+.check.on {
+  background: transparent;
+  animation: none;
+}
+.check::before {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  border-radius: var(--radius-round);
+  background: var(--success);
+  z-index: -1;
+  opacity: 0;
+  transform: scale(0.4);
+  transition: transform var(--dur) var(--ease-out), opacity var(--dur-fast) var(--ease);
+}
+.check.on::before {
+  opacity: 1;
+  transform: scale(1);
+}
+.check-mark {
+  display: block;
+  overflow: visible;
+}
+.check-mark path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  transition: stroke-dashoffset var(--dur-fast) var(--ease-out);
+}
+.check.on .check-mark path {
+  stroke-dashoffset: 0;
+  transition-delay: 70ms;
+}
+@media (prefers-reduced-motion: reduce) {
+  .check::before {
+    transform: none;
+    transition: opacity var(--dur-fast) linear;
+  }
+  .check-mark path {
+    stroke-dashoffset: 0;
+    opacity: 0;
+    transition: opacity var(--dur-fast) linear;
+  }
+  .check.on .check-mark path {
+    opacity: 1;
+    transition-delay: 0s;
+  }
+}
+
+/* ====================================================================
+   Navigation motion: poster -> detail morph (View Transitions), Catálogo
+   section slide, first-screen grid stagger, badge pop, soft state fades.
+   transform/opacity only. Reduced motion: no morph (the helper never starts
+   one), fade-only elsewhere.
+   ==================================================================== */
+
+/* ---- View transitions. lib/viewTransition.ts sets html[data-vt] for the
+   duration and names the clicked poster; the detail cover takes the same
+   name only while data-vt is set. The rest of the page crossfades fast. ---- */
+html[data-vt] .detail-cover {
+  view-transition-name: series-cover;
+}
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: var(--dur-fast);
+  animation-timing-function: var(--ease);
+}
+::view-transition-group(series-cover) {
+  animation-duration: 300ms;
+  animation-timing-function: var(--ease-out);
+}
+::view-transition-old(series-cover),
+::view-transition-new(series-cover) {
+  height: 100%;
+  object-fit: cover;
+  overflow: clip;
+}
+/* The morph carries the cover in: skip its own fade-up. */
+.detail-cover[data-morph] {
+  animation: none;
+}
+
+/* ---- Catálogo section switch: content under the page head slides in from the
+   side the section sits on (order Explorar / Descubrir / Listas). backwards
+   fill only; data-sdir is cleared by App shortly after. ---- */
+.view-stack {
+  --sec-dx: 18px;
+}
+.view-stack[data-sdir="back"] {
+  --sec-dx: -18px;
+}
+.view-stack[data-sdir] .view-panel.view-enter .page > :not(.page-head) {
+  animation: sec-in var(--dur) var(--ease-out) backwards;
+}
+@keyframes sec-in {
+  from {
+    opacity: 0;
+    transform: translateX(var(--sec-dx));
+  }
+}
+
+/* ---- First-screenful grid stagger: only the first 12 cards, only while the
+   tab is fresh (App sets data-fresh for ~1.2 s after a tab/first load), so
+   infinite-scroll appends and later re-renders never replay it. 20 ms steps,
+   220 ms max delay. Skeleton grids (aria-busy) are excluded. ---- */
+.view-stack[data-fresh] .grid:not([aria-busy]) > .card:nth-child(-n + 12) {
+  animation: card-in var(--dur) var(--ease-out) backwards;
+  animation-delay: calc(var(--i, 0) * 20ms);
+}
+.grid > .card:nth-child(2) { --i: 1; }
+.grid > .card:nth-child(3) { --i: 2; }
+.grid > .card:nth-child(4) { --i: 3; }
+.grid > .card:nth-child(5) { --i: 4; }
+.grid > .card:nth-child(6) { --i: 5; }
+.grid > .card:nth-child(7) { --i: 6; }
+.grid > .card:nth-child(8) { --i: 7; }
+.grid > .card:nth-child(9) { --i: 8; }
+.grid > .card:nth-child(10) { --i: 9; }
+.grid > .card:nth-child(11) { --i: 10; }
+.grid > .card:nth-child(12) { --i: 11; }
+@keyframes card-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+}
+
+/* ---- Gentle fade for empty/loading states and notices appearing. ---- */
+.empty,
+.notice {
+  animation: soft-in var(--dur-slow) var(--ease-out) backwards;
+}
+@keyframes soft-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .view-stack[data-sdir] .view-panel.view-enter .page > :not(.page-head) {
+    animation-name: soft-in;
+  }
+  .view-stack[data-fresh] .grid:not([aria-busy]) > .card:nth-child(-n + 12) {
+    animation-name: soft-in;
+    animation-delay: 0ms;
+  }
+}

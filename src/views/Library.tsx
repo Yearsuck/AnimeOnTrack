@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { listLibrary, openEpisode, reclassifySeries } from "../api";
+import { useCallback, useEffect, useMemo, useState, type MouseEvent } from "react";
+import { listLibrary, reclassifySeries } from "../api";
+import { launchEpisode } from "../lib/launchEpisode";
 import { useT } from "../i18n";
 import { createFilterCache } from "../lib/createFilterCache";
+import { resolveCoverUrl } from "../lib/posterFallback";
 import { Menu } from "../components/Menu";
 import { PosterCard } from "../components/PosterCard";
 import { Reveal } from "../components/Reveal";
@@ -162,8 +164,16 @@ function LibraryCard({
   // The play button sits in PosterCard's action slot, which already stops
   // click/keys from reaching the card, so Enter on it never also opens the
   // series.
-  function playNext() {
-    if (next) openEpisode(next.url);
+  function playNext(e: MouseEvent<HTMLElement>) {
+    if (next) {
+      void launchEpisode({
+        url: next.url,
+        origin: e.currentTarget,
+        title: item.series.title,
+        episode: next.number,
+        cover: resolveCoverUrl(item.series.cover_url),
+      });
+    }
   }
 
   return (
