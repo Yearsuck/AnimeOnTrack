@@ -888,7 +888,7 @@ export function Catalog({
                         aria-label={t("catalog.infoTitle")}
                         onClick={(e) => {
                           e.stopPropagation();
-                          info(a);
+                          info(a, e.currentTarget);
                         }}
                         onKeyDown={stopCardEvent}
                       >

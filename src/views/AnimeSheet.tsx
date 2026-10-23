@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { getAnimeExtras, openEpisode } from "../api";
 import { useT, type MessageKey } from "../i18n";
 import { airCountdown } from "../lib/airCountdown";
 import { seasonOf } from "../lib/anilistLinks";
 import { formatLabel } from "../lib/formatLabel";
+import { FALLBACK_TRANSFORM, flipDelta, flipTransform, type Box } from "../lib/flip";
 import { useFormatNumber } from "../lib/formatNumber";
 import { initials, resolveCoverUrl } from "../lib/posterFallback";
 import type { AnimeExtras, CatalogAnime, Trailer } from "../types";
@@ -109,14 +110,126 @@ export interface AnimeSheetActions {
   onSeen?: (anime: SheetAnime) => void | Promise<void>;
 }
 
-function AnimeSheet({ anime, onClose, onStart, onWant, onSeen }: AnimeSheetActions & { anime: SheetAnime; onClose: () => void }) {
+const ENTER_MS = 320;
+const EXIT_MS = 220;
+const EASE_OUT = "cubic-bezier(0.16, 1, 0.3, 1)";
+
+function prefersReducedMotion(): boolean {
+  try {
+    return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  } catch {
+    return false;
+  }
+}
+
+/** The box a sheet should grow from: the clicked poster/cover, if there is one. */
+function originBox(el: Element | null | undefined): Box | null {
+  if (!el) return null;
+  const card = el.closest(".poster-card");
+  const hero = el.closest(".cat-hero");
+  const target = card?.querySelector(".poster") ?? hero?.querySelector(".cat-hero-cover") ?? (card || hero ? null : el);
+  if (!target) return null;
+  const r = target.getBoundingClientRect();
+  return r.width > 0 && r.height > 0 ? { left: r.left, top: r.top, width: r.width, height: r.height } : null;
+}
+
+function AnimeSheet({
+  anime,
+  origin,
+  originEl,
+  onClose: onClosed,
+  onStart,
+  onWant,
+  onSeen,
+}: AnimeSheetActions & { anime: SheetAnime; origin: Box | null; originEl: Element | null; onClose: () => void }) {
   const t = useT();
+  const backdropRef = useRef<HTMLDivElement>(null);
+  const closingRef = useRef(false);
+  const unmount = onClosed;
+  const closedRef = useRef(FALLBACK_TRANSFORM);
   const formatNumber = useFormatNumber();
   const dialogRef = useRef<HTMLDivElement>(null);
   const [extras, setExtras] = useState<AnimeExtras | null>(null);
   const [bannerFailed, setBannerFailed] = useState(false);
   const [coverFailed, setCoverFailed] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  // Closed-state keyframe: the origin's footprint (centre-anchored scale) or a
+  // small settle when the origin is unknown. Reduced motion: opacity only.
+  const finalRectRef = useRef<DOMRect | null>(null);
+  const closedTransform = useCallback(
+    (from: Box | null): string => {
+      if (prefersReducedMotion()) return "none";
+      const rect = finalRectRef.current;
+      const d = from && rect ? flipDelta(from, rect) : null;
+      return d ? flipTransform(d) : FALLBACK_TRANSFORM;
+    },
+    []
+  );
+
+  // Grow in: runs before first paint, so the dialog never flashes at full size.
+  // Only transform + opacity animate (compositor). StrictMode runs this twice
+  // in dev: running animations are cancelled before measuring so the second
+  // run reads the final box, and the cleanup cancels what this run started.
+  useLayoutEffect(() => {
+    const dlg = dialogRef.current;
+    const back = backdropRef.current;
+    if (!dlg || !back || typeof dlg.animate !== "function") return;
+    dlg.getAnimations().forEach((a) => a.cancel());
+    back.getAnimations().forEach((a) => a.cancel());
+    finalRectRef.current = dlg.getBoundingClientRect();
+    const reduce = prefersReducedMotion();
+    const from = closedTransform(origin);
+    closedRef.current = from;
+    const anims = [
+      back.animate([{ opacity: 0 }, { opacity: 1 }], { duration: reduce ? 140 : 200, easing: "ease-out" }),
+      dlg.animate(
+        [
+          { transform: from, opacity: 0 },
+          { transform: from, opacity: 1, offset: 0.18 },
+          { transform: "none", opacity: 1 },
+        ],
+        { duration: reduce ? 140 : ENTER_MS, easing: EASE_OUT }
+      ),
+    ];
+    return () => {
+      if (!closingRef.current) anims.forEach((a) => a.cancel());
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Shrink back toward the origin, then unmount. Starts from wherever the
+  // enter animation currently is, so closing mid-open does not jump.
+  const onClose = useCallback(() => {
+    if (closingRef.current) return;
+    closingRef.current = true;
+    const dlg = dialogRef.current;
+    const back = backdropRef.current;
+    if (!dlg || !back || typeof dlg.animate !== "function") {
+      unmount();
+      return;
+    }
+    const cs = getComputedStyle(dlg);
+    const fromT = cs.transform;
+    const fromO = cs.opacity;
+    const bo = getComputedStyle(back).opacity;
+    dlg.getAnimations().forEach((a) => a.cancel());
+    back.getAnimations().forEach((a) => a.cancel());
+    const reduce = prefersReducedMotion();
+    // Re-measure the origin if it is still on screen (the list may have scrolled).
+    const live = originEl?.isConnected ? originBox(originEl) : null;
+    const to = live ? closedTransform(live) : closedRef.current;
+    back.animate([{ opacity: bo }, { opacity: 0 }], { duration: EXIT_MS, easing: "ease-out", fill: "forwards" });
+    const exit = dlg.animate(
+      [
+        { transform: fromT, opacity: fromO },
+        { transform: to, opacity: 0 },
+      ],
+      { duration: reduce ? 120 : EXIT_MS, easing: EASE_OUT, fill: "forwards" }
+    );
+    exit.onfinish = unmount;
+    exit.oncancel = unmount;
+  }, [unmount, originEl, closedTransform]);
 
   // Load the description/relations/trailer; a failure just leaves them empty.
   useEffect(() => {
@@ -246,6 +359,7 @@ function AnimeSheet({ anime, onClose, onStart, onWant, onSeen }: AnimeSheetActio
 
   return (
     <div
+      ref={backdropRef}
       className="sheet-backdrop"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
@@ -361,13 +475,21 @@ function AnimeSheet({ anime, onClose, onStart, onWant, onSeen }: AnimeSheetActio
 
 /** `const { open, element } = useAnimeSheet({ onWant, ... })`, then render `{element}`. */
 export function useAnimeSheet(actions: AnimeSheetActions = {}): {
-  open: (anime: SheetAnime) => void;
+  /** `origin`: the clicked element; the sheet grows out of its poster/cover. When omitted, a focused poster card is used, else a plain scale+fade. */
+  open: (anime: SheetAnime, origin?: Element | null) => void;
   element: ReactNode;
 } {
-  const [anime, setAnime] = useState<SheetAnime | null>(null);
-  const close = useCallback(() => setAnime(null), []);
-  const element = anime
-    ? createPortal(<AnimeSheet anime={anime} onClose={close} {...actions} />, document.body)
+  const [shown, setShown] = useState<{ anime: SheetAnime; origin: Box | null; originEl: Element | null } | null>(null);
+  const close = useCallback(() => setShown(null), []);
+  const open = useCallback((anime: SheetAnime, origin?: Element | null) => {
+    // Measured now, at click time, while the card is still where it was.
+    const active = document.activeElement;
+    const el = origin ?? (active?.closest(".poster-card") ? active : null);
+    const box = originBox(el);
+    setShown({ anime, origin: box, originEl: box ? el : null });
+  }, []);
+  const element = shown
+    ? createPortal(<AnimeSheet anime={shown.anime} origin={shown.origin} originEl={shown.originEl} onClose={close} {...actions} />, document.body)
     : null;
-  return { open: setAnime, element };
+  return { open, element };
 }
