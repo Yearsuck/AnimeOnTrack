@@ -1,7 +1,7 @@
-/* Catálogo > Listas. The grid card, filter bar, segmented controls and batch
-   bar are the shared ones (.card/.poster-card, .filter-bar, .seg, .batch-bar
-   in styles.css); only what Listas alone has lives here: the year range and
-   the dense "Lista" view. */
+/* Catálogo > Listas. The grid card, segmented controls and batch bar are the
+   shared ones (.card/.poster-card, .seg, .batch-bar in styles.css) and the
+   filter chips and drawer are Explorar's (catalog.css); only what Listas
+   alone has lives here. */
 
 .listas-container {
   display: flex;
@@ -11,14 +11,11 @@
 }
 
 /* The container's gap already spaces the bar from the grid. */
-.listas-container .filter-bar {
-  margin-bottom: 0;
-}
 .listas-container .batch-bar {
   margin-bottom: 0;
 }
 
-/* Year range in the "Más filtros" panel */
+/* Year range in the filter drawer */
 .listas-year-inputs {
   display: inline-flex;
   align-items: center;
@@ -316,4 +313,99 @@
   display: flex;
   justify-content: center;
   padding: var(--sp-4) 0;
+}
+
+/* Toolbar: search + sort + Filtros on one row, then quick filters and the
+   active filters as chips (the chips and the drawer are Explorar's). */
+.listas-toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+.listas-toolbar-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+.listas-search {
+  flex: 1 1 280px;
+  max-width: 460px;
+}
+.listas-active {
+  margin-bottom: 0;
+}
+.listas-active .chip-row {
+  display: contents;
+}
+.listas-container .cat-main > * + * {
+  margin-top: var(--sp-4);
+}
+
+/* "Para empezar hoy" (Quiero ver only) */
+.listas-start {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+.listas-start-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: var(--sp-3);
+}
+.listas-start-card {
+  display: flex;
+  gap: var(--sp-4);
+  padding: var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+}
+.listas-start-card img,
+.listas-start-ph {
+  flex: none;
+  width: 84px;
+  height: 120px;
+  border-radius: var(--radius-sm);
+  object-fit: cover;
+  background: var(--surface-2);
+}
+.listas-start-ph {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: var(--fw-bold);
+  color: var(--muted);
+}
+.listas-start-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+.listas-start-name {
+  margin: 0;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-bold);
+  line-height: 1.3;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.listas-start-why {
+  margin: 0;
+  color: var(--accent);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+}
+.listas-start-meta {
+  margin: 0;
+}
+.listas-start-actions {
+  display: flex;
+  gap: var(--sp-2);
+  margin-top: auto;
+  padding-top: var(--sp-2);
 }

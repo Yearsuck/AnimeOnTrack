@@ -22,7 +22,8 @@ import type { SwipeOutDirection } from "./types";
 import { anilistIdFromUrl } from "./helpers";
 import { DeckPanel } from "./DeckPanel";
 import { HistoryRow } from "./HistoryRow";
-import { TasteChips } from "./TasteChips";
+import { deckCardInfo, useCardSynopsis } from "./deckCard";
+import "../../styles/discover.css";
 import { useLinkQueue } from "./useLinkQueue";
 import { resolveCoverUrl } from "../../lib/posterFallback";
 import { formatLabel } from "../../lib/formatLabel";
@@ -62,7 +63,7 @@ export function SwipeView() {
   // to release from decidedUrlsRef.
   const lastDecidedUrlRef = useRef<string | null>(null);
   const { statuses: linkStatuses, enqueue: enqueueLink } = useLinkQueue();
-  const [discoverMode] = useDiscoverMode();
+  const [discoverMode, setDiscoverMode] = useDiscoverMode();
   const discoverModeRef = useRef(discoverMode);
   discoverModeRef.current = discoverMode;
   const isFirstModeRenderRef = useRef(true);
@@ -431,137 +432,187 @@ export function SwipeView() {
   const sheet = useAnimeSheet({
     // Only when the sheet still shows the card on screen.
     onWant: (a) => {
-      if (card && anilistIdFromUrl(card.url) === a.id) decide("Want", "want");
+      if (card && (card.catalog?.id ?? anilistIdFromUrl(card.url)) === a.id) decide("Want", "want");
     },
     onSeen: (a) => {
-      if (card && anilistIdFromUrl(card.url) === a.id) decide("Seen", "seen");
+      if (card && (card.catalog?.id ?? anilistIdFromUrl(card.url)) === a.id) decide("Seen", "seen");
     },
   });
 
+  function openSheet(c: SwipeCard) {
+    const id = c.catalog?.id ?? anilistIdFromUrl(c.url);
+    if (id == null) {
+      openEpisode(c.url).catch((err) => console.error("openEpisode failed for", c.url, err));
+      return;
+    }
+    sheet.open(
+      c.catalog ?? {
+        id,
+        title: c.title,
+        cover_url: c.poster_url,
+        url: c.url,
+        format: c.kind || null,
+        genres: c.matched_genre ? [c.matched_genre] : [],
+      }
+    );
+  }
+
+  const synopsis = useCardSynopsis(card);
+  const info = card ? deckCardInfo(card, t) : null;
+
   return (
     <DeckPanel onBansSaved={resetQueue}>
-      {sheet.element}
-      <div className="swipe-stage">
-        <TasteChips />
-        {exhausted ? (
-          <div className="empty">{t("discover.exhausted")}</div>
-        ) : card ? (
-          <div key={card.url} className={`card swipe-card ${outDirection ? `swipe-out-${outDirection}` : ""}`}>
-            <div
-              className="poster clickable"
-              title={t("discover.openPageTitle")}
-              onClick={(e) => {
-                e.stopPropagation();
-                const id = anilistIdFromUrl(card.url);
-                if (id != null) {
-                  sheet.open({
-                    id,
-                    title: card.title,
-                    cover_url: card.poster_url,
-                    url: card.url,
-                    format: card.kind || null,
-                    genres: card.matched_genre ? [card.matched_genre] : [],
-                  });
-                } else {
-                  openEpisode(card.url).catch((err) => console.error("openEpisode failed for", card.url, err));
-                }
-              }}
-            >
-              {card.kind && <span className="chip">{formatLabel(t, card.kind)}</span>}
-              {(() => {
-                const src = resolveCoverUrl(card.poster_url);
-                return src ? <img src={src} alt={card.title} /> : null;
-              })()}
-            </div>
-
-            <div className="card-body">
-              <div className="card-title swipe-card-title">
-                {card.title}
+      {({ openSettings, activeBans }) => (
+        <>
+          {sheet.element}
+          {exhausted ? (
+            <div className="disc-empty">
+              <h3 className="disc-empty-title">{t("discover.exhaustedTitle")}</h3>
+              <p className="muted">
+                {activeBans > 0 ? t("discover.exhaustedFiltered", { count: activeBans }) : t("discover.exhausted")}
+              </p>
+              <div className="disc-empty-actions">
+                <button type="button" className="btn btn-primary" onClick={openSettings}>
+                  {t("discover.deckSettings")}
+                </button>
+                {discoverMode === "recommended" && (
+                  <button type="button" className="btn" onClick={() => setDiscoverMode("random")}>
+                    {t("discover.tryRandom")}
+                  </button>
+                )}
               </div>
-              {card.matched_genre && (
-                <div className="muted text-sm">
-                  {t("discover.genreLabel", { genre: card.matched_genre })}
+            </div>
+          ) : (
+            <section className="disc-stage" aria-label={t("discover.stageAria")}>
+              <div className="disc-deck">
+                <div className="disc-ghost disc-ghost-2" aria-hidden="true" />
+                <div className="disc-ghost disc-ghost-1" aria-hidden="true" />
+                {card ? (
+                  <button
+                    key={card.url}
+                    type="button"
+                    className={`disc-card${outDirection ? ` swipe-out-${outDirection}` : ""}`}
+                    title={t("discover.openPageTitle")}
+                    onClick={() => openSheet(card)}
+                  >
+                    {(() => {
+                      const src = resolveCoverUrl(card.poster_url);
+                      return src ? <img src={src} alt="" /> : <span className="disc-card-fallback">{card.title}</span>;
+                    })()}
+                    {card.kind && <span className="chip">{formatLabel(t, card.kind)}</span>}
+                    {info?.score && <span className="disc-card-score">{info.score}</span>}
+                  </button>
+                ) : (
+                  <div className="disc-card disc-card-loading" aria-busy="true" />
+                )}
+              </div>
+
+              <div className="disc-info">
+                {card && info ? (
+                  <>
+                    {card.matched_genre && (
+                      <p className="disc-why">
+                        {discoverMode === "recommended"
+                          ? t("discover.whyRecommended", { genre: card.matched_genre })
+                          : t("discover.whyRandom", { genre: card.matched_genre })}
+                      </p>
+                    )}
+                    <h2 className="disc-title">{card.title}</h2>
+                    {info.alt && <p className="disc-alt">{info.alt}</p>}
+                    {info.facts && <p className="disc-facts">{info.facts}</p>}
+                    {info.genres.length > 0 && (
+                      <ul className="disc-genres" aria-label={t("animeSheet.genres")}>
+                        {info.genres.map((g) => (
+                          <li key={g} className="tag">
+                            {g}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    <p className={`disc-synopsis${synopsis === null ? " loading" : ""}`}>
+                      {synopsis === null ? t("common.loading") : synopsis || t("discover.noSynopsis")}
+                    </p>
+                    <button type="button" className="btn-text disc-more" onClick={() => openSheet(card)}>
+                      {t("discover.fullSheet")}
+                    </button>
+                  </>
+                ) : (
+                  <p className="muted">{loading ? t("common.loading") : ""}</p>
+                )}
+
+                <div className="disc-actions">
+                  <button
+                    type="button"
+                    className="disc-act disc-act-discard"
+                    onClick={() => decide("Discard", "discard")}
+                    disabled={!card}
+                  >
+                    {t("discover.discard")}
+                    <span className="disc-act-key">{t("discover.keyLeft")}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="disc-act disc-act-seen"
+                    onClick={() => decide("Seen", "seen")}
+                    disabled={!card}
+                  >
+                    {t("discover.seen")}
+                    <span className="disc-act-key">{t("discover.keyUp")}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="disc-act disc-act-want"
+                    onClick={() => decide("Want", "want")}
+                    disabled={!card}
+                  >
+                    {t("discover.want")}
+                    <span className="disc-act-key">{t("discover.keyRight")}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="disc-act disc-act-undo"
+                    onClick={undo}
+                    disabled={!canUndo}
+                    aria-label={t("discover.undoTitle")}
+                    title={t("discover.undoTitle")}
+                  >
+                    ↺
+                  </button>
                 </div>
-              )}
-            </div>
-          </div>
-        ) : (
-          <div className="card swipe-card">
-            <div className="poster" />
-            <div className="card-body">
-              <div className="muted">{loading ? t("common.loading") : ""}</div>
-            </div>
-          </div>
-        )}
-
-        <div className="swipe-actions">
-          <button
-            className="btn btn-discard"
-            title={t("discover.discardTitle")}
-            onClick={() => decide("Discard", "discard")}
-            disabled={!card}
-          >
-            ✕
-          </button>
-          <button
-            className="btn btn-want"
-            title={t("discover.wantTitle")}
-            onClick={() => decide("Want", "want")}
-            disabled={!card}
-          >
-            ★
-          </button>
-          <button
-            className="btn btn-success"
-            title={t("discover.seenTitle")}
-            onClick={() => decide("Seen", "seen")}
-            disabled={!card}
-          >
-            ✓
-          </button>
-          <button
-            className="btn btn-ghost"
-            title={t("discover.undoTitle")}
-            onClick={undo}
-            disabled={!canUndo}
-          >
-            ↺
-          </button>
-        </div>
-        <div className="swipe-hint">{t("discover.hint")}</div>
-        {undoneMessage && (
-          <div className="muted text-sm text-danger">
-            {undoneMessage}
-          </div>
-        )}
-        {linkStatuses.length > 0 && (
-          <div className="swipe-history-list">
-            {linkStatuses.map((s) => (
-              <div key={s.id} className="muted text-sm">
-                {s.state === "searching" && t("discover.searching", { title: s.title })}
-                {s.state === "linked" && t("discover.linked", { count: s.episodes ?? 0 })}
-                {s.state === "nomatch" && t("discover.noMatch", { title: s.title })}
               </div>
-            ))}
-          </div>
-        )}
+            </section>
+          )}
 
-        {history.length > 0 && (
-          <div className="swipe-history">
-            <div className="muted text-sm swipe-history-heading">
-              {t("discover.historyHeading")}
+          {(undoneMessage || linkStatuses.length > 0) && (
+            <div className="disc-status" role="status">
+              {undoneMessage && <div className="muted text-sm text-danger">{undoneMessage}</div>}
+              {linkStatuses.map((s) => (
+                <div key={s.id} className="muted text-sm">
+                  {s.state === "searching" && t("discover.searching", { title: s.title })}
+                  {s.state === "linked" && t("discover.linked", { count: s.episodes ?? 0 })}
+                  {s.state === "nomatch" && t("discover.noMatch", { title: s.title })}
+                </div>
+              ))}
             </div>
-            {history.map((h) => (
-              <HistoryRow
-                key={h.series_id}
-                item={h}
-                onReclassify={reclassifyHistory}
-                onReturn={returnToDeck}
-              />
-            ))}
-          </div>
-        )}
-      </div>
+          )}
+
+          {history.length > 0 && (
+            <section className="disc-recent" aria-labelledby="disc-recent-title">
+              <div className="cat-shelf-head">
+                <h2 id="disc-recent-title" className="cat-shelf-title">
+                  {t("discover.historyHeading")}
+                </h2>
+                <span className="cat-shelf-hint">{t("discover.historyHint")}</span>
+              </div>
+              <div className="disc-recent-track">
+                {history.map((h) => (
+                  <HistoryRow key={h.series_id} item={h} onReclassify={reclassifyHistory} onReturn={returnToDeck} />
+                ))}
+              </div>
+            </section>
+          )}
+        </>
+      )}
     </DeckPanel>
   );
 }

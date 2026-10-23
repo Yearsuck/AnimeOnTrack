@@ -460,6 +460,17 @@ fn prepare_catalog_deck_setup(
     }))
 }
 
+/// A Descubrir deck card plus the catalog row it was picked from, so the deck
+/// can show the title's facts (year, episodes, score, studio, genres, banner)
+/// without another round trip. Serialized flat: the card's own fields stay
+/// where the frontend already reads them, `catalog` is added beside them.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DeckCard {
+    #[serde(flatten)]
+    pub card: FinishedCard,
+    pub catalog: crate::anilist::CatalogAnime,
+}
+
 /// One card from `setup`, skipping `excluded_norm_titles` / `excluded_ids` (a batch passes
 /// what it already picked, which is not persisted yet). A pool of candidate genres still
 /// worth trying: a genre that yields nothing undecided is dropped so a retry never
@@ -559,7 +570,7 @@ fn pick_single_catalog_card(
 pub async fn discover_catalog_card(
     state: State<'_, AppState>,
     recommended: bool,
-) -> Result<Option<FinishedCard>, String> {
+) -> Result<Option<DeckCard>, String> {
     let _ = get_source_id(&state)?;
     let db = state.db.lock().unwrap();
     let Some(setup) = prepare_catalog_deck_setup(&db, recommended)? else {
@@ -572,7 +583,7 @@ pub async fn discover_catalog_card(
         &setup.excluded_norm_titles,
         &HashSet::new(),
     )?;
-    Ok(res.map(|(card, _)| card))
+    Ok(res.map(|(card, catalog)| DeckCard { card, catalog }))
 }
 
 /// Up to `count` (clamped to 1..=20) distinct catalog cards for the deck in ONE call: the
@@ -584,7 +595,7 @@ pub async fn discover_catalog_cards(
     state: State<'_, AppState>,
     recommended: bool,
     count: u32,
-) -> Result<Vec<FinishedCard>, String> {
+) -> Result<Vec<DeckCard>, String> {
     let _ = get_source_id(&state)?;
     let db = state.db.lock().unwrap();
     let Some(setup) = prepare_catalog_deck_setup(&db, recommended)? else {
@@ -617,7 +628,7 @@ pub async fn discover_catalog_cards(
         for t in [Some(&anime.title), anime.title_romaji.as_ref(), anime.title_english.as_ref()].into_iter().flatten() {
             excluded_titles.insert(crate::matching::normalize_title(t));
         }
-        cards.push(card);
+        cards.push(DeckCard { card, catalog: anime });
     }
 
     Ok(cards)
@@ -733,6 +744,23 @@ mod tests {
             backlog_status: None, watched_externally: false,
         };
         assert_eq!(decision_for_history_row(&none), "none");
+    }
+
+    #[test]
+    fn deck_card_serializes_the_card_flat_with_its_catalog_row() {
+        let catalog = crate::db::test_support::catalog_anime(7, "Frieren", &["Fantasy"]);
+        let card = FinishedCard {
+            title: "Frieren".into(),
+            url: catalog.url.clone(),
+            poster_url: None,
+            kind: "TV".into(),
+            matched_genre: Some("Fantasy".into()),
+        };
+        let v = serde_json::to_value(DeckCard { card, catalog }).unwrap();
+        assert_eq!(v["title"], "Frieren");
+        assert_eq!(v["kind"], "TV");
+        assert_eq!(v["catalog"]["id"], 7);
+        assert_eq!(v["catalog"]["genres"][0], "Fantasy");
     }
 
     #[test]

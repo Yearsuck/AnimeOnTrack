@@ -1,0 +1,390 @@
+/* Catálogo → Descubrir (views/Descubrir/SwipeView.tsx + DeckPanel.tsx).
+   One card at a time: the deck on the left, everything about the top card
+   and the three decisions on the right; deck settings in a side drawer
+   (the .cat-drawer from catalog.css). */
+
+.disc-layout {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-5);
+}
+.disc-main {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+}
+.disc-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+.disc-drawer-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+}
+
+/* ---------- Stage ---------- */
+.disc-stage {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 48px;
+}
+.disc-deck {
+  position: relative;
+  flex: none;
+  width: 300px;
+  aspect-ratio: 2 / 3;
+}
+.disc-ghost {
+  position: absolute;
+  inset: 0;
+  border-radius: 16px;
+  border: 1px solid var(--border);
+}
+.disc-ghost-2 {
+  background: var(--surface-2);
+  transform: translate(18px, 10px) rotate(4deg);
+}
+.disc-ghost-1 {
+  background: var(--surface-3);
+  transform: translate(9px, 5px) rotate(2deg);
+}
+.disc-card {
+  position: absolute;
+  inset: 0;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  overflow: hidden;
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+  cursor: pointer;
+  font: inherit;
+  color: var(--text);
+  animation: disc-card-in var(--dur-slow) var(--ease-out);
+  transition: opacity var(--dur) var(--ease-out), transform var(--dur) var(--ease-out);
+}
+.disc-card:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-lg), var(--focus-ring);
+}
+.disc-card img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.disc-card .chip {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: var(--overlay-strong);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-bold);
+  color: var(--accent);
+}
+.disc-card-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: var(--sp-4);
+  font-weight: var(--fw-bold);
+  text-align: center;
+}
+.disc-card-score {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  padding: 3px 9px;
+  border-radius: 6px;
+  background: var(--success);
+  color: var(--on-success);
+  font-size: var(--fs-base);
+  font-weight: 800;
+}
+.disc-card-loading {
+  cursor: default;
+  animation: none;
+  background: var(--surface-2);
+}
+@keyframes disc-card-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.97);
+  }
+}
+/* Each decision leaves the way its key points: ← discard, → want, ↑ seen. */
+.disc-card.swipe-out-discard {
+  opacity: 0;
+  transform: translateX(-80px) rotate(-8deg);
+}
+.disc-card.swipe-out-want {
+  opacity: 0;
+  transform: translateX(80px) rotate(8deg);
+}
+.disc-card.swipe-out-seen {
+  opacity: 0;
+  transform: translateY(-70px) scale(0.96);
+}
+
+.disc-info {
+  flex: 1 1 420px;
+  max-width: 580px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+.disc-why {
+  margin: 0;
+  color: var(--accent);
+  font-weight: var(--fw-semibold);
+}
+.disc-title {
+  margin: 0;
+  font-size: var(--fs-3xl);
+  font-weight: 800;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+}
+.disc-alt,
+.disc-facts {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--fs-md);
+}
+.disc-facts {
+  color: var(--text);
+}
+.disc-genres {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.disc-synopsis {
+  margin: 0;
+  color: var(--text);
+  font-size: var(--fs-md);
+  line-height: 1.6;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  min-height: calc(1.6em * 2);
+}
+.disc-synopsis.loading {
+  color: var(--muted-2);
+}
+.disc-more {
+  align-self: flex-start;
+}
+
+/* ---------- The three decisions ---------- */
+.disc-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: var(--sp-3);
+}
+.disc-act {
+  flex: 1 1 120px;
+  height: 56px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-bold);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease),
+    transform var(--dur-fast) var(--ease);
+}
+.disc-act:active:not(:disabled) {
+  transform: scale(0.97);
+}
+.disc-act:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+.disc-act:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.disc-act-key {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  color: var(--muted);
+}
+.disc-act-discard {
+  color: var(--danger);
+  border-color: var(--danger-border);
+  background: var(--danger-dim);
+}
+.disc-act-discard:hover:not(:disabled) {
+  border-color: var(--danger);
+}
+.disc-act-seen {
+  color: var(--success);
+  border-color: var(--success);
+  background: var(--success-dim);
+}
+.disc-act-want {
+  flex-grow: 1.4;
+  border: 0;
+  background: var(--accent-solid);
+  color: var(--on-accent);
+  font-size: var(--fs-lg);
+  font-weight: 800;
+}
+.disc-act-want:hover:not(:disabled) {
+  background: var(--accent-solid-hover);
+}
+.disc-act-want .disc-act-key {
+  color: var(--on-accent);
+  opacity: 0.75;
+}
+.disc-act-undo {
+  flex: 0 0 56px;
+  font-size: var(--fs-xl);
+}
+.disc-act-undo:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.disc-status {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  align-items: center;
+}
+
+/* ---------- Empty deck ---------- */
+.disc-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-8) var(--sp-4);
+  text-align: center;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+}
+.disc-empty-title {
+  margin: 0;
+  font-size: var(--fs-xl);
+  font-weight: var(--fw-bold);
+}
+.disc-empty p {
+  margin: 0;
+  max-width: 460px;
+}
+.disc-empty-actions {
+  display: flex;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+/* ---------- Recently decided ---------- */
+.disc-recent {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding-top: var(--sp-5);
+  border-top: 1px solid var(--border);
+}
+.disc-recent-track {
+  display: flex;
+  gap: var(--sp-3);
+  overflow-x: auto;
+  padding-bottom: var(--sp-1);
+  scrollbar-width: thin;
+}
+.disc-recent-item {
+  flex: none;
+  width: 230px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: var(--sp-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.disc-recent-item img,
+.disc-recent-ph {
+  flex: none;
+  width: 40px;
+  height: 56px;
+  object-fit: cover;
+  border-radius: 6px;
+  background: var(--surface-2);
+}
+.disc-recent-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.disc-recent-title {
+  font-weight: var(--fw-semibold);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.disc-recent-decision {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-bold);
+  color: var(--muted);
+}
+.decision-want .disc-recent-decision {
+  color: var(--accent);
+}
+.decision-seen .disc-recent-decision {
+  color: var(--success);
+}
+.disc-recent-item .card-menu-btn {
+  position: static;
+  flex: none;
+}
+
+@media (max-width: 960px) {
+  .disc-layout {
+    flex-direction: column-reverse;
+  }
+  .disc-drawer {
+    position: static;
+    width: 100%;
+    max-height: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .disc-card {
+    animation: none;
+    transition: opacity var(--dur-fast) linear;
+  }
+  .disc-card.swipe-out-discard,
+  .disc-card.swipe-out-want,
+  .disc-card.swipe-out-seen {
+    transform: none;
+  }
+}

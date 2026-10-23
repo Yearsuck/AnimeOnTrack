@@ -1743,207 +1743,6 @@ progress.scanbar-track::-webkit-progress-value {
   transition: width var(--dur) var(--ease);
 }
 
-/* ---------- Descubrir (swipe mode) ---------- */
-.swipe-stage {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 20px;
-  padding-top: 8px;
-}
-.swipe-card {
-  width: min(320px, 100%);
-  box-shadow: var(--shadow-lg);
-  animation: swipe-card-in var(--dur-slow) var(--ease-out);
-  transition: opacity var(--dur) var(--ease-out), transform var(--dur) var(--ease-out);
-}
-@keyframes swipe-card-in {
-  from {
-    opacity: 0;
-    transform: translateY(14px) scale(0.97);
-  }
-}
-.swipe-card.swipe-out-discard {
-  opacity: 0;
-  transform: translateX(-60px) rotate(-6deg);
-}
-.swipe-card.swipe-out-want {
-  opacity: 0;
-  transform: translateY(-40px) scale(0.96);
-}
-.swipe-card.swipe-out-seen {
-  opacity: 0;
-  transform: translateX(60px) rotate(6deg);
-}
-.swipe-actions {
-  display: flex;
-  gap: 12px;
-}
-.swipe-actions .btn {
-  width: 56px;
-  height: 56px;
-  border-radius: var(--radius-round);
-  font-size: var(--fs-xl);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.swipe-actions .btn-discard {
-  color: var(--danger);
-  border-color: var(--danger-border);
-}
-.swipe-actions .btn-discard:hover:not(:disabled) {
-  background: var(--danger-dim);
-  border-color: var(--danger);
-}
-.swipe-actions .btn-want {
-  color: var(--accent);
-  border-color: var(--accent-dim);
-}
-.swipe-actions .btn-want:hover {
-  background: var(--accent-dim);
-}
-.swipe-hint {
-  font-size: var(--fs-sm);
-  color: var(--muted-2);
-  text-align: center;
-}
-.swipe-history {
-  width: 100%;
-  max-width: 420px;
-  margin-top: 16px;
-}
-.swipe-history-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 6px 8px;
-  border-bottom: 1px solid var(--border);
-}
-.swipe-history-row:last-child {
-  border-bottom: none;
-}
-.swipe-history-row img {
-  width: 32px;
-  height: 44px;
-  object-fit: cover;
-  border-radius: var(--radius-sm);
-  flex-shrink: 0;
-}
-.swipe-history-main {
-  flex: 1;
-  min-width: 0;
-}
-.swipe-history-title {
-  font-size: var(--fs-base);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.swipe-history-actions {
-  display: flex;
-  gap: 4px;
-  flex-shrink: 0;
-}
-.swipe-history-actions .btn {
-  width: 30px;
-  height: 30px;
-  padding: 0;
-  border-radius: var(--radius-round);
-  font-size: var(--fs-base);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-/* ---------- Descubrir: three-column deck (filters | card | filters) ---------- */
-.swipe-layout {
-  display: grid;
-  grid-template-columns: minmax(240px, 300px) minmax(300px, 1fr) minmax(240px, 300px);
-  gap: var(--sp-5);
-  align-items: start;
-}
-.deck-panel {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: var(--sp-4);
-  /* Pins to the top of its own .view-panel scroll container. */
-  position: sticky;
-  top: 0;
-}
-.deck-panel-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  border: none;
-  background: transparent;
-  color: var(--text);
-  cursor: pointer;
-  padding: 0;
-  font: inherit;
-  text-align: left;
-}
-.deck-panel-title {
-  flex: 1;
-  font-weight: var(--fw-bold);
-  font-size: var(--fs-md);
-}
-.deck-panel-badge {
-  font-size: var(--fs-xs);
-  font-weight: var(--fw-semibold);
-  color: var(--accent);
-  background: var(--accent-dim);
-  border-radius: var(--radius-round);
-  padding: 2px 8px;
-  white-space: nowrap;
-}
-.deck-panel-chevron {
-  color: var(--muted);
-  transition: transform var(--dur-fast) var(--ease);
-  flex-shrink: 0;
-}
-.deck-panel-chevron.open {
-  transform: rotate(180deg);
-}
-.deck-panel-body {
-  margin-top: var(--sp-4);
-}
-.deck-panel-genres {
-  max-height: 220px;
-  overflow-y: auto;
-}
-/* Under ~1000px there is no room for three columns: the card goes first and
-   the two filter panels stack below it (DOM/focus order is unchanged). */
-@media (max-width: 1000px) {
-  .swipe-layout {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  .swipe-layout > .swipe-stage {
-    order: -1;
-  }
-  .deck-panel {
-    position: static;
-    max-width: 520px;
-    margin: 0 auto;
-    width: 100%;
-  }
-}
-.deck-panel-left,
-.deck-panel-right {
-  box-shadow: var(--shadow-sm);
-}
-.deck-panel-body {
-  animation: deck-panel-in var(--dur) var(--ease-out);
-}
-@keyframes deck-panel-in {
-  from {
-    opacity: 0;
-    transform: translateY(-4px);
-  }
-}
-
 /* ---------- Settings ---------- */
 .settings-section {
   background: var(--surface);
@@ -2285,27 +2084,6 @@ progress.scanbar-track::-webkit-progress-value {
 }
 .notice-danger p {
   color: var(--danger);
-}
-
-/* ---------- Descubrir · taste chips ---------- */
-.taste-chips {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  flex-wrap: wrap;
-  margin-bottom: var(--sp-4);
-}
-.taste-chips-label {
-  font-size: var(--fs-sm);
-}
-.taste-chip {
-  font-size: var(--fs-sm);
-  font-weight: var(--fw-semibold);
-  padding: 3px var(--sp-3);
-  border-radius: var(--radius-round);
-  /* Genre colours are bright fills; the readable foreground on them is the
-     same near-black the success check uses, in both themes. */
-  color: var(--on-success);
 }
 
 /* Undefined until now: Library rendered <span class="lib-section-title"> with
@@ -3378,70 +3156,8 @@ select.settings-select {
 .catalog-sections {
   flex-shrink: 0;
 }
-.deck-panel-mode {
-  display: flex;
-  justify-content: center;
-  margin-bottom: var(--sp-3);
-}
-.deck-panel-intro {
-  margin-top: 0;
-  font-size: var(--fs-sm);
-}
-.deck-panel-heading {
-  margin-bottom: var(--sp-2);
-}
-.deck-panel-chips {
-  margin-bottom: var(--sp-4);
-}
-.deck-panel-chips-tight {
-  margin-bottom: var(--sp-2);
-}
 .deck-panel-warn {
-  margin-top: calc(-1 * var(--sp-2));
-  margin-bottom: var(--sp-4);
-}
-.deck-panel-save {
-  align-items: center;
-  gap: var(--sp-3);
-}
-.deck-panel-daterange {
-  gap: var(--sp-4);
-  margin-bottom: var(--sp-2);
-}
-.deck-panel-date-field {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-1);
-}
-.deck-panel-date-field input[type="date"] {
-  border: 1px solid var(--border);
-  background: var(--surface-2);
-  color: var(--text);
-  padding: 6px 10px;
-  border-radius: var(--radius-md);
-  font-size: var(--fs-sm);
-  font-family: inherit;
-  color-scheme: light dark;
-}
-.deck-panel-date-field input[type="date"]:focus-visible {
-  outline: none;
-  box-shadow: var(--focus-ring);
-}
-.deck-panel-date-hint {
-  margin-top: calc(-1 * var(--sp-1));
-  margin-bottom: var(--sp-4);
-}
-.swipe-card-title {
-  min-height: auto;
-}
-.swipe-history-list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-1);
-  margin-top: var(--sp-2);
-}
-.swipe-history-heading {
-  margin-bottom: var(--sp-2);
+  margin: var(--sp-2) 0 0;
 }
 
 /* Ring arc grow-in transition, previously an inline literal duration. */
@@ -3758,14 +3474,8 @@ select.settings-select {
   display: flex;
   flex-direction: column;
   gap: var(--sp-2);
-  margin-bottom: var(--sp-4);
 }
 
-.deck-panel-niche-label {
-  font-size: var(--fs-base);
-  font-weight: var(--fw-semibold);
-  color: var(--text);
-}
 
 .niche-slider {
   width: 100%;
@@ -3785,9 +3495,6 @@ select.settings-select {
   align-items: center;
 }
 
-.deck-panel-niche-hint {
-  margin: 0;
-}
 
 /* ---------- Update banner ---------- */
 .update-banner {

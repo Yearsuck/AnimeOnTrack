@@ -193,6 +193,8 @@ export interface SwipeCard {
   poster_url: string | null;
   kind: string;
   matched_genre: string | null;
+  /** The catalog row the deck picked this card from (facts, genres, banner). */
+  catalog?: CatalogAnime | null;
 }
 
 export type SwipeDecision = "Seen" | "Want" | "Discard";

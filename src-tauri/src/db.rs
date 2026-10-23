@@ -676,7 +676,7 @@ pub(crate) use episodes::parse_ep_number;
 pub use stats::SignatureCounts;
 
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
 
 #[cfg(test)]
 mod tests {

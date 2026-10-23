@@ -14,9 +14,8 @@ export const RECLASSIFY_TARGET: Record<"discard" | "want" | "seen", Classificati
 // Deck settings panel's collapsed/open state, persisted the same way as
 // theme.ts / discoverMode.ts (read once for initial state, write on toggle).
 // Local to this file — no other view reads it, so no dedicated module.
-export const DECK_PANEL_STORAGE_KEY = "aot.deckPanel";
+export const DECK_PANEL_STORAGE_KEY = "aot.deckDrawer";
 
-export const TOP_GENRES_LIMIT = 5;
 // Prefetch buffer: keep this many cards ready locally so a decision shows
 // the next card instantly instead of waiting on a fresh discover_catalog_card
 // round-trip. discover_catalog_card is a local SQLite read (no Cloudflare
