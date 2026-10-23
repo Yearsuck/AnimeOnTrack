@@ -22,7 +22,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' data: asset: https://asset.localhost http://asset.localhost https://*.anilist.co; media-src 'self' asset: https://asset.localhost http://asset.localhost; style-src 'self' 'unsafe-inline'; connect-src 'self' ipc: http://ipc.localhost",
+      "csp": "default-src 'self'; img-src 'self' data: asset: https://asset.localhost http://asset.localhost https://*.anilist.co https://i.ytimg.com; media-src 'self' asset: https://asset.localhost http://asset.localhost; style-src 'self' 'unsafe-inline'; connect-src 'self' ipc: http://ipc.localhost; frame-src https://www.youtube-nocookie.com https://www.dailymotion.com;",
       "assetProtocol": {
         "enable": true,
         "scope": [

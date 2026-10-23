@@ -1,0 +1,239 @@
+/* In-app anime info sheet (AnimeSheet.tsx). Tokens only; both themes. */
+.sheet-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 110;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--overlay-strong);
+  padding: var(--sp-4);
+}
+
+.sheet-dialog {
+  position: relative;
+  width: 100%;
+  max-width: 720px;
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+}
+
+.sheet-close {
+  position: absolute;
+  top: var(--sp-3);
+  right: var(--sp-3);
+  z-index: 1;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-round);
+  background: var(--overlay-strong);
+  color: var(--text);
+  font-size: var(--fs-md);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+
+.sheet-close:hover {
+  background: var(--accent-solid);
+  color: var(--on-accent);
+}
+
+.sheet-close:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.sheet-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.sheet-banner {
+  height: 160px;
+  background: var(--surface-3);
+}
+
+.sheet-banner img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.sheet-head {
+  display: flex;
+  gap: var(--sp-4);
+  align-items: flex-end;
+  padding: 0 var(--sp-5);
+  margin-top: calc(var(--sp-8) * -1);
+  position: relative;
+}
+
+.sheet-cover {
+  flex: none;
+  width: 104px;
+  aspect-ratio: 2 / 3;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface-3);
+  box-shadow: var(--shadow-md);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.sheet-cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.sheet-cover-fallback {
+  font-size: var(--fs-xl);
+  font-weight: var(--fw-bold);
+  color: var(--muted);
+}
+
+.sheet-head-text {
+  min-width: 0;
+  padding-bottom: var(--sp-1);
+}
+
+.sheet-title {
+  margin: 0;
+  font-size: var(--fs-xl);
+  font-weight: var(--fw-bold);
+  line-height: var(--lh-tight);
+  color: var(--text);
+}
+
+.sheet-alt {
+  font-size: var(--fs-sm);
+  margin-top: var(--sp-1);
+}
+
+.sheet-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  padding: var(--sp-4) var(--sp-5) var(--sp-5);
+}
+
+.sheet-facts {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: var(--sp-3) var(--sp-4);
+}
+
+.sheet-fact dt {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+
+.sheet-fact dd {
+  margin: 0;
+  font-size: var(--fs-base);
+  font-weight: var(--fw-medium);
+  color: var(--text);
+}
+
+.sheet-genres {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1) var(--sp-2);
+}
+
+.sheet-trailer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-2);
+}
+
+.sheet-trailer-frame {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface-3);
+  overflow: hidden;
+}
+
+.sheet-trailer-frame iframe {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+
+.sheet-trailer-play {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.sheet-trailer-play img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.sheet-trailer-icon {
+  position: relative;
+  width: 56px;
+  height: 56px;
+  border-radius: var(--radius-round);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent-solid);
+  color: var(--on-accent);
+  font-size: var(--fs-xl);
+  box-shadow: var(--shadow-md);
+  transition: transform var(--dur) var(--ease);
+}
+
+.sheet-trailer-play:hover .sheet-trailer-icon {
+  transform: scale(1.08);
+}
+
+.sheet-trailer-play:focus-visible {
+  outline: none;
+  box-shadow: inset var(--focus-ring);
+}
+
+.sheet-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-5);
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
