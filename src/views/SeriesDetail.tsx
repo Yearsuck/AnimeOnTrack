@@ -31,6 +31,7 @@ import { resolveCoverUrl } from "../lib/posterFallback";
 import { arrivedViaMorph } from "../lib/viewTransition";
 import type { AnimeExtras, CatalogAnime, Episode, NextAir, Series, SeriesSiteInfo } from "../types";
 import { CheckMark } from "../components/CheckMark";
+import { TrailerBox } from "../components/TrailerBox";
 import { RelatedRow, SeriesAbout } from "./SeriesInfo";
 
 const STATUS_KEYS: Record<string, MessageKey> = {
@@ -603,6 +604,8 @@ export function SeriesDetail({
           />
         </div>
       </header>
+
+      {extras?.trailer && <TrailerBox trailer={extras.trailer} title={series.title} />}
 
       <RelatedRow items={extras?.relations ?? []} onOpenSeries={onOpenSeries} />
 
