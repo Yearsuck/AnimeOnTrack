@@ -143,7 +143,8 @@ const STALE_STATUS_IDS_SQL: &str = "SELECT c.id FROM anilist_catalog c
      WHERE EXISTS (SELECT 1 FROM series s WHERE s.anilist_id = c.id AND s.is_airing = 1)
         OR c.status IN ('RELEASING', 'NOT_YET_RELEASED')
         OR (c.status = 'FINISHED' AND c.start_date IS NOT NULL AND c.start_date >= ?1)
-     ORDER BY EXISTS (SELECT 1 FROM series s WHERE s.anilist_id = c.id) DESC,
+     ORDER BY (c.next_airing_at IS NOT NULL AND c.next_airing_at <= ?2) DESC,
+              EXISTS (SELECT 1 FROM series s WHERE s.anilist_id = c.id) DESC,
               COALESCE(c.popularity, 0) DESC,
               c.id
      LIMIT 500";
@@ -738,13 +739,15 @@ impl Db {
     /// (b) status in `('RELEASING', 'NOT_YET_RELEASED')`, or
     /// (c) status = `'FINISHED'` but `start_date` within the last 120 days.
     ///
-    /// Capped at 500 rows and ordered linked-first, then by popularity, so
-    /// shows the user actually follows/watches take priority.
+    /// Capped at 500 rows and ordered: rows that have already aired (next_airing_at <= now)
+    /// first, then linked-first, then by popularity, so shows needing status rollover or
+    /// that the user actually follows/watches take priority.
     pub fn stale_status_ids(&self) -> Result<Vec<i64>> {
+        let now = chrono::Utc::now().timestamp();
         let cutoff = (chrono::Utc::now() - chrono::Duration::days(120)).timestamp();
         let mut stmt = self.conn.prepare(STALE_STATUS_IDS_SQL)?;
         let ids = stmt
-            .query_map([cutoff], |r| r.get::<_, i64>(0))?
+            .query_map(rusqlite::params![cutoff, now], |r| r.get::<_, i64>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(ids)
     }
@@ -1869,6 +1872,27 @@ impl Db {
                  LIMIT 1",
                 rusqlite::params![anilist_id, absolute],
                 |r| r.get(0),
+            )
+            .optional()?;
+        Ok(row)
+    }
+
+    /// Upcoming episode and its air timestamp (in seconds) for `anilist_id` from
+    /// `anilist_catalog` when `next_airing_at > now` and both columns are non-NULL.
+    /// Returns None when either column is NULL, the air date is not strictly in the
+    /// future, or no catalog row exists.
+    pub fn catalog_next_airing(&self, anilist_id: i64, now: i64) -> Result<Option<(i64, i64)>> {
+        let row: Option<(i64, i64)> = self
+            .conn
+            .query_row(
+                "SELECT next_episode, next_airing_at
+                 FROM anilist_catalog
+                 WHERE id = ?1
+                   AND next_airing_at IS NOT NULL
+                   AND next_episode IS NOT NULL
+                   AND next_airing_at > ?2",
+                rusqlite::params![anilist_id, now],
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()?;
         Ok(row)
@@ -3892,7 +3916,7 @@ mod tests {
             .conn
             .prepare(&format!("EXPLAIN QUERY PLAN {STALE_STATUS_IDS_SQL}"))
             .unwrap()
-            .query_map([0i64], |r| r.get::<_, String>(3))
+            .query_map([0i64, 0i64], |r| r.get::<_, String>(3))
             .unwrap()
             .collect::<rusqlite::Result<_>>()
             .unwrap();
@@ -5172,6 +5196,90 @@ mod tests {
 
         assert_eq!(picked_titles.len(), 5);
         assert_eq!(picked_ids.len(), 5);
+    }
+
+    #[test]
+    fn test_catalog_next_airing_cases() {
+        let db = Db::open(":memory:").unwrap();
+        let now = 1_000_000;
+
+        // 1. next_airing_at = now+3600, next_episode = 7 -> Some((7, now+3600))
+        let mut a1 = catalog_anime(1, "Upcoming Anime", &[]);
+        a1.next_airing_at = Some(now + 3600);
+        a1.next_episode = Some(7);
+        db.upsert_catalog_anime(&a1, 0).unwrap();
+        assert_eq!(db.catalog_next_airing(1, now).unwrap(), Some((7, now + 3600)));
+
+        // 2. next_airing_at = now-60 -> None
+        let mut a2 = catalog_anime(2, "Past Anime", &[]);
+        a2.next_airing_at = Some(now - 60);
+        a2.next_episode = Some(7);
+        db.upsert_catalog_anime(&a2, 1).unwrap();
+        assert_eq!(db.catalog_next_airing(2, now).unwrap(), None);
+
+        // 3. next_airing_at = now (strictly > now requirement) -> None
+        let mut a3 = catalog_anime(3, "Now Anime", &[]);
+        a3.next_airing_at = Some(now);
+        a3.next_episode = Some(7);
+        db.upsert_catalog_anime(&a3, 2).unwrap();
+        assert_eq!(db.catalog_next_airing(3, now).unwrap(), None);
+
+        // 4. next_episode = None -> None
+        let mut a4 = catalog_anime(4, "No Ep Anime", &[]);
+        a4.next_airing_at = Some(now + 3600);
+        a4.next_episode = None;
+        db.upsert_catalog_anime(&a4, 3).unwrap();
+        assert_eq!(db.catalog_next_airing(4, now).unwrap(), None);
+
+        // 5. next_airing_at = None -> None
+        let mut a5 = catalog_anime(5, "No Airing Anime", &[]);
+        a5.next_airing_at = None;
+        a5.next_episode = Some(7);
+        db.upsert_catalog_anime(&a5, 4).unwrap();
+        assert_eq!(db.catalog_next_airing(5, now).unwrap(), None);
+
+        // 6. Unknown anilist_id -> None
+        assert_eq!(db.catalog_next_airing(999_999, now).unwrap(), None);
+    }
+
+    #[test]
+    fn test_stale_status_ids_orders_aired_date_before_future_date_followed() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("TestSite", "https://site.example", "testsite").unwrap();
+        let now = chrono::Utc::now().timestamp();
+
+        // Id A (101): not followed, status RELEASING (matches WHERE), next_airing_at in past (already aired)
+        let mut a = catalog_anime_with_popularity(101, "AiredAwaitingRefresh", &[], Some(10));
+        a.status = Some("RELEASING".into());
+        a.next_airing_at = Some(now - 3600);
+        a.next_episode = Some(5);
+        db.upsert_catalog_anime(&a, 0).unwrap();
+
+        // Id B (102): followed series linked, is_airing = 1, status RELEASING, next_airing_at in future
+        let mut b = catalog_anime_with_popularity(102, "FutureAirFollowed", &[], Some(100_000));
+        b.status = Some("RELEASING".into());
+        b.next_airing_at = Some(now + 3600);
+        b.next_episode = Some(6);
+        db.upsert_catalog_anime(&b, 1).unwrap();
+        let sid = db.upsert_series(src, &crate::models::Series {
+            id: 0,
+            slug: "future-followed".into(),
+            title: "FutureAirFollowed".into(),
+            url: "https://example/future".into(),
+            cover_url: None,
+            is_airing: true,
+            followed: true,
+            next_episode_at: None,
+            site_episode_count: None,
+        }).unwrap();
+        db.set_anilist_id(sid, 102).unwrap();
+        db.set_followed(sid, true).unwrap();
+
+        let ids = db.stale_status_ids().unwrap();
+        assert!(ids.contains(&101));
+        assert!(ids.contains(&102));
+        assert_eq!(ids[0], 101, "aired-and-awaiting id A must come first despite id B being followed with higher popularity");
+        assert_eq!(ids[1], 102);
     }
 
     #[test]
