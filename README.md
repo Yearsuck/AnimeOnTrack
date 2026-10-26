@@ -318,7 +318,18 @@ AnimeOnTrack/
 
 ---
 
-## What's New in v0.10.0
+## What's New in v0.22.0
+
+* **Next-episode timing from AniList**: the series screen and the airing grid now read the same AniList date (ani.zip is only a fallback). The date is refreshed every 30 minutes and when the window regains focus (45-minute throttle, with a 5-minute backoff if AniList fails), shows whose episode just aired are refreshed first, and a RELEASING show whose date passed less than a week ago keeps its place in the weekly grid instead of vanishing until the next refresh.
+* **More precise statistics**: "Ya lo vi" on a show that is still airing now credits the episodes that have already aired (`next episode - 1`) instead of zero, the completion percentage no longer reads 100% when the site lists fewer episodes than AniList says have aired, and a movie in a franchise no longer prices every remaining TV episode at the movie's runtime.
+* **Trailer on the airing detail**: opening an airing anime now shows its AniList trailer, like the catalog sheet already did.
+* **Cleaner players**: 18 more ad, pop-under and tracker hosts are blocked (each one found in a stored page of the sites or their embeds), low-level click-hijack layers are neutralised, the cleaner no longer gives up on pages that re-render while you switch servers, and the gogoanime, jkanime and animeland selectors are tighter.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+---
+
+## Previous release: v0.10.0
 
 * **In-app updates**: the app checks GitHub for a newer release shortly after start (switchable in Settings → Appearance, with a manual "Check now") and offers *Install and restart*. Nothing installs without a click, and every installer is signed; the app verifies the signature against the public key in `tauri.conf.json`. 0.10.0 is the first release that ships it, so it has to be installed by hand once; from then on new versions arrive by themselves.
 

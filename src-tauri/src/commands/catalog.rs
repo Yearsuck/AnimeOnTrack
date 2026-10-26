@@ -129,12 +129,17 @@ pub struct NextAir {
 }
 
 /// Next upcoming episode and its air timestamp (in seconds) for `anilist_id`
-/// from the stored ani.zip episode map. Returns None when no upcoming episodes exist.
+/// read first from `anilist_catalog` when an upcoming date is stored, falling
+/// back to the stored ani.zip episode map when the catalog has no upcoming date.
+/// Returns None when no upcoming episodes exist.
 #[tauri::command]
 pub async fn get_next_air(state: State<'_, AppState>, anilist_id: i64) -> Result<Option<NextAir>, String> {
     let now = chrono::Utc::now().timestamp();
     let db = state.db.lock().unwrap();
-    let next = db.next_airing_episode(anilist_id, now).map_err(|e| e.to_string())?;
+    let next = match db.catalog_next_airing(anilist_id, now).map_err(|e| e.to_string())? {
+        Some(pair) => Some(pair),
+        None => db.next_airing_episode(anilist_id, now).map_err(|e| e.to_string())?,
+    };
     Ok(next.map(|(episode, air_at)| NextAir { episode, air_at }))
 }
 
@@ -399,10 +404,10 @@ pub async fn backfill_catalog_metadata(app: AppHandle, state: State<'_, AppState
     Ok(done)
 }
 
-/// Pure throttle check for `refresh_catalog_status`: run once per 6 hours,
+/// Pure throttle check for `refresh_catalog_status`: run once per 45 minutes,
 /// or immediately if never run / persisted timestamp is unparseable.
 pub fn should_refresh_catalog_status(last_at: Option<&str>, now: chrono::DateTime<chrono::Utc>) -> bool {
-    const STATUS_REFRESH_COOLDOWN_SECS: i64 = 6 * 60 * 60;
+    const STATUS_REFRESH_COOLDOWN_SECS: i64 = 45 * 60;
     match last_at.and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok()) {
         Some(last) => (now - last.with_timezone(&chrono::Utc)).num_seconds() >= STATUS_REFRESH_COOLDOWN_SECS,
         None => true,
@@ -413,7 +418,7 @@ pub fn should_refresh_catalog_status(last_at: Option<&str>, now: chrono::DateTim
 /// releasing, or recently finished). Batches candidate ids (from `db.stale_status_ids()`)
 /// through AniList's GraphQL API, preserving existing `sort_order`, with ~2100ms
 /// pacing between batches. Throttled via settings key `catalog_status_refreshed_at`
-/// to run at most once every 6 hours. After updating catalog rows, runs
+/// to run at most once every 45 minutes. After updating catalog rows, runs
 /// `sync_status_from_catalog()` so linked series have their `is_airing`
 /// flag corrected when AniList reports them as finished.
 #[tauri::command]
@@ -431,6 +436,13 @@ pub async fn refresh_catalog_status(state: State<'_, AppState>) -> Result<Option
         db.get_setting("catalog_status_refreshed_at").map_err(|e| e.to_string())?
     };
     if !should_refresh_catalog_status(last_at.as_deref(), chrono::Utc::now()) {
+        return Ok(None);
+    }
+    // The throttle timestamp is written only after a full pass, so a failing
+    // AniList would otherwise be retried by every focus event and timer tick.
+    static LAST_ATTEMPT: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+    let attempt_now = chrono::Utc::now().timestamp();
+    if attempt_now - LAST_ATTEMPT.swap(attempt_now, std::sync::atomic::Ordering::SeqCst) < 5 * 60 {
         return Ok(None);
     }
 
@@ -886,23 +898,23 @@ mod status_refresh_tests {
     }
 
     #[test]
-    fn recent_refresh_under_6h_should_skip() {
+    fn recent_refresh_under_45m_should_skip() {
         let now = Utc::now();
-        let last = (now - Duration::hours(3)).to_rfc3339();
+        let last = (now - Duration::minutes(44)).to_rfc3339();
         assert!(!should_refresh_catalog_status(Some(&last), now));
     }
 
     #[test]
-    fn past_6h_should_run_again() {
+    fn past_45m_should_run_again() {
         let now = Utc::now();
-        let last = (now - Duration::hours(7)).to_rfc3339();
+        let last = (now - Duration::minutes(46)).to_rfc3339();
         assert!(should_refresh_catalog_status(Some(&last), now));
     }
 
     #[test]
-    fn boundary_at_6h_should_run() {
+    fn boundary_at_45m_should_run() {
         let now = Utc::now();
-        let last = (now - Duration::hours(6)).to_rfc3339();
+        let last = (now - Duration::minutes(45)).to_rfc3339();
         assert!(should_refresh_catalog_status(Some(&last), now));
     }
 

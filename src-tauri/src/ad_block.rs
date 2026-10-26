@@ -64,6 +64,33 @@ const BLOCKED_HOSTS: &[&str] = &[
     "yadro.ru",
     "mc.yandex.ru",
     "ads.yahoo.com",
+    // animeyt (ad and pop-under scripts)
+    "adsco.re",
+    "visariomedia.com",
+    // animeflv (ad tag script)
+    "llvpn.com",
+    // jkanime (click/pop tracker and pop-under scripts/landing)
+    "agl003.com",
+    "cln9vhvfo2.top",
+    "driverhugoverblown.com",
+    // monoschinos (banner and pop-under scripts)
+    "numbestkarree.com",
+    "browsepantartful.com",
+    // mixdrop embed (pop-under redirect)
+    "greatdexchange.com",
+    // mp4upload embed (ad scripts)
+    "dopattaoutcant.com",
+    "talpiddullity.com",
+    "sxlzbz.com",
+    // yourupload / tioanime (ad script)
+    "cpmstar.com",
+    // voe embed (pop-under redirect and ad script)
+    "evasivewashoutsociety.com",
+    "phruk.org",
+    // trackers and widget analytics
+    "sharethis.com",
+    "mdstats.info",
+    "whos.amung.us",
 ];
 
 /// Whether a request to `host` must be cancelled.
@@ -144,6 +171,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn blocks_newly_added_fixture_ad_hosts_and_subdomains() {
+        let added_hosts = [
+            "adsco.re",
+            "visariomedia.com",
+            "llvpn.com",
+            "agl003.com",
+            "cln9vhvfo2.top",
+            "driverhugoverblown.com",
+            "numbestkarree.com",
+            "browsepantartful.com",
+            "greatdexchange.com",
+            "dopattaoutcant.com",
+            "talpiddullity.com",
+            "sxlzbz.com",
+            "cpmstar.com",
+            "evasivewashoutsociety.com",
+            "phruk.org",
+            "sharethis.com",
+            "mdstats.info",
+            "whos.amung.us",
+        ];
+        for host in added_hosts {
+            assert!(is_blocked_host(host), "host {host} should be blocked");
+            let sub = format!("x.{host}");
+            assert!(is_blocked_host(&sub), "subdomain {sub} should be blocked");
+        }
+        assert!(is_blocked_host("x.adsco.re"));
+    }
+
+    #[test]
     fn blocks_listed_hosts_and_their_subdomains() {
         assert!(is_blocked_host("doubleclick.net"));
         assert!(is_blocked_host("ad.doubleclick.net"));
@@ -153,6 +210,13 @@ mod tests {
 
     #[test]
     fn does_not_block_lookalikes_or_unrelated_hosts() {
+        assert!(!is_blocked_host("notadsco.re"));
+        assert!(!is_blocked_host("googletagmanager.com"));
+        assert!(!is_blocked_host("imasdk.googleapis.com"));
+        assert!(!is_blocked_host("megankiddifference.com"));
+        assert!(!is_blocked_host("silverlinencreativeworks.com"));
+        assert!(!is_blocked_host("silverlinencreativeworks.store"));
+        assert!(!is_blocked_host("callistanise.com"));
         assert!(!is_blocked_host("notdoubleclick.net"));
         assert!(!is_blocked_host("doubleclick.net.example.org"));
         assert!(!is_blocked_host("anilist.co"));

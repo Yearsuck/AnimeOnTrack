@@ -62,7 +62,9 @@ impl Db {
     /// `next_episode_at` is AniList's `next_airing_at` when the series is linked
     /// to a catalog entry of the SAME season (`season_consistent`, the check
     /// `sync_status_from_catalog` applies) and that time is still in the future;
-    /// otherwise the scraped value. A catalog time that has already passed is a
+    /// otherwise, if status is RELEASING, the catalog date aired within the last 7
+    /// days, and no scraped upcoming date exists, it rolls over to next week so the show
+    /// stays in the weekly grid; otherwise the scraped value. A catalog time that has already passed is a
     /// snapshot taken before the episode aired (the site has usually rolled to
     /// next week by then), so it never beats the freshly scraped value.
     pub fn list_airing(&self, active_source_id: i64) -> Result<Vec<crate::models::Series>> {
@@ -120,6 +122,20 @@ impl Db {
                         if let Some(cat) = catalog_next.filter(|&cat| cat > now) {
                             effective_next = Some(cat);
                             catalog_upcoming = true;
+                        } else if let Some(cat) = catalog_next {
+                            const SEVEN_DAYS_SECS: i64 = 7 * 86400;
+                            let scraped_upcoming = scraped_next.is_some_and(|s| s > now);
+                            if status.as_deref() == Some("RELEASING")
+                                && cat <= now
+                                && now - cat < SEVEN_DAYS_SECS
+                                && !scraped_upcoming
+                            {
+                                let mut rolled = cat;
+                                while rolled <= now {
+                                    rolled += SEVEN_DAYS_SECS;
+                                }
+                                effective_next = Some(rolled);
+                            }
                         }
                     }
                 }
@@ -2305,5 +2321,72 @@ mod tests {
         let airing = db.list_airing(src_a).unwrap();
         assert_eq!(airing.len(), 1, "linked and unlinked same-title rows collapse into one airing card");
         assert_eq!(airing[0].title, "Sousou no Frieren");
+    }
+
+    #[test]
+    fn list_airing_rollover_when_no_scraped_upcoming_date() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "https://a.example", "animeytx").unwrap();
+        let now = chrono::Utc::now().timestamp();
+        let day = 86400;
+
+        // 1. RELEASING, next_airing_at = now - 2 days, no scraped date
+        // -> effective_next == next_airing_at + 7 days
+        let mut a1 = crate::db::test_support::catalog_anime(101, "Rolled Show", &[]);
+        a1.status = Some("RELEASING".into());
+        a1.next_airing_at = Some(now - 2 * day);
+        a1.next_episode = Some(5);
+        db.upsert_catalog_anime(&a1, 0).unwrap();
+        let s1 = db.upsert_series(src, &mk_airing("rolled", "Rolled Show", None)).unwrap();
+        db.set_anilist_id(s1, 101).unwrap();
+
+        let airing1 = db.list_airing(src).unwrap();
+        assert_eq!(airing1.len(), 1);
+        assert_eq!(airing1[0].next_episode_at, Some(now - 2 * day + 7 * day));
+
+        // 2. now - 9 days (>= 7 days ago) -> no rolled date (None)
+        db.conn.execute("UPDATE anilist_catalog SET next_airing_at = ?1 WHERE id = 101", [now - 9 * day]).unwrap();
+        let airing2 = db.list_airing(src).unwrap();
+        assert_eq!(airing2.len(), 1);
+        assert_eq!(airing2[0].next_episode_at, None);
+
+        // 3. FINISHED status -> no rolled date (None)
+        db.conn.execute(
+            "UPDATE anilist_catalog SET status = 'FINISHED', next_airing_at = ?1 WHERE id = 101",
+            [now - 2 * day],
+        ).unwrap();
+        let airing3 = db.list_airing(src).unwrap();
+        assert_eq!(airing3.len(), 1);
+        assert_eq!(airing3[0].next_episode_at, None);
+
+        // 4. Must NOT happen: catalog date > now is replaced by a rolled date
+        db.conn.execute(
+            "UPDATE anilist_catalog SET status = 'RELEASING', next_airing_at = ?1 WHERE id = 101",
+            [now + 2 * day],
+        ).unwrap();
+        let airing4 = db.list_airing(src).unwrap();
+        assert_eq!(airing4.len(), 1);
+        assert_eq!(airing4[0].next_episode_at, Some(now + 2 * day));
+
+        // 5. Must NOT happen: a scraped upcoming date is overridden by the roll-over
+        db.conn.execute("UPDATE anilist_catalog SET next_airing_at = ?1 WHERE id = 101", [now - 2 * day]).unwrap();
+        db.conn.execute("UPDATE series SET next_episode_at = ?1 WHERE id = ?2", [now + 3 * day, s1]).unwrap();
+        let airing5 = db.list_airing(src).unwrap();
+        assert_eq!(airing5.len(), 1);
+        assert_eq!(airing5[0].next_episode_at, Some(now + 3 * day));
+
+        // 6. catalog_upcoming is false for rolled date: unfollowed OVA is hidden
+        db.conn.execute("UPDATE series SET next_episode_at = NULL, followed = 0 WHERE id = ?1", [s1]).unwrap();
+        db.conn.execute(
+            "UPDATE anilist_catalog SET format = 'OVA', next_airing_at = ?1 WHERE id = 101",
+            [now - 2 * day],
+        ).unwrap();
+        let airing_ova_rolled = db.list_airing(src).unwrap();
+        assert!(airing_ova_rolled.is_empty(), "unfollowed OVA with rolled date must stay hidden (catalog_upcoming false)");
+
+        // But with real future catalog date (catalog_upcoming true), unfollowed OVA is shown
+        db.conn.execute("UPDATE anilist_catalog SET next_airing_at = ?1 WHERE id = 101", [now + 2 * day]).unwrap();
+        let airing_ova_future = db.list_airing(src).unwrap();
+        assert_eq!(airing_ova_future.len(), 1, "unfollowed OVA with future date must show (catalog_upcoming true)");
     }
 }
