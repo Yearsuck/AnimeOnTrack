@@ -62,7 +62,7 @@ pub const SELECTORS: &[SiteSelectors] = &[
     },
     SiteSelectors {
         site: "jkanime",
-        players: &["iframe.player_conte <"],
+        players: &["iframe.player_conte <", "#video_box"],
         switchers: &[".bg-servers"],
         dynamic: false,
         anchor: "",
@@ -70,7 +70,7 @@ pub const SELECTORS: &[SiteSelectors] = &[
     SiteSelectors {
         site: "gogoanime",
         players: &["#player"],
-        switchers: &["#w-servers"],
+        switchers: &["#w-servers .servers"],
         dynamic: false,
         anchor: "",
     },
@@ -78,7 +78,7 @@ pub const SELECTORS: &[SiteSelectors] = &[
     // fallback (largest iframe/video) is what normally does the work.
     SiteSelectors {
         site: "animeland",
-        players: &["#player", ".player", "#video-player"],
+        players: &[".video_wrapper_container", ".video_wrapper", "#player", ".player", "#video-player"],
         switchers: &[".servers", "#servers"],
         dynamic: true,
         anchor: "",
@@ -360,9 +360,9 @@ try{
     for(i=0;i<n;i++){
       var e=l[i]; if(e.hasAttribute('data-aot-hide')||e.closest('.aot-sw')) continue;
       var cs=getComputedStyle(e), pos=cs.position; if(pos!=='absolute'&&pos!=='fixed') continue;
-      var z=parseInt(cs.zIndex,10)||0; if(pos==='absolute'&&z<100) continue;
+      var z=parseInt(cs.zIndex,10)||0, id=(e.id||'')+' '+(typeof e.className==='string'?e.className:'');
+      if(pos==='absolute'&&z<100&&!/adang|adsco|popunder|popup|clickunder|hijack/i.test(id)) continue;
       var r=e.getBoundingClientRect(); if(r.width*r.height<0.8*pa) continue;
-      var id=(e.id||'')+' '+(typeof e.className==='string'?e.className:'');
       if(/poster|play|load|ctrl|control|sug|ifplay|server|cover|spinner|pause|error|loader|cf-|turnstile/i.test(id)) continue;
       if(e.querySelector('iframe,video,button,input,svg,img,canvas')) continue;
       if((e.textContent||'').replace(/\s+/g,'').length>0) continue;
@@ -432,7 +432,7 @@ try{
     if(pending) return;
     pending=setTimeout(function(){
       pending=0;
-      try{ if(apply()) misses=0; else if(++misses>=3){ undo(); S.player=null; } }catch(e){}
+      try{ if(apply()) misses=0; else if(++misses>=10){ undo(); S.player=null; } }catch(e){}
     },400);
   });
   mo.observe(document.documentElement,{childList:true,subtree:true});
@@ -541,6 +541,52 @@ mod tests {
         assert!(site_ids_for_url("https://some-mirror.example/x").is_empty());
         let all: serde_json::Value = serde_json::from_str(&config_json("https://m.example/x")).unwrap();
         assert!(all["players"].as_array().unwrap().len() > 5);
+    }
+
+    #[test]
+    fn polished_selectors_specifically_match_fixtures() {
+        let gogo = fixture("gogoanime").expect("gogoanime fixture");
+        assert!(
+            gogo.select(&sel("#w-servers .servers")).next().is_some(),
+            "gogoanime #w-servers .servers must match fixture"
+        );
+
+        let jk = fixture("jkanime").expect("jkanime fixture");
+        assert!(
+            jk.select(&sel("iframe.player_conte <")).next().is_some(),
+            "jkanime iframe.player_conte < must match fixture"
+        );
+        assert!(
+            jk.select(&sel("#video_box")).next().is_some(),
+            "jkanime #video_box must match fixture"
+        );
+
+        let animeland_p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures")
+            .join("animeland_series.html");
+        let bytes = std::fs::read(animeland_p).expect("animeland_series.html");
+        let doc = Html::parse_document(&String::from_utf8_lossy(&bytes));
+        assert!(
+            doc.select(&sel(".video_wrapper_container")).next().is_some(),
+            "animeland .video_wrapper_container must match fixture"
+        );
+        assert!(
+            doc.select(&sel(".video_wrapper")).next().is_some(),
+            "animeland .video_wrapper must match fixture"
+        );
+    }
+
+    #[test]
+    fn script_contains_overlay_regex_and_raised_misses_threshold() {
+        let s = script_for("https://tioanime.com/ver/x-1");
+        assert!(
+            s.contains("/adang|adsco|popunder|popup|clickunder|hijack/i"),
+            "script should contain overlay id/class regex"
+        );
+        assert!(
+            s.contains("misses>=10"),
+            "script should have misses threshold raised to 10"
+        );
     }
 
     #[test]
