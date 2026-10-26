@@ -102,7 +102,7 @@ async function runCatalogMaintenance() {
   // match well, so it goes right after the backfill.
   await linkSeriesToCatalog().catch(() => {});
   // Paced AniList refresh of airing/recent statuses (~20s of
-  // requests, once per 6h): last so it never delays the linking.
+  // requests, once per 45 min): last so it never delays the linking.
   await refreshCatalogStatus().catch(() => {});
   // Last: ~1 request per unlinked title, so it never delays the steps above.
   await linkUnlinkedViaAnilist().catch(() => {});
@@ -237,6 +237,31 @@ export default function App() {
       }
     })();
   }, [onPendingDataChanged]);
+
+  // Keep AniList catalog status fresh while the app is open: re-check every
+  // 30 minutes and whenever the window regains visibility. Both rely on the
+  // server-side 45-minute throttle and swallow errors.
+  useEffect(() => {
+    const trigger = () => {
+      // New dates only show up if the airing grid re-reads them afterwards.
+      void refreshCatalogStatus()
+        .then((n) => {
+          if (n != null) setAiringRefreshSignal((c) => c + 1);
+        })
+        .catch(() => {});
+    };
+    const interval = setInterval(trigger, 30 * 60 * 1000);
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        trigger();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, []);
 
   // Everyone who has not seen the tutorial gets it once, existing users
   // updating from a build without it included.
