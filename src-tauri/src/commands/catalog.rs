@@ -129,8 +129,10 @@ pub struct NextAir {
 }
 
 /// Next upcoming episode and its air timestamp (in seconds) for `anilist_id`
-/// read first from `anilist_catalog` when an upcoming date is stored, falling
-/// back to the stored ani.zip episode map when the catalog has no upcoming date.
+/// read first from `anilist_catalog` when an upcoming date is stored, then from
+/// the stored ani.zip episode map, and only then from the catalog date rolled
+/// forward by a week (a RELEASING show whose date just expired, as `list_airing`
+/// does) so an exact map entry is never shadowed by a guess.
 /// Returns None when no upcoming episodes exist.
 #[tauri::command]
 pub async fn get_next_air(state: State<'_, AppState>, anilist_id: i64) -> Result<Option<NextAir>, String> {
@@ -138,7 +140,10 @@ pub async fn get_next_air(state: State<'_, AppState>, anilist_id: i64) -> Result
     let db = state.db.lock().unwrap();
     let next = match db.catalog_next_airing(anilist_id, now).map_err(|e| e.to_string())? {
         Some(pair) => Some(pair),
-        None => db.next_airing_episode(anilist_id, now).map_err(|e| e.to_string())?,
+        None => match db.next_airing_episode(anilist_id, now).map_err(|e| e.to_string())? {
+            Some(pair) => Some(pair),
+            None => db.catalog_next_airing_rolled(anilist_id, now).map_err(|e| e.to_string())?,
+        },
     };
     Ok(next.map(|(episode, air_at)| NextAir { episode, air_at }))
 }
