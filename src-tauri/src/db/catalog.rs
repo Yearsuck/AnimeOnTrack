@@ -1898,6 +1898,48 @@ impl Db {
         Ok(row)
     }
 
+    /// Upcoming episode and its air timestamp (in seconds) for `anilist_id`.
+    ///
+    /// Returns `catalog_next_airing` when that has a value. Otherwise, if the catalog row
+    /// has status `RELEASING`, `next_airing_at <= now`, and expired less than 7 days ago,
+    /// rolls forward by weekly intervals (matching the `list_airing` date rollover logic).
+    /// Returns None when not releasing, air date is too old, columns are NULL, or no row exists.
+    pub fn catalog_next_airing_rolled(&self, anilist_id: i64, now: i64) -> Result<Option<(i64, i64)>> {
+        if let Some(pair) = self.catalog_next_airing(anilist_id, now)? {
+            return Ok(Some(pair));
+        }
+
+        const SEVEN_DAYS_SECS: i64 = 7 * 86400;
+        let row: Option<(i64, i64)> = self
+            .conn
+            .query_row(
+                "SELECT next_episode, next_airing_at
+                 FROM anilist_catalog
+                 WHERE id = ?1
+                   AND status = 'RELEASING'
+                   AND next_airing_at IS NOT NULL
+                   AND next_episode IS NOT NULL
+                   AND next_airing_at <= ?2
+                   AND ?2 - next_airing_at < ?3",
+                rusqlite::params![anilist_id, now, SEVEN_DAYS_SECS],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+
+        let Some((next_episode, next_airing_at)) = row else {
+            return Ok(None);
+        };
+
+        let mut rolled = next_airing_at;
+        let mut k = 0i64;
+        while rolled <= now {
+            rolled += SEVEN_DAYS_SECS;
+            k += 1;
+        }
+
+        Ok(Some((next_episode + k, rolled)))
+    }
+
     /// Smallest future `air_at` (strictly > `now`) and its episode for `anilist_id`.
     /// Ties on `air_at` broken by lowest episode. Ignores entries with NULL `air_at`.
     /// Returns None when no map exists or nothing upcoming.
@@ -5240,6 +5282,95 @@ mod tests {
 
         // 6. Unknown anilist_id -> None
         assert_eq!(db.catalog_next_airing(999_999, now).unwrap(), None);
+    }
+
+    #[test]
+    fn test_catalog_next_airing_rolled_cases() {
+        let db = Db::open(":memory:").unwrap();
+        let now = 1_000_000;
+        const SEVEN_DAYS_SECS: i64 = 7 * 86400;
+
+        // 1. RELEASING, next_episode=5, next_airing_at = now+3600 -> Some((5, now+3600)) (unchanged).
+        let mut a1 = catalog_anime(1, "Upcoming Releasing", &[]);
+        a1.status = Some("RELEASING".into());
+        a1.next_airing_at = Some(now + 3600);
+        a1.next_episode = Some(5);
+        db.upsert_catalog_anime(&a1, 0).unwrap();
+        assert_eq!(
+            db.catalog_next_airing_rolled(1, now).unwrap(),
+            Some((5, now + 3600))
+        );
+
+        // 2. RELEASING, next_episode=5, next_airing_at = now-3600 -> Some((6, next_airing_at + 7*86400)).
+        let mut a2 = catalog_anime(2, "Recent Expired Releasing", &[]);
+        a2.status = Some("RELEASING".into());
+        let a2_air = now - 3600;
+        a2.next_airing_at = Some(a2_air);
+        a2.next_episode = Some(5);
+        db.upsert_catalog_anime(&a2, 1).unwrap();
+        assert_eq!(
+            db.catalog_next_airing_rolled(2, now).unwrap(),
+            Some((6, a2_air + SEVEN_DAYS_SECS))
+        );
+
+        // 3. RELEASING, next_episode=5, next_airing_at = now-(7*86400-60) -> Some((6, next_airing_at + 7*86400)) (one week is enough: that is > now by 60 s).
+        let mut a3 = catalog_anime(3, "Near Week Limit Releasing", &[]);
+        a3.status = Some("RELEASING".into());
+        let a3_air = now - (SEVEN_DAYS_SECS - 60);
+        a3.next_airing_at = Some(a3_air);
+        a3.next_episode = Some(5);
+        db.upsert_catalog_anime(&a3, 2).unwrap();
+        assert_eq!(
+            db.catalog_next_airing_rolled(3, now).unwrap(),
+            Some((6, a3_air + SEVEN_DAYS_SECS))
+        );
+
+        // 4. RELEASING, next_airing_at = now-(7*86400+1) -> None (too old).
+        let mut a4 = catalog_anime(4, "Too Old Releasing", &[]);
+        a4.status = Some("RELEASING".into());
+        let a4_air = now - (SEVEN_DAYS_SECS + 1);
+        a4.next_airing_at = Some(a4_air);
+        a4.next_episode = Some(5);
+        db.upsert_catalog_anime(&a4, 3).unwrap();
+        assert_eq!(db.catalog_next_airing_rolled(4, now).unwrap(), None);
+
+        // 5. Must NOT happen: status FINISHED with an expired date -> None.
+        let mut a5 = catalog_anime(5, "Finished Expired", &[]);
+        a5.status = Some("FINISHED".into());
+        a5.next_airing_at = Some(now - 3600);
+        a5.next_episode = Some(5);
+        db.upsert_catalog_anime(&a5, 4).unwrap();
+        assert_eq!(db.catalog_next_airing_rolled(5, now).unwrap(), None);
+
+        // 6. Must NOT happen: next_episode NULL -> None.
+        let mut a6 = catalog_anime(6, "No Ep Releasing", &[]);
+        a6.status = Some("RELEASING".into());
+        a6.next_airing_at = Some(now - 3600);
+        a6.next_episode = None;
+        db.upsert_catalog_anime(&a6, 5).unwrap();
+        assert_eq!(db.catalog_next_airing_rolled(6, now).unwrap(), None);
+
+        // 7. Must NOT happen: next_airing_at NULL -> None.
+        let mut a7 = catalog_anime(7, "No Airing Releasing", &[]);
+        a7.status = Some("RELEASING".into());
+        a7.next_airing_at = None;
+        a7.next_episode = Some(5);
+        db.upsert_catalog_anime(&a7, 6).unwrap();
+        assert_eq!(db.catalog_next_airing_rolled(7, now).unwrap(), None);
+
+        // 8. Must NOT happen: no catalog row -> None.
+        assert_eq!(db.catalog_next_airing_rolled(999_999, now).unwrap(), None);
+
+        // 9. RELEASING, next_airing_at = now (strictly expired) -> rolled forward by 1 week.
+        let mut a8 = catalog_anime(8, "Now Releasing", &[]);
+        a8.status = Some("RELEASING".into());
+        a8.next_airing_at = Some(now);
+        a8.next_episode = Some(5);
+        db.upsert_catalog_anime(&a8, 7).unwrap();
+        assert_eq!(
+            db.catalog_next_airing_rolled(8, now).unwrap(),
+            Some((6, now + SEVEN_DAYS_SECS))
+        );
     }
 
     #[test]

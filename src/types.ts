@@ -373,6 +373,7 @@ export interface PlayerSettings {
   monitor: string | null;
   fullscreen: boolean;
   clean: boolean;
+  adblock: boolean;
 }
 
 export interface ListEntryMeta {

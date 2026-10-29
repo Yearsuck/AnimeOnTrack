@@ -30,6 +30,7 @@ anyhow = "1"
 url = "2"
 # gzip for the catalog snapshot a new install downloads instead of crawling AniList.
 flate2 = "1"
+adblock = { version = "0.13", default-features = false, features = ["embedded-domain-resolver", "full-regex-handling"] }
 tokio = { version = "1", features = ["time", "sync", "macros", "net", "io-util"] }
 # AniList's public GraphQL API is a normal, non-Cloudflare-protected service
 # (unlike the scraped site) — plain HTTP via reqwest is fine here, no need

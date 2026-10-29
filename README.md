@@ -25,10 +25,10 @@
   <p align="center">
     <strong>A high-performance, local-first anime tracker and offline downloader for Windows.</strong>
     <br />
-    Tracks currently-airing anime, notifies you the second a new episode drops, downloads episodes for offline viewing (in development), and unifies your progress across six streaming sites — without an account or cloud lock-in.
+    Tracks currently-airing anime, notifies you the second a new episode drops, downloads episodes for offline viewing, and unifies your progress across ten streaming sites — without an account or cloud lock-in.
     <br />
     <br />
-    <a href="https://github.com/Yearsuck/AnimeOnTrack/releases/latest"><strong>⬇ Download Installer (v0.10.0) »</strong></a>
+    <a href="https://github.com/Yearsuck/AnimeOnTrack/releases/latest"><strong>⬇ Download Installer (v0.22.0) »</strong></a>
     <br />
     <br />
     <a href="#about-the-project">About The Project</a>
@@ -69,7 +69,9 @@
     </li>
     <li><a href="#architecture--engineering-highlights">Architecture & Engineering Highlights</a></li>
     <li><a href="#project-layout">Project Layout</a></li>
-    <li><a href="#whats-new-in-v0100">What's New in v0.10.0</a></li>
+    <li><a href="#whats-new-in-v0220">What's New in v0.22.0</a></li>
+    <li><a href="#previous-releases-v0110-to-v0210-highlights">Previous releases: v0.11.0 to v0.21.0 highlights</a></li>
+    <li><a href="#previous-release-v0100">Previous release: v0.10.0</a></li>
     <li><a href="#previous-release-v090">Previous release: v0.9.0</a></li>
     <li><a href="#previous-release-v080">Previous release: v0.8.0</a></li>
     <li><a href="#contributing">Contributing</a></li>
@@ -112,20 +114,22 @@ Crucially, the app maintains an **offline mirror of the AniList catalog (~22,000
 
 ### 💾 Offline Episode Downloads & Auto-Cleanup
 * **Per-series downloads panel**: download one episode, **every pending episode of a series** (oldest first, one transfer at a time), cancel a running one, play it offline, or delete a series' downloads **without touching its watched state**.
-* **Five sites, many hosts**: TioAnime, JKAnime, animeyt.cc, GogoAnime and the new AnimeFLV, through Mp4upload, YourUpload, Mediafire, Streamtape, Mixdrop, Vidhide, VOE, Ok.ru and direct mp4 players, plus a built-in HLS downloader for stream-only hosts. See [`docs/superpowers/plans/2026-10-14-download-sources-research.md`](docs/superpowers/plans/2026-10-14-download-sources-research.md) for what each site serves and what cannot be done (captcha, encrypted or anti-bot hosts).
+* **Six download-capable sites, many hosts**: TioAnime, JKAnime, animeyt.cc, GogoAnime, AnimeFLV, and MonosChinos, through Mp4upload, YourUpload, Mediafire, Streamtape, Mixdrop, Vidhide, VOE, Ok.ru and direct mp4 players, plus a built-in HLS downloader for stream-only hosts. See [`docs/superpowers/plans/2026-10-14-download-sources-research.md`](docs/superpowers/plans/2026-10-14-download-sources-research.md) for what each site serves and what cannot be done (captcha, encrypted or anti-bot hosts).
 * **Quarantine before a file is kept**: every download is a `.part` until it is a real video container (MP4, MPEG-TS or Matroska; the extension comes from the bytes, never the URL) and Windows Defender finds nothing. Kept files get the Mark of the Web and the downloads folder denies *execute* on its files. This is hardening, not a virtual machine.
 * **Auto-Delete on Seen**: the local file is removed once the episode is marked watched.
 
 ### 🖼️ AniList Spotlight & Landscape Banners
 * **Wide Cinematic Banners**: The Airing Spotlight carousel fetches high-definition landscape banners directly from AniList's GraphQL API.
 * **Graceful Cover Fallback**: Automatic fallback to high-resolution portrait posters whenever an official banner is unavailable.
+* **In-App Anime Trailers**: Watch official YouTube trailers embedded directly in the Airing series detail view and catalog info sheets (`TrailerBox.tsx`).
 
 ### ⚡ Intelligent Airing Detection
 * **Sub-2-Second Quiet Scans**: Release schedule heuristics skip titles that cannot have updated yet, cutting refresh cycles from ~510s down to ~1.5s.
+* **AniList-Driven Next-Episode Timing**: Airing schedule dates and next-episode countdowns synchronize directly from AniList, auto-refreshed periodically with focus-aware prioritization.
 * **App-Wide Semaphore**: Scraper requests are capped to 4 concurrent permits, eliminating bot-detection triggers and WebView2 IPC stalls.
 
-### 🔗 Canonical Tracking Across 6 Streaming Sites
-* **Unified Watch History**: Followed series, watched episodes, and backlogs are shared canonically across all supported sites using AniList ID resolution.
+### 🔗 Canonical Tracking Across 10 Streaming Sites
+* **Unified Watch History**: Followed series, watched episodes, and backlogs are shared canonically across all 10 supported sites using AniList ID resolution.
 * **Seamless Site Switching**: Switching between streaming providers updates video links without disturbing your library progress or statistics.
 * **Automatic Mirror Failover**: Each adapter contains a fallback mirror list that automatically bypasses dead domains or DNS takedowns.
 
@@ -149,13 +153,26 @@ Crucially, the app maintains an **offline mirror of the AniList catalog (~22,000
 ### 🌐 Tri-Lingual Support
 * Full localization in **English (`en`)**, **Spanish (`es`)**, and **Catalan (`ca`)**, verified at compile time with 100% key coverage.
 
+### 🛡️ Ad-Free Clean Player & Pop-Up Blocking
+* **Distraction-Free Playback**: Dedicated viewer window mode isolates the video stream and server switcher, stripping menus, banners, and third-party page clutter (`clean_player.rs`).
+* **Comprehensive Ad & Tracker Shield**: A curated blocklist of ad, pop-under, and tracker hosts is enforced at the network layer, and transparent click-hijack layers are neutralized (`ad_block.rs`).
+
+### 🔄 Signed In-App Updates
+* **One-Click Auto-Updates**: Checks GitHub for newer releases in the background with manual "Check now" controls in Settings (`UpdateBanner.tsx`).
+* **Cryptographically Signed**: Every release payload is signed with a private key and verified host-side before installation.
+
+### 🛠️ Diagnostics, Watchdog & Debug Sandbox
+* **UI-Hang Watchdog**: Background heartbeat monitors the main GUI thread every 2 seconds, logging freezes and safely restarting if the main loop hangs (`ui_watchdog.rs`).
+* **Isolated Debug Sandbox & CDP**: Run against an isolated copy of the database via Chrome DevTools Protocol without touching live user data (`tools/sandbox/`).
+* **Rotating Diagnostics**: In-app exportable diagnostics bundle with a bounded, rotating local log (`file_log.rs`).
+
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 ---
 
 ## Supported Streaming Sites
 
-Six adapters are bundled out of the box, all conforming to a pluggable `SiteAdapter` interface:
+Ten adapters are bundled out of the box, all conforming to a pluggable `SiteAdapter` interface:
 
 | Site | Default Domain | Adapter ID | Primary Language | Offline downloads |
 |:---|:---|:---|:---:|:---:|
@@ -165,6 +182,10 @@ Six adapters are bundled out of the box, all conforming to a pluggable `SiteAdap
 | **JKanime** | `jkanime.net` | `jkanime` | Spanish (Castilian / LatAm) | Mp4upload, Mediafire, Mixdrop, Vidhide, VOE… |
 | **GogoAnime** | `gogoanime.by` | `gogoanime` | English (Sub / Dub) | HLS |
 | **AnimeLand** | `w7.animeland.tv` | `animeland` | English (Dubbed) | not possible (see research doc) |
+| **Aniwaves** | `aniwaves.ru` | `aniwaves` | English | - |
+| **MonosChinos** | `monoschinos.st` | `monoschinos` | Spanish (Castilian / LatAm) | Mp4upload, Ok.ru, VOE… |
+| **AnimeFenix** | `animefenix.com.co` | `animefenix` | Spanish (Castilian / LatAm) | - |
+| **AnimoraTV** | `www.animoratv.com` | `animoratv` | Spanish (Castilian / LatAm) | - |
 
 Every adapter keeps a per-site mirror list that fails over automatically when a domain dies. AnimeFLV moved to a new WordPress site (`animeflv.or.at`) in October 2026; existing installs are migrated to it on first launch.
 
@@ -217,7 +238,7 @@ To build AnimeOnTrack from source, ensure your environment has:
 Verify both backend and frontend layers prior to opening pull requests:
 
 ```bash
-# Rust backend: Run all 900+ automated unit & integration tests
+# Rust backend: Run all 1100+ automated unit & integration tests
 cargo test --manifest-path src-tauri/Cargo.toml
 
 # Rust backend: Strict linter check
@@ -283,33 +304,47 @@ flowchart TD
 
 ```text
 AnimeOnTrack/
+├── .github/
+│   └── workflows/           # Multi-platform CI (build, clippy, tests) and release pipeline
 ├── src-tauri/
 │   ├── src/
-│   │   ├── adapter/         # SiteAdapter trait and 6 streaming implementations
+│   │   ├── adapter/         # SiteAdapter trait and 10 streaming implementations
 │   │   ├── backup/          # Google Drive OAuth (PKCE), snapshot, and staged restore
 │   │   ├── commands/        # Tauri command handlers (app API surface)
 │   │   ├── db/              # rusqlite schema, migrations, queries, and catalog indexing
 │   │   ├── anilist.rs       # AniList GraphQL sync, landscape banner & metadata resolver
 │   │   ├── anizip.rs        # ani.zip episode map (per-season vs absolute numbering, air dates)
 │   │   ├── catalog_snapshot.rs # gzip snapshot of the whole catalog for a fast first run
+│   │   ├── clean_player.rs  # Clean player mode isolating streams and hiding ads, menus and pop-ups
+│   │   ├── cover_cache.rs   # Disk cover image cache (direct HTTP download with WebView2 fallback)
+│   │   ├── dates.rs         # Date parser for localized release timestamps and air schedules
+│   │   ├── diff.rs          # Number-keyed episode diffing to prevent duplicates across mirror changes
 │   │   ├── download_sources.rs # Pure parsers: server lists and file hosts -> a downloadable link
 │   │   ├── downloader.rs    # Streams a file or an HLS stream to disk (.part -> checks -> rename)
 │   │   ├── download_safety.rs # Content sniffing, Defender scan, Mark of the Web, no-execute folder
+│   │   ├── extras_guard.rs  # Concurrency guard and failure backoff for on-demand AniList metadata
 │   │   ├── hls.rs           # HLS playlist parsing and the GogoAnime player chain
+│   │   ├── html_cache.rs    # Short-TTL in-memory cache for rendered HTML pages
 │   │   ├── ad_block.rs      # Ad/tracker request blocking in the app's viewer windows
 │   │   ├── domain_breaker.rs# Backs off hosts that keep failing
 │   │   ├── file_log.rs      # Small rotating aot.log
+│   │   ├── genres.rs        # Normalizes site genre tags into canonical AniList categories
 │   │   ├── matching.rs      # Fuzzy and exact title matching algorithms
 │   │   ├── player.rs        # Dedicated viewer window lifecycle (maximised, ads blocked)
-│   │   └── scraper_engine.rs# Hidden WebView2 challenge solver & canvas cover decoder
+│   │   ├── recommend.rs     # Taste-based scoring and recommendation engine for the discover deck
+│   │   ├── scraper_engine.rs# Hidden WebView2 challenge solver & canvas cover decoder
+│   │   ├── swipe.rs         # Card selection, PRNG, and filtering helpers for the swipe discovery deck
+│   │   └── ui_watchdog.rs   # Main-thread heartbeat watchdog detecting freezes and auto-restarting
 │   ├── Cargo.toml           # Rust backend dependencies & build settings
 │   └── tauri.conf.json      # Tauri application bundle configuration
 ├── src/
-│   ├── components/          # Reusable design system primitives & UI widgets
+│   ├── components/          # Design system primitives & UI widgets (TrailerBox, PosterCard, Menu...)
 │   ├── i18n/                # Zero-dependency catalog with full en/es/ca coverage
-│   ├── views/               # Screen views (Airing, Library, Discover, Downloads, Stats)
+│   ├── views/               # Screen views (Airing, Spotlight, Library, Discover, Stats, Tutorial...)
 │   ├── api.ts               # Strongly-typed wrapper over window.__TAURI__.invoke
 │   └── styles.css           # Custom design system tokens, typography, and dark/light themes
+├── tools/
+│   └── sandbox/             # CDP debugging sandbox and sanitized test database tooling
 ├── docs/                    # Technical documentation and platform guides
 └── package.json             # Frontend dependencies & scripts
 ```
@@ -324,6 +359,29 @@ AnimeOnTrack/
 * **More precise statistics**: "Ya lo vi" on a show that is still airing now credits the episodes that have already aired (`next episode - 1`) instead of zero, the completion percentage no longer reads 100% when the site lists fewer episodes than AniList says have aired, and a movie in a franchise no longer prices every remaining TV episode at the movie's runtime.
 * **Trailer on the airing detail**: opening an airing anime now shows its AniList trailer, like the catalog sheet already did.
 * **Cleaner players**: 18 more ad, pop-under and tracker hosts are blocked (each one found in a stored page of the sites or their embeds), low-level click-hijack layers are neutralised, the cleaner no longer gives up on pages that re-render while you switch servers, and the gogoanime, jkanime and animeland selectors are tighter.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+---
+
+<a id="previous-releases-v0110-to-v0210-highlights"></a>
+
+## Previous releases: v0.11.0 to v0.21.0 highlights
+
+* **Expanded site coverage**: Added full streaming adapters for Aniwaves, MonosChinos, AnimeFenix, and AnimoraTV, expanding catalog tracking to 10 streaming providers (v0.16.0).
+* **Multi-site download fallback**: Downloads automatically fall back to identical episodes across sibling sites when a source fails or lags (v0.12.0, v0.12.1).
+* **Instant local playback**: The pending queue plays downloaded `.mp4` and `.mkv` files directly when clicking Watch (v0.11.0).
+* **Dedicated storage manager**: Added disk space monitoring in Settings to inspect cached media, reclaim storage safely, and truncate crash logs (v0.15.0).
+* **Adaptive streaming & quality selection**: Choose preferred video resolutions for direct MP4 downloads and HLS stream variants (v0.15.0).
+* **Distraction-free clean player**: Optional viewer mode isolating the player frame and server switchers while stripping site ads, menus, and pop-up overlays (v0.19.0).
+* **In-app anime sheets & trailers**: Inspect rich synopsis, relations, and trailers in modal sheets without leaving the app (v0.19.0, v0.20.0).
+* **Catalog Explorar overhaul**: Curated shelf browsing, a seasonal hero banner, and unified navigation linking Explorar, Descubrir, and Listas (v0.19.0, v0.20.0).
+* **Enhanced swipe deck & Listas**: Refactored card decisions with granular filters, drawer toolbars, smart groups, and batch actions (v0.17.0, v0.20.0).
+* **Fluid motion & transitions**: Added poster-to-detail zoom morphs, sheet ease-in transitions, tab slide indicators, and launch curtains (v0.20.0, v0.21.0).
+* **First-run interactive tutorial**: Guided introductory tour for new users with an on-demand replay option in Settings (v0.17.0, v0.17.1).
+* **Stats & 3D graph redesign**: Overhauled Resumen tab with a unified hero band, separated AniList tags from true genres, and made the 3D force graph readable (v0.17.2, v0.18.0).
+* **Network & WebView hardening**: Blocked private/NAT64/6to4 IP ranges in scrapers, capped cover image sizes, and enforced timeouts on Google Drive OAuth redirects (v0.16.2, v0.16.3).
+* **Engine performance & WAL**: Switched SQLite to write-ahead logging (WAL), minimized mutex lock holding times during scans, and batched recommendation deck queries (v0.15.0, v0.15.1).
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
