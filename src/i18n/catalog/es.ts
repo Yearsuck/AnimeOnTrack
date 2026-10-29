@@ -165,6 +165,8 @@ export const es = {
   "settings.playerFullscreen": "Ventana a pantalla completa",
   "settings.playerClean": "Modo reproductor limpio",
   "settings.playerCleanHelp": "Solo el reproductor y el nombre del anime; sin menús, comentarios ni anuncios.",
+  "settings.playerAdblock": "Bloqueador de anuncios avanzado",
+  "settings.playerAdblockHelp": "Bloquea anuncios, ventanas emergentes y rastreadores con listas abiertas (EasyList). Desactívalo si una web deja de cargar el vídeo.",
   "settings.playerHelp": "Configura en qué monitor se abren los episodios y si deben abrirse en una ventana normal o maximizada a pantalla completa. El pantalla completa real lo activas tú al empezar el episodio.",
 
 

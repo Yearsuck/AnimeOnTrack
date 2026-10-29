@@ -135,6 +135,16 @@ impl Db {
         self.set_setting("player_clean", if clean { "true" } else { "false" })
     }
 
+    /// User preference: enable advanced ad blocking via open filter lists.
+    /// Defaults to `true` when never set.
+    pub fn get_player_adblock(&self) -> Result<bool> {
+        Ok(self.get_setting("player_adblock")?.as_deref() != Some("false"))
+    }
+
+    pub fn set_player_adblock(&self, adblock: bool) -> Result<()> {
+        self.set_setting("player_adblock", if adblock { "true" } else { "false" })
+    }
+
 
     /// Record "this series' episode list was actually fetched just now" —
     /// gates the FINISHED_RECHECK interval for followed series absent from
@@ -476,6 +486,16 @@ mod tests {
     }
 
     #[test]
+    fn player_adblock_defaults_on_and_round_trips() {
+        let db = Db::open(":memory:").unwrap();
+        assert!(db.get_player_adblock().unwrap());
+        db.set_player_adblock(false).unwrap();
+        assert!(!db.get_player_adblock().unwrap());
+        db.set_player_adblock(true).unwrap();
+        assert!(db.get_player_adblock().unwrap());
+    }
+
+    #[test]
     fn player_settings_round_trip() {
         let db = Db::open(":memory:").unwrap();
         assert_eq!(db.get_player_monitor().unwrap(), None);
@@ -577,4 +597,3 @@ mod tests {
         assert!(db.get_auto_delete_seen_downloads().unwrap());
     }
 }
-

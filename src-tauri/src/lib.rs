@@ -148,6 +148,7 @@ pub fn run() {
                 .flatten()
                 .unwrap_or_else(|| "animeytx".to_string());
             let source_id: Option<i64> = db.get_source_id_for_site(&active_site_id).ok().flatten();
+            crate::ad_block::set_engine_enabled(db.get_player_adblock().unwrap_or(true));
             app.manage(AppState {
                 db: Mutex::new(db),
                 source_id: Mutex::new(source_id),
@@ -184,6 +185,7 @@ pub fn run() {
             });
 
             anizip::spawn_sync(app.handle().clone());
+            ad_block::init_engine_in_background();
 
             Ok(())
         })

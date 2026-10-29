@@ -75,7 +75,8 @@ pub async fn get_player_settings(state: State<'_, AppState>) -> Result<crate::mo
     let monitor = db.get_player_monitor().map_err(|e| e.to_string())?;
     let fullscreen = db.get_player_fullscreen().map_err(|e| e.to_string())?;
     let clean = db.get_player_clean().map_err(|e| e.to_string())?;
-    Ok(crate::models::PlayerSettings { monitor, fullscreen, clean })
+    let adblock = db.get_player_adblock().map_err(|e| e.to_string())?;
+    Ok(crate::models::PlayerSettings { monitor, fullscreen, clean, adblock })
 }
 
 /// Persists player playback preferences (target monitor and fullscreen).
@@ -85,11 +86,16 @@ pub async fn set_player_settings(
     monitor: Option<String>,
     fullscreen: bool,
     clean: bool,
+    adblock: Option<bool>,
 ) -> Result<(), String> {
     let db = state.db.lock().unwrap();
     db.set_player_monitor(monitor.as_deref()).map_err(|e| e.to_string())?;
     db.set_player_fullscreen(fullscreen).map_err(|e| e.to_string())?;
     db.set_player_clean(clean).map_err(|e| e.to_string())?;
+    if let Some(adblock) = adblock {
+        db.set_player_adblock(adblock).map_err(|e| e.to_string())?;
+        crate::ad_block::set_engine_enabled(adblock);
+    }
     Ok(())
 }
 

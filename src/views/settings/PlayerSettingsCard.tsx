@@ -10,6 +10,7 @@ export function PlayerSettingsCard() {
   const [targetMonitor, setTargetMonitor] = useState<string>("");
   const [fullscreen, setFullscreen] = useState(false);
   const [clean, setClean] = useState(true);
+  const [adblock, setAdblock] = useState(true);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -19,6 +20,7 @@ export function PlayerSettingsCard() {
         setTargetMonitor(settings.monitor ?? "");
         setFullscreen(settings.fullscreen);
         setClean(settings.clean);
+        setAdblock(settings.adblock);
       })
       .catch((err) => console.error("Error loading player settings:", err))
       .finally(() => setLoading(false));
@@ -27,7 +29,7 @@ export function PlayerSettingsCard() {
   const handleMonitorChange = async (val: string) => {
     setTargetMonitor(val);
     try {
-      await setPlayerSettings(val.trim() === "" ? null : val, fullscreen, clean);
+      await setPlayerSettings(val.trim() === "" ? null : val, fullscreen, clean, adblock);
     } catch (err) {
       console.error("Failed to save monitor setting:", err);
     }
@@ -36,7 +38,7 @@ export function PlayerSettingsCard() {
   const handleFullscreenChange = async (fs: boolean) => {
     setFullscreen(fs);
     try {
-      await setPlayerSettings(targetMonitor.trim() === "" ? null : targetMonitor, fs, clean);
+      await setPlayerSettings(targetMonitor.trim() === "" ? null : targetMonitor, fs, clean, adblock);
     } catch (err) {
       console.error("Failed to save fullscreen setting:", err);
     }
@@ -45,9 +47,18 @@ export function PlayerSettingsCard() {
   const handleCleanChange = async (next: boolean) => {
     setClean(next);
     try {
-      await setPlayerSettings(targetMonitor.trim() === "" ? null : targetMonitor, fullscreen, next);
+      await setPlayerSettings(targetMonitor.trim() === "" ? null : targetMonitor, fullscreen, next, adblock);
     } catch (err) {
       console.error("Failed to save clean player setting:", err);
+    }
+  };
+
+  const handleAdblockChange = async (next: boolean) => {
+    setAdblock(next);
+    try {
+      await setPlayerSettings(targetMonitor.trim() === "" ? null : targetMonitor, fullscreen, clean, next);
+    } catch (err) {
+      console.error("Failed to save adblock setting:", err);
     }
   };
 
@@ -114,6 +125,22 @@ export function PlayerSettingsCard() {
           >
             {clean ? "✓ " : ""}
             {t("settings.playerClean")}
+          </button>
+        </div>
+      </div>
+
+      <div className="settings-field">
+        <label className="settings-field-label">{t("settings.playerAdblock")}</label>
+        <p className="settings-section-desc">{t("settings.playerAdblockHelp")}</p>
+        <div className="row">
+          <button
+            type="button"
+            className={`chip-toggle ${adblock ? "active" : ""}`}
+            aria-pressed={adblock}
+            onClick={() => handleAdblockChange(!adblock)}
+          >
+            {adblock ? "✓ " : ""}
+            {t("settings.playerAdblock")}
           </button>
         </div>
       </div>
