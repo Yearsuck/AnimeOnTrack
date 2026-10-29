@@ -133,6 +133,9 @@ impl EpisodePlayer for AppWindowPlayer {
             // Pop-ups and pop-unders are the worst of the ads on these sites:
             // nothing the user wants to watch needs a second window.
             .on_new_window(|_url, _features| tauri::webview::NewWindowResponse::Deny)
+            // A navigation to a known ad host is cancelled instead of replacing
+            // the video page (e.g. ad scripts attempting `location.href = ...`).
+            .on_navigation(|url| !crate::ad_block::is_blocked_url(url.as_str()))
             .build()?;
         crate::ad_block::install(&win);
 

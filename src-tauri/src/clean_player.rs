@@ -150,6 +150,27 @@ pub fn site_ids_for_url(url: &str) -> Vec<&'static str> {
         .collect()
 }
 
+/// Whether `url` points to an external site that must never be touched by the
+/// clean-player injection.
+///
+/// AniList pages (e.g. series info, user profiles) can be viewed in the app's
+/// viewer window. Because `anilist.co` is not a recognized streaming site in
+/// `site_ids_for_url`, `config_json` falls back to trying all sites' selectors.
+/// The generic selectors (like `iframe` or `[class*='player']`) then match
+/// AniList's trailer embeds or media elements, hide everything else on the page,
+/// and leave the user with an unusable black screen.
+pub fn is_exempt(url: &str) -> bool {
+    base_domain(&host_of(url)) == "anilist.co"
+}
+
+/// Whether `url` should receive clean-player injection.
+///
+/// Exempt domains (such as AniList) return false so the clean-player script is
+/// never injected.
+pub fn should_inject(url: &str) -> bool {
+    !is_exempt(url)
+}
+
 /// JSON config handed to the page script for `url`.
 pub fn config_json(url: &str) -> String {
     let ids = site_ids_for_url(url);
@@ -172,7 +193,13 @@ pub fn script_for(url: &str) -> String {
 /// (runs on the async runtime, never blocks the main thread): polls the page
 /// (condition-based, bounded) until a player appears, then re-checks slowly so
 /// a navigation inside the window (new episode, server change) is cleaned too.
+///
+/// Exempt URLs (such as AniList pages) return immediately without injecting:
+/// their content is not an episode player and injecting would break the page layout.
 pub fn spawn_injection(win: tauri::WebviewWindow, url: String) {
+    if !should_inject(&url) {
+        return;
+    }
     tauri::async_runtime::spawn(async move {
         let script = script_for(&url);
         let started = Instant::now();
@@ -541,6 +568,38 @@ mod tests {
         assert!(site_ids_for_url("https://some-mirror.example/x").is_empty());
         let all: serde_json::Value = serde_json::from_str(&config_json("https://m.example/x")).unwrap();
         assert!(all["players"].as_array().unwrap().len() > 5);
+    }
+
+    #[test]
+    fn is_exempt_identifies_anilist_domains() {
+        assert!(is_exempt("https://anilist.co/anime/21/One-Piece"));
+        assert!(is_exempt("https://s4.anilist.co/file/x.jpg"));
+        assert!(is_exempt("https://graphql.anilist.co"));
+
+        assert!(!is_exempt("https://animeyt.cc/tv/x/"));
+        assert!(!is_exempt("https://notanilist.co/"));
+        assert!(!is_exempt("https://anilist.co.evil.example/"));
+        assert!(!is_exempt("not a url"));
+    }
+
+    #[test]
+    fn should_inject_exempts_anilist_and_keeps_streaming_sites() {
+        assert!(!should_inject("https://anilist.co/anime/21/One-Piece"));
+        assert!(!should_inject("https://s4.anilist.co/file/x.jpg"));
+        assert!(!should_inject("https://graphql.anilist.co"));
+
+        assert!(should_inject("https://animeyt.cc/tv/x/"));
+        assert!(should_inject("https://unknown-mirror.example/ver/x"));
+    }
+
+    #[test]
+    fn unknown_mirror_domain_still_returns_merged_selectors() {
+        let cfg: serde_json::Value =
+            serde_json::from_str(&config_json("https://unknown-mirror.example/ver/x")).unwrap();
+        let players = cfg["players"].as_array().expect("players array");
+        assert!(!players.is_empty(), "players list must not be empty for unknown mirror");
+        let switchers = cfg["switchers"].as_array().expect("switchers array");
+        assert!(!switchers.is_empty(), "switchers list must not be empty for unknown mirror");
     }
 
     #[test]
