@@ -496,6 +496,24 @@ mod tests {
         let back: ListEntryMeta = serde_json::from_str(&j).unwrap();
         assert_eq!(m, back);
     }
+
+    #[test]
+    fn player_settings_json_roundtrips() {
+        let p = PlayerSettings {
+            monitor: Some("DISPLAY1".into()),
+            fullscreen: true,
+            clean: false,
+            adblock: true,
+        };
+        let j = serde_json::to_string(&p).unwrap();
+        let back: PlayerSettings = serde_json::from_str(&j).unwrap();
+        assert_eq!(p, back);
+
+        // Deserializing without `adblock` defaults to true for backwards compatibility.
+        let old_json = r#"{"monitor":"DISPLAY1","fullscreen":true,"clean":false}"#;
+        let from_old: PlayerSettings = serde_json::from_str(old_json).unwrap();
+        assert_eq!(from_old, p);
+    }
 }
 
 /// Result of importing the canonical library onto the active site: how many
@@ -528,6 +546,10 @@ pub struct MonitorOption {
     pub height: u32,
 }
 
+fn default_true() -> bool {
+    true
+}
+
 /// User preference for episode playback display and window state.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PlayerSettings {
@@ -535,6 +557,9 @@ pub struct PlayerSettings {
     pub fullscreen: bool,
     /// Clean-player mode: hide everything but the player and a title bar.
     pub clean: bool,
+    /// Advanced ad blocking via filter lists.
+    #[serde(default = "default_true")]
+    pub adblock: bool,
 }
 
 /// Extended metadata for Discover list entries, joining series with catalog data.
