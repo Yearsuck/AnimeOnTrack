@@ -3823,7 +3823,7 @@ mod tests {
         }).unwrap();
         // Manually backdate seen_at to >90 days ago
         db.conn.execute(
-            "UPDATE episodes SET seen_at = datetime('now', '-100 days') WHERE series_id=?1",
+            "UPDATE episodes SET seen_at = datetime('now', 'start of day', '-100 days', '+12 hours') WHERE series_id=?1",
             [dusty],
         ).unwrap();
 
@@ -3869,7 +3869,7 @@ mod tests {
             url: "https://site/dusty-1".into(), released_at: None, seen: true, download_path: None, download_status: None,
         }).unwrap();
         db.conn.execute(
-            "UPDATE episodes SET seen_at = datetime('now', '-100 days') WHERE series_id=?1",
+            "UPDATE episodes SET seen_at = datetime('now', 'start of day', '-100 days', '+12 hours') WHERE series_id=?1",
             [dusty_a],
         ).unwrap();
 
@@ -3880,7 +3880,7 @@ mod tests {
             url: "https://site/dusty-1".into(), released_at: None, seen: true, download_path: None, download_status: None,
         }).unwrap();
         db.conn.execute(
-            "UPDATE episodes SET seen_at = datetime('now', '-120 days') WHERE series_id=?1",
+            "UPDATE episodes SET seen_at = datetime('now', 'start of day', '-120 days', '+12 hours') WHERE series_id=?1",
             [dusty_b],
         ).unwrap();
 
@@ -3890,9 +3890,16 @@ mod tests {
         assert_eq!(dusty_list[0].title, "Dusty Show");
 
         // The most recent date across sites (-100 days) should win
-        // Compute expected date same way the implementation does
-        let expected_date = chrono::Local::now().date_naive() - chrono::Days::new(100);
-        let expected_str = expected_date.format("%Y-%m-%d").to_string();
+        // Expected date computed directly from SQLite
+        let expected_str: String = db
+            .conn
+            .query_row(
+                "SELECT DATE(datetime('now', 'start of day', '-100 days', '+12 hours'), 'localtime')",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .unwrap();
+
         assert_eq!(dusty_list[0].last_seen_at, expected_str);
     }
 
@@ -4056,7 +4063,9 @@ mod tests {
 
     /// Seed helper: insert a finished series with episodes spanning a known
     /// number of days by backdating `seen_at` via raw SQL (normal insert uses
-    /// `datetime('now')` which we can't control in tests).
+    /// `datetime('now')` which we can't control in tests). Backdates to noon
+    /// UTC so the local calendar date and spans stay deterministic across clock
+    /// times, timezone offsets within +/-11 h, and DST changes.
     fn seed_finished_series(
         db: &Db,
         src: i64,
@@ -4082,14 +4091,14 @@ mod tests {
         // Backdate first episode
         db.conn
             .execute(
-                "UPDATE episodes SET seen_at=datetime('now', ?1) WHERE series_id=?2 AND number='1'",
+                "UPDATE episodes SET seen_at=datetime('now', 'start of day', ?1, '+12 hours') WHERE series_id=?2 AND number='1'",
                 [format!("-{} days", first_seen_days_ago), id.to_string()],
             )
             .unwrap();
         // Backdate last episode
         db.conn
             .execute(
-                "UPDATE episodes SET seen_at=datetime('now', ?1) WHERE series_id=?2 AND number='2'",
+                "UPDATE episodes SET seen_at=datetime('now', 'start of day', ?1, '+12 hours') WHERE series_id=?2 AND number='2'",
                 [format!("-{} days", last_seen_days_ago), id.to_string()],
             )
             .unwrap();
@@ -4169,13 +4178,13 @@ mod tests {
         }
         db.conn
             .execute(
-                "UPDATE episodes SET seen_at=datetime('now', '-10 days') WHERE series_id=?1 AND number='1'",
+                "UPDATE episodes SET seen_at=datetime('now', 'start of day', '-10 days', '+12 hours') WHERE series_id=?1 AND number='1'",
                 [airing_id.to_string()],
             )
             .unwrap();
         db.conn
             .execute(
-                "UPDATE episodes SET seen_at=datetime('now', '-2 days') WHERE series_id=?1 AND number='2'",
+                "UPDATE episodes SET seen_at=datetime('now', 'start of day', '-2 days', '+12 hours') WHERE series_id=?1 AND number='2'",
                 [airing_id.to_string()],
             )
             .unwrap();
@@ -4206,13 +4215,13 @@ mod tests {
         }
         db.conn
             .execute(
-                "UPDATE episodes SET seen_at=datetime('now', ?1) WHERE series_id=?2 AND number='1'",
+                "UPDATE episodes SET seen_at=datetime('now', 'start of day', ?1, '+12 hours') WHERE series_id=?2 AND number='1'",
                 ("-10 days", id_a),
             )
             .unwrap();
         db.conn
             .execute(
-                "UPDATE episodes SET seen_at=datetime('now', ?1) WHERE series_id=?2 AND number='2'",
+                "UPDATE episodes SET seen_at=datetime('now', 'start of day', ?1, '+12 hours') WHERE series_id=?2 AND number='2'",
                 ("-2 days", id_a),
             )
             .unwrap();
@@ -4233,13 +4242,13 @@ mod tests {
         }
         db.conn
             .execute(
-                "UPDATE episodes SET seen_at=datetime('now', ?1) WHERE series_id=?2 AND number='1'",
+                "UPDATE episodes SET seen_at=datetime('now', 'start of day', ?1, '+12 hours') WHERE series_id=?2 AND number='1'",
                 ("-8 days", id_b),
             )
             .unwrap();
         db.conn
             .execute(
-                "UPDATE episodes SET seen_at=datetime('now', ?1) WHERE series_id=?2 AND number='2'",
+                "UPDATE episodes SET seen_at=datetime('now', 'start of day', ?1, '+12 hours') WHERE series_id=?2 AND number='2'",
                 ("-1 days", id_b),
             )
             .unwrap();
@@ -5348,7 +5357,7 @@ mod tests {
             }).unwrap();
             // Same day for both -> 0-day span
             db.conn.execute(
-                "UPDATE episodes SET seen_at=datetime('now', '-5 days') WHERE series_id=?1 AND number=?2",
+                "UPDATE episodes SET seen_at=datetime('now', 'start of day', '-5 days', '+12 hours') WHERE series_id=?1 AND number=?2",
                 [id1.to_string(), n.to_string()],
             ).unwrap();
         }
