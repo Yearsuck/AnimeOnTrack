@@ -28,7 +28,7 @@
     Tracks currently-airing anime, notifies you the second a new episode drops, downloads episodes for offline viewing, and unifies your progress across ten streaming sites — without an account or cloud lock-in.
     <br />
     <br />
-    <a href="https://github.com/Yearsuck/AnimeOnTrack/releases/latest"><strong>⬇ Download Installer (v0.22.0) »</strong></a>
+    <a href="https://github.com/Yearsuck/AnimeOnTrack/releases/latest"><strong>⬇ Download Installer (v0.23.0) »</strong></a>
     <br />
     <br />
     <a href="#about-the-project">About The Project</a>
@@ -69,7 +69,8 @@
     </li>
     <li><a href="#architecture--engineering-highlights">Architecture & Engineering Highlights</a></li>
     <li><a href="#project-layout">Project Layout</a></li>
-    <li><a href="#whats-new-in-v0220">What's New in v0.22.0</a></li>
+    <li><a href="#whats-new-in-v0230">What's New in v0.23.0</a></li>
+    <li><a href="#previous-release-v0220">Previous release: v0.22.0</a></li>
     <li><a href="#previous-releases-v0110-to-v0210-highlights">Previous releases: v0.11.0 to v0.21.0 highlights</a></li>
     <li><a href="#previous-release-v0100">Previous release: v0.10.0</a></li>
     <li><a href="#previous-release-v090">Previous release: v0.9.0</a></li>
@@ -353,7 +354,21 @@ AnimeOnTrack/
 
 ---
 
-## What's New in v0.22.0
+## What's New in v0.23.0
+
+* **Open-source ad blocker**: the viewer windows now run Brave's `adblock` engine with bundled EasyList, EasyList Spanish, EasyPrivacy and uBlock filter lists, so pop-ups, pop-unders and tracker frames from the streaming sites are cancelled before they load. The site, its video hosts and AniList are always allowed. It can be switched off in Settings (Player), and the lists are a snapshot with refresh steps in `src-tauri/filters/README.md`.
+* **No more black screen on AniList**: the clean player no longer runs on anilist.co, where its generic selectors hid the whole page behind a black layer. Viewer windows also cancel navigations to known ad hosts.
+* **Consistent next-episode date**: the series screen now rolls an expired AniList date forward by a week, the same rule the airing grid uses, and an exact ani.zip date wins over that estimate.
+* **Sturdier statistics tests**: the day-bucket tests no longer depend on the time of day or on daylight-saving changes.
+* **README**: all ten sites, the missing feature sections and highlights of v0.11 to v0.21.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+---
+
+<a id="previous-release-v0220"></a>
+
+## Previous release: v0.22.0
 
 * **Next-episode timing from AniList**: the series screen and the airing grid now read the same AniList date (ani.zip is only a fallback). The date is refreshed every 30 minutes and when the window regains focus (45-minute throttle, with a 5-minute backoff if AniList fails), shows whose episode just aired are refreshed first, and a RELEASING show whose date passed less than a week ago keeps its place in the weekly grid instead of vanishing until the next refresh.
 * **More precise statistics**: "Ya lo vi" on a show that is still airing now credits the episodes that have already aired (`next episode - 1`) instead of zero, the completion percentage no longer reads 100% when the site lists fewer episodes than AniList says have aired, and a movie in a franchise no longer prices every remaining TV episode at the movie's runtime.
