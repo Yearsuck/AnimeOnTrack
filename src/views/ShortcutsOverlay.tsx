@@ -1,4 +1,5 @@
 import { useT, type MessageKey } from "../i18n";
+import { useBackLayer } from "../lib/backStack";
 import { SHORTCUT_ROWS } from "../lib/shortcuts";
 
 interface ShortcutsOverlayProps {
@@ -8,6 +9,7 @@ interface ShortcutsOverlayProps {
 
 export function ShortcutsOverlay({ open, onClose }: ShortcutsOverlayProps) {
   const t = useT();
+  useBackLayer(open, onClose);
 
   if (!open) return null;
 

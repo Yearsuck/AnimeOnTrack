@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { BackLevel, useBackLayer } from "../lib/backStack";
 import { listen } from "@tauri-apps/api/event";
 import {
   getGenreCards,
@@ -37,6 +38,9 @@ export function Stats({
   const [graph, setGraph] = useState<SeriesGraphNode[]>([]);
   const [library, setLibrary] = useState<LibraryItem[]>([]);
   const [view, setView] = useState<StatsView>("resumen");
+  // System back returns to the first sub-tab before leaving Stats (only while
+  // Stats is the visible tab: it stays mounted, hidden, once visited).
+  useBackLayer(active && view !== "resumen", () => setView("resumen"), BackLevel.tab);
   const [backfilling, setBackfilling] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);

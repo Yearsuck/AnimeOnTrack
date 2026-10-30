@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { useBackLayer } from "../../lib/backStack";
 import { useT } from "../../i18n";
 import { formatLabel, sortFormats } from "../../lib/formatLabel";
 import { DateRangeControl, ScoreRangeControl } from "../../components/filters";
@@ -67,6 +68,7 @@ export function FilterDrawer({
 }) {
   const t = useT();
   const closeRef = useRef<HTMLButtonElement>(null);
+  useBackLayer(true, onClose);
 
   useEffect(() => {
     if (autoFocus) closeRef.current?.focus();
