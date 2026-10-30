@@ -11,6 +11,19 @@ import { useLang } from "../i18n";
 // ("1,234"), which is exactly what Intl gives us for free.
 const LOCALE_BY_LANG = { es: "es-ES", en: "en-GB", ca: "ca-ES" } as const;
 
+export function formatDecimal(lang: keyof typeof LOCALE_BY_LANG, value: number, digits = 1): string {
+  if (!Number.isFinite(value)) return "—";
+  return new Intl.NumberFormat(LOCALE_BY_LANG[lang], {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  }).format(value);
+}
+
+export function useFormatDecimal(): (value: number, digits?: number) => string {
+  const { lang } = useLang();
+  return useCallback((value: number, digits = 1) => formatDecimal(lang, value, digits), [lang]);
+}
+
 export function useFormatNumber(): (value: number) => string {
   const { lang } = useLang();
   return useCallback(
