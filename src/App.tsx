@@ -1,4 +1,5 @@
 import { Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
+import { BackLevel, useBackLayer } from "./lib/backStack";
 import { Onboarding } from "./views/Onboarding";
 import { AiringGrid } from "./views/AiringGrid";
 import { Pending } from "./views/Pending";
@@ -392,6 +393,22 @@ export default function App() {
     await onPendingDataChanged();
     navigate("airing");
   }
+
+  // System back (Android) / mouse back (desktop), top first: overlays (each
+  // registers its own layer), the series detail, the Descubrir section, then
+  // the main view back to Pendientes. At Pendientes with nothing open no
+  // history entry is left, so Android's back exits the app.
+  useBackLayer(selected !== null, closeSeries);
+  useBackLayer(
+    view === "catalog" && catalogSection !== DEFAULT_CATALOG_SECTION,
+    () => changeSection(DEFAULT_CATALOG_SECTION),
+    BackLevel.tab
+  );
+  useBackLayer(
+    view !== "pending" && view !== "loading" && view !== "onboarding",
+    () => navigate("pending"),
+    BackLevel.view
+  );
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {

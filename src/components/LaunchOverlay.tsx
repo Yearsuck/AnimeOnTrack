@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useSyncExternalStore } from "react";
+import { useBackLayer } from "../lib/backStack";
 import { createPortal } from "react-dom";
 import { useT } from "../i18n";
 import { dispatchLaunch, getLaunchState, subscribeLaunch } from "../lib/launchEpisode";
@@ -20,6 +21,8 @@ export function LaunchHost() {
   const card = useRef<HTMLDivElement>(null);
   const seqShown = useRef(0);
   const active = st.phase !== "idle" && st.req != null;
+  // System back dismisses the curtain like Escape (not while it is already leaving).
+  useBackLayer(active && st.phase !== "closing", () => dispatchLaunch({ type: "dismiss" }));
 
   // Enter: grow out of the clicked element. Curtain via clip-path (exact rect),
   // card via the shared FLIP transform. Fade only under reduced motion.

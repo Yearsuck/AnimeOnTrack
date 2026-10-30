@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useBackLayer } from "../../lib/backStack";
 import { getCatalogFacets, getDeckBans, getDiscoverNiche, setDeckBans, setDiscoverNiche } from "../../api";
 import { useT } from "../../i18n";
 import { DECK_FORMATS } from "./constants";
@@ -183,6 +184,7 @@ export function DeckPanel({
     setOpen(next);
     persistDeckPanelOpen(next);
   }
+  useBackLayer(open, () => setDrawer(false));
 
   const activeBans = countActiveFilters({
     genres: bannedGenres,

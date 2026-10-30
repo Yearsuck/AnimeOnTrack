@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { computeMenuPosition, nextMenuIndex } from "../lib/menuPlacement";
+import { useBackLayer } from "../lib/backStack";
 
 export interface MenuItem {
   label: string;
@@ -92,6 +93,7 @@ export function Menu({
       window.removeEventListener("resize", onAway);
     };
   }, [open, close]);
+  useBackLayer(open, () => close(false));
 
   if (items.length === 0) return null;
 

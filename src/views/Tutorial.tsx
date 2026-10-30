@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useBackLayer } from "../lib/backStack";
 import { useT } from "../i18n";
 import { TUTORIAL_STEPS, clampStep, type TutorialIllustration } from "../lib/tutorial";
 import "../styles/tutorial.css";
@@ -99,6 +100,8 @@ export function Tutorial({ onClose }: TutorialProps) {
     else setIndex((i) => clampStep(i + 1));
   }, [last, onClose]);
   const back = useCallback(() => setIndex((i) => clampStep(i - 1)), []);
+  // System back skips the tour, like Escape.
+  useBackLayer(true, onClose);
 
   // Ring the tab for this step; fall back to a centered card when missing.
   useLayoutEffect(() => {

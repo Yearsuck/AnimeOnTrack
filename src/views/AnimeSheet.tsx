@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useBackLayer } from "../lib/backStack";
 import { createPortal } from "react-dom";
 import { getAnimeExtras, openEpisode } from "../api";
 import { useT, type MessageKey } from "../i18n";
@@ -166,6 +167,8 @@ function AnimeSheet({
     exit.onfinish = unmount;
     exit.oncancel = unmount;
   }, [unmount, originEl, closedTransform]);
+  // System back closes the sheet like Escape does (animated).
+  useBackLayer(true, onClose);
 
   // Load the description/relations/trailer; a failure just leaves them empty.
   useEffect(() => {
