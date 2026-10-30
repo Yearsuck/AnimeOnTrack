@@ -47,8 +47,13 @@ export function countdownLabel(
 // the last 3 calendar months. Computed frontend-side (see the design spec)
 // so "now" is the user's own clock and a day-rollover never needs a re-query.
 export function isWithinLastThreeMonths(firstEpisodeAt: number): boolean {
-  const cutoff = new Date();
-  cutoff.setMonth(cutoff.getMonth() - 3);
+  const now = new Date();
+  // Clamp the day to the target month's length so May 31 -> Feb 28, not Mar 3.
+  const lastDay = new Date(now.getFullYear(), now.getMonth() - 3 + 1, 0).getDate();
+  const cutoff = new Date(now);
+  cutoff.setDate(1);
+  cutoff.setMonth(now.getMonth() - 3);
+  cutoff.setDate(Math.min(now.getDate(), lastDay));
   return firstEpisodeAt * 1000 >= cutoff.getTime();
 }
 

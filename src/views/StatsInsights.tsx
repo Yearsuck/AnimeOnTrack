@@ -3,18 +3,19 @@ import { useLang, useT } from "../i18n";
 import type { WatchInsights, WatchSummary, DustyEntry, BingeRecord, HourCount, PopularityBias } from "../types";
 import { BarChart, CategoryBlock, ShapeToggle } from "./StatsRings";
 import { useStatsShape } from "../lib/statsShape";
-import { useFormatNumber } from "../lib/formatNumber";
+import { useFormatNumber, useFormatDecimal } from "../lib/formatNumber";
 import { getDustyWatchlist, getBingeRecord, getHourlyDistribution, getAvgCompletionDays } from "../api";
 import { StatsHeatmap } from "./StatsHeatmap";
 
-const MINUTES_PER_DAY = 24 * 60;
-
-function formatMinutes(t: ReturnType<typeof useT>, minutes: number): string {
+export function formatMinutes(t: ReturnType<typeof useT>, rawMinutes: number): string {
+  const minutes = Number.isFinite(rawMinutes) && rawMinutes > 0 ? Math.round(rawMinutes) : 0;
+  // Pick the unit from the rounded values so 59.6 min reads "1 h", not "60 min",
+  // and 2879 min reads like 2880 ("2 d 0 h"), not "48 h".
   if (minutes < 60) {
-    return t("stats.minutesUnit", { minutes: Math.round(minutes) });
+    return t("stats.minutesUnit", { minutes });
   }
   const totalHours = Math.round(minutes / 60);
-  if (minutes >= 2 * MINUTES_PER_DAY) {
+  if (totalHours >= 48) {
     return t("stats.daysUnit", {
       days: Math.floor(totalHours / 24),
       hours: totalHours % 24,
@@ -129,6 +130,7 @@ export function StatsInsights({
 }) {
   const t = useT();
   const n = useFormatNumber();
+  const fd = useFormatDecimal();
   const { lang } = useLang();
   const [shape, setShape] = useStatsShape();
   const [activityTab, setActivityTab] = useState<"year" | "month">("year");
@@ -428,13 +430,13 @@ export function StatsInsights({
                 <dt className="milestone-label">{t("stats.completionSpeed")}</dt>
                 <dd className="milestone-value">
                   {avgDays !== null
-                    ? t("stats.completionSpeedValue", { days: avgDays.toFixed(1) })
+                    ? t("stats.completionSpeedValue", { days: fd(avgDays) })
                     : t("stats.completionSpeedEmpty")}
                 </dd>
               </div>
               <div className="milestone">
                 <dt className="milestone-label">{t("stats.avgEpisodes")}</dt>
-                <dd className="milestone-value">{insights.avg_episodes_per_series.toFixed(1)}</dd>
+                <dd className="milestone-value">{fd(insights.avg_episodes_per_series)}</dd>
               </div>
             </dl>
           </section>
@@ -455,7 +457,7 @@ export function StatsInsights({
                 <div className="popbias-labels">
                   <span className="popbias-low">{t("stats.popularityBiasLow")}</span>
                   <span className="popbias-score">
-                    {popScore !== null ? `${popScore.toFixed(1)} / 10` : "—"}
+                    {popScore !== null ? `${fd(popScore)} / 10` : "—"}
                   </span>
                   <span className="popbias-high">{t("stats.popularityBiasHigh")}</span>
                 </div>
