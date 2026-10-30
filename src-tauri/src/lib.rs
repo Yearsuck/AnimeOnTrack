@@ -118,6 +118,9 @@ pub fn run() {
     let builder = builder
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init());
+    // The scraper's Android backend (see scraper_engine::android).
+    #[cfg(target_os = "android")]
+    let builder = builder.plugin(tauri_plugin_webfetch::init());
     builder
         .setup(|app| {
             let dir = app.path().app_data_dir().expect("app data dir");
