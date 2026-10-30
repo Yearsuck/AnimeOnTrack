@@ -48,6 +48,9 @@ urlencoding = "2"
 # backup/oauth.rs) — replaces a hand-rolled, clock-seeded PRNG that was not
 # cryptographically secure.
 getrandom = "0.3"
+
+# Desktop-only plugins: the updater and process-restart plugins do not exist on mobile.
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-updater = "~2.10.1"
 tauri-plugin-process = "~2.3.1"
 
