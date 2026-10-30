@@ -3,6 +3,7 @@
 // public key in tauri.conf.json, and only installs when the user says so.
 
 import type { Update } from "@tauri-apps/plugin-updater";
+import { isMobile } from "./platform";
 
 export const UPDATE_KEY = "aot.autoUpdateCheck";
 
@@ -35,6 +36,8 @@ export function downloadPercent(downloaded: number, total: number | undefined): 
 
 /** The newer release, or null when up to date. Throws on network/signature errors. */
 export async function checkForUpdate(): Promise<Update | null> {
+  // The updater plugin is desktop-only; mobile builds are sideloaded.
+  if (isMobile) return null;
   const { check } = await import("@tauri-apps/plugin-updater");
   return check();
 }

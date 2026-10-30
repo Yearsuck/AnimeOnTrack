@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { isMobile } from "../lib/platform";
 
 // Custom minimize / maximize-restore / close controls for the frameless
 // window (the native title bar is disabled via `decorations: false` in
@@ -11,6 +12,11 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 // event so it stays correct even when the OS maximizes the window some other
 // way (double-click drag region, Win+Up, snapping).
 export function WindowControls() {
+  // No window chrome on phones (the OS owns the window).
+  return isMobile ? null : <DesktopWindowControls />;
+}
+
+function DesktopWindowControls() {
   const win = useMemo(() => getCurrentWindow(), []);
   const [maximized, setMaximized] = useState(false);
 
