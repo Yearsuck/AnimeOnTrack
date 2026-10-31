@@ -1,6 +1,6 @@
 # Estado de AnimeOnTrack
 
-Instantánea del 2026-10-31. Se reescribe tras cada merge a `develop`, cada release y antes de compactar una
+Instantánea del 2026-10-31 (tarde). Se reescribe tras cada merge a `develop`, cada release y antes de compactar una
 conversación (ver "Docs that travel with the code" en `AGENTS.md`). Lo que no está aquí hay que mirarlo en git.
 
 ## Publicado
@@ -26,13 +26,17 @@ conversación (ver "Docs that travel with the code" en `AGENTS.md`). Lo que no e
   - #131 interfaz usable en móvil: márgenes del sistema nativos en `MainActivity.kt`, navegación inferior, reglas en
     `src/styles/mobile.css` limitadas a `html[data-platform="mobile"]`.
 
+  - #133 y #136 estimaciones marcadas: «≈» y % estimado en minutos vistos, «Ya lo vi» aparte, popularidad como
+    percentil del catálogo, fechas de próximo episodio extrapoladas (+7 d) con «≈», una sola cuenta atrás,
+    "vistos / emitidos (plan)", duración de películas.
+  - #135 temporadas: marcadores de temporada en cualquier posición del título; la reparación al arrancar saca de la
+    temporada 1 las filas de temporada N (en la base real: 5 filas, comprobado sobre una copia).
+  - #132 `AGENTS.md` único archivo de instrucciones, con "Docs that travel with the code".
+
 ## Abierto
-- **B, estimaciones marcadas** (en curso): «≈» y % estimado en minutos vistos, popularidad como percentil del catálogo,
-  fechas de próximo episodio extrapoladas marcadas como estimadas, una sola cuenta atrás, "vistos / emitidos" en detalle y
-  biblioteca, duración de películas.
-- **D, vinculación con AniList** (investigando): filas enlazadas a la temporada equivocada en la base real
-  ("Diamond no Ace: Act II Temporada 2" y "Clevatess Temporada 2" en animeyt apuntan a la temporada 1); fechas de estreno
-  parciales (`FuzzyDate`) que se pierden. Reparar filas existentes requiere copia de seguridad y permiso del usuario.
+- **Datos**: fechas extrapoladas por animeytx (+1 semana) sin marcar y fechas de estreno parciales de AniList
+  (`FuzzyDate`): ambas necesitan una columna nueva (migración). Algunas filas reparadas quedan sin vínculo en vez de
+  reenlazarse (ver PR #135).
 - **Android pendiente**: scraper con la pantalla apagada (servicio en primer plano), secretos en Keystore (hoy texto
   plano fuera de Windows), OAuth de Drive por deep link, sincronización con el PC, segunda pasada de diseño móvil.
   Compilar Android en Windows necesita el Modo desarrollador (enlaces simbólicos); sin él: compilar la lib, copiar el `.so`
