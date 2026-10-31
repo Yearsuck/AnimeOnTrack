@@ -314,6 +314,10 @@ pub struct WatchInsights {
     /// Estimated minutes watched across "Ya vistas" (`watched_externally=1`)
     /// series that are linked to a catalog row with a known episode count.
     pub estimated_minutes_external: i64,
+    /// Share of `estimated_minutes_tracked` that came from default format
+    /// durations rather than known AniList catalog durations (0.0..=1.0).
+    /// 0.0 when `estimated_minutes_tracked` is 0.
+    pub estimated_minutes_share: f64,
     /// How many "Ya vistas" rows actually contributed to
     /// `estimated_minutes_external` (linked + catalog `episodes` non-NULL).
     pub external_titles_estimated: i64,
@@ -356,6 +360,10 @@ pub struct PopularityBias {
     /// Normalized to 0-10 using ~70,000 as divisor (700,000 / 10). `None`
     /// mirrors `average_popularity`.
     pub normalized_score: Option<f64>,
+    /// Percentile against the AniList catalog (0.0..=100.0): percentage of
+    /// catalog titles with non-null popularity whose popularity is strictly
+    /// below the user's average popularity. `None` mirrors `average_popularity`.
+    pub percentile: Option<f64>,
 }
 
 /// Snapshot of cloud-backup state shown in Settings — whether Google

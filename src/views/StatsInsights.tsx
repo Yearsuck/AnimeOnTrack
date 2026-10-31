@@ -24,6 +24,38 @@ export function formatMinutes(t: ReturnType<typeof useT>, rawMinutes: number): s
   return t("stats.hoursUnit", { hours: totalHours });
 }
 
+export function formatTimeWatched(t: ReturnType<typeof useT>, minutes: number, estimatedMinutesShare: number): string {
+  const formatted = formatMinutes(t, minutes);
+  return estimatedMinutesShare > 0 ? `≈ ${formatted}` : formatted;
+}
+
+export function formatTimeWatchedHelp(t: ReturnType<typeof useT>, estimatedMinutesShare: number, n: (v: number) => string): string {
+  return estimatedMinutesShare > 0
+    ? t("stats.timeWatchedHelp", {
+        pct: Math.round(estimatedMinutesShare * 100) < 1 ? "< 1" : n(Math.round(estimatedMinutesShare * 100)),
+      })
+    : t("stats.timeWatchedExact");
+}
+
+export function formatEpisodesWatchedNote(
+  t: ReturnType<typeof useT>,
+  external: number,
+  n: (v: number) => string
+): string | null {
+  return external > 0 ? t("stats.episodesWatchedHelp", { external: n(external) }) : null;
+}
+
+export function formatPopularityPercentile(
+  t: ReturnType<typeof useT>,
+  percentile: number | null,
+  n: (v: number) => string,
+  fd: (v: number) => string
+): string {
+  if (percentile === null) return "—";
+  const pctStr = percentile % 1 === 0 ? n(percentile) : fd(percentile);
+  return t("stats.popularityPercentile", { pct: pctStr });
+}
+
 function axisDay(iso: string, locale: string): string {
   const d = new Date(`${iso}T00:00:00`);
   if (Number.isNaN(d.getTime())) return iso;
@@ -159,7 +191,8 @@ export function StatsInsights({
     };
   }, []);
 
-  const totalMinutes = insights.estimated_minutes_tracked + insights.estimated_minutes_external;
+  // Real marks only, like the episode figure; the "Ya lo vi" catalog estimate is shown apart.
+  const realMinutes = insights.estimated_minutes_tracked;
   // Same base on both sides: real marks plus the "Ya vistas" estimate,
   // over a denominator that includes those titles (see get_watch_summary).
   const episodesCredited = summary.episodes_watched + summary.episodes_watched_external;
@@ -195,8 +228,8 @@ export function StatsInsights({
   const hasMarks = insights.marks_by_day.some((d) => d.count > 0);
   const hasHourly = (hourlyDist ?? []).some((d) => d.count > 0);
 
-  const popScore = popularityBias?.normalized_score ?? null;
-  const popPct = popScore !== null ? Math.min(100, Math.max(0, popScore * 10)) : 0;
+  const popPercentile = popularityBias?.percentile ?? null;
+  const popPct = popPercentile !== null ? Math.min(100, Math.max(0, popPercentile)) : 0;
 
   return (
     <div className="stats-insights">
@@ -208,24 +241,20 @@ export function StatsInsights({
           <div className="hero-fig hero-fig-lead">
             <dt className="hero-fig-label">{t("stats.episodesWatched")}</dt>
             <dd className="hero-fig-value">
-              {n(episodesCredited)}
+              {n(summary.episodes_watched)}
             </dd>
             <dd className="hero-fig-note">
-              {t("stats.episodesWatchedHelp", {
-                real: n(summary.episodes_watched),
-                external: n(summary.episodes_watched_external),
-              })}
+              {formatEpisodesWatchedNote(t, summary.episodes_watched_external, n)}
             </dd>
           </div>
 
           <div className="hero-fig">
             <dt className="hero-fig-label">{t("stats.timeWatched")}</dt>
-            <dd className="hero-fig-value">{formatMinutes(t, totalMinutes)}</dd>
+            <dd className="hero-fig-value">{formatTimeWatched(t, realMinutes, insights.estimated_minutes_share)}</dd>
             <dd className="hero-fig-note">
-              {t("stats.timeWatchedHelp", {
-                done: n(insights.external_titles_estimated),
-                total: n(insights.external_titles_total),
-              })}
+              {formatTimeWatchedHelp(t, insights.estimated_minutes_share, n)}
+              {insights.estimated_minutes_external > 0 &&
+                ` · ${t("stats.timeWatchedExternal", { time: formatMinutes(t, insights.estimated_minutes_external) })}`}
             </dd>
           </div>
 
@@ -457,7 +486,7 @@ export function StatsInsights({
                 <div className="popbias-labels">
                   <span className="popbias-low">{t("stats.popularityBiasLow")}</span>
                   <span className="popbias-score">
-                    {popScore !== null ? `${fd(popScore)} / 10` : "—"}
+                    {formatPopularityPercentile(t, popPercentile, n, fd)}
                   </span>
                   <span className="popbias-high">{t("stats.popularityBiasHigh")}</span>
                 </div>
@@ -465,8 +494,8 @@ export function StatsInsights({
                   className="popbias-meter"
                   role="meter"
                   aria-valuemin={0}
-                  aria-valuemax={10}
-                  aria-valuenow={popScore !== null ? Math.round(popScore * 10) / 10 : 0}
+                  aria-valuemax={100}
+                  aria-valuenow={popPercentile !== null ? Math.round(popPercentile * 10) / 10 : 0}
                   aria-label={t("stats.popularityBiasLabel")}
                 >
                   <div className="popbias-track">
