@@ -591,9 +591,10 @@ impl Db {
                     continue;
                 }
             }
-
-            let norm = crate::matching::normalize_title(&title);
-            let s = crate::matching::extract_season_number(&norm);
+            // The row's own season uses the strict reading (explicit markers, trailing
+            // numerals): a numeral before a colon ("Lupin III: ...") names a work, not a
+            // season, and this pass removes links, so it must not guess.
+            let s = crate::matching::extract_season_number(&crate::matching::normalize_title(&title));
             // A colon-qualified title linked to a short show can only have got
             // there through the base-title fallback (see `is_long_runner`): keep
             // it only when its own full title matches that entry.
@@ -627,10 +628,17 @@ impl Db {
                         return false;
                     }
                     let key = crate::matching::franchise_dedup_key(&title);
+                    let base_key = crate::matching::franchise_dedup_key(
+                        &crate::db::stats::franchise_base_title(&title),
+                    );
+                    let all_catalog_titles_plain = refs.iter().all(|t| {
+                        crate::matching::extract_season_number_from_title(t).is_none_or(|n| n <= 1)
+                    });
                     refs.iter().any(|t| {
-                        crate::matching::franchise_dedup_key(t) == key
-                            || crate::matching::extract_season_number(&crate::matching::normalize_title(t))
-                                .is_some_and(|n| n >= 2)
+                        let catalog_key = crate::matching::franchise_dedup_key(t);
+                        catalog_key == key
+                            || (all_catalog_titles_plain && catalog_key == base_key)
+                            || crate::matching::extract_season_number_from_title(t).is_some_and(|n| n >= 2)
                     })
                 });
                 if contradicts {
@@ -3045,6 +3053,42 @@ mod tests {
         assert_eq!(db.repair_season_mislinks().unwrap(), 1);
         assert_eq!(linked_id(&db, s5), Some(199029));
         assert_eq!(db.repair_season_mislinks().unwrap(), 0, "idempotent");
+    }
+
+    #[test]
+    fn repair_takes_a_subtitle_season_off_the_plain_entry() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        db.upsert_catalog_anime(&catalog_anime(178869, "Clevatess", &[]), 0).unwrap();
+        db.upsert_catalog_anime(
+            &catalog_anime(198946, "Clevatess II: Majuu no Ou to Itsuwari no Yuusha Denshou", &[]),
+            1,
+        )
+        .unwrap();
+
+        let wrong = series_with(
+            &db,
+            src,
+            "clevatess-t2",
+            "Clevatess Temporada 2: Majuu no Ou to Itsuwari no Yuusha Denshou",
+        );
+        db.set_anilist_id(wrong, 178869).unwrap();
+        let correct = series_with(
+            &db,
+            src,
+            "clevatess-ii",
+            "Clevatess II: Majuu no Ou to Itsuwari no Yuusha Denshou",
+        );
+        db.set_anilist_id(correct, 198946).unwrap();
+        let plain = series_with(&db, src, "clevatess", "Clevatess");
+        db.set_anilist_id(plain, 178869).unwrap();
+
+        assert_eq!(db.repair_season_mislinks().unwrap(), 1);
+        // Off the season-1 entry; without an unambiguous season-2 match the repair
+        // leaves it unlinked (never wrong), as on the real database.
+        assert_ne!(linked_id(&db, wrong), Some(178869));
+        assert_eq!(linked_id(&db, correct), Some(198946));
+        assert_eq!(linked_id(&db, plain), Some(178869));
     }
 
     #[test]
