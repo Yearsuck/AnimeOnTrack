@@ -4,6 +4,7 @@ import { launchEpisode } from "../lib/launchEpisode";
 import { useT } from "../i18n";
 import { createFilterCache } from "../lib/createFilterCache";
 import { resolveCoverUrl } from "../lib/posterFallback";
+import { formatProgress } from "../lib/airCountdown";
 import { Menu } from "../components/Menu";
 import { PosterCard } from "../components/PosterCard";
 import { Reveal } from "../components/Reveal";
@@ -184,7 +185,7 @@ function LibraryCard({
       title={item.series.title}
       coverUrl={item.series.cover_url}
       genres={item.genres}
-      meta={noEpisodes ? t("library.watchedExternally") : `${item.seen_episodes} / ${item.total_episodes}`}
+      meta={noEpisodes ? t("library.watchedExternally") : formatProgress(item.seen_episodes, item.total_episodes)}
       selectable={selectMode}
       selected={selectMode && isSelected}
       onActivate={() => (selectMode ? onToggleSelect(item.series.id) : onOpenSeries(item.series))}
