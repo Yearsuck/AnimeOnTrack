@@ -122,10 +122,11 @@ pub async fn get_anime_extras(state: State<'_, AppState>, anilist_id: i64) -> Re
     Ok(AnimeExtras { description, relations, trailer })
 }
 
-#[derive(serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct NextAir {
     pub episode: i64,
     pub air_at: i64,
+    pub estimated: bool,
 }
 
 /// Next upcoming episode and its air timestamp (in seconds) for `anilist_id`
@@ -139,13 +140,16 @@ pub async fn get_next_air(state: State<'_, AppState>, anilist_id: i64) -> Result
     let now = chrono::Utc::now().timestamp();
     let db = state.db.lock().unwrap();
     let next = match db.catalog_next_airing(anilist_id, now).map_err(|e| e.to_string())? {
-        Some(pair) => Some(pair),
+        Some((episode, air_at)) => Some(NextAir { episode, air_at, estimated: false }),
         None => match db.next_airing_episode(anilist_id, now).map_err(|e| e.to_string())? {
-            Some(pair) => Some(pair),
-            None => db.catalog_next_airing_rolled(anilist_id, now).map_err(|e| e.to_string())?,
+            Some((episode, air_at)) => Some(NextAir { episode, air_at, estimated: false }),
+            None => db
+                .catalog_next_airing_rolled(anilist_id, now)
+                .map_err(|e| e.to_string())?
+                .map(|(episode, air_at, estimated)| NextAir { episode, air_at, estimated }),
         },
     };
-    Ok(next.map(|(episode, air_at)| NextAir { episode, air_at }))
+    Ok(next)
 }
 
 #[derive(Serialize)]
@@ -933,5 +937,53 @@ mod status_refresh_tests {
             assert!(running.swap(true, Ordering::SeqCst));
         }
         assert!(!running.load(Ordering::SeqCst));
+    }
+}
+
+
+#[cfg(test)]
+mod next_air_tests {
+    use super::*;
+    use crate::db::Db;
+
+    #[test]
+    fn next_air_estimated_flags_for_sources() {
+        let db = Db::open(":memory:").unwrap();
+        let now = 1_000_000;
+        const SEVEN_DAYS_SECS: i64 = 7 * 86400;
+
+        // 1. Catalog future date -> estimated false
+        let mut a1 = crate::db::test_support::catalog_anime(1, "Future Air", &[]);
+        a1.status = Some("RELEASING".into());
+        a1.next_airing_at = Some(now + 3600);
+        a1.next_episode = Some(2);
+        db.upsert_catalog_anime(&a1, 0).unwrap();
+
+        let pair1 = db.catalog_next_airing(1, now).unwrap();
+        assert_eq!(pair1, Some((2, now + 3600)));
+        let next1 = pair1.map(|(episode, air_at)| NextAir { episode, air_at, estimated: false });
+        assert_eq!(next1, Some(NextAir { episode: 2, air_at: now + 3600, estimated: false }));
+
+        // 2. Ani.zip date -> estimated false
+        let entries = vec![
+            crate::anizip::MapEntry { episode: 3, season: 1, absolute: Some(3), air_at: Some(now + 7200) },
+        ];
+        db.replace_episode_map(2, &entries, now).unwrap();
+        let pair2 = db.next_airing_episode(2, now).unwrap();
+        assert_eq!(pair2, Some((3, now + 7200)));
+        let next2 = pair2.map(|(episode, air_at)| NextAir { episode, air_at, estimated: false });
+        assert_eq!(next2, Some(NextAir { episode: 3, air_at: now + 7200, estimated: false }));
+
+        // 3. Rolled catalog date -> estimated true
+        let mut a3 = crate::db::test_support::catalog_anime(3, "Rolled Air", &[]);
+        a3.status = Some("RELEASING".into());
+        a3.next_airing_at = Some(now - 3600);
+        a3.next_episode = Some(4);
+        db.upsert_catalog_anime(&a3, 1).unwrap();
+
+        let rolled = db.catalog_next_airing_rolled(3, now).unwrap();
+        assert_eq!(rolled, Some((5, now - 3600 + SEVEN_DAYS_SECS, true)));
+        let next3 = rolled.map(|(episode, air_at, estimated)| NextAir { episode, air_at, estimated });
+        assert_eq!(next3, Some(NextAir { episode: 5, air_at: now - 3600 + SEVEN_DAYS_SECS, estimated: true }));
     }
 }

@@ -419,14 +419,14 @@ pub async fn list_airing(state: State<'_, AppState>) -> Result<Vec<Series>, Stri
 #[tauri::command]
 pub async fn list_airing_season(state: State<'_, AppState>) -> Result<Vec<AiringItem>, String> {
     let src = get_source_id(&state)?;
-    let (series, first_dates, meta_rows, banners_and_scores) = {
+    let (series, rolled, first_dates, meta_rows, banners_and_scores) = {
         let db = state.db.lock().unwrap();
-        let series = db.list_airing(src).map_err(|e| e.to_string())?;
+        let (series, rolled) = db.list_airing_with_rolled(src).map_err(|e| e.to_string())?;
         let first_dates = db.first_episode_dates(src).map_err(|e| e.to_string())?;
         let meta_rows = db.catalog_airing_meta_rows().map_err(|e| e.to_string())?;
         let airing_ids: Vec<i64> = series.iter().map(|s| s.id).collect();
         let banners_and_scores = db.series_banners_and_scores(&airing_ids).map_err(|e| e.to_string())?;
-        (series, first_dates, meta_rows, banners_and_scores)
+        (series, rolled, first_dates, meta_rows, banners_and_scores)
     };
     let meta = tauri::async_runtime::spawn_blocking(move || {
         Db::build_catalog_airing_meta(meta_rows)
@@ -458,7 +458,14 @@ pub async fn list_airing_season(state: State<'_, AppState>) -> Result<Vec<Airing
                 .or_else(|| meta.banners.get(&norm).cloned());
             let score = series_score
                 .or_else(|| meta.scores.get(&norm).copied());
-            AiringItem { series: s, first_episode_at, banner_url, score }
+            let next_episode_estimated = rolled.contains(&s.id);
+            AiringItem {
+                series: s,
+                first_episode_at,
+                banner_url,
+                score,
+                next_episode_estimated,
+            }
         })
         .collect())
 }

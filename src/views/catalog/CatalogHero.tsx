@@ -4,7 +4,7 @@ import { formatLabel } from "../../lib/formatLabel";
 import { resolveCoverUrl } from "../../lib/posterFallback";
 import { isMobile } from "../../lib/platform";
 import type { CatalogAnime } from "../../types";
-import { countdownParts, countdownShape, type CountdownParts } from "./browse";
+import { countdown } from "../../lib/airCountdown";
 
 const TICK_MS = 30_000;
 
@@ -20,16 +20,8 @@ export function useNowSecs(): number {
 
 export function useCountdownText() {
   const t = useT();
-  return (p: CountdownParts | null): string | null => {
-    if (!p) return null;
-    switch (countdownShape(p)) {
-      case "days":
-        return t("catalog.countdownDays", { d: p.days, h: p.hours });
-      case "hours":
-        return t("catalog.countdownHours", { h: p.hours, m: p.minutes });
-      default:
-        return t("catalog.countdownMinutes", { m: p.minutes });
-    }
+  return (airAt: number | null | undefined, now: number): string | null => {
+    return countdown(airAt, now, { t });
   };
 }
 
@@ -67,7 +59,7 @@ export function CatalogHero({
   const banner = hero.banner_url || hero.cover_url;
   const bannerSrc = banner ? resolveCoverUrl(banner) : null;
   const coverSrc = hero.cover_url ? resolveCoverUrl(hero.cover_url) : null;
-  const left = countdownText(countdownParts(hero.next_airing_at, now));
+  const left = countdownText(hero.next_airing_at, now);
   const facts = [
     hero.format ? formatLabel(t, hero.format) : null,
     hero.episodes ? t("catalog.episodesCount", { count: hero.episodes }) : null,
@@ -78,7 +70,7 @@ export function CatalogHero({
     .join(" · ");
 
   const railItems = items.map((a) => {
-    const when = countdownText(countdownParts(a.next_airing_at, now));
+    const when = countdownText(a.next_airing_at, now);
     const src = a.cover_url ? resolveCoverUrl(a.cover_url) : null;
     return (
       <button

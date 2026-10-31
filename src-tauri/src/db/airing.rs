@@ -67,7 +67,10 @@ impl Db {
     /// stays in the weekly grid; otherwise the scraped value. A catalog time that has already passed is a
     /// snapshot taken before the episode aired (the site has usually rolled to
     /// next week by then), so it never beats the freshly scraped value.
-    pub fn list_airing(&self, active_source_id: i64) -> Result<Vec<crate::models::Series>> {
+    pub fn list_airing_with_rolled(
+        &self,
+        active_source_id: i64,
+    ) -> Result<(Vec<crate::models::Series>, std::collections::HashSet<i64>)> {
         let mut stmt = self.conn.prepare(
             "SELECT s.id, s.source_id, s.anilist_id, s.slug, s.url,
                     COALESCE(c.cover_url, s.cover_url) AS cover_url,
@@ -94,6 +97,7 @@ impl Db {
             catalog_active: bool,
             /// The catalog confirms an upcoming episode of this very season.
             catalog_upcoming: bool,
+            next_episode_estimated: bool,
             series: crate::models::Series,
         }
         let now = chrono::Utc::now().timestamp();
@@ -107,6 +111,7 @@ impl Db {
                 let mut effective_next = scraped_next;
                 let mut catalog_upcoming = false;
                 let mut catalog_active = false;
+                let mut next_episode_estimated = false;
                 let mut catalog_format: Option<String> = None;
                 if anilist_id.is_some() && r.get::<_, Option<String>>("c_title")?.is_some() {
                     let site_title: String = r.get("site_title")?;
@@ -135,6 +140,7 @@ impl Db {
                                     rolled += SEVEN_DAYS_SECS;
                                 }
                                 effective_next = Some(rolled);
+                                next_episode_estimated = true;
                             }
                         }
                     }
@@ -148,6 +154,7 @@ impl Db {
                     catalog_format,
                     catalog_active,
                     catalog_upcoming,
+                    next_episode_estimated,
                     series: crate::models::Series {
                         id: r.get("id")?,
                         slug: r.get("slug")?,
@@ -192,6 +199,7 @@ impl Db {
         }
 
         let mut out: Vec<crate::models::Series> = Vec::with_capacity(order.len());
+        let mut rolled_series_ids = std::collections::HashSet::new();
         for key in &order {
             let group = groups.remove(key).unwrap();
             let followed_any = group.iter().any(|m| m.followed);
@@ -203,6 +211,14 @@ impl Db {
             // happens to be active — otherwise a stale active-site member
             // silently drags the whole show to the bottom of the list.
             let freshest_next_episode_at = group.iter().filter_map(|m| m.series.next_episode_at).max();
+            // The shown date is estimated only when it comes from a rolled member and no
+            // member with a real date (scraped or AniList) confirms the same moment.
+            let from_freshest = |est: bool| {
+                group
+                    .iter()
+                    .any(|m| m.next_episode_estimated == est && m.series.next_episode_at == freshest_next_episode_at)
+            };
+            let next_date_rolled = from_freshest(true) && !from_freshest(false);
             // A site keeps listing OVAs, "Specials" and shows that stopped
             // weeks ago on its airing page. Hide them at read time (nothing is
             // rewritten) unless the user follows them or AniList confirms an
@@ -260,6 +276,9 @@ impl Db {
             }
             series.followed = followed_any;
             series.next_episode_at = freshest_next_episode_at;
+            if next_date_rolled {
+                rolled_series_ids.insert(series.id);
+            }
             out.push(series);
         }
 
@@ -271,7 +290,11 @@ impl Db {
                 .then(b.next_episode_at.cmp(&a.next_episode_at))
                 .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
         });
-        Ok(out)
+        Ok((out, rolled_series_ids))
+    }
+
+    pub fn list_airing(&self, active_source_id: i64) -> Result<Vec<crate::models::Series>> {
+        Ok(self.list_airing_with_rolled(active_source_id)?.0)
     }
 }
 
@@ -2388,5 +2411,61 @@ mod tests {
         db.conn.execute("UPDATE anilist_catalog SET next_airing_at = ?1 WHERE id = 101", [now + 2 * day]).unwrap();
         let airing_ova_future = db.list_airing(src).unwrap();
         assert_eq!(airing_ova_future.len(), 1, "unfollowed OVA with future date must show (catalog_upcoming true)");
+    }
+
+    #[test]
+    fn a_rolled_date_confirmed_by_a_scraped_one_is_not_estimated() {
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("AnimeYT", "https://a.example", "animeytx").unwrap();
+        let b = db.upsert_source("TioAnime", "https://b.example", "tioanime").unwrap();
+        let now = chrono::Utc::now().timestamp();
+        let day = 86400;
+        let mut cat = crate::db::test_support::catalog_anime(101, "Twin Show", &[]);
+        cat.status = Some("RELEASING".into());
+        cat.next_airing_at = Some(now - 2 * day);
+        cat.next_episode = Some(5);
+        db.upsert_catalog_anime(&cat, 0).unwrap();
+        // Site A has no date of its own (its date is the +7 d roll); site B scraped exactly that moment.
+        let sa = db.upsert_series(a, &crate::db::test_support::mk_airing("twin-a", "Twin Show", None)).unwrap();
+        db.set_anilist_id(sa, 101).unwrap();
+        let sb = db
+            .upsert_series(b, &crate::db::test_support::mk_airing("twin-b", "Twin Show", Some(now + 5 * day)))
+            .unwrap();
+        db.set_anilist_id(sb, 101).unwrap();
+
+        let (series, rolled) = db.list_airing_with_rolled(a).unwrap();
+        assert_eq!(series.len(), 1);
+        assert_eq!(series[0].next_episode_at, Some(now + 5 * day));
+        assert!(rolled.is_empty(), "a real date confirms the rolled one");
+    }
+
+    #[test]
+    fn test_list_airing_next_episode_estimated() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "https://a.example", "animeytx").unwrap();
+        let now = chrono::Utc::now().timestamp();
+        let day = 86400;
+
+        // RELEASING, next_airing_at = now - 2 days, no scraped date -> next_episode_estimated == true
+        let mut a1 = crate::db::test_support::catalog_anime(101, "Rolled Show", &[]);
+        a1.status = Some("RELEASING".into());
+        a1.next_airing_at = Some(now - 2 * day);
+        a1.next_episode = Some(5);
+        db.upsert_catalog_anime(&a1, 0).unwrap();
+        let s1 = db.upsert_series(src, &crate::db::test_support::mk_airing("rolled", "Rolled Show", None)).unwrap();
+        db.set_anilist_id(s1, 101).unwrap();
+
+        let (series1, rolled1) = db.list_airing_with_rolled(src).unwrap();
+        assert_eq!(series1.len(), 1);
+        assert!(rolled1.contains(&s1));
+
+        // Future catalog date -> rolled does not contain s1
+        db.conn.execute(
+            "UPDATE anilist_catalog SET next_airing_at = ?1 WHERE id = 101",
+            [now + 2 * day],
+        ).unwrap();
+        let (series2, rolled2) = db.list_airing_with_rolled(src).unwrap();
+        assert_eq!(series2.len(), 1);
+        assert!(!rolled2.contains(&s1));
     }
 }

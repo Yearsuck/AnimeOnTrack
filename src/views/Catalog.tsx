@@ -22,7 +22,7 @@ import type { MessageKey } from "../i18n";
 import { SortSelect } from "../components/filters";
 import {
   activeFilterChips,
-  countdownParts,
+
   isBrowseFilter,
   isBrowseMode,
   pickThisWeek,
@@ -805,7 +805,7 @@ export function Catalog({
                 filter={AIRING_FILTER}
                 items={airingFailed ? undefined : airing}
                 badgeFor={(a) => {
-                  const when = countdownText(countdownParts(a.next_airing_at, nowSecs));
+                  const when = countdownText(a.next_airing_at, nowSecs);
                   return a.next_episode != null && when
                     ? t("catalog.railEpisodeIn", { ep: a.next_episode, when })
                     : null;

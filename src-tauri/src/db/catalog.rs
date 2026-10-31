@@ -1912,9 +1912,9 @@ impl Db {
     /// has status `RELEASING`, `next_airing_at <= now`, and expired less than 7 days ago,
     /// rolls forward by weekly intervals (matching the `list_airing` date rollover logic).
     /// Returns None when not releasing, air date is too old, columns are NULL, or no row exists.
-    pub fn catalog_next_airing_rolled(&self, anilist_id: i64, now: i64) -> Result<Option<(i64, i64)>> {
-        if let Some(pair) = self.catalog_next_airing(anilist_id, now)? {
-            return Ok(Some(pair));
+    pub fn catalog_next_airing_rolled(&self, anilist_id: i64, now: i64) -> Result<Option<(i64, i64, bool)>> {
+        if let Some((ep, air)) = self.catalog_next_airing(anilist_id, now)? {
+            return Ok(Some((ep, air, false)));
         }
 
         const SEVEN_DAYS_SECS: i64 = 7 * 86400;
@@ -1945,7 +1945,7 @@ impl Db {
             k += 1;
         }
 
-        Ok(Some((next_episode + k, rolled)))
+        Ok(Some((next_episode + k, rolled, true)))
     }
 
     /// Smallest future `air_at` (strictly > `now`) and its episode for `anilist_id`.
@@ -5342,7 +5342,7 @@ mod tests {
         db.upsert_catalog_anime(&a1, 0).unwrap();
         assert_eq!(
             db.catalog_next_airing_rolled(1, now).unwrap(),
-            Some((5, now + 3600))
+            Some((5, now + 3600, false))
         );
 
         // 2. RELEASING, next_episode=5, next_airing_at = now-3600 -> Some((6, next_airing_at + 7*86400)).
@@ -5354,7 +5354,7 @@ mod tests {
         db.upsert_catalog_anime(&a2, 1).unwrap();
         assert_eq!(
             db.catalog_next_airing_rolled(2, now).unwrap(),
-            Some((6, a2_air + SEVEN_DAYS_SECS))
+            Some((6, a2_air + SEVEN_DAYS_SECS, true))
         );
 
         // 3. RELEASING, next_episode=5, next_airing_at = now-(7*86400-60) -> Some((6, next_airing_at + 7*86400)) (one week is enough: that is > now by 60 s).
@@ -5366,7 +5366,7 @@ mod tests {
         db.upsert_catalog_anime(&a3, 2).unwrap();
         assert_eq!(
             db.catalog_next_airing_rolled(3, now).unwrap(),
-            Some((6, a3_air + SEVEN_DAYS_SECS))
+            Some((6, a3_air + SEVEN_DAYS_SECS, true))
         );
 
         // 4. RELEASING, next_airing_at = now-(7*86400+1) -> None (too old).
@@ -5413,7 +5413,7 @@ mod tests {
         db.upsert_catalog_anime(&a8, 7).unwrap();
         assert_eq!(
             db.catalog_next_airing_rolled(8, now).unwrap(),
-            Some((6, now + SEVEN_DAYS_SECS))
+            Some((6, now + SEVEN_DAYS_SECS, true))
         );
     }
 

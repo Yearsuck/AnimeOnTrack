@@ -21,7 +21,7 @@ import {
 } from "../api";
 
 import { useT, type MessageKey } from "../i18n";
-import { airCountdown } from "../lib/airCountdown";
+import { countdown, formatAired } from "../lib/airCountdown";
 import { aniListTarget, seasonOf, sitePageUrl } from "../lib/anilistLinks";
 import { isUnlinkedCatalogRow } from "../lib/catalogLink";
 import { summarizeDownloads } from "../lib/downloadSummary";
@@ -370,18 +370,13 @@ export function SeriesDetail({
 
   const seenCount = episodes.filter((e) => e.seen).length;
   const pct = episodes.length ? Math.round((seenCount / episodes.length) * 100) : 0;
-  const countdown =
-    nextAir != null ? airCountdown(nextAir.air_at, Date.now() / 1000) : null;
-  const when = countdown
-    ? t(
-        countdown.unit === "minutes"
-          ? "seriesDetail.nextAir.minutes"
-          : countdown.unit === "hours"
-          ? "seriesDetail.nextAir.hours"
-          : "seriesDetail.nextAir.days",
-        { n: countdown.value }
-      )
-    : "";
+  const when =
+    nextAir != null
+      ? countdown(nextAir.air_at, Math.floor(Date.now() / 1000), {
+          t,
+          estimated: nextAir.estimated,
+        }) ?? ""
+      : "";
 
   const aniList = aniListTarget(catalogLoaded, catalogInfo?.url, series.title);
   const sitePage = sitePageUrl(series.url);
@@ -411,9 +406,12 @@ export function SeriesDetail({
       out.push({ label: t("seriesDetail.info.episodes"), value: String(catalogInfo.episodes) });
     }
     if (catalogInfo.duration != null && catalogInfo.duration > 0) {
+      const isMovie = catalogInfo.format?.toUpperCase() === "MOVIE";
       out.push({
         label: t("seriesDetail.info.duration"),
-        value: t("seriesDetail.info.durationValue", { n: catalogInfo.duration }),
+        value: isMovie
+          ? t("seriesDetail.info.durationMovie", { n: catalogInfo.duration })
+          : t("seriesDetail.info.durationValue", { n: catalogInfo.duration }),
       });
     }
     if (catalogInfo.studio) out.push({ label: t("seriesDetail.info.studio"), value: catalogInfo.studio });
@@ -540,8 +538,11 @@ export function SeriesDetail({
             ) : (
               catalogLoaded && <div className="muted detail-meta">{t("seriesDetail.info.notSynced")}</div>
             )}
-            {nextAir && countdown && (
-              <p className="detail-next-air">
+            {nextAir && when && (
+              <p
+                className="detail-next-air"
+                title={nextAir.estimated ? t("airing.estimatedTooltip") : undefined}
+              >
                 {t("seriesDetail.nextAir", { episode: nextAir.episode, when })}
               </p>
             )}
@@ -556,7 +557,10 @@ export function SeriesDetail({
             )}
             <div className="detail-progress">
               <div className="muted detail-progress-label">
-                {t("seriesDetail.seenCount", { seen: seenCount, total: episodes.length })}
+                {t("seriesDetail.seenCount", {
+                  seen: seenCount,
+                  total: formatAired(episodes.length, catalogInfo?.episodes),
+                })}
               </div>
               <div className="progress">
                 <span style={{ width: `${pct}%` }} />

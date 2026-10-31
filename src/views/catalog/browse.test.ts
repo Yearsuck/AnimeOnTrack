@@ -2,8 +2,6 @@ import { describe, expect, it } from "vitest";
 import type { CatalogAnime } from "../../types";
 import {
   activeFilterChips,
-  countdownParts,
-  countdownShape,
   isBrowseFilter,
   isBrowseMode,
   pickThisWeek,
@@ -71,26 +69,6 @@ describe("pickThisWeek", () => {
   it("falls back to the popularity order when nothing has a usable countdown", () => {
     const items = [anime(1, null), anime(2, NOW - 5), anime(3, null)];
     expect(pickThisWeek(items, NOW, 2).map((a) => a.id)).toEqual([1, 2]);
-  });
-});
-
-describe("countdownParts", () => {
-  it("is null once the time has passed", () => {
-    expect(countdownParts(NOW, NOW)).toBeNull();
-    expect(countdownParts(null, NOW)).toBeNull();
-  });
-
-  it("splits into days, hours and minutes, rounding minutes up", () => {
-    expect(countdownParts(NOW + 13_151, NOW)).toEqual({ days: 0, hours: 3, minutes: 40 });
-    expect(countdownParts(NOW + 99_551, NOW)).toEqual({ days: 1, hours: 3, minutes: 40 });
-    expect(countdownParts(NOW + 20, NOW)).toEqual({ days: 0, hours: 0, minutes: 1 });
-    expect(countdownParts(NOW + 3600, NOW)).toEqual({ days: 0, hours: 1, minutes: 0 });
-  });
-
-  it("picks the largest unit for the label shape", () => {
-    expect(countdownShape({ days: 1, hours: 0, minutes: 5 })).toBe("days");
-    expect(countdownShape({ days: 0, hours: 2, minutes: 5 })).toBe("hours");
-    expect(countdownShape({ days: 0, hours: 0, minutes: 5 })).toBe("minutes");
   });
 });
 
