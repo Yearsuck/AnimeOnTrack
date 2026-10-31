@@ -1,0 +1,775 @@
+/* ====================================================================
+   Mobile layout & responsive rules (AnimeOnTrack Android & small screens)
+   Every rule is strictly scoped under html[data-platform="mobile"] or
+   @media (max-width: 600px) so desktop layout is 100% unaffected.
+   ==================================================================== */
+
+/* --------------------------------------------------------------------
+   Responsive rules for viewports <= 600px (phones & compact displays)
+   -------------------------------------------------------------------- */
+@media (max-width: 600px) {
+  html,
+  body {
+    overflow-x: hidden;
+    max-width: 100vw;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .app-shell {
+    padding-left: env(safe-area-inset-left, 0px);
+    padding-right: env(safe-area-inset-right, 0px);
+    overflow-x: hidden;
+    height: 100%;
+  }
+
+  /* Collapse empty custom title-bar on mobile */
+  .titlebar-min {
+    display: none !important;
+  }
+
+  /* Fixed sticky top header: readable while scrolling, opaque background, safe-area inset */
+  .topbar {
+    position: sticky;
+    top: 0;
+    z-index: 90;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-top: max(var(--sp-2), env(safe-area-inset-top, 0px));
+    padding-bottom: var(--sp-2);
+    padding-left: max(var(--sp-3), env(safe-area-inset-left, 0px));
+    padding-right: max(var(--sp-3), env(safe-area-inset-right, 0px));
+    background: var(--surface);
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    filter: none !important;
+    transform: none !important;
+    contain: none !important;
+    will-change: auto !important;
+    border-bottom: 1px solid var(--border-soft);
+    gap: var(--sp-2);
+    min-height: calc(48px + env(safe-area-inset-top, 0px));
+  }
+
+  .topbar .brand {
+    font-size: var(--fs-md);
+    letter-spacing: -0.01em;
+    flex-shrink: 0;
+  }
+
+  .topbar .brand-logo {
+    width: 20px;
+    height: 20px;
+  }
+
+  .topbar .topbar-refresh,
+  .topbar .btn {
+    min-height: 32px;
+    padding: 0 var(--sp-2);
+    font-size: var(--fs-xs);
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  .topbar .spacer {
+    flex: 1;
+  }
+
+  /* Fixed touch-friendly BOTTOM navigation bar (thumb zone ergonomic reachability) */
+  .topbar .tabs {
+    position: fixed !important;
+    bottom: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    top: auto !important;
+    width: 100% !important;
+    min-height: 56px !important;
+    height: 56px;
+    z-index: 100;
+    display: flex !important;
+    justify-content: space-around;
+    align-items: center;
+    background: var(--surface) !important;
+    border-top: 1px solid var(--border) !important;
+    padding-top: var(--sp-1);
+    padding-bottom: max(var(--sp-2), env(safe-area-inset-bottom, 0px));
+    padding-left: max(0px, env(safe-area-inset-left, 0px));
+    padding-right: max(0px, env(safe-area-inset-right, 0px));
+    gap: 0;
+    box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.25);
+    margin: 0 !important;
+  }
+
+  /* Desktop sliding indicator does not apply to fixed bottom bar */
+  .topbar .tabs::before {
+    display: none !important;
+  }
+
+  /* Touch targets >= 44px with icons and short labels */
+  .topbar .tab {
+    flex: 1 1 0;
+    min-width: 0;
+    min-height: 52px;
+    height: 52px;
+    padding: 4px 2px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    border-radius: var(--radius-sm);
+    font-size: 10px;
+    font-weight: var(--fw-medium);
+    line-height: 1.1;
+    text-align: center;
+    position: relative;
+    background: transparent;
+    color: var(--muted);
+    border: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  /* Mobile focus ring: suppress sticky outline after touch; keep :focus-visible for keyboard */
+  *:focus:not(:focus-visible),
+  .tab:focus:not(:focus-visible),
+  .btn:focus:not(:focus-visible),
+  .chip-toggle:focus:not(:focus-visible),
+  .seg-btn:focus:not(:focus-visible) {
+    outline: none !important;
+    box-shadow: none !important;
+  }
+
+  .topbar .tab.active {
+    color: var(--accent);
+    background: transparent;
+  }
+
+  .topbar .tab .tab-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    flex-shrink: 0;
+  }
+
+  .topbar .tab .tab-label {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 100%;
+  }
+
+  .topbar .tab .badge {
+    position: absolute;
+    top: 4px;
+    right: calc(50% - 18px);
+    margin: 0;
+    min-width: 16px;
+    height: 16px;
+    font-size: 10px;
+    padding: 0 4px;
+    line-height: 16px;
+  }
+
+  /* Content area: ensure scrollable panel has room above bottom navigation */
+  .view-panel {
+    padding-bottom: calc(72px + env(safe-area-inset-bottom, 0px));
+    overflow-x: hidden;
+  }
+
+  .page {
+    padding: var(--sp-3);
+    padding-bottom: calc(80px + env(safe-area-inset-bottom, 0px));
+    max-width: 100%;
+    overflow-x: hidden;
+  }
+
+  /* En emisión toolbar: prevent squashing, wrap neatly into structured rows */
+  .airing-toolbar {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--sp-2);
+    min-height: auto;
+    margin-bottom: var(--sp-3);
+  }
+
+  .airing-toolbar-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+  }
+
+  .airing-toolbar-top .airing-count {
+    display: inline;
+    font-size: var(--fs-sm);
+  }
+
+  .airing-search {
+    width: 100%;
+    max-width: 100%;
+    flex: 1 1 100%;
+  }
+
+  .airing-toolbar-filters {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    width: 100%;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .airing-toolbar-filters .seg {
+    flex-shrink: 0;
+  }
+
+  .desktop-only {
+    display: none !important;
+  }
+
+  /* Catálogo mobile safety: prevent any catalog element from overflowing viewport */
+  .cat-page,
+  .cat-layout,
+  .cat-main,
+  .cat-browse,
+  .cat-shelf,
+  .cat-shelf-track {
+    max-width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+  }
+
+  .cat-head-tools {
+    flex: 1 1 auto;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    justify-content: flex-start;
+  }
+
+  .cat-search {
+    flex: 1 1 100%;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+  }
+
+  /* Spotlight banner in En emisión: keep controls and Ver serie separated */
+  .spotlight {
+    height: 280px;
+    margin-bottom: var(--sp-3);
+  }
+
+  .spotlight-content {
+    padding: var(--sp-3);
+    padding-bottom: calc(var(--sp-3) + 38px);
+    gap: var(--sp-3);
+  }
+
+  .spotlight-poster-card {
+    width: 72px;
+    height: 102px;
+  }
+
+  .spotlight-title {
+    font-size: var(--fs-lg);
+    line-height: 1.2;
+  }
+
+  .spotlight-btn {
+    min-height: 36px;
+    padding: 0 var(--sp-3);
+    font-size: var(--fs-sm);
+  }
+
+  .spotlight-controls {
+    bottom: var(--sp-2);
+    left: auto;
+    right: var(--sp-2);
+    transform: none;
+    gap: var(--sp-2);
+  }
+
+  .spotlight-nav {
+    width: 32px;
+    height: 32px;
+  }
+
+  /* Series Detail: Volver button clears status bar clock */
+  .detail-back {
+    margin-top: max(var(--sp-2), env(safe-area-inset-top, 0px));
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+    padding: 0 var(--sp-3);
+  }
+
+  /* Series Detail: Hero grid & poster alignment */
+  .detail-hero {
+    margin-bottom: var(--sp-3);
+  }
+
+  .detail-hero.has-banner {
+    padding-top: var(--sp-6);
+  }
+
+  .detail-banner {
+    height: 140px;
+  }
+
+  .detail-hero-grid {
+    grid-template-columns: 96px 1fr;
+    gap: var(--sp-3);
+    align-items: start;
+  }
+
+  .detail-cover {
+    width: 96px;
+    height: 136px;
+  }
+
+  .detail-title {
+    font-size: var(--fs-lg);
+  }
+
+  .detail-genres {
+    position: relative;
+    z-index: 2;
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--sp-1);
+    margin-top: var(--sp-2);
+  }
+
+  /* Desktop-only hints hidden on mobile */
+  .disc-act-key,
+  .shortcuts-key,
+  kbd {
+    display: none !important;
+  }
+
+  /* Cards & grids responsive on phone */
+  .grid {
+    gap: var(--sp-3);
+  }
+
+  @media (hover: none) {
+    .lib-card .card-menu-btn,
+    .poster-card .card-menu-btn {
+      opacity: 0.9 !important;
+      background: var(--overlay-strong);
+    }
+
+    .poster-action {
+      opacity: 1 !important;
+      pointer-events: auto !important;
+    }
+  }
+}
+
+/* --------------------------------------------------------------------
+   Mobile platform rules scoped to html[data-platform="mobile"]
+   -------------------------------------------------------------------- */
+html[data-platform="mobile"] {
+  overflow-x: hidden;
+  max-width: 100vw;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html[data-platform="mobile"] body {
+  overflow-x: hidden;
+  max-width: 100vw;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html[data-platform="mobile"] .app-shell {
+  padding-left: env(safe-area-inset-left, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+  overflow-x: hidden;
+  height: 100%;
+}
+
+html[data-platform="mobile"] .titlebar-min {
+  display: none !important;
+}
+
+html[data-platform="mobile"] .topbar {
+  position: sticky;
+  top: 0;
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: max(var(--sp-2), env(safe-area-inset-top, 0px));
+  padding-bottom: var(--sp-2);
+  padding-left: max(var(--sp-3), env(safe-area-inset-left, 0px));
+  padding-right: max(var(--sp-3), env(safe-area-inset-right, 0px));
+  background: var(--surface);
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  filter: none !important;
+  transform: none !important;
+  contain: none !important;
+  will-change: auto !important;
+  border-bottom: 1px solid var(--border-soft);
+  gap: var(--sp-2);
+  min-height: calc(48px + env(safe-area-inset-top, 0px));
+}
+
+html[data-platform="mobile"] .topbar .brand {
+  font-size: var(--fs-md);
+  letter-spacing: -0.01em;
+  flex-shrink: 0;
+}
+
+html[data-platform="mobile"] .topbar .brand-logo {
+  width: 20px;
+  height: 20px;
+}
+
+html[data-platform="mobile"] .topbar .topbar-refresh,
+html[data-platform="mobile"] .topbar .btn {
+  min-height: 32px;
+  padding: 0 var(--sp-2);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+html[data-platform="mobile"] .topbar .spacer {
+  flex: 1;
+}
+
+html[data-platform="mobile"] .topbar .tabs {
+  position: fixed !important;
+  bottom: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  top: auto !important;
+  width: 100% !important;
+  min-height: 56px !important;
+  height: 56px;
+  z-index: 100;
+  display: flex !important;
+  justify-content: space-around;
+  align-items: center;
+  background: var(--surface) !important;
+  border-top: 1px solid var(--border) !important;
+  padding-top: var(--sp-1);
+  padding-bottom: max(var(--sp-2), env(safe-area-inset-bottom, 0px));
+  padding-left: max(0px, env(safe-area-inset-left, 0px));
+  padding-right: max(0px, env(safe-area-inset-right, 0px));
+  gap: 0;
+  box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.25);
+  margin: 0 !important;
+}
+
+html[data-platform="mobile"] .topbar .tabs::before {
+  display: none !important;
+}
+
+html[data-platform="mobile"] .topbar .tab {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 52px;
+  height: 52px;
+  padding: 4px 2px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  border-radius: var(--radius-sm);
+  font-size: 10px;
+  font-weight: var(--fw-medium);
+  line-height: 1.1;
+  text-align: center;
+  position: relative;
+  background: transparent;
+  color: var(--muted);
+  border: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Mobile focus ring: suppress sticky outline after touch; keep :focus-visible for keyboard */
+html[data-platform="mobile"] *:focus:not(:focus-visible),
+html[data-platform="mobile"] .tab:focus:not(:focus-visible),
+html[data-platform="mobile"] .btn:focus:not(:focus-visible),
+html[data-platform="mobile"] .chip-toggle:focus:not(:focus-visible),
+html[data-platform="mobile"] .seg-btn:focus:not(:focus-visible) {
+  outline: none !important;
+  box-shadow: none !important;
+}
+
+html[data-platform="mobile"] .topbar .tab.active {
+  color: var(--accent);
+  background: transparent;
+}
+
+html[data-platform="mobile"] .topbar .tab .tab-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+}
+
+html[data-platform="mobile"] .topbar .tab .tab-label {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+html[data-platform="mobile"] .topbar .tab .badge {
+  position: absolute;
+  top: 4px;
+  right: calc(50% - 18px);
+  margin: 0;
+  min-width: 16px;
+  height: 16px;
+  font-size: 10px;
+  padding: 0 4px;
+  line-height: 16px;
+}
+
+html[data-platform="mobile"] .view-panel {
+  padding-bottom: calc(72px + env(safe-area-inset-bottom, 0px));
+  overflow-x: hidden;
+}
+
+html[data-platform="mobile"] .page {
+  padding: var(--sp-3);
+  padding-bottom: calc(80px + env(safe-area-inset-bottom, 0px));
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+/* Mobile page head: title first (left), counts/actions right (or wrap), filter bar full width */
+html[data-platform="mobile"] .page-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: 32px;
+}
+
+html[data-platform="mobile"] .page-head .page-title {
+  margin-right: auto;
+}
+
+html[data-platform="mobile"] .page-head .pending-head-count {
+  white-space: nowrap;
+  font-size: var(--fs-sm);
+  flex-shrink: 0;
+}
+
+html[data-platform="mobile"] .page-head .spacer {
+  display: none;
+}
+
+html[data-platform="mobile"] .page-head .lib-filter-bar {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+}
+
+html[data-platform="mobile"] .page-head .lib-filter-bar .seg {
+  flex: 1;
+  display: flex;
+}
+
+html[data-platform="mobile"] .page-head .lib-filter-bar .seg-btn {
+  flex: 1;
+  text-align: center;
+  justify-content: center;
+}
+
+html[data-platform="mobile"] .airing-toolbar {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--sp-2);
+  min-height: auto;
+  margin-bottom: var(--sp-3);
+}
+
+html[data-platform="mobile"] .airing-toolbar-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+}
+
+html[data-platform="mobile"] .airing-toolbar-top .airing-count {
+  display: inline;
+  font-size: var(--fs-sm);
+}
+
+html[data-platform="mobile"] .airing-search {
+  width: 100%;
+  max-width: 100%;
+  flex: 1 1 100%;
+}
+
+html[data-platform="mobile"] .airing-toolbar-filters {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+html[data-platform="mobile"] .airing-toolbar-filters .seg {
+  flex-shrink: 0;
+}
+
+html[data-platform="mobile"] .desktop-only {
+  display: none !important;
+}
+
+/* Catálogo mobile safety: prevent any catalog element from overflowing viewport */
+html[data-platform="mobile"] .cat-page,
+html[data-platform="mobile"] .cat-layout,
+html[data-platform="mobile"] .cat-main,
+html[data-platform="mobile"] .cat-browse,
+html[data-platform="mobile"] .cat-shelf,
+html[data-platform="mobile"] .cat-shelf-track {
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+html[data-platform="mobile"] .cat-head-tools {
+  flex: 1 1 auto;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  justify-content: flex-start;
+}
+
+html[data-platform="mobile"] .cat-search {
+  flex: 1 1 100%;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+
+/* Catálogo hero swap on mobile: simple fade without vertical translation */
+html[data-platform="mobile"] .cat-hero-swap {
+  animation-name: cat-hero-fade;
+}
+
+html[data-platform="mobile"] .spotlight {
+  height: 280px;
+  margin-bottom: var(--sp-3);
+}
+
+html[data-platform="mobile"] .spotlight-content {
+  padding: var(--sp-3);
+  padding-bottom: calc(var(--sp-3) + 38px);
+  gap: var(--sp-3);
+}
+
+html[data-platform="mobile"] .spotlight-poster-card {
+  width: 72px;
+  height: 102px;
+}
+
+html[data-platform="mobile"] .spotlight-title {
+  font-size: var(--fs-lg);
+  line-height: 1.2;
+}
+
+html[data-platform="mobile"] .spotlight-btn {
+  min-height: 36px;
+  padding: 0 var(--sp-3);
+  font-size: var(--fs-sm);
+}
+
+html[data-platform="mobile"] .spotlight-controls {
+  bottom: var(--sp-2);
+  left: auto;
+  right: var(--sp-2);
+  transform: none;
+  gap: var(--sp-2);
+}
+
+html[data-platform="mobile"] .spotlight-nav {
+  width: 32px;
+  height: 32px;
+}
+
+html[data-platform="mobile"] .detail-back {
+  margin-top: max(var(--sp-2), env(safe-area-inset-top, 0px));
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 var(--sp-3);
+}
+
+html[data-platform="mobile"] .detail-hero {
+  margin-bottom: var(--sp-3);
+}
+
+html[data-platform="mobile"] .detail-hero.has-banner {
+  padding-top: var(--sp-6);
+}
+
+html[data-platform="mobile"] .detail-banner {
+  height: 140px;
+}
+
+html[data-platform="mobile"] .detail-hero-grid {
+  grid-template-columns: 96px 1fr;
+  gap: var(--sp-3);
+  align-items: start;
+}
+
+html[data-platform="mobile"] .detail-cover {
+  width: 96px;
+  height: 136px;
+}
+
+html[data-platform="mobile"] .detail-title {
+  font-size: var(--fs-lg);
+}
+
+html[data-platform="mobile"] .detail-genres {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+  margin-top: var(--sp-2);
+}
+
+html[data-platform="mobile"] .disc-act-key,
+html[data-platform="mobile"] .shortcuts-key,
+html[data-platform="mobile"] kbd {
+  display: none !important;
+}
+
+html[data-platform="mobile"] .grid {
+  gap: var(--sp-3);
+}
+
+html[data-platform="mobile"] .lib-card .card-menu-btn,
+html[data-platform="mobile"] .poster-card .card-menu-btn {
+  opacity: 0.9 !important;
+  background: var(--overlay-strong);
+}
+
+html[data-platform="mobile"] .poster-action {
+  opacity: 1 !important;
+  pointer-events: auto !important;
+}

@@ -8,10 +8,13 @@ export const ca: Messages = {
   "nav.pending": "Pendents",
   "nav.airing": "En emissió",
   "nav.library": "La meva biblioteca",
+  "nav.libraryShort": "Biblioteca",
   "nav.discover": "Descobreix",
   "nav.catalog": "Catàleg",
   "nav.stats": "Estadístiques",
+  "nav.statsShort": "Stats",
   "nav.settings": "Configuració",
+  "nav.settingsShort": "Ajustos",
 
   // Common / shared across multiple views.
   "common.loading": "Carregant…",
@@ -863,6 +866,8 @@ export const ca: Messages = {
   "settings.notifyLabel": "Notificacions",
   "settings.notifyOn": "Activades",
   "settings.notifyOff": "Desactivades",
+  "settings.notifyHintMobile":
+    "Avís quan una actualització troba episodis nous i l'aplicació està en segon pla.",
   "settings.notifyHint":
     "Avís de Windows quan una actualització troba episodis nous i la finestra està en segon pla.",
 
@@ -898,8 +903,10 @@ export const ca: Messages = {
   "tutorial.library.body": "Reuneix les teves sèries seguides i les llistes «Vull veure» i «Ja l'he vist», per tenir-ho tot ordenat.",
   "tutorial.catalog.title": "4. «Catàleg»: Explorar, Descobrir i Llistes",
   "tutorial.catalog.body": "Explora milers de títols o fes servir Descobrir, una baralla de targetes: ← descarta, ↑ «Ja l'he vist», → «Vull veure». Llistes guarda el que decideixis.",
+  "tutorial.catalog.bodyMobile": "Explora milers de títols o fes servir Descobrir, una baralla de targetes: llisca a l'esquerra per descartar, amunt per «Ja l'he vist» i a la dreta per «Vull veure». Llistes guarda el que decideixis.",
   "tutorial.settings.title": "5. «Ajustos» i dreceres",
   "tutorial.settings.body": "Configura fonts, descàrregues i còpia de seguretat a Google Drive. Les tecles 1-6 canvien de pestanya i ? mostra totes les dreceres.",
+  "tutorial.settings.bodyMobile": "Configura fonts, descàrregues i còpia de seguretat a Google Drive.",
   "tutorial.next": "Següent",
   "tutorial.back": "Enrere",
   "tutorial.skip": "Saltar",

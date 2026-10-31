@@ -1,6 +1,7 @@
 import { useT, type MessageKey } from "../i18n";
 import { useBackLayer } from "../lib/backStack";
 import { SHORTCUT_ROWS } from "../lib/shortcuts";
+import { isMobile } from "../lib/platform";
 
 interface ShortcutsOverlayProps {
   open: boolean;
@@ -11,7 +12,7 @@ export function ShortcutsOverlay({ open, onClose }: ShortcutsOverlayProps) {
   const t = useT();
   useBackLayer(open, onClose);
 
-  if (!open) return null;
+  if (isMobile || !open) return null;
 
   return (
     <div

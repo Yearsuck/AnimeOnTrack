@@ -42,6 +42,7 @@ import {
 import { notifyNewEpisodes, readNotifyPref, shouldNotify } from "./lib/notify";
 import { useT } from "./i18n";
 import type { Series } from "./types";
+import { isMobile } from "./lib/platform";
 
 const loadLibrary = () => import("./views/Library");
 const Library = lazy(() => loadLibrary().then((m) => ({ default: m.Library })));
@@ -189,9 +190,13 @@ export default function App() {
   const [catalogSection, setCatalogSection] = useState<CatalogSection>(DEFAULT_CATALOG_SECTION);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [tutorialOpen, setTutorialOpen] = useState(false);
+  const navigateRef = useRef(navigate);
+  navigateRef.current = navigate;
   const closeTutorial = useCallback(() => {
     writeTutorialSeen();
     setTutorialOpen(false);
+    // Phone: land on Pendientes after the tour (the device test saw a blank screen there).
+    if (isMobile) navigateRef.current("pending");
   }, []);
 
   const refreshBadge = useCallback(async () => {
@@ -482,7 +487,7 @@ export default function App() {
   // Frameless window: every screen needs *some* draggable strip with the
   // window controls, or the loading/onboarding views (which don't render the
   // main topbar) would leave the user unable to move or close the window.
-  const MiniTitleBar = () => (
+  const MiniTitleBar = () => isMobile ? null : (
     <div className="titlebar-min" data-tauri-drag-region>
       <WindowControls />
     </div>
@@ -535,6 +540,48 @@ export default function App() {
   // A plain render helper, not a component: a component type declared in the
   // render body is new every render and would remount the tabs (and the badge,
   // whose pop animation lives on the element).
+  const tabIcons: Record<string, React.ReactNode> = {
+    pending: (
+      <svg className="tab-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="10" />
+        <polyline points="12 6 12 12 16 14" />
+      </svg>
+    ),
+    airing: (
+      <svg className="tab-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <rect x="2" y="7" width="20" height="15" rx="2" ry="2" />
+        <polyline points="17 2 12 7 7 2" />
+      </svg>
+    ),
+    library: (
+      <svg className="tab-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+        <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+      </svg>
+    ),
+    catalog: (
+      <svg className="tab-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="10" />
+        <polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76" />
+      </svg>
+    ),
+    stats: (
+      <svg className="tab-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <line x1="18" y1="20" x2="18" y2="10" />
+        <line x1="12" y1="20" x2="12" y2="4" />
+        <line x1="6" y1="20" x2="6" y2="14" />
+      </svg>
+    ),
+    settings: (
+      <svg className="tab-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="3" />
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+      </svg>
+    ),
+  };
+
+  const dragProp = isMobile ? undefined : "";
+
   const tab = (id: View, label: string) => (
     <button
       key={id}
@@ -544,7 +591,8 @@ export default function App() {
       onMouseEnter={() => preloadTab(id)}
       onFocus={() => preloadTab(id)}
     >
-      {label}
+      {isMobile && tabIcons[id]}
+      <span className="tab-label">{label}</span>
       {id === "pending" && pending > 0 && (
         <span className="badge" ref={badgeRef}>
           {pending}
@@ -560,21 +608,21 @@ export default function App() {
           drag the window; double-clicking them maximizes, same as a native bar.
           Interactive children (tabs, buttons) don't carry the attribute, so
           clicks on them never start a drag. */}
-      <div className="topbar" data-tauri-drag-region>
-        <div className="brand" data-tauri-drag-region>
+      <div className="topbar" data-tauri-drag-region={dragProp}>
+        <div className="brand" data-tauri-drag-region={dragProp}>
           <img className="brand-logo" src="/app-icon.png" alt="" width={26} height={26} />
           AnimeOnTrack
         </div>
         <div className="tabs">
           {tab("pending", t("nav.pending"))}
           {tab("airing", t("nav.airing"))}
-          {tab("library", t("nav.library"))}
+          {tab("library", isMobile ? t("nav.libraryShort") : t("nav.library"))}
           {tab("catalog", t("nav.catalog"))}
-          {tab("stats", t("nav.stats"))}
-          {tab("settings", t("nav.settings"))}
+          {tab("stats", isMobile ? t("nav.statsShort") : t("nav.stats"))}
+          {tab("settings", isMobile ? t("nav.settingsShort") : t("nav.settings"))}
         </div>
-        <div className="spacer" data-tauri-drag-region />
-        <button className="btn btn-primary" onClick={doRefresh} disabled={refreshing} aria-busy={refreshing}>
+        <div className="spacer" data-tauri-drag-region={dragProp} />
+        <button className="btn btn-primary topbar-refresh" onClick={doRefresh} disabled={refreshing} aria-busy={refreshing}>
           <BusyLabel busy={refreshing} idle={t("common.refresh")} busyText={t("common.refreshing")} />
         </button>
         <WindowControls />

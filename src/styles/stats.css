@@ -851,3 +851,115 @@
   height: 100%;
   border-radius: inherit;
 }
+
+
+/* --------------------------------------------------------------------------
+   Mobile-scoped Stats rules
+   -------------------------------------------------------------------------- */
+@media (max-width: 600px) {
+  .stats-page {
+    padding-bottom: calc(80px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .stats-subtabs-sticky {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    background: var(--bg);
+    padding: var(--sp-2) 0;
+    margin-bottom: var(--sp-4);
+    width: 100%;
+  }
+
+  .stats-subtabs {
+    display: flex;
+    width: 100%;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-round);
+    overflow: hidden;
+    background: var(--surface);
+    gap: 0;
+    box-sizing: border-box;
+  }
+
+  .stats-subtabs .tab {
+    flex: 1;
+    min-height: 34px;
+    height: 34px;
+    padding: 0 var(--sp-2);
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    font-size: var(--fs-sm);
+    font-weight: var(--fw-semibold);
+    color: var(--muted);
+    background: transparent;
+    border-radius: 0;
+    border: none;
+    text-align: center;
+    white-space: nowrap;
+  }
+
+  .stats-subtabs .tab:not(:last-child) {
+    border-right: 1px solid var(--border);
+  }
+
+  .stats-subtabs .tab.active {
+    background: var(--accent-dim);
+    color: var(--accent);
+  }
+}
+
+html[data-platform="mobile"] .stats-page {
+  padding-bottom: calc(80px + env(safe-area-inset-bottom, 0px));
+}
+
+html[data-platform="mobile"] .stats-subtabs-sticky {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: var(--bg);
+  padding: var(--sp-2) 0;
+  margin-bottom: var(--sp-4);
+  width: 100%;
+}
+
+html[data-platform="mobile"] .stats-subtabs {
+  display: flex;
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-round);
+  overflow: hidden;
+  background: var(--surface);
+  gap: 0;
+  box-sizing: border-box;
+}
+
+html[data-platform="mobile"] .stats-subtabs .tab {
+  flex: 1;
+  min-height: 34px;
+  height: 34px;
+  padding: 0 var(--sp-2);
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  color: var(--muted);
+  background: transparent;
+  border-radius: 0;
+  border: none;
+  text-align: center;
+  white-space: nowrap;
+}
+
+html[data-platform="mobile"] .stats-subtabs .tab:not(:last-child) {
+  border-right: 1px solid var(--border);
+}
+
+html[data-platform="mobile"] .stats-subtabs .tab.active {
+  background: var(--accent-dim);
+  color: var(--accent);
+}

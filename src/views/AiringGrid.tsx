@@ -4,6 +4,7 @@ import { listAiringSeason, setFollowed } from "../api";
 import { useT } from "../i18n";
 import { initials, resolveCoverUrl, useCoverFailure } from "../lib/posterFallback";
 import type { AiringItem, CatalogSyncProgress, Series } from "../types";
+import { isMobile } from "../lib/platform";
 import { AiringSpotlight } from "./AiringSpotlight";
 
 // A series' cover_url is a data: URI (fetched via webview), a cached local file:
@@ -306,8 +307,11 @@ export function AiringGrid({
 
   return (
     <div className="page">
-      <div className="page-head">
-        <h2 className="page-title">{t("nav.airing")}</h2>
+      <div className="page-head airing-toolbar">
+        <div className="airing-toolbar-top">
+          <h2 className="page-title">{t("nav.airing")}</h2>
+          {isMobile && <span className="muted airing-count">{t("common.seriesCount", { count: filtered.length })}</span>}
+        </div>
         <div className="search">
           <span className="icon">⌕</span>
           <input
@@ -355,7 +359,7 @@ export function AiringGrid({
           {t("airing.followingFilter", { count: followedCount })}
         </button>
         <div className="spacer" />
-        <span className="muted">{t("common.seriesCount", { count: filtered.length })}</span>
+        {!isMobile && <span className="muted">{t("common.seriesCount", { count: filtered.length })}</span>}
       </div>
 
       {viewMode === "season" && (

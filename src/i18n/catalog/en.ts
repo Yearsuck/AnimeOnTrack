@@ -7,10 +7,13 @@ export const en: Messages = {
   "nav.pending": "Pending",
   "nav.airing": "Airing",
   "nav.library": "Library",
+  "nav.libraryShort": "Library",
   "nav.discover": "Discover",
   "nav.catalog": "Catalog",
   "nav.stats": "Stats",
+  "nav.statsShort": "Stats",
   "nav.settings": "Settings",
+  "nav.settingsShort": "Settings",
 
   "common.loading": "Loading…",
   "common.refresh": "↻ Refresh",
@@ -848,6 +851,8 @@ export const en: Messages = {
   "settings.notifyLabel": "Notifications",
   "settings.notifyOn": "On",
   "settings.notifyOff": "Off",
+  "settings.notifyHintMobile":
+    "Notification when a refresh finds new episodes and the app is in the background.",
   "settings.notifyHint":
     "Windows notification when a refresh finds new episodes and the window is in the background.",
 
@@ -883,8 +888,10 @@ export const en: Messages = {
   "tutorial.library.body": "It gathers your followed series plus the “Want to watch” and “Already seen” lists, all in one place.",
   "tutorial.catalog.title": "4. “Catalog”: Explore, Discover and Lists",
   "tutorial.catalog.body": "Browse thousands of titles or use Discover, a deck of cards: ← discard, ↑ “Already seen”, → “Want to watch”. Lists keeps what you decide.",
+  "tutorial.catalog.bodyMobile": "Browse thousands of titles or use Discover, a deck of cards: swipe left to discard, up for “Already seen”, and right for “Want to watch”. Lists keeps what you decide.",
   "tutorial.settings.title": "5. “Settings” and shortcuts",
   "tutorial.settings.body": "Set up sources, downloads and Google Drive backup. Keys 1-6 switch tabs and ? shows every shortcut.",
+  "tutorial.settings.bodyMobile": "Set up sources, downloads and Google Drive backup.",
   "tutorial.next": "Next",
   "tutorial.back": "Back",
   "tutorial.skip": "Skip",

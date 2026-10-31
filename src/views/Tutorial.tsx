@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { isMobile } from "../lib/platform";
 import { useBackLayer } from "../lib/backStack";
 import { useT } from "../i18n";
 import { TUTORIAL_STEPS, clampStep, type TutorialIllustration } from "../lib/tutorial";
@@ -103,6 +104,14 @@ export function Tutorial({ onClose }: TutorialProps) {
   // System back skips the tour, like Escape.
   useBackLayer(true, onClose);
 
+  const bodyText = useMemo(() => {
+    if (isMobile) {
+      if (step.id === "catalog") return t("tutorial.catalog.bodyMobile");
+      if (step.id === "settings") return t("tutorial.settings.bodyMobile");
+    }
+    return t(step.bodyKey);
+  }, [t, step]);
+
   // Ring the tab for this step; fall back to a centered card when missing.
   useLayoutEffect(() => {
     function measure() {
@@ -201,7 +210,7 @@ export function Tutorial({ onClose }: TutorialProps) {
             {t(step.titleKey)}
           </h2>
           <p id="tutorial-body" className="tutorial-body">
-            {t(step.bodyKey)}
+            {bodyText}
           </p>
         </div>
         <div

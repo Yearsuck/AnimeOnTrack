@@ -12,10 +12,13 @@ export const es = {
   "nav.pending": "Pendientes",
   "nav.airing": "En emisión",
   "nav.library": "Mi biblioteca",
+  "nav.libraryShort": "Biblioteca",
   "nav.discover": "Descubrir",
   "nav.catalog": "Catálogo",
   "nav.stats": "Estadísticas",
+  "nav.statsShort": "Stats",
   "nav.settings": "Ajustes",
+  "nav.settingsShort": "Ajustes",
 
   // Common / shared across multiple views.
   "common.loading": "Cargando…",
@@ -867,6 +870,8 @@ export const es = {
   "settings.notifyLabel": "Notificaciones",
   "settings.notifyOn": "Activadas",
   "settings.notifyOff": "Desactivadas",
+  "settings.notifyHintMobile":
+    "Aviso cuando una actualización encuentra episodios nuevos y la aplicación está en segundo plano.",
   "settings.notifyHint":
     "Aviso de Windows cuando una actualización encuentra episodios nuevos y la ventana está en segundo plano.",
 
@@ -902,8 +907,10 @@ export const es = {
   "tutorial.library.body": "Reúne tus series seguidas y las listas «Quiero ver» y «Ya lo vi», para tenerlo todo ordenado.",
   "tutorial.catalog.title": "4. «Catálogo»: Explorar, Descubrir y Listas",
   "tutorial.catalog.body": "Explora miles de títulos o usa Descubrir, un mazo de tarjetas: ← descarta, ↑ «Ya lo vi», → «Quiero ver». Listas guarda lo que decidas.",
+  "tutorial.catalog.bodyMobile": "Explora miles de títulos o usa Descubrir, un mazo de tarjetas: desliza a la izquierda para descartar, arriba para «Ya lo vi» y a la derecha para «Quiero ver». Listas guarda lo que decidas.",
   "tutorial.settings.title": "5. «Ajustes» y atajos",
   "tutorial.settings.body": "Configura fuentes, descargas y copia de seguridad en Google Drive. Las teclas 1-6 cambian de pestaña y ? muestra todos los atajos.",
+  "tutorial.settings.bodyMobile": "Configura fuentes, descargas y copia de seguridad en Google Drive.",
   "tutorial.next": "Siguiente",
   "tutorial.back": "Atrás",
   "tutorial.skip": "Saltar",
