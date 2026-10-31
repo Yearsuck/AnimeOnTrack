@@ -217,7 +217,7 @@ async fn scrape_airing_listing(
     mirrors: &[String],
     a: &dyn SiteAdapter,
 ) -> Result<(Vec<Series>, String, bool), String> {
-    emit_refresh_progress(app, 0, 1, "Escaneando listado de estrenos");
+    emit_refresh_progress(app, 0, 1, "Escaneando listado de estrenos", false);
     // Walk every page of the airing listing, not just the first. Some sites
     // paginate their "en emisión" directory (TioAnime: ~5 pages of 20), so a
     // single-page scan silently dropped every followed show past page 1 from
@@ -244,7 +244,7 @@ async fn scrape_airing_listing(
             complete = true;
             break;
         };
-        emit_refresh_progress(app, 0, 1, &format!("Escaneando estrenos (página {page})"));
+        emit_refresh_progress(app, 0, 1, &format!("Escaneando estrenos (página {page})"), false);
         // Wrap the parse in a one-element Vec so scrape_via_mirrors doesn't read
         // an empty page as a mirror failure (same trick as search_site): an
         // empty page is the end of pagination, handled right below.
@@ -273,7 +273,7 @@ async fn scrape_airing_listing(
             break;
         }
     }
-    emit_refresh_progress(app, 1, 1, "Listado completo");
+    emit_refresh_progress(app, 1, 1, "Listado completo", false);
     Ok((series, working_mirror, complete))
 }
 
@@ -519,7 +519,7 @@ pub async fn backfill_genres(app: AppHandle, state: State<'_, AppState>) -> Resu
     let total = candidates.len();
     let mut filled = 0i64;
     for (idx, s) in candidates.into_iter().enumerate() {
-        emit_refresh_progress(&app, idx, total, &s.title);
+        emit_refresh_progress(&app, idx, total, &s.title, false);
         if backfill_series_genre_if_missing(&app, &state.db, &mirrors, &s, a.as_ref()).await {
             let got = {
                 let db = state.db.lock().unwrap();
@@ -531,7 +531,7 @@ pub async fn backfill_genres(app: AppHandle, state: State<'_, AppState>) -> Resu
             tokio::time::sleep(std::time::Duration::from_millis(800)).await;
         }
     }
-    emit_refresh_progress(&app, total, total, "Completado");
+    emit_refresh_progress(&app, total, total, "Completado", true);
     Ok(filled)
 }
 
@@ -1035,7 +1035,7 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
             to_fetch.push(s);
         } else {
             idx += 1;
-            emit_refresh_progress(&app, idx, total_series, &s.title);
+            emit_refresh_progress(&app, idx, total_series, &s.title, false);
             if !linked_ids.contains(&s.id)
                 && s.cover_url.as_deref().is_some_and(|u| !crate::db::is_csp_displayable_cover(Some(u)))
             {
@@ -1053,7 +1053,7 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
     let mut total_new = 0i64;
     for chunk in to_fetch.chunks(REFRESH_CONCURRENCY) {
         for s in chunk {
-            emit_refresh_progress(&app, idx, total_series, &s.title);
+            emit_refresh_progress(&app, idx, total_series, &s.title, false);
             idx += 1;
         }
 
@@ -1184,7 +1184,7 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
     // made every cover fetch fail, then near-zero on every refresh after).
     let backlog_total = cover_backlog.len();
     for (i, s) in cover_backlog.iter().enumerate() {
-        emit_refresh_progress(&app, i, backlog_total, &format!("Descargando carátulas: {}", s.title));
+        emit_refresh_progress(&app, i, backlog_total, &format!("Descargando carátulas: {}", s.title), false);
         if let Some(remote) = &s.cover_url {
             if !crate::db::is_csp_displayable_cover(Some(remote)) {
                 cover_attempted.insert(s.id);
@@ -1253,7 +1253,7 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
 
         for task in tasks {
             if let Ok((id, title, remote, row_src, res)) = task.await {
-                emit_refresh_progress(&app, total_series, total_series, &format!("Descargando carátulas: {title}"));
+                emit_refresh_progress(&app, total_series, total_series, &format!("Descargando carátulas: {title}"), false);
                 match res {
                     Ok(path) => {
                         let normalized = path.display().to_string().replace('\\', "/");
@@ -1295,7 +1295,7 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
         .take(AIRING_WEBVIEW_FALLBACK_CAP)
         .chain(cf_blocked_other.into_iter().take(OTHER_SITE_WEBVIEW_FALLBACK_CAP));
     for (id, title, remote) in webview_queue {
-        emit_refresh_progress(&app, total_series, total_series, &format!("Descargando carátulas: {title}"));
+        emit_refresh_progress(&app, total_series, total_series, &format!("Descargando carátulas: {title}"), false);
         match fetch_cover_image(&app, &remote).await {
             Ok(data_uri) => {
                 if crate::cover_cache::is_placeholder_data_uri(&data_uri) {
@@ -1313,7 +1313,7 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
         }
     }
 
-    emit_refresh_progress(&app, total_series, total_series, "Completado");
+    emit_refresh_progress(&app, total_series, total_series, "Completado", true);
     eprintln!(
         "[scrape] refresh() wall time: {:?} for {total_series} followed series ({skipped} skipped), {total_new} new episodes",
         refresh_started.elapsed()

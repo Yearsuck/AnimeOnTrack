@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { exportDiagnostics, refresh, revealInFolder } from "../../api";
 import { useT } from "../../i18n";
+import { BusyLabel } from "../../components/BusyLabel";
 
 export function MaintenanceSection() {
   const t = useT();
@@ -54,8 +55,8 @@ export function MaintenanceSection() {
       <div className="settings-section">
         <h3 className="settings-section-title">{t("settings.maintenanceHeading")}</h3>
         <p className="settings-section-desc">{t("settings.forceRefreshDesc")}</p>
-        <button className="btn" onClick={doForceRefresh} disabled={forcing}>
-          {forcing ? t("settings.forcing") : t("settings.forceRefresh")}
+        <button className="btn" onClick={doForceRefresh} disabled={forcing} aria-busy={forcing}>
+          <BusyLabel busy={forcing} idle={t("settings.forceRefresh")} busyText={t("settings.forcing")} />
         </button>
         {msg && <p className="muted settings-msg">{msg}</p>}
       </div>

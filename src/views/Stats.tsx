@@ -13,6 +13,7 @@ import {
   listLibrary,
 } from "../api";
 import { useT } from "../i18n";
+import { BusyLabel } from "../components/BusyLabel";
 import type { TypeStat, WatchSummary, WatchInsights, PopularityBias, SeriesGraphNode, GenreCard, LibraryItem } from "../types";
 import { StatsGraph } from "./StatsGraph";
 import { StatsRings } from "./StatsRings";
@@ -114,13 +115,13 @@ export function Stats({
   }, []);
 
   // Reuse the same `refresh-progress` Tauri event ProgressBar.tsx already
-  // listens to (current >= total marks the cycle complete) rather than
+  // listens to (`done` marks the end of the cycle) rather than
   // adding a new event. If Estadísticas is visible when a scan finishes,
   // reload right away — this is the one case the activation reload below
   // wouldn't catch, since the user never leaves and re-enters the tab.
   useEffect(() => {
-    const un = listen<{ current: number; total: number }>("refresh-progress", (e) => {
-      if (e.payload.current < e.payload.total) return;
+    const un = listen<{ done?: boolean }>("refresh-progress", (e) => {
+      if (e.payload.done !== true) return;
       if (active) load();
     });
     return () => {
@@ -186,8 +187,8 @@ export function Stats({
           </button>
         </div>
         <div className="spacer" />
-        <button className="btn btn-ghost" onClick={runBackfill} disabled={backfilling}>
-          {backfilling ? t("stats.backfilling") : t("stats.backfillButton")}
+        <button className="btn btn-ghost" onClick={runBackfill} disabled={backfilling} aria-busy={backfilling}>
+          <BusyLabel busy={backfilling} idle={t("stats.backfillButton")} busyText={t("stats.backfilling")} />
         </button>
       </div>
 

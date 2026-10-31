@@ -14,6 +14,8 @@ import { formatLabel } from "../lib/formatLabel";
 import { useFormatNumber } from "../lib/formatNumber";
 import { PosterCard, posterMetaLine, stopCardEvent } from "../components/PosterCard";
 import { Menu } from "../components/Menu";
+import { ProgressTrack } from "../components/ProgressTrack";
+import { usePresence } from "../lib/usePresence";
 import { startSeriesSequentially, summarizeStart } from "../lib/startWatchingQueue";
 import type { CatalogAnime, CatalogFacets, CatalogFilter, CatalogSyncProgress } from "../types";
 import type { MessageKey } from "../i18n";
@@ -135,6 +137,7 @@ export function Catalog({
   const [syncing, setSyncing] = useState(false);
   const [syncProgress, setSyncProgress] = useState<CatalogSyncProgress | null>(null);
   const syncingRef = useRef(false);
+  const syncPresence = usePresence(syncing);
   const [moreFailed, setMoreFailed] = useState(false);
   // Focus moves into the drawer only when the user opens it, not when it is
   // restored open on returning to the tab.
@@ -730,17 +733,17 @@ export function Catalog({
         </div>
       </div>
 
-      {syncing && (
-        <div className="series-block catalog-sync">
-          <div className="muted catalog-sync-label">{t("catalog.syncInfo")}</div>
-          {syncProgress && (
-            <progress
-              className="scanbar-track"
-              value={syncProgress.synced}
-              max={Math.max(syncProgress.total, syncProgress.synced, 1)}
-              aria-label={t("catalog.syncProgressAria")}
-            />
-          )}
+      {syncPresence !== "hidden" && (
+        <div
+          className="series-block catalog-sync presence"
+          data-leaving={syncPresence === "leaving" ? "" : undefined}
+        >
+          <div className="muted catalog-sync-label" role="status">
+            {t("catalog.syncInfo")}
+          </div>
+          {/* Indeterminate on purpose: the backend total is an estimate while syncing,
+              so a percentage would be invented. The exact count is the text below. */}
+          <ProgressTrack label={t("catalog.syncProgressAria")} indeterminate />
           {syncProgress && (
             <div className="muted catalog-sync-note">{t("catalog.syncedCount", { count: syncProgress.synced })}</div>
           )}
