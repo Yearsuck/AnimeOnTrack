@@ -1,0 +1,18 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "desktop",
+  "description": "Desktop-only capability: updater, restart and custom window controls",
+  "windows": ["main"],
+  "platforms": ["windows", "linux", "macOS"],
+  "permissions": [
+    "updater:default",
+    "process:allow-restart",
+    "core:window:allow-minimize",
+    "core:window:allow-maximize",
+    "core:window:allow-unmaximize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-is-maximized",
+    "core:window:allow-close",
+    "core:window:allow-start-dragging"
+  ]
+}

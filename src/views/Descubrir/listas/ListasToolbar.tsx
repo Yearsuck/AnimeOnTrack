@@ -1,4 +1,5 @@
 import { useEffect, useRef, type ReactNode } from "react";
+import { useBackLayer } from "../../../lib/backStack";
 import { useT } from "../../../i18n";
 import { formatLabel } from "../../../lib/formatLabel";
 import { MIN_SCORE_OPTIONS, type ListasFilterState, type SortKey, type StatusFilter } from "./types";
@@ -196,6 +197,7 @@ export function ListasFilterDrawer({
 }) {
   const t = useT();
   const format = filterState.selectedFormats[0] ?? "";
+  useBackLayer(true, onClose);
   return (
     <aside
       id="listas-filter-drawer"

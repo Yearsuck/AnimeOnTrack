@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { BackLevel, useBackLayer } from "../lib/backStack";
 import { listen } from "@tauri-apps/api/event";
 import {
   getGenreCards,
@@ -12,6 +13,8 @@ import {
   listLibrary,
 } from "../api";
 import { useT } from "../i18n";
+import { BusyLabel } from "../components/BusyLabel";
+import { isMobile } from "../lib/platform";
 import type { TypeStat, WatchSummary, WatchInsights, PopularityBias, SeriesGraphNode, GenreCard, LibraryItem } from "../types";
 import { StatsGraph } from "./StatsGraph";
 import { StatsRings } from "./StatsRings";
@@ -37,6 +40,9 @@ export function Stats({
   const [graph, setGraph] = useState<SeriesGraphNode[]>([]);
   const [library, setLibrary] = useState<LibraryItem[]>([]);
   const [view, setView] = useState<StatsView>("resumen");
+  // System back returns to the first sub-tab before leaving Stats (only while
+  // Stats is the visible tab: it stays mounted, hidden, once visited).
+  useBackLayer(active && view !== "resumen", () => setView("resumen"), BackLevel.tab);
   const [backfilling, setBackfilling] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -48,7 +54,7 @@ export function Stats({
         item.seen_episodes > 0
           ? item.seen_episodes
           : item.watched_externally
-          ? Math.max(item.total_episodes, 1)
+          ? Math.max(item.total_episodes, 0)
           : 0;
       map.set(item.series.id, eps);
     }
@@ -110,13 +116,13 @@ export function Stats({
   }, []);
 
   // Reuse the same `refresh-progress` Tauri event ProgressBar.tsx already
-  // listens to (current >= total marks the cycle complete) rather than
+  // listens to (`done` marks the end of the cycle) rather than
   // adding a new event. If Estadísticas is visible when a scan finishes,
   // reload right away — this is the one case the activation reload below
   // wouldn't catch, since the user never leaves and re-enters the tab.
   useEffect(() => {
-    const un = listen<{ current: number; total: number }>("refresh-progress", (e) => {
-      if (e.payload.current < e.payload.total) return;
+    const un = listen<{ done?: boolean }>("refresh-progress", (e) => {
+      if (e.payload.done !== true) return;
       if (active) load();
     });
     return () => {
@@ -148,44 +154,51 @@ export function Stats({
     }
   }
 
+  // Desktop: in the page head. Phone: sticky below the app bar, clear of the bottom nav.
+  const subTabs = (
+    <div className={isMobile ? "tabs stats-subtabs" : "tabs"} role="tablist">
+      <button
+        type="button"
+        role="tab"
+        aria-selected={view === "resumen"}
+        className={`tab ${view === "resumen" ? "active" : ""}`}
+        onClick={() => setView("resumen")}
+      >
+        {t("stats.insightsHeading")}
+      </button>
+      <button
+        type="button"
+        role="tab"
+        aria-selected={view === "grafo"}
+        className={`tab ${view === "grafo" ? "active" : ""}`}
+        onClick={() => setView("grafo")}
+      >
+        {t("stats.tabGraph")}
+      </button>
+      <button
+        type="button"
+        role="tab"
+        aria-selected={view === "generos"}
+        className={`tab ${view === "generos" ? "active" : ""}`}
+        onClick={() => setView("generos")}
+      >
+        {t("stats.byGenre")}
+      </button>
+    </div>
+  );
+
   return (
     <div className="page stats-page">
       <div className="page-head">
         <h2 className="page-title">{t("nav.stats")}</h2>
-        <div className="tabs" role="tablist">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={view === "resumen"}
-            className={`tab ${view === "resumen" ? "active" : ""}`}
-            onClick={() => setView("resumen")}
-          >
-            {t("stats.insightsHeading")}
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={view === "grafo"}
-            className={`tab ${view === "grafo" ? "active" : ""}`}
-            onClick={() => setView("grafo")}
-          >
-            {t("stats.tabGraph")}
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={view === "generos"}
-            className={`tab ${view === "generos" ? "active" : ""}`}
-            onClick={() => setView("generos")}
-          >
-            {t("stats.byGenre")}
-          </button>
-        </div>
+        {!isMobile && subTabs}
         <div className="spacer" />
-        <button className="btn btn-ghost" onClick={runBackfill} disabled={backfilling}>
-          {backfilling ? t("stats.backfilling") : t("stats.backfillButton")}
+        <button className="btn btn-ghost" onClick={runBackfill} disabled={backfilling} aria-busy={backfilling}>
+          <BusyLabel busy={backfilling} idle={t("stats.backfillButton")} busyText={t("stats.backfilling")} />
         </button>
       </div>
+
+      {isMobile && <div className="stats-subtabs-sticky">{subTabs}</div>}
 
       {error && (
         <div className="notice notice-danger" role="alert">

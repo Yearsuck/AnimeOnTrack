@@ -31,7 +31,10 @@ export function intensityThresholds(counts: number[]): [number, number, number] 
   const sorted = counts.filter((c) => c > 0).sort((a, b) => a - b);
   if (sorted.length === 0) return [1, 2, 3];
   const at = (q: number) => sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))];
-  return [at(0.25), at(0.5), at(0.75)];
+  // The busiest day must always reach level 4: cap every cut-off below the max
+  // (with few active days the quartiles can equal the max, leaving it at level 1).
+  const cap = sorted[sorted.length - 1] - 1;
+  return [Math.min(at(0.25), cap), Math.min(at(0.5), cap), Math.min(at(0.75), cap)];
 }
 
 export function getIntensityLevel(
@@ -127,15 +130,15 @@ export function getMonthBoundaries(weeks: HeatmapWeek[]): HeatmapMonthBoundary[]
   const boundaries: HeatmapMonthBoundary[] = [];
   let lastMonth = -1;
 
+  // A month starts at the week that contains its first day, wherever in the
+  // week that day falls; scanning every day (not just the week's first) finds it.
   for (const week of weeks) {
     for (const day of week.days) {
-      if (day) {
-        const month = parseInt(day.date.split("-")[1], 10) - 1;
-        if (month !== lastMonth) {
-          lastMonth = month;
-          boundaries.push({ month, weekIndex: week.weekIndex });
-        }
-        break;
+      if (!day) continue;
+      const month = parseInt(day.date.split("-")[1], 10) - 1;
+      if (month !== lastMonth) {
+        lastMonth = month;
+        boundaries.push({ month, weekIndex: week.weekIndex });
       }
     }
   }

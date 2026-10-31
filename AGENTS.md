@@ -1,6 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for coding agents (Claude Code, Codex, agy...) working in this repository.
 
 ## What this is
 
@@ -51,8 +51,19 @@ Gitflow, commits atómicos y release están en las reglas globales. Aquí cambia
 commit debe compilar y pasar por separado (`cargo check --tests` + `npx tsc --noEmit`); un
 release sube la versión en `package.json`, `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock` y
 `src-tauri/tauri.conf.json`, y el push del tag `vX.Y.Z` dispara `release.yml`. Los agentes
-delegados (skill `agy-agents`) nunca ejecutan git; el commit lo hace la sesión que supervisa,
+delegados (skill `agent-delegation`) nunca ejecutan git; el commit lo hace la sesión que supervisa,
 tras validar el diff con los checks de arriba.
+
+## Docs that travel with the code
+
+- **`README.md`**: in the same PR that changes something a user sees (sites, features, platforms, install,
+  settings), update the matching README section.
+- **`AGENTS.md`** (this file): in the same PR that changes how the code works (architecture, commands,
+  build steps, a gotcha you hit), update the matching section here.
+- **`STATE.md`**: after every merge into `develop`, every release, and before compacting a conversation,
+  rewrite the snapshot: published version, what `develop` has unreleased, what is open (with the PR or plan
+  that tracks it). Date it. It is the first file a new session reads.
+- Plans live in `docs/superpowers/plans/YYYY-MM-DD-<topic>.md`; note there what was merged and what is left.
 
 ## Architecture
 
@@ -117,8 +128,8 @@ Scan/refresh progress is pushed from Rust via Tauri events (`refresh-progress` f
 
 If you are the orchestrating agent (Claude, Codex, ...) and not an `agy` agent launched from a
 `.agy-spec-*.md` file: whenever possible and the model quota is not exhausted, investigate and
-implement through `agy` agents with the `agy-agents` skill (`~/.claude/skills/agy-agents/SKILL.md`).
-Models: `gemini-3.8-flash-high` (default) or `claude-opus-4-6-thinking`; one out of quota -> use
-the other. Long prompts go in a spec `.md` inside the agent's worktree (templates in the skill),
+implement through `agy` (or `copilot`) agents with the `agent-delegation` skill (`~/.claude/skills/agent-delegation/SKILL.md`).
+agy models: `gemini-3.8-flash-high` (default) or `claude-opus-4-6-thinking`; one out of quota -> use
+the other, or switch to `copilot` (model per subtask: skill `references/copilot-models.md`). Long prompts go in a spec `.md` inside the agent's worktree (templates in the skill),
 never typed into the terminal. Full rule: `~/Documents/GitHub/ai-hub/rules/delegation.md`.
 <!-- ai-hub:delegation:end -->

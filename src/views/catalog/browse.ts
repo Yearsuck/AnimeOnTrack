@@ -20,31 +20,6 @@ export function pickThisWeek(items: CatalogAnime[], now: number, limit = 5): Cat
   return (upcoming.length > 0 ? upcoming : items).slice(0, limit);
 }
 
-export interface CountdownParts {
-  days: number;
-  hours: number;
-  minutes: number;
-}
-
-/** Time left until `airAt` (unix seconds), or null once it has passed. */
-export function countdownParts(airAt: number | null | undefined, now: number): CountdownParts | null {
-  if (airAt == null || airAt <= now) return null;
-  // Whole minutes, rounded up so "0 min" never shows while the episode is ahead.
-  const total = Math.ceil((airAt - now) / 60);
-  return {
-    days: Math.floor(total / 1440),
-    hours: Math.floor((total % 1440) / 60),
-    minutes: total % 60,
-  };
-}
-
-/** Which unit pair the hero's big countdown shows: "1 d 3 h", "3 h 39 min" or "12 min". */
-export function countdownShape(p: CountdownParts): "days" | "hours" | "minutes" {
-  if (p.days > 0) return "days";
-  if (p.hours > 0) return "hours";
-  return "minutes";
-}
-
 /** Every filter field the results mode can show as a removable chip. */
 export interface CatalogFilterState {
   search: string;

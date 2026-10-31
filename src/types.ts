@@ -12,6 +12,7 @@ export interface Series {
   /** The site's own episode-count badge; null when non-numeric ("??"). */
   site_episode_count: number | null;
   score?: number | null;
+  next_episode_estimated?: boolean;
   format?: string | null;
   start_date?: number | null;
 }
@@ -29,6 +30,7 @@ export interface AiringItem {
   banner_url?: string | null;
   /** Average score (0-100 scale from AniList catalog) */
   score?: number | null;
+  next_episode_estimated?: boolean;
 }
 
 export interface Episode {
@@ -160,6 +162,7 @@ export interface EraCount {
 export interface WatchInsights {
   estimated_minutes_tracked: number;
   estimated_minutes_external: number;
+  estimated_minutes_share: number;
   external_titles_estimated: number;
   external_titles_total: number;
   avg_episodes_per_series: number;
@@ -180,6 +183,7 @@ export interface WatchInsights {
 export interface PopularityBias {
   average_popularity: number | null;
   normalized_score: number | null;
+  percentile: number | null;
 }
 
 export interface YearlyActivity {
@@ -393,6 +397,7 @@ export interface ListEntryMeta {
 export interface NextAir {
   episode: number;
   air_at: number;
+  estimated: boolean;
 }
 
 export interface DownloadBatch {

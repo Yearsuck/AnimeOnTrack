@@ -2,8 +2,9 @@ import { useEffect, useState } from "react";
 import { useT } from "../../i18n";
 import { formatLabel } from "../../lib/formatLabel";
 import { resolveCoverUrl } from "../../lib/posterFallback";
+import { isMobile } from "../../lib/platform";
 import type { CatalogAnime } from "../../types";
-import { countdownParts, countdownShape, type CountdownParts } from "./browse";
+import { countdown } from "../../lib/airCountdown";
 
 const TICK_MS = 30_000;
 
@@ -19,16 +20,8 @@ export function useNowSecs(): number {
 
 export function useCountdownText() {
   const t = useT();
-  return (p: CountdownParts | null): string | null => {
-    if (!p) return null;
-    switch (countdownShape(p)) {
-      case "days":
-        return t("catalog.countdownDays", { d: p.days, h: p.hours });
-      case "hours":
-        return t("catalog.countdownHours", { h: p.hours, m: p.minutes });
-      default:
-        return t("catalog.countdownMinutes", { m: p.minutes });
-    }
+  return (airAt: number | null | undefined, now: number): string | null => {
+    return countdown(airAt, now, { t });
   };
 }
 
@@ -66,7 +59,7 @@ export function CatalogHero({
   const banner = hero.banner_url || hero.cover_url;
   const bannerSrc = banner ? resolveCoverUrl(banner) : null;
   const coverSrc = hero.cover_url ? resolveCoverUrl(hero.cover_url) : null;
-  const left = countdownText(countdownParts(hero.next_airing_at, now));
+  const left = countdownText(hero.next_airing_at, now);
   const facts = [
     hero.format ? formatLabel(t, hero.format) : null,
     hero.episodes ? t("catalog.episodesCount", { count: hero.episodes }) : null,
@@ -75,6 +68,36 @@ export function CatalogHero({
   ]
     .filter(Boolean)
     .join(" · ");
+
+  const railItems = items.map((a) => {
+    const when = countdownText(a.next_airing_at, now);
+    const src = a.cover_url ? resolveCoverUrl(a.cover_url) : null;
+    return (
+      <button
+        key={a.id}
+        type="button"
+        className={`cat-hero-rail-item${a.id === hero.id ? " active" : ""}`}
+        aria-pressed={a.id === hero.id}
+        onClick={() => {
+          if (a.id === hero.id) return;
+          const next = a.banner_url || a.cover_url;
+          setOutgoing(next && bannerSrc ? bannerSrc : null);
+          setSwapped(true);
+          setPickedId(a.id);
+        }}
+      >
+        {src ? <img src={src} alt="" /> : <span className="cat-hero-rail-ph" aria-hidden="true" />}
+        <span className="cat-hero-rail-text">
+          <span className="cat-hero-rail-name">{a.title}</span>
+          <span className="cat-hero-rail-when">
+            {a.next_episode != null && when
+              ? t("catalog.railEpisodeIn", { ep: a.next_episode, when })
+              : t("catalog.heroAiring")}
+          </span>
+        </span>
+      </button>
+    );
+  });
 
   return (
     <section className="cat-hero" aria-label={t("catalog.heroAria")}>
@@ -125,35 +148,7 @@ export function CatalogHero({
       {items.length > 1 && (
         <aside className="cat-hero-rail" aria-label={t("catalog.thisWeek")}>
           <h3 className="cat-hero-rail-title">{t("catalog.thisWeek")}</h3>
-          {items.map((a) => {
-            const when = countdownText(countdownParts(a.next_airing_at, now));
-            const src = a.cover_url ? resolveCoverUrl(a.cover_url) : null;
-            return (
-              <button
-                key={a.id}
-                type="button"
-                className={`cat-hero-rail-item${a.id === hero.id ? " active" : ""}`}
-                aria-pressed={a.id === hero.id}
-                onClick={() => {
-                  if (a.id === hero.id) return;
-                  const next = a.banner_url || a.cover_url;
-                  setOutgoing(next && bannerSrc ? bannerSrc : null);
-                  setSwapped(true);
-                  setPickedId(a.id);
-                }}
-              >
-                {src ? <img src={src} alt="" /> : <span className="cat-hero-rail-ph" aria-hidden="true" />}
-                <span className="cat-hero-rail-text">
-                  <span className="cat-hero-rail-name">{a.title}</span>
-                  <span className="cat-hero-rail-when">
-                    {a.next_episode != null && when
-                      ? t("catalog.railEpisodeIn", { ep: a.next_episode, when })
-                      : t("catalog.heroAiring")}
-                  </span>
-                </span>
-              </button>
-            );
-          })}
+          {isMobile ? <div className="cat-hero-rail-track">{railItems}</div> : railItems}
         </aside>
       )}
     </section>

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { scanAiring } from "../api";
 import { useT } from "../i18n";
+import { BusyLabel } from "../components/BusyLabel";
 
 export function Onboarding({ onDone }: { onDone: () => void }) {
   const t = useT();
@@ -37,8 +38,8 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
           placeholder={t("onboarding.urlPlaceholder")}
           onKeyDown={(e) => e.key === "Enter" && submit()}
         />
-        <button className="btn btn-primary" disabled={busy} onClick={submit}>
-          {busy ? t("common.scanning") : t("common.scan")}
+        <button className="btn btn-primary" disabled={busy} aria-busy={busy} onClick={submit}>
+          <BusyLabel busy={busy} idle={t("common.scan")} busyText={t("common.scanning")} />
         </button>
       </div>
       {busy && <p className="muted onboard-note">{t("onboarding.scanningHint")}</p>}

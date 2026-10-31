@@ -48,6 +48,8 @@ pub struct AiringItem {
     /// Average score (0-100 scale from AniList catalog) for ranking top anime.
     #[serde(default)]
     pub score: Option<f64>,
+    #[serde(default)]
+    pub next_episode_estimated: bool,
 }
 
 /// The lowest-numbered unseen episode of a followed series (`LibraryItem`'s
@@ -314,6 +316,10 @@ pub struct WatchInsights {
     /// Estimated minutes watched across "Ya vistas" (`watched_externally=1`)
     /// series that are linked to a catalog row with a known episode count.
     pub estimated_minutes_external: i64,
+    /// Share of `estimated_minutes_tracked` that came from default format
+    /// durations rather than known AniList catalog durations (0.0..=1.0).
+    /// 0.0 when `estimated_minutes_tracked` is 0.
+    pub estimated_minutes_share: f64,
     /// How many "Ya vistas" rows actually contributed to
     /// `estimated_minutes_external` (linked + catalog `episodes` non-NULL).
     pub external_titles_estimated: i64,
@@ -356,6 +362,10 @@ pub struct PopularityBias {
     /// Normalized to 0-10 using ~70,000 as divisor (700,000 / 10). `None`
     /// mirrors `average_popularity`.
     pub normalized_score: Option<f64>,
+    /// Percentile against the AniList catalog (0.0..=100.0): percentage of
+    /// catalog titles with non-null popularity whose popularity is strictly
+    /// below the user's average popularity. `None` mirrors `average_popularity`.
+    pub percentile: Option<f64>,
 }
 
 /// Snapshot of cloud-backup state shown in Settings — whether Google
@@ -413,6 +423,7 @@ mod tests {
             first_episode_at: Some(1_780_000_000),
             banner_url: Some("https://s4.anilist.co/banner.jpg".into()),
             score: Some(85.5),
+            next_episode_estimated: false,
         };
         let j = serde_json::to_string(&item).unwrap();
         let back: AiringItem = serde_json::from_str(&j).unwrap();

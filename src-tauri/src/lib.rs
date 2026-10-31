@@ -25,6 +25,7 @@ mod recommend;
 mod scraper_engine;
 mod swipe;
 mod cover_cache;
+#[cfg(desktop)]
 mod ui_watchdog;
 
 use commands::AppState;
@@ -109,11 +110,18 @@ fn install_panic_log(dir: &std::path::Path) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_notification::init());
+    // Updater and process-restart exist only on desktop.
+    #[cfg(desktop)]
+    let builder = builder
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_process::init());
+    // The scraper's Android backend (see scraper_engine::android).
+    #[cfg(target_os = "android")]
+    let builder = builder.plugin(tauri_plugin_webfetch::init());
+    builder
         .setup(|app| {
             let dir = app.path().app_data_dir().expect("app data dir");
             std::fs::create_dir_all(&dir).ok();
@@ -174,6 +182,7 @@ pub fn run() {
             // allows it). Must be started after AppState is managed so the
             // app handle is fully set up. `dir` is still in scope here
             // (only borrowed, not moved) so .clone() is safe.
+            #[cfg(desktop)]
             ui_watchdog::start(app.handle().clone(), dir.clone());
 
             // Opportunistic startup cloud backup: silently does nothing

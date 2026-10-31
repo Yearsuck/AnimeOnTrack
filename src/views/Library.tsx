@@ -4,6 +4,7 @@ import { launchEpisode } from "../lib/launchEpisode";
 import { useT } from "../i18n";
 import { createFilterCache } from "../lib/createFilterCache";
 import { resolveCoverUrl } from "../lib/posterFallback";
+import { formatProgress } from "../lib/airCountdown";
 import { Menu } from "../components/Menu";
 import { PosterCard } from "../components/PosterCard";
 import { Reveal } from "../components/Reveal";
@@ -69,9 +70,14 @@ function normalizeKind(raw: string | null): NormalizedKind {
 // Everything with >0 seen that isn't completed is "watching" (incl.
 // caught-up airing and partly-watched finished shows); 0 seen is "plan",
 // never dividing by zero.
-function statusOf(it: LibraryItem): Status {
+export function progressPct(seen: number, total: number): number {
+  if (!total || total <= 0) return 0;
+  return Math.min(100, Math.max(0, Math.round((seen / total) * 100)));
+}
+
+export function statusOf(it: LibraryItem): Status {
   if (it.watched_externally) return "completed";
-  const allSeen = it.total_episodes > 0 && it.seen_episodes === it.total_episodes;
+  const allSeen = it.total_episodes > 0 && it.seen_episodes >= it.total_episodes;
   if (allSeen && !it.series.is_airing) return "completed";
   if (it.seen_episodes > 0) return "watching";
   return "plan";
@@ -157,9 +163,7 @@ function LibraryCard({
   const noEpisodes = item.watched_externally && item.total_episodes === 0;
   const pct = noEpisodes
     ? 100
-    : item.total_episodes
-      ? Math.round((item.seen_episodes / item.total_episodes) * 100)
-      : 0;
+    : progressPct(item.seen_episodes, item.total_episodes);
 
   // The play button sits in PosterCard's action slot, which already stops
   // click/keys from reaching the card, so Enter on it never also opens the
@@ -181,7 +185,7 @@ function LibraryCard({
       title={item.series.title}
       coverUrl={item.series.cover_url}
       genres={item.genres}
-      meta={noEpisodes ? t("library.watchedExternally") : `${item.seen_episodes} / ${item.total_episodes}`}
+      meta={noEpisodes ? t("library.watchedExternally") : formatProgress(item.seen_episodes, item.total_episodes)}
       selectable={selectMode}
       selected={selectMode && isSelected}
       onActivate={() => (selectMode ? onToggleSelect(item.series.id) : onOpenSeries(item.series))}

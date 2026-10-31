@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useBackLayer } from "../lib/backStack";
 import ForceGraph3D, { type ForceGraphMethods, type NodeObject } from "react-force-graph-3d";
 import * as THREE from "three";
 import { useT, type MessageKey } from "../i18n";
@@ -277,7 +278,7 @@ export function StatsGraph({
             item.seen_episodes > 0
               ? item.seen_episodes
               : item.watched_externally
-              ? Math.max(item.total_episodes, 1)
+              ? Math.max(item.total_episodes, 0)
               : 0;
           map.set(item.series.id, eps);
         }
@@ -801,6 +802,8 @@ export function StatsGraph({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [active]);
+  // System back clears the selection (closes the node card) like Escape.
+  useBackLayer(active && selection !== null, () => setSelection(null));
 
   // ---- search ----
   const results = useMemo(() => searchShows(atlas.shows, query), [atlas, query]);

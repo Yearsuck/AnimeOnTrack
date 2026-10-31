@@ -1,3 +1,4 @@
+#[cfg(windows)]
 use base64::Engine;
 
 const PREFIX: &str = "dpapi1:";

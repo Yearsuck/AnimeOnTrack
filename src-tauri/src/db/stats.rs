@@ -415,6 +415,7 @@ fn merge_into_parent_franchises(
     merge_into_parent_groups(groups, parent_of, |existing, rollup| {
         existing.real_seen += rollup.real_seen;
         existing.real_minutes += rollup.real_minutes;
+        existing.real_minutes_estimated += rollup.real_minutes_estimated;
         existing.has_external |= rollup.has_external;
         if rollup.external_episodes > existing.external_episodes {
             existing.external_episodes = rollup.external_episodes;
@@ -446,8 +447,21 @@ struct SeriesWatchRow {
     catalog_episodes: Option<i64>,
     catalog_format: Option<String>,
     catalog_duration: Option<i64>,
+    /// The row's `canonical_group_keys` identity: twin rows of one show on
+    /// several sites share it, different seasons (different AniList entries
+    /// or titles) don't.
+    canon_group: String,
+    /// `canonical_episode_label` of every episode of this row marked seen,
+    /// with or without a `seen_at` — an undated mark is still a real one.
+    seen_episodes: Vec<String>,
+}
 
-
+/// AniList's per-episode `duration`, when it is usable: a non-positive value
+/// is missing data (AniList reports 0 for some entries), not a zero-minute
+/// episode, so callers fall back to their estimate instead of pricing every
+/// episode at nothing.
+fn known_duration(duration: Option<i64>) -> Option<i64> {
+    duration.filter(|&minutes| minutes > 0)
 }
 
 /// One franchise's watch contribution, rolled up across every `series` row
@@ -468,6 +482,8 @@ pub(crate) struct FranchiseRollup {
     pub real_seen: i64,
     /// Minutes for exactly those episodes.
     pub real_minutes: i64,
+    /// Real minutes that used fallback/default duration rather than known AniList duration.
+    pub real_minutes_estimated: i64,
     /// Largest catalog episode count among members marked "Ya lo vi" that have
     /// no real seen episodes of their own. 0 when there is no such member.
     pub external_episodes: i64,
@@ -521,16 +537,35 @@ impl FranchiseRollup {
 }
 
 /// Folds `SeriesWatchRow`s into one `FranchiseRollup` with the roll-up's
-/// rules, whatever the caller groups by: real marks summed within one site
-/// and the best single site taken across sites (two sites scraping the same
-/// show are mirrors of the same episodes — a user following One Piece on two
-/// sites had ~1170 real marks on each, and summing them reported ~2600 real
-/// episodes for a ~1170-episode show), and the largest "Ya lo vi" catalog
-/// claim kept apart from them (see `FranchiseRollup`).
+/// rules, whatever the caller groups by, and the largest "Ya lo vi" catalog
+/// claim kept apart from the real marks (see `FranchiseRollup`).
+///
+/// Real marks are credited with the larger of two readings, each of which
+/// can only undercount:
+/// - the best single site, that site's rows summed. Two sites scraping the
+///   same show are mirrors of the same episodes — a user following One Piece
+///   on two sites had ~1170 real marks on each, and summing them reported
+///   ~2600 real episodes for a ~1170-episode show — while one site's own rows
+///   (arcs, seasons) are genuinely different episodes, even when arc rows
+///   linked to one AniList entry restart their numbering.
+/// - the distinct canonical episodes per canonical show
+///   (`SeriesWatchRow::canon_group`, the dedupe `deduplicated_seen_episodes`
+///   applies), summed across shows, so S1 marked on one site and S2 on
+///   another add up to 24 as in the activity charts. Each show is capped at
+///   its AniList episode count when that is known: a site that numbers the
+///   whole franchise 1-25 straight through on a row linked to the 12-episode
+///   S1 entry otherwise credits S1 with 25 *and* S2 with its own 12 (High
+///   Card read 37 for a 25-episode franchise). Unlinked shows, or shows with
+///   no catalog total, are uncapped.
 struct RollupBuilder {
     rollup: FranchiseRollup,
-    /// source_id -> (seen episodes, their minutes)
-    per_site: HashMap<i64, (i64, i64)>,
+    /// source_id -> (seen episodes, their minutes), every member row summed
+    per_site: HashMap<i64, (i64, i64, i64)>,
+    /// canon_group -> canonical episode -> its minutes (the longest rate
+    /// among the rows marking it, so row order never decides it)
+    distinct: HashMap<String, HashMap<String, (i64, bool)>>,
+    /// canon_group -> its AniList episode count, when known (> 0)
+    catalog_total: HashMap<String, i64>,
 }
 
 impl RollupBuilder {
@@ -540,25 +575,44 @@ impl RollupBuilder {
                 display_title,
                 real_seen: 0,
                 real_minutes: 0,
+                real_minutes_estimated: 0,
                 external_episodes: 0,
                 external_per_episode: 0,
                 has_external: false,
             },
             per_site: HashMap::new(),
+            distinct: HashMap::new(),
+            catalog_total: HashMap::new(),
         }
     }
 
     fn add(&mut self, row: &SeriesWatchRow) {
         // AniList's real per-episode duration wins whenever the series is
-        // linked to a synced catalog row that has one; otherwise estimate
-        // from the format, AniList's first (raw, so TV_SHORT keeps its
-        // short-episode estimate) and the site's own kind as the fallback.
-        let per_episode = row.catalog_duration.unwrap_or_else(|| {
+        // linked to a synced catalog row that has a usable one; otherwise
+        // estimate from the format, AniList's first (raw, so TV_SHORT keeps
+        // its short-episode estimate) and the site's own kind as the fallback.
+        let duration_opt = known_duration(row.catalog_duration);
+        let is_default = duration_opt.is_none();
+        let per_episode = duration_opt.unwrap_or_else(|| {
             minutes_per_episode(row.catalog_format.as_deref().or(row.kind.as_deref()))
         });
-        let bucket = self.per_site.entry(row.source_id).or_insert((0, 0));
+        let bucket = self.per_site.entry(row.source_id).or_insert((0, 0, 0));
         bucket.0 += row.seen_count;
         bucket.1 += row.seen_count * per_episode;
+        if is_default {
+            bucket.2 += row.seen_count * per_episode;
+        }
+        if let Some(total) = row.catalog_episodes.filter(|&n| n > 0) {
+            let cap = self.catalog_total.entry(row.canon_group.clone()).or_insert(total);
+            *cap = (*cap).max(total);
+        }
+        let episodes = self.distinct.entry(row.canon_group.clone()).or_default();
+        for label in &row.seen_episodes {
+            let entry = episodes.entry(label.clone()).or_insert((per_episode, is_default));
+            if per_episode > entry.0 || (per_episode == entry.0 && !is_default && entry.1) {
+                *entry = (per_episode, is_default);
+            }
+        }
 
         // A "Ya lo vi" row contributes its catalog total regardless of
         // whether that same row also has real marks. Gating this on the
@@ -586,14 +640,47 @@ impl RollupBuilder {
         }
     }
 
-    /// Credit the group with its best single site's real progress — never
-    /// the sum of what multiple sites separately claim about the same
-    /// underlying episodes (same "biggest single signal, never add signals"
-    /// rule `episodes()` already applies to real vs. external).
+    /// Credit the group with the larger of its best single site and its
+    /// capped distinct canonical episodes (see the struct's doc comment) —
+    /// never the sum of what several sites separately claim about the same
+    /// underlying episodes. Minutes follow whichever reading wins; a capped
+    /// show's episodes are priced at its longest per-episode rate.
     fn finish(mut self) -> FranchiseRollup {
-        if let Some(&(seen, minutes)) = self.per_site.values().max_by_key(|&&(seen, _)| seen) {
-            self.rollup.real_seen = seen;
-            self.rollup.real_minutes = minutes;
+        let (site_seen, site_minutes, site_estimated) =
+            self.per_site.values().copied().max_by_key(|&(seen, _, _)| seen).unwrap_or((0, 0, 0));
+        let (mut distinct_seen, mut distinct_minutes, mut distinct_estimated) = (0, 0, 0);
+        for (group, episodes) in &self.distinct {
+            let count = episodes.len() as i64;
+            match self.catalog_total.get(group) {
+                Some(&cap) if count > cap => {
+                    distinct_seen += cap;
+                    let max_entry = episodes.values().copied().max_by_key(|&(m, is_def)| (m, !is_def));
+                    if let Some((max_m, is_def)) = max_entry {
+                        distinct_minutes += cap * max_m;
+                        if is_def {
+                            distinct_estimated += cap * max_m;
+                        }
+                    }
+                }
+                _ => {
+                    distinct_seen += count;
+                    for &(m, is_def) in episodes.values() {
+                        distinct_minutes += m;
+                        if is_def {
+                            distinct_estimated += m;
+                        }
+                    }
+                }
+            }
+        }
+        if distinct_seen > site_seen {
+            self.rollup.real_seen = distinct_seen;
+            self.rollup.real_minutes = distinct_minutes;
+            self.rollup.real_minutes_estimated = distinct_estimated;
+        } else {
+            self.rollup.real_seen = site_seen;
+            self.rollup.real_minutes = site_minutes;
+            self.rollup.real_minutes_estimated = site_estimated;
         }
         self.rollup
     }
@@ -640,7 +727,7 @@ impl Db {
     /// Same corpus and canonical grouping as `get_genre_stats` (followed or
     /// "Ya lo vi", one show once, genres unioned). Each show is weighted by
     /// `FranchiseRollup::episodes` computed by the shared `RollupBuilder`
-    /// over its member rows: real marks (best single site), or the "Ya lo vi"
+    /// over its member rows: real marks (mirrors counted once), or the "Ya lo vi"
     /// catalog estimate when larger — never their sum.
     pub fn get_genre_cards(&self) -> Result<Vec<crate::models::GenreCard>> {
         self.taste_cards(|db, id| db.stats_genres(id), None)
@@ -1314,8 +1401,10 @@ impl Db {
              LEFT JOIN anilist_catalog c ON c.id = s.anilist_id
              WHERE {scope}"
         );
+        let mut group_keys = self.canonical_group_keys()?;
+        let mut seen_by_series = self.seen_canonical_episodes()?;
         let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt
+        let mut rows = stmt
             .query_map([], |r| {
                 Ok(SeriesWatchRow {
                     id: r.get(0)?,
@@ -1330,10 +1419,45 @@ impl Db {
                     catalog_episodes: r.get(7)?,
                     catalog_format: r.get(8)?,
                     catalog_duration: r.get(9)?,
+                    canon_group: String::new(),
+                    seen_episodes: Vec::new(),
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
+        for row in &mut rows {
+            row.canon_group =
+                group_keys.remove(&row.id).unwrap_or_else(|| format!("s:{}", row.id));
+            row.seen_episodes = seen_by_series.remove(&row.id).unwrap_or_default();
+        }
         Ok(rows)
+    }
+
+    /// series_id -> `canonical_episode_label` of each of its seen episodes,
+    /// dated or not (unlike `deduplicated_seen_episodes`, which needs a day to
+    /// bucket into). Only series with at least one seen episode are present.
+    fn seen_canonical_episodes(&self) -> Result<HashMap<i64, Vec<String>>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT series_id, number FROM episodes WHERE seen = 1")?;
+        let raw = stmt
+            .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        let now = chrono::Utc::now().timestamp();
+        let mut aligns: HashMap<i64, super::episode_align::RowAlign> = HashMap::new();
+        let mut out: HashMap<i64, Vec<String>> = HashMap::new();
+        for (series_id, number) in raw {
+            let align = match aligns.entry(series_id) {
+                std::collections::hash_map::Entry::Occupied(slot) => *slot.get(),
+                std::collections::hash_map::Entry::Vacant(slot) => {
+                    *slot.insert(self.row_align(series_id, now)?)
+                }
+            };
+            out.entry(series_id)
+                .or_default()
+                .push(canonical_episode_label(align, &number));
+        }
+        Ok(out)
     }
 
     /// How many episodes each franchise has, one entry per franchise, with the
@@ -1522,8 +1646,8 @@ impl Db {
         // marked on both was counted twice (One Piece marked to 600 on two
         // sites read as 1200 real episodes for an 1140-episode show) — and it
         // then disagreed with every figure that *was* collapsed, breaking the
-        // invariant this file's doc comments claim. `real_seen` is already
-        // "sum within one site, best single site across sites".
+        // invariant this file's doc comments claim. `real_seen` already
+        // counts mirrored episodes once (see `RollupBuilder`).
         let episodes_watched: i64 = rollups.iter().map(|r| r.real_seen).sum();
         // `episodes_total` stays scoped to series that mean something for a
         // "how far along am I" denominator: followed, or with at least one
@@ -1570,10 +1694,13 @@ impl Db {
         // airing/finished funnel so the two screens can't disagree — see
         // `followed_airing_split`.
         let (airing_followed, _) = self.followed_airing_split()?;
+        // A "Ya lo vi" row is claimed as watched, so its unseen scraped
+        // episodes are not pending — the same exclusion `list_pending`
+        // applies, or this counter reports shows the Pendientes screen hides.
         let pending_to_watch = self.distinct_canon_count(
             "SELECT DISTINCT s.anilist_id, s.title FROM series s
              JOIN episodes e ON e.series_id = s.id
-             WHERE s.followed=1 AND e.seen=0",
+             WHERE s.followed=1 AND s.watched_externally=0 AND e.seen=0",
         )?;
         // Distinct animes = distinct franchises with actual watch evidence —
         // watched-externally (a "Ya lo vi" swipe) OR at least one real seen
@@ -1595,6 +1722,20 @@ impl Db {
         })
     }
 
+}
+
+/// One episode's number in its canonical (cross-site) space, as the dedupe
+/// key both `deduplicated_seen_episodes` and the roll-up's distinct-episode
+/// count use: mapped through the row's `RowAlign`, the raw number when the
+/// mapping has no answer, the raw text when it isn't numeric.
+fn canonical_episode_label(align: super::episode_align::RowAlign, number: &str) -> String {
+    match crate::db::episodes::parse_ep_number(number) {
+        Some(n) => match align.to_canonical(n) {
+            Some(c) => crate::db::episode_align::format_ep_number(c),
+            None => crate::db::episode_align::format_ep_number(n),
+        },
+        None => number.to_string(),
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1670,13 +1811,7 @@ impl Db {
                 cumulative: false,
             });
 
-            let canon_ep = match crate::db::episodes::parse_ep_number(&r.number) {
-                Some(n) => match align.to_canonical(n) {
-                    Some(c) => crate::db::episode_align::format_ep_number(c),
-                    None => crate::db::episode_align::format_ep_number(n),
-                },
-                None => r.number.clone(),
-            };
+            let canon_ep = canonical_episode_label(align, &r.number);
 
             let item = DeduplicatedSeenEpisode {
                 title: r.title,
@@ -1717,6 +1852,12 @@ impl Db {
         let estimated_minutes_tracked: i64 = rollups.iter().map(|r| r.real_minutes).sum();
         let estimated_minutes_external: i64 =
             rollups.iter().map(|r| r.extra_external_minutes()).sum();
+        let estimated_tracked_default: i64 = rollups.iter().map(|r| r.real_minutes_estimated).sum();
+        let estimated_minutes_share = if estimated_minutes_tracked > 0 {
+            estimated_tracked_default as f64 / estimated_minutes_tracked as f64
+        } else {
+            0.0
+        };
         // "Estimated" means a catalog episode count was available for the
         // franchise, not that it happened to exceed the real marks. Counting
         // only the ones with a nonzero remainder made the "X of Y" ratio
@@ -1962,10 +2103,13 @@ impl Db {
                 bucket.0 += row.available;
                 bucket.1 += row.seen_cnt;
 
-                entry.catalog_minutes = entry.catalog_minutes.max(row.catalog_duration);
+                // A non-positive AniList duration is missing data, not a
+                // zero-minute episode (see `known_duration`).
+                let catalog_duration = known_duration(row.catalog_duration);
+                entry.catalog_minutes = entry.catalog_minutes.max(catalog_duration);
                 if !is_movie_or_music {
                     entry.non_movie_catalog_minutes =
-                        entry.non_movie_catalog_minutes.max(row.catalog_duration);
+                        entry.non_movie_catalog_minutes.max(catalog_duration);
                     entry.non_movie_estimate_minutes = entry.non_movie_estimate_minutes.max(Some(estimate));
                 }
                 entry.estimate_minutes = entry.estimate_minutes.max(estimate);
@@ -2048,6 +2192,7 @@ impl Db {
         Ok(crate::models::WatchInsights {
             estimated_minutes_tracked,
             estimated_minutes_external,
+            estimated_minutes_share,
             external_titles_estimated,
             external_titles_total,
             avg_episodes_per_series,
@@ -2066,85 +2211,116 @@ impl Db {
         })
     }
 
-    /// Followed series that have gone quiet — no episode marked seen in 90+ days.
-    /// Canonical across sites (deduped via `canon_key`), so the same show
-    /// followed on two sites appears once. "Never started" (no seen_at at all)
-    /// is excluded — dusty means it was watched, then stopped. Returns at most
-    /// 12 entries, sorted by most stale first (oldest last_seen_at).
+    /// Followed franchises that have gone quiet — no episode marked seen in
+    /// 90+ days while episodes are still waiting. Grouped per franchise with
+    /// the same key/alias/parent rules as `franchise_rollups`, so the same show
+    /// followed on two sites appears once and S1 isn't "dusty" while S2 of the
+    /// same franchise is being watched. "Never started" (no seen_at at all) is
+    /// excluded — dusty means it was watched, then stopped — and so is a
+    /// franchise with nothing left to watch in a member the user started:
+    /// finished is not abandoned, and an unstarted sequel is backlog. Returns
+    /// at most 12 entries, sorted by most stale first (oldest last_seen_at).
     pub fn get_dusty_watchlist(&self) -> Result<Vec<crate::models::DustyEntry>> {
-        // Get all followed series with their latest seen_at, canonical across sites.
-        // We need: series.id, series.anilist_id, series.title, MAX(episodes.seen_at) as last_seen
-        // Filter: followed=1 AND last_seen IS NOT NULL
-        // Group by canon_key, pick the MOST RECENT (max) last_seen per canon group,
-        // then filter groups older than 90 days, sort by most stale first, limit 12.
-        // IMPORTANT: the 90-day filter runs AFTER cross-site grouping, not before.
-        // If we filtered before grouping, a show followed on two sites where one
-        // site's row is recent (<90 days) and the other is stale (>90 days) would
-        // incorrectly lose the recent row (filtered out) or keep the stale one.
-        // By fetching ALL last_seen dates first, reducing to MAX per canon_key
-        // in Rust, then filtering, we correctly answer "has the user engaged
-        // with this show recently on ANY site".
+        // Every followed row with its latest dated seen mark (NULL when it has
+        // none) and whether it still has episodes to watch. A "Ya lo vi" row is
+        // claimed as watched, so its unseen scraped episodes don't count as
+        // waiting — the rule `list_pending` and `pending_to_watch` apply. Only
+        // a row the user has started (at least one seen mark) can be the one
+        // left waiting: S1 finished long ago next to a never-started S2 is a
+        // backlog entry, not an abandoned show.
+        // IMPORTANT: the 90-day filter runs AFTER grouping, not before. If we
+        // filtered before grouping, a show followed on two sites (or a
+        // franchise with two seasons) where one row is recent (<90 days) and
+        // another is stale (>90 days) would wrongly keep the stale one. By
+        // reducing to MAX per franchise in Rust, then filtering, we correctly
+        // answer "has the user engaged with this franchise recently on ANY
+        // site, in ANY season".
         let mut stmt = self.conn.prepare(
-            "SELECT s.id, s.anilist_id, s.title,
-                    MAX(DATE(e.seen_at, 'localtime')) AS last_seen
+            "SELECT s.anilist_id, s.title,
+                    MAX(CASE WHEN e.seen=1 AND e.seen_at IS NOT NULL
+                             THEN DATE(e.seen_at, 'localtime') END) AS last_seen,
+                    MAX(CASE WHEN e.seen=0 AND s.watched_externally=0 THEN 1 ELSE 0 END)
+                      * MAX(e.seen) AS has_unseen
              FROM series s
              JOIN episodes e ON e.series_id = s.id
              WHERE s.followed=1
-               AND e.seen=1
-               AND e.seen_at IS NOT NULL
-             GROUP BY s.id, s.anilist_id, s.title",
+             GROUP BY s.id",
         )?;
-        #[allow(dead_code)]
         struct Row {
-            id: i64,
             anilist_id: Option<i64>,
             title: String,
-            last_seen: String,
+            last_seen: Option<String>,
+            has_unseen: bool,
         }
         let rows: Vec<Row> = stmt
             .query_map([], |r| {
                 Ok(Row {
-                    id: r.get(0)?,
-                    anilist_id: r.get(1)?,
-                    title: r.get(2)?,
-                    last_seen: r.get(3)?,
+                    anilist_id: r.get(0)?,
+                    title: r.get(1)?,
+                    last_seen: r.get(2)?,
+                    has_unseen: r.get::<_, i64>(3)? != 0,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
 
-        // Group by canon_key, keep the MOST RECENT (MAX) last_seen across all sites
-        // for that canonical show. "Dusty" means the user hasn't engaged with
-        // the show on ANY site recently — so if they watched an episode on
-        // site A yesterday, the show is NOT dusty even if site B's row is stale.
-        // We take MAX per canon_key (most recent engagement), then filter
-        // groups older than 90 days.
-        let mut grouped: HashMap<String, (String, String)> = HashMap::new(); // canon_key -> (display_title, last_seen)
-        for row in rows {
-            let key = super::library::canon_key(row.anilist_id, &row.title);
-            let display = crate::db::stats::franchise_display_title(&row.title);
-            let entry = grouped.entry(key).or_insert_with(|| (display.clone(), row.last_seen.clone()));
-            // Keep the MORE RECENT (max) date across sites
-            if row.last_seen > entry.1 {
-                entry.1 = row.last_seen.clone();
-            }
-            // Keep the preferred display title
-            if crate::db::stats::prefer_display_title(&display, &entry.0) {
-                entry.0 = display;
-            }
-        }
+        let aliases = franchise_key_aliases(
+            &rows.iter().map(|row| (row.anilist_id, franchise_key(&row.title))).collect::<Vec<_>>(),
+        );
+        let canonical = |key: String| aliases.get(&key).cloned().unwrap_or(key);
 
-        // Now filter: only keep groups where the most recent engagement is >90 days old
+        #[derive(Clone)]
+        struct DustyGroup {
+            display_title: String,
+            /// The MOST RECENT (max) dated seen mark across every member row.
+            last_seen: Option<String>,
+            has_unseen: bool,
+        }
+        let mut grouped: HashMap<String, DustyGroup> = HashMap::new();
+        let mut parent_of: HashMap<String, String> = HashMap::new();
+        for row in rows {
+            let key = canonical(franchise_key(&row.title));
+            if let Some(parent) = franchise_parent_key(&row.title).map(canonical) {
+                if parent != key {
+                    record_parent_candidate(&mut parent_of, &key, parent);
+                }
+            }
+            let display = franchise_display_title(&row.title);
+            let entry = grouped.entry(key).or_insert_with(|| DustyGroup {
+                display_title: display.clone(),
+                last_seen: None,
+                has_unseen: false,
+            });
+            if prefer_display_title(&display, &entry.display_title) {
+                entry.display_title = display;
+            }
+            entry.last_seen = entry.last_seen.take().max(row.last_seen);
+            entry.has_unseen |= row.has_unseen;
+        }
+        let merged = merge_into_parent_groups(grouped, &parent_of, |existing, child| {
+            existing.last_seen = existing.last_seen.take().max(child.last_seen.clone());
+            existing.has_unseen |= child.has_unseen;
+        });
+
+        // Now filter: only keep groups with something left to watch whose most
+        // recent engagement is >90 days old.
         let cutoff = chrono::Local::now().date_naive() - chrono::Days::new(90);
         let cutoff_str = cutoff.format("%Y-%m-%d").to_string();
 
-        let mut entries: Vec<crate::models::DustyEntry> = grouped
+        let mut entries: Vec<crate::models::DustyEntry> = merged
             .into_iter()
-            .filter(|(_, (_, last_seen_at))| last_seen_at.as_str() < cutoff_str.as_str())
-            .map(|(_, (title, last_seen_at))| crate::models::DustyEntry { title, last_seen_at })
+            .filter(|g| g.has_unseen)
+            .filter_map(|g| {
+                let last_seen_at = g.last_seen?;
+                (last_seen_at < cutoff_str).then_some(crate::models::DustyEntry {
+                    title: g.display_title,
+                    last_seen_at,
+                })
+            })
             .collect();
 
-        // Sort by most stale first (oldest last_seen_at)
-        entries.sort_by(|a, b| a.last_seen_at.cmp(&b.last_seen_at));
+        // Sort by most stale first (oldest last_seen_at), title as a stable
+        // tie-break since the groups come out of a HashMap.
+        entries.sort_by(|a, b| a.last_seen_at.cmp(&b.last_seen_at).then_with(|| a.title.cmp(&b.title)));
         // Cap at 12
         entries.truncate(12);
         Ok(entries)
@@ -2239,10 +2415,11 @@ impl Db {
     ///
     /// The known total is the largest of: the episode rows the app holds for
     /// the best site, that site's own advertised `site_episode_count`, and the
-    /// linked AniList row's `episodes`. Progress is collapsed exactly the way
-    /// `franchise_rollups` collapses `real_seen` — summed within one site, best
-    /// single site across sites — so a show marked on two sites never looks
-    /// like twice its own length. Only franchises with at least one real
+    /// linked AniList row's `episodes`. Progress still uses the old
+    /// best-single-site rule (summed within one site, the best site across
+    /// sites) — not `franchise_rollups`' distinct-episode count — so a show
+    /// marked on two sites never looks like twice its own length, but seasons
+    /// marked on different sites don't add up here either. Only franchises with at least one real
     /// `episodes.seen_at` count (the first/last date is what the span is made
     /// of), and grouping runs through `franchise_key` **plus** the same parent
     /// merge every other franchise stat here uses: this one function used to
@@ -2541,6 +2718,7 @@ impl Db {
             return Ok(crate::models::PopularityBias {
                 average_popularity: None,
                 normalized_score: None,
+                percentile: None,
             });
         }
 
@@ -2553,9 +2731,24 @@ impl Db {
         // break the 0-10 slider. Clamp to the scale's own bounds.
         let normalized = (average / 70_000.0).min(10.0);
 
+        let (count_below, total_catalog): (i64, i64) = self.conn.query_row(
+            "SELECT
+                (SELECT COUNT(*) FROM anilist_catalog WHERE popularity < ?1),
+                (SELECT COUNT(*) FROM anilist_catalog WHERE popularity IS NOT NULL)",
+            [average],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+
+        let percentile = if total_catalog > 0 {
+            (count_below as f64 / total_catalog as f64) * 100.0
+        } else {
+            0.0
+        };
+
         Ok(crate::models::PopularityBias {
             average_popularity: Some(average),
             normalized_score: Some(normalized),
+            percentile: Some(percentile),
         })
     }
 
@@ -2577,9 +2770,12 @@ impl Db {
 
         // Always include the current year (local time) so the year selector is
         // never empty — mirrors the `marks_tracked_since` grace handling.
+        // Sorted after inserting it: a future-dated mark (clock skew, a backup
+        // from a machine whose clock ran ahead) is a later year than this one.
         let this_year = chrono::Local::now().date_naive().year();
         if !years.contains(&this_year) {
-            years.insert(0, this_year);
+            years.push(this_year);
+            years.sort_unstable_by(|a, b| b.cmp(a));
         }
 
         Ok(years)
@@ -3211,6 +3407,7 @@ mod tests {
         let insights = db.get_watch_insights().unwrap();
         assert_eq!(insights.estimated_minutes_tracked, 0);
         assert_eq!(insights.estimated_minutes_external, 0);
+        assert_eq!(insights.estimated_minutes_share, 0.0);
         assert_eq!(insights.external_titles_estimated, 0);
         assert_eq!(insights.external_titles_total, 0);
         assert_eq!(insights.avg_episodes_per_series, 0.0);
@@ -3826,6 +4023,12 @@ mod tests {
             "UPDATE episodes SET seen_at = datetime('now', 'start of day', '-100 days', '+12 hours') WHERE series_id=?1",
             [dusty],
         ).unwrap();
+        // ...with an episode still waiting: a fully seen show is finished,
+        // not dusty (see `get_dusty_watchlist_skips_series_with_nothing_left_to_watch`).
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: dusty, number: "2".into(), title: None,
+            url: "https://site/dusty-2".into(), released_at: None, seen: false, download_path: None, download_status: None,
+        }).unwrap();
 
         // Series with a recent seen_at — should NOT appear
         let fresh = db.upsert_series(src, &mk_airing("fresh", "Fresh Show", None)).unwrap();
@@ -3872,6 +4075,11 @@ mod tests {
             "UPDATE episodes SET seen_at = datetime('now', 'start of day', '-100 days', '+12 hours') WHERE series_id=?1",
             [dusty_a],
         ).unwrap();
+        // An episode still waiting, so the show is unfinished (dusty), not done.
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: dusty_a, number: "2".into(), title: None,
+            url: "https://site/dusty-2".into(), released_at: None, seen: false, download_path: None, download_status: None,
+        }).unwrap();
 
         let dusty_b = db.upsert_series(b, &mk_airing("dusty", "Dusty Show", None)).unwrap();
         db.set_followed(dusty_b, true).unwrap();
@@ -4372,6 +4580,7 @@ mod tests {
         let bias = db.get_popularity_bias().unwrap();
         assert_eq!(bias.average_popularity, None);
         assert_eq!(bias.normalized_score, None);
+        assert_eq!(bias.percentile, None);
     }
 
     #[test]
@@ -4392,6 +4601,7 @@ mod tests {
         let bias = db.get_popularity_bias().unwrap();
         assert_eq!(bias.average_popularity, None);
         assert_eq!(bias.normalized_score, None);
+        assert_eq!(bias.percentile, None);
     }
 
     #[test]
@@ -6519,5 +6729,369 @@ mod tests {
             assert_eq!(insights.backlog_episodes, 6);
             assert_eq!(insights.backlog_minutes, 6 * 24, "TV estimate, not the movie runtime");
         }
+    }
+
+    // ---- Data-accuracy fixes (2026-10-30 plan, section A) ----
+
+    /// Backdates every seen mark of `series_id` to `days_ago` days before now.
+    fn backdate_seen(db: &Db, series_id: i64, days_ago: i64) {
+        db.conn
+            .execute(
+                "UPDATE episodes SET seen_at = datetime('now', 'start of day', ?1, '+12 hours')
+                 WHERE series_id=?2 AND seen=1",
+                rusqlite::params![format!("-{days_ago} days"), series_id],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn get_watch_summary_pending_to_watch_skips_series_marked_watched_externally() {
+        // Pendientes (`list_pending`) never lists a "Ya lo vi" row, so the
+        // Stats counter must not either: it read "1 pendiente" over an empty
+        // Pendientes screen.
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+        let id = db.upsert_series(src, &mk_airing("ext", "Ext Show", None)).unwrap();
+        db.set_followed(id, true).unwrap();
+        db.set_watched_externally(id, true).unwrap();
+        insert_eps_seen_up_to(&db, id, 3, 0);
+
+        assert_eq!(db.get_watch_summary().unwrap().pending_to_watch, 0);
+    }
+
+    #[test]
+    fn get_dusty_watchlist_skips_series_with_nothing_left_to_watch() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+
+        // Finished long ago: nothing is waiting, so it isn't "gathering dust".
+        let done = db.upsert_series(src, &mk_airing("done", "Done Show", None)).unwrap();
+        db.set_followed(done, true).unwrap();
+        insert_eps_seen_up_to(&db, done, 3, 3);
+        backdate_seen(&db, done, 120);
+
+        // Abandoned halfway: still has unseen episodes.
+        let stuck = db.upsert_series(src, &mk_airing("stuck", "Stuck Show", None)).unwrap();
+        db.set_followed(stuck, true).unwrap();
+        insert_eps_seen_up_to(&db, stuck, 3, 1);
+        backdate_seen(&db, stuck, 120);
+
+        let titles: Vec<String> = db.get_dusty_watchlist().unwrap().into_iter().map(|d| d.title).collect();
+        assert_eq!(titles, vec!["Stuck Show".to_string()]);
+    }
+
+    #[test]
+    fn get_dusty_watchlist_groups_seasons_of_one_franchise() {
+        // S1 last watched 120 days ago, S2 of the same franchise yesterday:
+        // the user is actively watching the franchise, so neither is dusty.
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+
+        let s1 = db.upsert_series(src, &mk_airing("ky1", "Kimetsu no Yaiba", None)).unwrap();
+        db.set_followed(s1, true).unwrap();
+        insert_eps_seen_up_to(&db, s1, 12, 6);
+        backdate_seen(&db, s1, 120);
+
+        let s2 = db.upsert_series(src, &mk_airing("ky2", "Kimetsu no Yaiba Temporada 2", None)).unwrap();
+        db.set_followed(s2, true).unwrap();
+        insert_eps_seen_up_to(&db, s2, 12, 3);
+        backdate_seen(&db, s2, 1);
+
+        assert!(db.get_dusty_watchlist().unwrap().is_empty());
+
+    }
+
+    #[test]
+    fn real_progress_adds_up_different_seasons_watched_on_different_sites() {
+        // S1 marked on site A, S2 on site B: 24 distinct episodes — the
+        // heatmap already counts 24, the best-single-site rule said 12.
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        let b = db.upsert_source("TioAnime", "b", "tioanime").unwrap();
+
+        let s1 = db.upsert_series(a, &mk_airing("ky1", "Kimetsu no Yaiba", None)).unwrap();
+        db.set_followed(s1, true).unwrap();
+        insert_eps_seen_up_to(&db, s1, 12, 12);
+        let s2 = db.upsert_series(b, &mk_airing("ky2", "Kimetsu no Yaiba Temporada 2", None)).unwrap();
+        db.set_followed(s2, true).unwrap();
+        insert_eps_seen_up_to(&db, s2, 12, 12);
+
+        let summary = db.get_watch_summary().unwrap();
+        assert_eq!(summary.episodes_watched, 24);
+        assert_eq!(summary.distinct_anime, 1, "still one franchise");
+        let insights = db.get_watch_insights().unwrap();
+        assert_eq!(insights.estimated_minutes_tracked, 24 * 24);
+    }
+
+    #[test]
+    fn real_progress_counts_partial_mirrors_of_one_show_by_distinct_episode() {
+        // Same show on two sites, episodes 1-6 marked on A and 1-9 on B:
+        // 9 distinct episodes, never the 15 sum.
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        let b = db.upsert_source("TioAnime", "b", "tioanime").unwrap();
+
+        let ra = db.upsert_series(a, &mk_airing("m", "Mirror Show", None)).unwrap();
+        db.set_followed(ra, true).unwrap();
+        insert_eps_seen_up_to(&db, ra, 12, 6);
+        let rb = db.upsert_series(b, &mk_airing("m", "Mirror Show", None)).unwrap();
+        db.set_followed(rb, true).unwrap();
+        insert_eps_seen_up_to(&db, rb, 12, 9);
+
+        assert_eq!(db.get_watch_summary().unwrap().episodes_watched, 9);
+        assert_eq!(db.get_watch_insights().unwrap().estimated_minutes_tracked, 9 * 24);
+    }
+
+    #[test]
+    fn real_progress_still_counts_seen_marks_without_a_seen_at() {
+        // A seen mark with no date is still a real seen episode: the date
+        // only decides which day bucket it lands in, never whether it counts.
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        let b = db.upsert_source("TioAnime", "b", "tioanime").unwrap();
+
+        let s1 = db.upsert_series(a, &mk_airing("ky1", "Kimetsu no Yaiba", None)).unwrap();
+        db.set_followed(s1, true).unwrap();
+        insert_eps_seen_up_to(&db, s1, 12, 12);
+        db.conn.execute("UPDATE episodes SET seen_at = NULL WHERE series_id=?1", [s1]).unwrap();
+        let s2 = db.upsert_series(b, &mk_airing("ky2", "Kimetsu no Yaiba Temporada 2", None)).unwrap();
+        db.set_followed(s2, true).unwrap();
+        insert_eps_seen_up_to(&db, s2, 12, 12);
+
+        assert_eq!(db.get_watch_summary().unwrap().episodes_watched, 24);
+    }
+
+    #[test]
+    fn zero_catalog_duration_is_treated_as_unknown() {
+        // AniList reports `duration: 0` for some entries; read literally it
+        // priced every episode at 0 minutes.
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+        let mut zero = catalog_anime_full(601, "Zero Show", &[], "TV", Some(12), None);
+        zero.duration = Some(0);
+        db.upsert_catalog_anime(&zero, 0).unwrap();
+        let id = db.upsert_series(src, &mk_airing("zero", "Zero Show", None)).unwrap();
+        db.set_followed(id, true).unwrap();
+        db.set_anilist_id(id, 601).unwrap();
+        insert_eps_seen_up_to(&db, id, 12, 6);
+
+        let insights = db.get_watch_insights().unwrap();
+        assert_eq!(insights.estimated_minutes_tracked, 6 * 24, "TV estimate, not 0 min/ep");
+        assert_eq!(insights.backlog_episodes, 6);
+        assert_eq!(insights.backlog_minutes, 6 * 24, "TV estimate, not 0 min/ep");
+    }
+
+    #[test]
+    fn get_activity_years_stays_descending_with_a_future_year() {
+        // A future-dated mark (clock skew, restored backup) must not leave the
+        // current year inserted ahead of it.
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+        let id = db.upsert_series(src, &mk_airing("x", "X", None)).unwrap();
+        insert_eps_seen_up_to(&db, id, 1, 1);
+        let this_year = chrono::Local::now().date_naive().year();
+        db.conn
+            .execute(
+                "UPDATE episodes SET seen_at = ?1 WHERE series_id = ?2",
+                rusqlite::params![format!("{}-07-15 12:00:00", this_year + 1), id],
+            )
+            .unwrap();
+
+        assert_eq!(db.get_activity_years().unwrap(), vec![this_year + 1, this_year]);
+    }
+
+    /// A followed row on `src` titled `title`, linked to `anilist_id`, with
+    /// `total` episodes of which the first `seen` are marked seen.
+    fn linked_row(db: &Db, src: i64, slug: &str, title: &str, anilist_id: i64, total: i64, seen: i64) -> i64 {
+        let id = db.upsert_series(src, &mk_airing(slug, title, None)).unwrap();
+        db.set_followed(id, true).unwrap();
+        db.set_anilist_id(id, anilist_id).unwrap();
+        insert_eps_seen_up_to(db, id, total, seen);
+        id
+    }
+
+    #[test]
+    fn real_progress_caps_a_cumulative_row_at_its_seasons_catalog_length() {
+        // High Card shape from the reference database: one site numbers the
+        // whole show 1-25 on a row linked to the 12-episode S1 entry, another
+        // splits it into S1 (1-12) and S2 (1-12). Labels 13-25 of the first
+        // row are S2 episodes, not more S1 ones: 25, never 25 + 12.
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        let b = db.upsert_source("TioAnime", "b", "tioanime").unwrap();
+        db.upsert_catalog_anime(&catalog_anime_full(135778, "HIGH CARD", &[], "TV", Some(12), None), 0).unwrap();
+        db.upsert_catalog_anime(&catalog_anime_full(163151, "HIGH CARD Season 2", &[], "TV", Some(12), None), 0).unwrap();
+
+        linked_row(&db, b, "hc", "HIGH CARD", 135778, 25, 25);
+        linked_row(&db, a, "hc", "HIGH CARD", 135778, 12, 12);
+        linked_row(&db, a, "hc2", "High Card Temporada 2", 163151, 12, 12);
+
+        let summary = db.get_watch_summary().unwrap();
+        assert_eq!(summary.distinct_anime, 1);
+        assert_eq!(summary.episodes_watched, 25);
+        assert_eq!(db.get_watch_insights().unwrap().estimated_minutes_tracked, 25 * 24);
+    }
+
+    #[test]
+    fn real_progress_caps_a_cumulative_row_on_the_site_without_the_sequel_row() {
+        // Mushoku Tensei shape: the cumulative row (1-23 on the 11-episode S1
+        // entry) is on the site that has no S2 row; the other site has S1
+        // (1-11) and S2 (1-12). 23 episodes, not 23 + 12.
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        let b = db.upsert_source("TioAnime", "b", "tioanime").unwrap();
+        db.upsert_catalog_anime(&catalog_anime_full(108465, "Mushoku Tensei", &[], "TV", Some(11), None), 0).unwrap();
+        db.upsert_catalog_anime(&catalog_anime_full(127720, "Mushoku Tensei Part 2", &[], "TV", Some(12), None), 0).unwrap();
+
+        linked_row(&db, a, "mt", "Mushoku Tensei", 108465, 23, 23);
+        linked_row(&db, b, "mt", "Mushoku Tensei", 108465, 11, 11);
+        linked_row(&db, b, "mt2", "Mushoku Tensei Temporada 2", 127720, 12, 12);
+
+        assert_eq!(db.get_watch_summary().unwrap().episodes_watched, 23);
+    }
+
+    #[test]
+    fn real_progress_adds_up_linked_seasons_watched_on_different_sites() {
+        // Otome Game shape: S1 (12 eps) on one site, S2 (12 eps) on another,
+        // both linked — the catalog caps don't bite, 24 stands.
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        let b = db.upsert_source("TioAnime", "b", "tioanime").unwrap();
+        db.upsert_catalog_anime(&catalog_anime_full(142074, "Otome Game", &[], "TV", Some(12), None), 0).unwrap();
+        db.upsert_catalog_anime(&catalog_anime_full(159309, "Otome Game Season 2", &[], "TV", Some(12), None), 0).unwrap();
+
+        linked_row(&db, a, "og", "Otome Game", 142074, 12, 12);
+        linked_row(&db, b, "og2", "Otome Game Temporada 2", 159309, 12, 12);
+
+        assert_eq!(db.get_watch_summary().unwrap().episodes_watched, 24);
+    }
+
+    #[test]
+    fn estimated_minutes_share_mixed_matches_spec_example() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+
+        // Series A: 2 seen episodes, linked to AniList catalog row with duration = 23 -> 46 mins (0 estimated)
+        db.upsert_catalog_anime(
+            &crate::anilist::CatalogAnime {
+                id: 101, title: "Show A".into(), title_romaji: None, title_english: None,
+                synonyms: Vec::new(), cover_url: None, banner_url: None, format: Some("TV".into()),
+                genres: vec![], episodes: Some(12), average_score: None, popularity: None,
+                url: "https://anilist.co/anime/101".into(), status: None, duration: Some(23),
+                studio: None, start_date: None, next_airing_at: None, next_episode: None,
+                tags: Vec::new(), relations: Vec::new(),
+            },
+            0,
+        ).unwrap();
+        let sa = db.upsert_series(src, &mk_airing("sa", "Show A", None)).unwrap();
+        db.set_followed(sa, true).unwrap();
+        db.set_anilist_id(sa, 101).unwrap();
+        insert_eps_seen_up_to(&db, sa, 12, 2);
+
+        // Series B: 1 seen episode, unlinked (default TV = 24) -> 24 mins (24 estimated)
+        let sb = db.upsert_series(src, &mk_airing("sb", "Show B", None)).unwrap();
+        db.set_followed(sb, true).unwrap();
+        insert_eps_seen_up_to(&db, sb, 12, 1);
+
+        let insights = db.get_watch_insights().unwrap();
+        assert_eq!(insights.estimated_minutes_tracked, 70);
+        let expected_share = 24.0 / 70.0;
+        assert!(
+            (insights.estimated_minutes_share - expected_share).abs() < 1e-9,
+            "expected share {expected_share}, got {}",
+            insights.estimated_minutes_share
+        );
+    }
+
+    #[test]
+    fn estimated_minutes_share_all_known_gives_zero() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+
+        db.upsert_catalog_anime(
+            &crate::anilist::CatalogAnime {
+                id: 201, title: "Known Show".into(), title_romaji: None, title_english: None,
+                synonyms: Vec::new(), cover_url: None, banner_url: None, format: Some("TV".into()),
+                genres: vec![], episodes: Some(12), average_score: None, popularity: None,
+                url: "https://anilist.co/anime/201".into(), status: None, duration: Some(25),
+                studio: None, start_date: None, next_airing_at: None, next_episode: None,
+                tags: Vec::new(), relations: Vec::new(),
+            },
+            0,
+        ).unwrap();
+        let s = db.upsert_series(src, &mk_airing("s", "Known Show", None)).unwrap();
+        db.set_followed(s, true).unwrap();
+        db.set_anilist_id(s, 201).unwrap();
+        insert_eps_seen_up_to(&db, s, 12, 5);
+
+        let insights = db.get_watch_insights().unwrap();
+        assert_eq!(insights.estimated_minutes_tracked, 5 * 25);
+        assert_eq!(insights.estimated_minutes_share, 0.0);
+    }
+
+    #[test]
+    fn estimated_minutes_share_all_unlinked_gives_one() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+
+        let s = db.upsert_series(src, &mk_airing("s", "Unlinked Show", None)).unwrap();
+        db.set_followed(s, true).unwrap();
+        insert_eps_seen_up_to(&db, s, 12, 4);
+
+        let insights = db.get_watch_insights().unwrap();
+        assert_eq!(insights.estimated_minutes_tracked, 4 * 24);
+        assert_eq!(insights.estimated_minutes_share, 1.0);
+    }
+
+    #[test]
+    fn get_popularity_bias_percentile_matches_spec_example() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+
+        // Catalog popularities [10, 20, 30, 40]
+        for (id, pop) in [(1, 10), (2, 20), (3, 30), (4, 40)] {
+            db.upsert_catalog_anime(
+                &crate::anilist::CatalogAnime {
+                    id, title: format!("Pop Show {id}"), title_romaji: None, title_english: None,
+                    synonyms: Vec::new(), cover_url: None, banner_url: None, format: Some("TV".into()),
+                    genres: vec![], episodes: Some(12), average_score: None, popularity: Some(pop),
+                    url: format!("https://anilist.co/anime/{id}"), status: None, duration: Some(24),
+                    studio: None, start_date: None, next_airing_at: None, next_episode: None,
+                    tags: Vec::new(), relations: Vec::new(),
+                },
+                0,
+            ).unwrap();
+            let sid = db.upsert_series(src, &mk_airing(&format!("s{id}"), &format!("Pop Show {id}"), None)).unwrap();
+            db.set_followed(sid, true).unwrap();
+            db.set_anilist_id(sid, id).unwrap();
+        }
+
+        // User watched 4 series with popularities [10, 20, 30, 40]
+        // User average = (10 + 20 + 30 + 40) / 4 = 25.0
+        // Catalog popularities strictly below 25.0 are 10, 20 (2 out of 4) -> percentile 50.0
+        let bias = db.get_popularity_bias().unwrap();
+        assert_eq!(bias.average_popularity, Some(25.0));
+        assert_eq!(bias.percentile, Some(50.0));
+    }
+
+    #[test]
+    fn get_dusty_watchlist_skips_a_finished_season_beside_a_never_started_one() {
+        // S1 finished 120 days ago, S2 followed but never started: that's a
+        // backlog entry, not an abandoned show — the only unseen episodes
+        // belong to a member nobody has started.
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+
+        let s1 = db.upsert_series(src, &mk_airing("ky1", "Kimetsu no Yaiba", None)).unwrap();
+        db.set_followed(s1, true).unwrap();
+        insert_eps_seen_up_to(&db, s1, 12, 12);
+        backdate_seen(&db, s1, 120);
+
+        let s2 = db.upsert_series(src, &mk_airing("ky2", "Kimetsu no Yaiba Temporada 2", None)).unwrap();
+        db.set_followed(s2, true).unwrap();
+        insert_eps_seen_up_to(&db, s2, 12, 0);
+
+        assert!(db.get_dusty_watchlist().unwrap().is_empty());
+
     }
 }

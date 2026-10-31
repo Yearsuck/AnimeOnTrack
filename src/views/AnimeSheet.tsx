@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useBackLayer } from "../lib/backStack";
 import { createPortal } from "react-dom";
 import { getAnimeExtras, openEpisode } from "../api";
 import { useT, type MessageKey } from "../i18n";
-import { airCountdown } from "../lib/airCountdown";
+import { countdown } from "../lib/airCountdown";
 import { seasonOf } from "../lib/anilistLinks";
 import { formatLabel } from "../lib/formatLabel";
 import { FALLBACK_TRANSFORM, flipDelta, flipTransform, type Box } from "../lib/flip";
 import { useFormatNumber } from "../lib/formatNumber";
 import { initials, resolveCoverUrl } from "../lib/posterFallback";
+import { isMobile } from "../lib/platform";
 import type { AnimeExtras, CatalogAnime } from "../types";
 import { TrailerBox } from "../components/TrailerBox";
 import { RelatedRow, SeriesAbout } from "./SeriesInfo";
@@ -95,7 +97,7 @@ function AnimeSheet({
   const finalRectRef = useRef<DOMRect | null>(null);
   const closedTransform = useCallback(
     (from: Box | null): string => {
-      if (prefersReducedMotion()) return "none";
+      if (prefersReducedMotion() || isMobile) return "none";
       const rect = finalRectRef.current;
       const d = from && rect ? flipDelta(from, rect) : null;
       return d ? flipTransform(d) : FALLBACK_TRANSFORM;
@@ -166,6 +168,8 @@ function AnimeSheet({
     exit.onfinish = unmount;
     exit.oncancel = unmount;
   }, [unmount, originEl, closedTransform]);
+  // System back closes the sheet like Escape does (animated).
+  useBackLayer(true, onClose);
 
   // Load the description/relations/trailer; a failure just leaves them empty.
   useEffect(() => {
@@ -258,9 +262,12 @@ function AnimeSheet({
     if (anime.format) out.push({ label: t("seriesDetail.info.format"), value: formatLabel(t, anime.format) });
     if (anime.episodes != null) out.push({ label: t("seriesDetail.info.episodes"), value: String(anime.episodes) });
     if (anime.duration != null && anime.duration > 0) {
+      const isMovie = anime.format?.toUpperCase() === "MOVIE";
       out.push({
         label: t("seriesDetail.info.duration"),
-        value: t("seriesDetail.info.durationValue", { n: anime.duration }),
+        value: isMovie
+          ? t("seriesDetail.info.durationMovie", { n: anime.duration })
+          : t("seriesDetail.info.durationValue", { n: anime.duration }),
       });
     }
     const season = seasonOf(anime.start_date);
@@ -271,16 +278,8 @@ function AnimeSheet({
     if (anime.average_score != null) out.push({ label: t("seriesDetail.info.score"), value: `${anime.average_score}/100` });
     if (anime.popularity != null) out.push({ label: t("animeSheet.popularity"), value: formatNumber(anime.popularity) });
     if (anime.next_airing_at != null) {
-      const c = airCountdown(anime.next_airing_at, Date.now() / 1000);
-      if (c) {
-        const when = t(
-          c.unit === "minutes"
-            ? "seriesDetail.nextAir.minutes"
-            : c.unit === "hours"
-            ? "seriesDetail.nextAir.hours"
-            : "seriesDetail.nextAir.days",
-          { n: c.value }
-        );
+      const when = countdown(anime.next_airing_at, Math.floor(Date.now() / 1000), { t });
+      if (when) {
         out.push({
           label: t("animeSheet.nextEpisode"),
           value: anime.next_episode != null ? `Ep ${anime.next_episode} · ${when}` : when,

@@ -3,7 +3,9 @@ import { listen } from "@tauri-apps/api/event";
 import { listAiringSeason, setFollowed } from "../api";
 import { useT } from "../i18n";
 import { initials, resolveCoverUrl, useCoverFailure } from "../lib/posterFallback";
+import { countdown } from "../lib/airCountdown";
 import type { AiringItem, CatalogSyncProgress, Series } from "../types";
+import { isMobile } from "../lib/platform";
 import { AiringSpotlight } from "./AiringSpotlight";
 
 // A series' cover_url is a data: URI (fetched via webview), a cached local file:
@@ -29,26 +31,24 @@ function AiringPoster({ title, coverUrl }: { title: string; coverUrl: string | n
 // hasn't rolled over yet. Null when the series carries no countdown.
 export function countdownLabel(
   nextEpisodeAt: number | null,
-  t: ReturnType<typeof useT>
+  t: ReturnType<typeof useT>,
+  estimated?: boolean
 ): string | null {
   if (nextEpisodeAt == null) return null;
-  const diffMs = nextEpisodeAt * 1000 - Date.now();
-  const absHours = Math.abs(diffMs) / 3_600_000;
-  const span =
-    absHours >= 48
-      ? `${Math.round(absHours / 24)} d`
-      : absHours >= 1
-        ? `${Math.round(absHours)} h`
-        : `${Math.max(1, Math.round(Math.abs(diffMs) / 60_000))} min`;
-  return diffMs >= 0 ? t("airing.countdownIn", { span }) : t("airing.countdownAgo", { span });
+  return countdown(nextEpisodeAt, Math.floor(Date.now() / 1000), { t, estimated });
 }
 
 // "Esta temporada" cutoff: the series' first scraped episode aired within
 // the last 3 calendar months. Computed frontend-side (see the design spec)
 // so "now" is the user's own clock and a day-rollover never needs a re-query.
 export function isWithinLastThreeMonths(firstEpisodeAt: number): boolean {
-  const cutoff = new Date();
-  cutoff.setMonth(cutoff.getMonth() - 3);
+  const now = new Date();
+  // Clamp the day to the target month's length so May 31 -> Feb 28, not Mar 3.
+  const lastDay = new Date(now.getFullYear(), now.getMonth() - 3 + 1, 0).getDate();
+  const cutoff = new Date(now);
+  cutoff.setDate(1);
+  cutoff.setMonth(now.getMonth() - 3);
+  cutoff.setDate(Math.min(now.getDate(), lastDay));
   return firstEpisodeAt * 1000 >= cutoff.getTime();
 }
 
@@ -83,15 +83,21 @@ function getWeekdayName(day: number, t: ReturnType<typeof useT>): string {
 // button stops its own keydown so Enter on it does not also open the detail.
 function AiringCard({
   series: s,
+  estimated,
   onOpen,
   onToggle,
 }: {
   series: Series;
+  estimated?: boolean;
   onOpen: (s: Series) => void;
   onToggle: (e: React.SyntheticEvent, s: Series) => void;
 }) {
   const t = useT();
-  const countdown = countdownLabel(s.next_episode_at, t);
+  const isEstimated = estimated ?? s.next_episode_estimated;
+  const label = countdown(s.next_episode_at, Math.floor(Date.now() / 1000), {
+    t,
+    estimated: isEstimated,
+  });
   return (
     <div
       className="card card-clickable"
@@ -108,7 +114,14 @@ function AiringCard({
     >
       <div className="poster">
         {s.followed && <span className="chip">{t("airing.followingChip")}</span>}
-        {countdown && <span className="chip chip-countdown">{countdown}</span>}
+        {label && (
+          <span
+            className="chip chip-countdown"
+            title={isEstimated ? t("airing.estimatedTooltip") : undefined}
+          >
+            {label}
+          </span>
+        )}
         <AiringPoster title={s.title} coverUrl={s.cover_url} />
       </div>
       <div className="card-body">
@@ -301,8 +314,11 @@ export function AiringGrid({
 
   return (
     <div className="page">
-      <div className="page-head">
-        <h2 className="page-title">{t("nav.airing")}</h2>
+      <div className="page-head airing-toolbar">
+        <div className="airing-toolbar-top">
+          <h2 className="page-title">{t("nav.airing")}</h2>
+          {isMobile && <span className="muted airing-count">{t("common.seriesCount", { count: filtered.length })}</span>}
+        </div>
         <div className="search">
           <span className="icon">⌕</span>
           <input
@@ -350,7 +366,7 @@ export function AiringGrid({
           {t("airing.followingFilter", { count: followedCount })}
         </button>
         <div className="spacer" />
-        <span className="muted">{t("common.seriesCount", { count: filtered.length })}</span>
+        {!isMobile && <span className="muted">{t("common.seriesCount", { count: filtered.length })}</span>}
       </div>
 
       {viewMode === "season" && (
@@ -387,8 +403,14 @@ export function AiringGrid({
                 <div key={day} className={`week-day${day === today ? " today" : ""}`}>
                   <h3 className="week-day-header">{getWeekdayName(day, t)}</h3>
                   <div className="week-day-grid">
-                    {dayItems.map(({ series: s }) => (
-                      <AiringCard key={s.id} series={s} onOpen={onOpenSeries} onToggle={toggle} />
+                    {dayItems.map((it) => (
+                      <AiringCard
+                        key={it.series.id}
+                        series={it.series}
+                        estimated={it.next_episode_estimated}
+                        onOpen={onOpenSeries}
+                        onToggle={toggle}
+                      />
                     ))}
                   </div>
                 </div>
@@ -398,8 +420,14 @@ export function AiringGrid({
         </div>
       ) : (
         <div className="grid">
-          {filtered.map(({ series: s }) => (
-            <AiringCard key={s.id} series={s} onOpen={onOpenSeries} onToggle={toggle} />
+          {filtered.map((it) => (
+            <AiringCard
+              key={it.series.id}
+              series={it.series}
+              estimated={it.next_episode_estimated}
+              onOpen={onOpenSeries}
+              onToggle={toggle}
+            />
           ))}
         </div>
       )}

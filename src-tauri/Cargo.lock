@@ -95,7 +95,7 @@ checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 
 [[package]]
 name = "aot-scaffold"
-version = "0.23.0"
+version = "0.24.0"
 dependencies = [
  "adblock",
  "anyhow",
@@ -115,6 +115,7 @@ dependencies = [
  "tauri-plugin-opener",
  "tauri-plugin-process",
  "tauri-plugin-updater",
+ "tauri-plugin-webfetch",
  "tokio",
  "url",
  "urlencoding",
@@ -4483,6 +4484,16 @@ dependencies = [
  "url",
  "windows-sys 0.60.2",
  "zip",
+]
+
+[[package]]
+name = "tauri-plugin-webfetch"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-plugin",
 ]
 
 [[package]]

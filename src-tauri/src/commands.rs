@@ -62,13 +62,19 @@ pub use storage::*;
 struct RefreshProgress {
     current: usize,
     total: usize,
+    done: bool,
     title: String,
 }
 
-fn emit_refresh_progress(app: &AppHandle, current: usize, total: usize, title: &str) {
+fn emit_refresh_progress(app: &AppHandle, current: usize, total: usize, title: &str, done: bool) {
     let _ = app.emit(
         "refresh-progress",
-        RefreshProgress { current, total, title: title.to_string() },
+        RefreshProgress {
+            current,
+            total,
+            title: title.to_string(),
+            done,
+        },
     );
 }
 
