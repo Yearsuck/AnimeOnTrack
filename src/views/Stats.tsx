@@ -14,6 +14,7 @@ import {
 } from "../api";
 import { useT } from "../i18n";
 import { BusyLabel } from "../components/BusyLabel";
+import { isMobile } from "../lib/platform";
 import type { TypeStat, WatchSummary, WatchInsights, PopularityBias, SeriesGraphNode, GenreCard, LibraryItem } from "../types";
 import { StatsGraph } from "./StatsGraph";
 import { StatsRings } from "./StatsRings";
@@ -153,44 +154,51 @@ export function Stats({
     }
   }
 
+  // Desktop: in the page head. Phone: sticky below the app bar, clear of the bottom nav.
+  const subTabs = (
+    <div className={isMobile ? "tabs stats-subtabs" : "tabs"} role="tablist">
+      <button
+        type="button"
+        role="tab"
+        aria-selected={view === "resumen"}
+        className={`tab ${view === "resumen" ? "active" : ""}`}
+        onClick={() => setView("resumen")}
+      >
+        {t("stats.insightsHeading")}
+      </button>
+      <button
+        type="button"
+        role="tab"
+        aria-selected={view === "grafo"}
+        className={`tab ${view === "grafo" ? "active" : ""}`}
+        onClick={() => setView("grafo")}
+      >
+        {t("stats.tabGraph")}
+      </button>
+      <button
+        type="button"
+        role="tab"
+        aria-selected={view === "generos"}
+        className={`tab ${view === "generos" ? "active" : ""}`}
+        onClick={() => setView("generos")}
+      >
+        {t("stats.byGenre")}
+      </button>
+    </div>
+  );
+
   return (
     <div className="page stats-page">
       <div className="page-head">
         <h2 className="page-title">{t("nav.stats")}</h2>
-        <div className="tabs" role="tablist">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={view === "resumen"}
-            className={`tab ${view === "resumen" ? "active" : ""}`}
-            onClick={() => setView("resumen")}
-          >
-            {t("stats.insightsHeading")}
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={view === "grafo"}
-            className={`tab ${view === "grafo" ? "active" : ""}`}
-            onClick={() => setView("grafo")}
-          >
-            {t("stats.tabGraph")}
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={view === "generos"}
-            className={`tab ${view === "generos" ? "active" : ""}`}
-            onClick={() => setView("generos")}
-          >
-            {t("stats.byGenre")}
-          </button>
-        </div>
+        {!isMobile && subTabs}
         <div className="spacer" />
         <button className="btn btn-ghost" onClick={runBackfill} disabled={backfilling} aria-busy={backfilling}>
           <BusyLabel busy={backfilling} idle={t("stats.backfillButton")} busyText={t("stats.backfilling")} />
         </button>
       </div>
+
+      {isMobile && <div className="stats-subtabs-sticky">{subTabs}</div>}
 
       {error && (
         <div className="notice notice-danger" role="alert">

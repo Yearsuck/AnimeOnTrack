@@ -3,6 +3,7 @@ import type { Update } from "@tauri-apps/plugin-updater";
 import { THEMES, useTheme } from "../../theme";
 import { LANGS, useLang, useT } from "../../i18n";
 import { readNotifyPref, writeNotifyPref } from "../../lib/notify";
+import { isMobile } from "../../lib/platform";
 import { checkForUpdate, installUpdate, readUpdatePref, writeUpdatePref } from "../../lib/updater";
 
 export function AppearanceSection({ onReplayTutorial }: { onReplayTutorial?: () => void }) {
@@ -100,53 +101,55 @@ export function AppearanceSection({ onReplayTutorial }: { onReplayTutorial?: () 
             {t("settings.notifyOff")}
           </button>
         </div>
-        <p className="settings-field-hint">{t("settings.notifyHint")}</p>
+        <p className="settings-field-hint">{t(isMobile ? "settings.notifyHintMobile" : "settings.notifyHint")}</p>
       </div>
 
-      <div className="settings-field">
-        <label className="settings-field-label">{t("settings.updateLabel")}</label>
-        <div className="row">
-          <button
-            type="button"
-            className={`chip-toggle ${updateAuto ? "active" : ""}`}
-            onClick={() => handleUpdateToggle(true)}
-          >
-            {t("settings.updateOn")}
-          </button>
-          <button
-            type="button"
-            className={`chip-toggle ${!updateAuto ? "active" : ""}`}
-            onClick={() => handleUpdateToggle(false)}
-          >
-            {t("settings.updateOff")}
-          </button>
-          {updateState.kind === "found" ? (
-            <button type="button" className="btn btn-primary" onClick={() => handleUpdateInstall(updateState.update)}>
-              {t("update.install")}
-            </button>
-          ) : (
+      {!isMobile && (
+        <div className="settings-field">
+          <label className="settings-field-label">{t("settings.updateLabel")}</label>
+          <div className="row">
             <button
               type="button"
-              className="btn"
-              disabled={updateState.kind === "checking" || updateState.kind === "installing"}
-              onClick={handleUpdateCheck}
+              className={`chip-toggle ${updateAuto ? "active" : ""}`}
+              onClick={() => handleUpdateToggle(true)}
             >
-              {updateState.kind === "checking" ? t("settings.updateChecking") : t("settings.updateCheck")}
+              {t("settings.updateOn")}
             </button>
+            <button
+              type="button"
+              className={`chip-toggle ${!updateAuto ? "active" : ""}`}
+              onClick={() => handleUpdateToggle(false)}
+            >
+              {t("settings.updateOff")}
+            </button>
+            {updateState.kind === "found" ? (
+              <button type="button" className="btn btn-primary" onClick={() => handleUpdateInstall(updateState.update)}>
+                {t("update.install")}
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="btn"
+                disabled={updateState.kind === "checking" || updateState.kind === "installing"}
+                onClick={handleUpdateCheck}
+              >
+                {updateState.kind === "checking" ? t("settings.updateChecking") : t("settings.updateCheck")}
+              </button>
+            )}
+          </div>
+          {updateState.kind === "upToDate" && <p className="settings-field-hint">{t("settings.updateUpToDate")}</p>}
+          {updateState.kind === "found" && (
+            <p className="settings-field-hint">{t("settings.updateFound", { version: updateState.update.version })}</p>
           )}
+          {updateState.kind === "installing" && (
+            <p className="settings-field-hint">
+              {updateState.percent === null ? t("update.installing") : t("update.downloading", { percent: updateState.percent })}
+            </p>
+          )}
+          {updateState.kind === "failed" && <p className="settings-field-hint">{t("update.failed")}</p>}
+          <p className="settings-field-hint">{t("settings.updateHint")}</p>
         </div>
-        {updateState.kind === "upToDate" && <p className="settings-field-hint">{t("settings.updateUpToDate")}</p>}
-        {updateState.kind === "found" && (
-          <p className="settings-field-hint">{t("settings.updateFound", { version: updateState.update.version })}</p>
-        )}
-        {updateState.kind === "installing" && (
-          <p className="settings-field-hint">
-            {updateState.percent === null ? t("update.installing") : t("update.downloading", { percent: updateState.percent })}
-          </p>
-        )}
-        {updateState.kind === "failed" && <p className="settings-field-hint">{t("update.failed")}</p>}
-        <p className="settings-field-hint">{t("settings.updateHint")}</p>
-      </div>
+      )}
 
       {onReplayTutorial && (
         <div className="settings-field">

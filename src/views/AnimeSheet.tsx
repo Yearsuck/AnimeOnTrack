@@ -9,6 +9,7 @@ import { formatLabel } from "../lib/formatLabel";
 import { FALLBACK_TRANSFORM, flipDelta, flipTransform, type Box } from "../lib/flip";
 import { useFormatNumber } from "../lib/formatNumber";
 import { initials, resolveCoverUrl } from "../lib/posterFallback";
+import { isMobile } from "../lib/platform";
 import type { AnimeExtras, CatalogAnime } from "../types";
 import { TrailerBox } from "../components/TrailerBox";
 import { RelatedRow, SeriesAbout } from "./SeriesInfo";
@@ -96,7 +97,7 @@ function AnimeSheet({
   const finalRectRef = useRef<DOMRect | null>(null);
   const closedTransform = useCallback(
     (from: Box | null): string => {
-      if (prefersReducedMotion()) return "none";
+      if (prefersReducedMotion() || isMobile) return "none";
       const rect = finalRectRef.current;
       const d = from && rect ? flipDelta(from, rect) : null;
       return d ? flipTransform(d) : FALLBACK_TRANSFORM;

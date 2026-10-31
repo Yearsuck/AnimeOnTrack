@@ -136,7 +136,7 @@ export function Pending({
     <div className="page">
       <div className="page-head">
         <h2 className="page-title">{t("nav.pending")}</h2>
-        <span className="muted">{t("pending.episodesToWatch", { count: items.length })}</span>
+        <span className="muted pending-head-count">{t("pending.episodesToWatch", { count: items.length })}</span>
         <div className="spacer" />
         {items.length > 0 && (
           <div className="lib-filter-bar">

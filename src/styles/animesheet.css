@@ -166,3 +166,65 @@
   border-top: 1px solid var(--border);
   background: var(--surface);
 }
+
+@media (max-width: 600px) {
+  .sheet-backdrop {
+    padding: 0;
+    align-items: flex-end;
+  }
+  .sheet-dialog {
+    width: 100%;
+    max-width: 100%;
+    height: 100%;
+    max-height: 100%;
+    border-radius: 0;
+    border: none;
+  }
+  .sheet-close {
+    top: max(var(--sp-2), env(safe-area-inset-top, 0px));
+    right: max(var(--sp-2), env(safe-area-inset-right, 0px));
+    width: 44px;
+    height: 44px;
+    font-size: var(--fs-lg);
+    z-index: 10;
+  }
+  .sheet-head {
+    padding: 0 var(--sp-3);
+  }
+  .sheet-body {
+    padding: var(--sp-3) var(--sp-3) calc(var(--sp-6) + env(safe-area-inset-bottom, 0px));
+  }
+  .sheet-actions {
+    padding: var(--sp-3) var(--sp-3) max(var(--sp-3), env(safe-area-inset-bottom, 0px));
+  }
+}
+
+html[data-platform="mobile"] .sheet-backdrop {
+  padding: 0;
+  align-items: flex-end;
+}
+html[data-platform="mobile"] .sheet-dialog {
+  width: 100%;
+  max-width: 100%;
+  height: 100%;
+  max-height: 100%;
+  border-radius: 0;
+  border: none;
+}
+html[data-platform="mobile"] .sheet-close {
+  top: max(var(--sp-2), env(safe-area-inset-top, 0px));
+  right: max(var(--sp-2), env(safe-area-inset-right, 0px));
+  width: 44px;
+  height: 44px;
+  font-size: var(--fs-lg);
+  z-index: 10;
+}
+html[data-platform="mobile"] .sheet-head {
+  padding: 0 var(--sp-3);
+}
+html[data-platform="mobile"] .sheet-body {
+  padding: var(--sp-3) var(--sp-3) calc(var(--sp-6) + env(safe-area-inset-bottom, 0px));
+}
+html[data-platform="mobile"] .sheet-actions {
+  padding: var(--sp-3) var(--sp-3) max(var(--sp-3), env(safe-area-inset-bottom, 0px));
+}

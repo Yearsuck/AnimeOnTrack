@@ -133,3 +133,43 @@
   .tutorial-backdrop, .tutorial-card, .tutorial-step { animation: none; }
   .tutorial-ring, .tutorial-dot { transition: none; }
 }
+
+@media (max-width: 600px) {
+  .tutorial-backdrop {
+    padding: var(--sp-3);
+    align-items: center;
+    justify-content: center;
+  }
+  .tutorial-card {
+    width: 100%;
+    max-width: 100%;
+    padding: var(--sp-4);
+    box-sizing: border-box;
+    margin: 0 auto;
+  }
+  .tutorial-title {
+    font-size: var(--fs-lg);
+  }
+  .tutorial-body {
+    font-size: var(--fs-base);
+  }
+}
+
+html[data-platform="mobile"] .tutorial-backdrop {
+  padding: var(--sp-3);
+  align-items: center;
+  justify-content: center;
+}
+html[data-platform="mobile"] .tutorial-card {
+  width: 100%;
+  max-width: 100%;
+  padding: var(--sp-4);
+  box-sizing: border-box;
+  margin: 0 auto;
+}
+html[data-platform="mobile"] .tutorial-title {
+  font-size: var(--fs-lg);
+}
+html[data-platform="mobile"] .tutorial-body {
+  font-size: var(--fs-base);
+}
