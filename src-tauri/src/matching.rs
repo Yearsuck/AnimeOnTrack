@@ -552,6 +552,7 @@ pub(crate) fn strip_season_markers(
 pub fn extract_season_number(normalized_title: &str) -> Option<u32> {
     let tokens: Vec<&str> = normalized_title.split_whitespace().collect();
     let is_marker = |t: &str| SEASON_MARKERS.contains(&t);
+    let is_explicit_marker = |t: &str| is_marker(t) && t != "the";
     let roman_num = |t: &str| ROMAN_NUMERALS.iter().position(|r| *r == t).map(|i| i as u32 + 2);
     let ordinal_num = |t: &str| -> Option<u32> {
         if let Some(n) = spelled_ordinal_num(t) {
@@ -566,6 +567,36 @@ pub fn extract_season_number(normalized_title: &str) -> Option<u32> {
             .then(|| head.parse().ok())
             .flatten()
     };
+
+    // Explicit marker/number pairs are authoritative even when a title also
+    // contains an unrelated Roman numeral ("Act II Temporada 2").
+    for i in 0..tokens.len().saturating_sub(1) {
+        if !is_explicit_marker(tokens[i]) {
+            continue;
+        }
+        if is_ascii_int(tokens[i + 1]) {
+            if let Ok(n) = tokens[i + 1].parse() {
+                return Some(n);
+            }
+        }
+        if let Some(n) = spelled_ordinal_num(tokens[i + 1]) {
+            return Some(n);
+        }
+    }
+    for i in 0..tokens.len().saturating_sub(1) {
+        if !is_explicit_marker(tokens[i + 1]) {
+            continue;
+        }
+        if let Some(n) = ordinal_num(tokens[i]) {
+            let multi_range = (i >= 1 && ordinal_num(tokens[i - 1]).is_some())
+                || (i >= 2
+                    && (tokens[i - 1] == "and" || tokens[i - 1] == "to" || tokens[i - 1] == "y")
+                    && ordinal_num(tokens[i - 2]).is_some());
+            if !multi_range {
+                return Some(n);
+            }
+        }
+    }
 
     let &last = tokens.last()?;
     if let Some(n) = roman_num(last) {
@@ -613,6 +644,17 @@ pub fn extract_season_number(normalized_title: &str) -> Option<u32> {
     } else {
         Some(1)
     }
+}
+
+/// Extract a season from a raw title, including a Roman numeral or integer
+/// immediately before a subtitle colon.
+pub(crate) fn extract_season_number_from_title(title: &str) -> Option<u32> {
+    let normalized = normalize_title(title);
+    extract_season_number(&normalized).or_else(|| {
+        title
+            .split_once(':')
+            .and_then(|(head, _)| extract_season_number(&normalize_title(head)))
+    })
 }
 
 /// The "franchise base" of a normalized title: the same title with any
@@ -950,8 +992,8 @@ pub fn best_match_season_aware(
 ///   claim to check and is consistent.
 pub fn season_consistent(series_title: &str, catalog_titles: &[&str]) -> bool {
     let series_norm = normalize_title(series_title);
-    let s = extract_season_number(&series_norm);
-    let seasons = || catalog_titles.iter().map(|&ct| extract_season_number(&normalize_title(ct)));
+    let s = extract_season_number_from_title(series_title);
+    let seasons = || catalog_titles.iter().map(|&ct| extract_season_number_from_title(ct));
     let is_final_season_entry = |ct: &str| {
         let norm = normalize_title(ct);
         extract_season_number(&norm).is_none() && norm.split_whitespace().any(|t| t == "final")
@@ -1973,6 +2015,41 @@ mod tests {
         assert!(season_consistent("Some Title", &[]));
         assert!(season_consistent("Temporada 1", &[]));
         assert!(season_consistent("Dr. STONE SCIENCE FUTURE Cour 3", &["Dr. Stone: Science Future Part 3"]));
+    }
+
+    #[test]
+    fn test_extract_season_number_explicit_pairs_anywhere_in_title() {
+        let cases = [
+            ("Clevatess Temporada 2: Majuu no Ou to Itsuwari no Yuusha Denshou", Some(2)),
+            ("Diamond no Ace: Act II Temporada 2", Some(2)),
+            ("Re:Zero 2nd Season", Some(2)),
+            ("Re:Zero Season 3: Shuugetsu-hen", Some(3)),
+            ("Jujutsu Kaisen 2nd Season: Shibuya Jihen", Some(2)),
+            ("Dr. STONE SCIENCE FUTURE Cour 3", Some(3)),
+            ("Haikyuu Second Season: Tokyo Arc", Some(2)),
+            ("Haikyuu Temporada Segunda: Tokyo Arc", Some(2)),
+            ("Kami no Tou: Ouji no Kikan", Some(1)),
+            ("Clevatess II: Majuu no Ou to Itsuwari no Yuusha Denshou", None),
+        ];
+        for (title, expected) in cases {
+            assert_eq!(extract_season_number(&normalize_title(title)), expected, "{title}");
+        }
+    }
+
+    #[test]
+    fn test_season_consistent_for_subtitle_seasons() {
+        assert!(!season_consistent(
+            "Clevatess Temporada 2: Majuu no Ou to Itsuwari no Yuusha Denshou",
+            &["Clevatess"]
+        ));
+        assert!(season_consistent(
+            "Clevatess Temporada 2: Majuu no Ou to Itsuwari no Yuusha Denshou",
+            &["Clevatess II: Majuu no Ou to Itsuwari no Yuusha Denshou"]
+        ));
+        assert!(!season_consistent(
+            "Diamond no Ace: Act II Temporada 2",
+            &["Diamond no Ace", "Ace of the Diamond"]
+        ));
     }
 
     #[test]
