@@ -28,7 +28,7 @@
     Tracks currently-airing anime, notifies you the second a new episode drops, downloads episodes for offline viewing, and unifies your progress across ten streaming sites — without an account or cloud lock-in.
     <br />
     <br />
-    <a href="https://github.com/Yearsuck/AnimeOnTrack/releases/latest"><strong>⬇ Download Installer (v0.23.0) »</strong></a>
+    <a href="https://github.com/Yearsuck/AnimeOnTrack/releases/latest"><strong>⬇ Download Installer (v0.24.0) »</strong></a>
     <br />
     <br />
     <a href="#about-the-project">About The Project</a>
@@ -69,9 +69,9 @@
     </li>
     <li><a href="#architecture--engineering-highlights">Architecture & Engineering Highlights</a></li>
     <li><a href="#project-layout">Project Layout</a></li>
-    <li><a href="#whats-new-in-v0230">What's New in v0.23.0</a></li>
-    <li><a href="#previous-release-v0220">Previous release: v0.22.0</a></li>
-    <li><a href="#previous-releases-v0110-to-v0210-highlights">Previous releases: v0.11.0 to v0.21.0 highlights</a></li>
+    <li><a href="#whats-new-in-v0240">What's New in v0.24.0</a></li>
+    <li><a href="#previous-release-v0230">Previous release: v0.23.0</a></li>
+    <li><a href="#previous-releases-v0110-to-v0220-highlights">Previous releases: v0.11.0 to v0.22.0 highlights</a></li>
     <li><a href="#previous-release-v0100">Previous release: v0.10.0</a></li>
     <li><a href="#previous-release-v090">Previous release: v0.9.0</a></li>
     <li><a href="#previous-release-v080">Previous release: v0.8.0</a></li>
@@ -354,7 +354,22 @@ AnimeOnTrack/
 
 ---
 
-## What's New in v0.23.0
+## What's New in v0.24.0
+
+* **Statistics you can trust**: "pending" no longer counts series marked «Ya lo vi», the dusty list only shows shows you actually left half-watched (grouped by franchise, so a finished season 1 is not "abandoned" while you watch season 2), seasons watched on different sites now add up without double-counting mirrors or sites that number a whole show 1..25, an AniList duration of 0 no longer means 0 minutes, and the year list stays in order. Checked franchise by franchise against a real library.
+* **Estimates are marked as estimates**: watch time shows "≈" and the share that uses default episode lengths, «Ya lo vi» episodes and minutes are listed apart from what you really marked, next-episode dates extrapolated by a week carry "≈" and an explanation, and the popularity meter is now your percentile against the whole local AniList catalog instead of an arbitrary 0-10 scale.
+* **Right season, right data**: titles like "… Temporada 2: <subtitle>" or "Act II Temporada 2" are read as the season they are, and series that had been linked to their franchise's first season are taken off it at startup (relinked to the right season when unambiguous).
+* **One countdown, honest numbers**: every screen shows the same next-episode countdown, the series page counts seen episodes against those that exist plus the planned total ("4 / 4 (12)"), movies show their runtime instead of "min per episode", the activity heatmap labels months on the right week, and decimals use your language's separator.
+* **Smoother loading**: the scan and catalog-sync bars fill smoothly and enter and leave instead of popping, the catalog sync no longer shows a percentage of an estimated total, busy buttons show a spinner, and the scan bar no longer reads "completed" while covers are still downloading.
+* **Android groundwork**: the app now builds for Android, with its own off-screen scraper, the system back button, and a phone layout (bottom navigation, safe areas). No Android installer is published yet.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+---
+
+<a id="previous-release-v0230"></a>
+
+## Previous release: v0.23.0
 
 * **Open-source ad blocker**: the viewer windows now run Brave's `adblock` engine with bundled EasyList, EasyList Spanish, EasyPrivacy and uBlock filter lists, so pop-ups, pop-unders and tracker frames from the streaming sites are cancelled before they load. The site, its video hosts and AniList are always allowed. It can be switched off in Settings (Player), and the lists are a snapshot with refresh steps in `src-tauri/filters/README.md`.
 * **No more black screen on AniList**: the clean player no longer runs on anilist.co, where its generic selectors hid the whole page behind a black layer. Viewer windows also cancel navigations to known ad hosts.
@@ -366,23 +381,11 @@ AnimeOnTrack/
 
 ---
 
-<a id="previous-release-v0220"></a>
+<a id="previous-releases-v0110-to-v0220-highlights"></a>
 
-## Previous release: v0.22.0
+## Previous releases: v0.11.0 to v0.22.0 highlights
 
-* **Next-episode timing from AniList**: the series screen and the airing grid now read the same AniList date (ani.zip is only a fallback). The date is refreshed every 30 minutes and when the window regains focus (45-minute throttle, with a 5-minute backoff if AniList fails), shows whose episode just aired are refreshed first, and a RELEASING show whose date passed less than a week ago keeps its place in the weekly grid instead of vanishing until the next refresh.
-* **More precise statistics**: "Ya lo vi" on a show that is still airing now credits the episodes that have already aired (`next episode - 1`) instead of zero, the completion percentage no longer reads 100% when the site lists fewer episodes than AniList says have aired, and a movie in a franchise no longer prices every remaining TV episode at the movie's runtime.
-* **Trailer on the airing detail**: opening an airing anime now shows its AniList trailer, like the catalog sheet already did.
-* **Cleaner players**: 18 more ad, pop-under and tracker hosts are blocked (each one found in a stored page of the sites or their embeds), low-level click-hijack layers are neutralised, the cleaner no longer gives up on pages that re-render while you switch servers, and the gogoanime, jkanime and animeland selectors are tighter.
-
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
-
----
-
-<a id="previous-releases-v0110-to-v0210-highlights"></a>
-
-## Previous releases: v0.11.0 to v0.21.0 highlights
-
+* **Next-episode timing from AniList**: the series screen and the airing grid read the same AniList date, refreshed every 30 minutes and on focus; plus the AniList trailer on the airing detail (v0.22.0).
 * **Expanded site coverage**: Added full streaming adapters for Aniwaves, MonosChinos, AnimeFenix, and AnimoraTV, expanding catalog tracking to 10 streaming providers (v0.16.0).
 * **Multi-site download fallback**: Downloads automatically fall back to identical episodes across sibling sites when a source fails or lags (v0.12.0, v0.12.1).
 * **Instant local playback**: The pending queue plays downloaded `.mp4` and `.mkv` files directly when clicking Watch (v0.11.0).
