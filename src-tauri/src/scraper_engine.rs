@@ -1,8 +1,16 @@
 use anyhow::{anyhow, Result};
+// Android cannot open hidden windows: there every entry point below hands off to
+// `android` (an off-screen WebView plugin), and the window machinery is not compiled.
+#[cfg(not(target_os = "android"))]
 use std::collections::VecDeque;
+#[cfg(not(target_os = "android"))]
 use std::sync::{LazyLock, Mutex};
-use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+#[cfg(not(target_os = "android"))]
+use std::time::Instant;
+use std::time::Duration;
+use tauri::{AppHandle, Emitter, WebviewWindow};
+#[cfg(not(target_os = "android"))]
+use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
 /// Process-wide cap on concurrent scraper windows, shared by every caller
 /// (refresh()'s own chunking, discover_swipe_card, decide_swipe, etc). Each
@@ -21,13 +29,16 @@ use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindo
 /// same site, and higher counts previously correlated with the
 /// `ExecuteScript timed out` failures above) — if stalls/timeouts or mirror
 /// blocks start showing up, this is the first thing to dial back down.
+#[cfg(not(target_os = "android"))]
 const SCRAPE_CONCURRENCY: usize = 4;
+#[cfg(not(target_os = "android"))]
 static SCRAPE_PERMITS: LazyLock<tokio::sync::Semaphore> =
     LazyLock::new(|| tokio::sync::Semaphore::new(SCRAPE_CONCURRENCY));
 
 /// How long to wait for `WebviewWindowBuilder::build()` before giving up —
 /// see `build_webview_window_with_timeout`'s doc comment for why this needs
 /// a dedicated-thread timeout rather than an `async` one.
+#[cfg(not(target_os = "android"))]
 const WINDOW_BUILD_TIMEOUT: Duration = Duration::from_secs(20);
 
 // ── Window-activity ring ──────────────────────────────────────────────────────
@@ -43,11 +54,13 @@ const WINDOW_BUILD_TIMEOUT: Duration = Duration::from_secs(20);
 /// Maximum number of activity entries retained in the ring. Older entries are
 /// silently dropped when the ring is full so memory use is bounded regardless
 /// of how long the app runs.
+#[cfg(not(target_os = "android"))]
 const ACTIVITY_RING_CAP: usize = 8;
 
 /// Ring buffer of recent window events, protected by a plain `std::sync::Mutex`
 /// (not tokio's) because `note_window_activity` is called from both async
 /// tasks and the synchronous watchdog thread.
+#[cfg(not(target_os = "android"))]
 static WINDOW_ACTIVITY: LazyLock<Mutex<VecDeque<String>>> =
     LazyLock::new(|| Mutex::new(VecDeque::with_capacity(ACTIVITY_RING_CAP)));
 
@@ -62,6 +75,7 @@ static WINDOW_ACTIVITY: LazyLock<Mutex<VecDeque<String>>> =
 /// build-start (not the full URL, which can be very long), or a status word
 /// like "build ok" / "build timeout". A millisecond timestamp is prepended
 /// automatically so entries are sortable without a real logger.
+#[cfg(not(target_os = "android"))]
 pub(crate) fn note_window_activity(msg: &str) {
     use std::time::{SystemTime, UNIX_EPOCH};
     let ms = SystemTime::now()
@@ -79,6 +93,7 @@ pub(crate) fn note_window_activity(msg: &str) {
 
 /// Join all activity ring entries with a semicolon, or return `"none"` when
 /// the ring is empty. Called by the watchdog when it writes a stall log line.
+#[cfg(not(target_os = "android"))]
 pub fn describe_window_activity() -> String {
     match WINDOW_ACTIVITY.lock() {
         Ok(ring) if ring.is_empty() => "none".to_string(),
@@ -101,10 +116,12 @@ pub fn describe_window_activity() -> String {
 /// `fetch_html_with_script_inner` and `fetch_cover_image_inner`). Protected
 /// by a `tokio::sync::Mutex` so it can be awaited without blocking a tokio
 /// worker thread while the sleep runs inside the async fn.
+#[cfg(not(target_os = "android"))]
 static LAST_BUILD_START: LazyLock<tokio::sync::Mutex<Option<Instant>>> =
     LazyLock::new(|| tokio::sync::Mutex::new(None));
 
 /// Minimum gap between consecutive window build starts.
+#[cfg(not(target_os = "android"))]
 const BUILD_SPACING: Duration = Duration::from_millis(250);
 
 /// Compute how much time still needs to elapse before the next build is
@@ -115,6 +132,7 @@ const BUILD_SPACING: Duration = Duration::from_millis(250);
 ///
 /// Returns `Duration::ZERO` when `last` is `None` (no previous build) or
 /// when enough time has already passed.
+#[cfg(not(target_os = "android"))]
 fn remaining_spacing(last: Option<Instant>, now: Instant, min_gap: Duration) -> Duration {
     let Some(last) = last else { return Duration::ZERO };
     let elapsed = now.duration_since(last);
@@ -129,6 +147,7 @@ fn remaining_spacing(last: Option<Instant>, now: Instant, min_gap: Duration) -> 
 /// The lock is held for the duration of the sleep so that two concurrent
 /// callers both see each other's reservation and don't both start at the same
 /// time — this is intentional back-pressure, not a bug.
+#[cfg(not(target_os = "android"))]
 async fn space_window_builds() {
     let mut guard = LAST_BUILD_START.lock().await;
     let wait = remaining_spacing(*guard, Instant::now(), BUILD_SPACING);
@@ -188,6 +207,7 @@ fn emit_stage(app: &AppHandle, stage: &str) {
 /// returns, the queued main-thread closure is leaked (there is no way to
 /// cancel it once posted), but the caller gets its timeout error back
 /// immediately.
+#[cfg(not(target_os = "android"))]
 fn build_webview_window_with_timeout<F>(app: &AppHandle, build: F, timeout: Duration) -> Result<WebviewWindow>
 where
     F: FnOnce() -> tauri::Result<WebviewWindow> + Send + 'static,
@@ -275,6 +295,7 @@ pub fn is_safe_external_url(raw: &str) -> bool {
 /// Helper for WebView navigation guard: allows safe external HTTP/HTTPS URLs,
 /// as well as standard browser pseudo-schemes (about:blank, data:, blob:)
 /// needed for internal operations like Cloudflare handling or canvas reading.
+#[cfg(not(target_os = "android"))]
 pub fn navigation_allowed(raw: &str) -> bool {
     let Ok(u) = url::Url::parse(raw) else { return false };
     match u.scheme() {
@@ -302,6 +323,7 @@ fn is_link_local_v6(ip: &std::net::Ipv6Addr) -> bool {
 /// NOT via page-side Tauri IPC. Tauri does not inject its IPC into external
 /// remote pages (and exposing it to an untrusted scraped site would be a
 /// security hole), so the host-driven approach is the only correct one here.
+#[cfg(not(target_os = "android"))]
 pub async fn fetch_html_with_script(
     app: &AppHandle,
     url: &str,
@@ -329,6 +351,18 @@ pub async fn fetch_html_with_script(
     }
 }
 
+/// Android: no hidden windows exist there (a scraper window covers the whole app), so
+/// the page is rendered by the `webfetch` plugin's off-screen WebView.
+#[cfg(target_os = "android")]
+pub async fn fetch_html_with_script(
+    app: &AppHandle,
+    url: &str,
+    extra_script: Option<&str>,
+) -> Result<ScrapeResult> {
+    android::fetch_html_with_script(app, url, extra_script).await
+}
+
+#[cfg(not(target_os = "android"))]
 async fn fetch_html_with_script_inner(
     app: &AppHandle,
     label: &str,
@@ -410,6 +444,7 @@ async fn fetch_html_with_script_inner(
 /// real content, then extract the full HTML. Condition-based waiting rather
 /// than a fixed sleep, because the challenge clears in a variable amount of
 /// time.
+#[cfg(not(target_os = "android"))]
 async fn extract_when_ready(
     app: &AppHandle,
     window: &WebviewWindow,
@@ -545,6 +580,7 @@ len: document.body ? document.body.innerHTML.length : -1})";
 /// but this guards the symptom (one series' cover stalling the whole refresh
 /// cycle forever) regardless of the exact cause. On timeout the hidden window
 /// is closed by label to prevent leaks.
+#[cfg(not(target_os = "android"))]
 pub async fn fetch_cover_image(app: &AppHandle, image_url: &str) -> Result<String> {
     const OUTER_TIMEOUT: Duration = Duration::from_secs(30);
     let label = format!("cover-{}", uuid_like());
@@ -560,6 +596,14 @@ pub async fn fetch_cover_image(app: &AppHandle, image_url: &str) -> Result<Strin
     }
 }
 
+/// Android: no canvas grab (it needs a window). Fails at once; callers fall back to
+/// the direct reqwest download / keep the remote URL.
+#[cfg(target_os = "android")]
+pub async fn fetch_cover_image(_app: &AppHandle, image_url: &str) -> Result<String> {
+    Err(anyhow!("cover canvas fetch is not supported on Android ({image_url})"))
+}
+
+#[cfg(not(target_os = "android"))]
 async fn fetch_cover_image_inner(app: &AppHandle, label: &str, image_url: &str) -> Result<String> {
     if !is_safe_external_url(image_url) {
         return Err(anyhow!("refusing to navigate to unsafe cover url: {image_url}"));
@@ -696,7 +740,7 @@ pub(crate) async fn eval(window: &WebviewWindow, script: &str, timeout_secs: u64
             #[cfg(not(windows))]
             {
                 let _ = &_platform;
-                let _ = tx.send(Err("scraping is only implemented on Windows".into()));
+                let _ = tx.send(Err("running scripts in a window is only implemented on Windows".into()));
             }
         })
         .map_err(|e| anyhow!("with_webview failed: {e}"))?;
@@ -709,6 +753,10 @@ pub(crate) async fn eval(window: &WebviewWindow, script: &str, timeout_secs: u64
     }
 }
 
+#[cfg(any(test, target_os = "android"))]
+mod android;
+
+#[cfg(not(target_os = "android"))]
 fn uuid_like() -> u128 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()

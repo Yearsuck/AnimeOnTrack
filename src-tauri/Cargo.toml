@@ -54,6 +54,11 @@ getrandom = "0.3"
 tauri-plugin-updater = "~2.10.1"
 tauri-plugin-process = "~2.3.1"
 
+# Android-only: the scraper's backend there (an off-screen android.webkit.WebView driven
+# from Kotlin), since Android cannot open hidden windows. Local plugin crate.
+[target.'cfg(target_os = "android")'.dependencies]
+tauri-plugin-webfetch = { path = "plugins/webfetch" }
+
 # Windows-only: drive WebView2 ExecuteScript host-side to extract rendered HTML
 # from external (Cloudflare-protected) pages without exposing app IPC to them.
 [target.'cfg(windows)'.dependencies]
