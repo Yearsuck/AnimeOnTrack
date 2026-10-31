@@ -1597,7 +1597,6 @@ textarea.input {
   font-size: var(--fs-xs);
   margin-top: 2px;
 }
-
 /* seen checkbox: interruptible transition for the base states, a one-shot
    pop keyframe only for the moment it becomes checked. */
 .check {
@@ -1723,24 +1722,150 @@ textarea.input {
   font-variant-numeric: tabular-nums;
   flex-shrink: 0;
 }
-progress.scanbar-track {
-  -webkit-appearance: none;
-  appearance: none;
+
+/* ---------- Progress track ---------- */
+.ptrack {
+  position: relative;
   width: 100%;
   height: 6px;
-  border: none;
+  background: var(--surface-3);
   border-radius: var(--radius-round);
   overflow: hidden;
-  background: var(--surface-3);
 }
-progress.scanbar-track::-webkit-progress-bar {
-  background: var(--surface-3);
-  border-radius: var(--radius-round);
-}
-progress.scanbar-track::-webkit-progress-value {
+.ptrack-fill {
+  position: absolute;
+  inset: 0;
   background: var(--accent);
   border-radius: var(--radius-round);
-  transition: width var(--dur) var(--ease);
+  transform-origin: left;
+  transition: transform var(--dur-slow) var(--ease-out);
+}
+.ptrack-sweep {
+  display: none;
+}
+.ptrack[data-mode="indeterminate"] .ptrack-fill {
+  opacity: 0;
+}
+.ptrack[data-mode="indeterminate"] .ptrack-sweep {
+  display: block;
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 35%;
+  background: var(--accent);
+  border-radius: var(--radius-round);
+  animation: ptrack-sweep 1.2s linear infinite;
+}
+@keyframes ptrack-sweep {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(300%);
+  }
+}
+
+/* ---------- Presence ---------- */
+.presence {
+  opacity: 1;
+  transform: translateY(0);
+  transition: opacity var(--dur) var(--ease-out), transform var(--dur) var(--ease-out);
+}
+@starting-style {
+  .presence {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+.presence[data-leaving] {
+  opacity: 0;
+  transform: translateY(-4px);
+  pointer-events: none;
+  transition: opacity var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
+}
+
+/* ---------- Busy label + spinner ---------- */
+.busy-label {
+  display: inline-grid;
+  align-items: center;
+  justify-items: center;
+}
+.busy-label-idle,
+.busy-label-busy {
+  grid-area: 1 / 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  transition: opacity var(--dur-fast) var(--ease);
+}
+.busy-label-busy {
+  opacity: 0;
+  pointer-events: none;
+}
+.busy-label[data-busy] .busy-label-idle {
+  opacity: 0;
+  pointer-events: none;
+}
+.busy-label[data-busy] .busy-label-busy {
+  opacity: 1;
+  pointer-events: auto;
+}
+.btn[aria-busy="true"] {
+  cursor: wait;
+}
+.btn[aria-busy="true"]:disabled {
+  opacity: 0.85;
+}
+.spinner {
+  display: inline-block;
+  width: 0.9em;
+  height: 0.9em;
+  border-radius: var(--radius-round);
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  animation: spin 0.8s linear infinite;
+  box-sizing: border-box;
+  flex-shrink: 0;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ---------- Motion reduction for progress, presence & spinner ---------- */
+@media (prefers-reduced-motion: reduce) {
+  .ptrack-fill {
+    transition: none !important;
+  }
+  .ptrack[data-mode="indeterminate"] .ptrack-sweep {
+    animation: none;
+    width: 100%;
+    transform: none;
+    opacity: 0.35;
+  }
+  .presence {
+    transform: none;
+    transition: opacity var(--dur) var(--ease-out);
+    transition-duration: var(--dur) !important;
+  }
+  @starting-style {
+    .presence {
+      opacity: 0;
+      transform: none;
+    }
+  }
+  .presence[data-leaving] {
+    transform: none;
+    transition: opacity var(--dur-fast) var(--ease-out);
+    transition-duration: var(--dur-fast) !important;
+  }
+  .spinner {
+    animation: none;
+    opacity: 0.6;
+  }
 }
 
 /* ---------- Settings ---------- */
@@ -2397,6 +2522,7 @@ progress.scanbar-track::-webkit-progress-value {
 }
 .detail-progress {
   margin-top: var(--sp-3);
+
   max-width: 420px;
 }
 .detail-progress-label {
@@ -2640,11 +2766,11 @@ progress.scanbar-track::-webkit-progress-value {
 }
 .catalog-sync-label {
   font-size: var(--fs-sm);
-  margin-bottom: var(--sp-1);
+  margin-bottom: var(--sp-2);
 }
 .catalog-sync-note {
   font-size: var(--fs-sm);
-  margin-top: var(--sp-1);
+  margin-top: var(--sp-2);
 }
 /* Uniform width for the filter-bar selects, replacing four ad hoc widths
    (150 / 170 / 170 / 190) — they read as one control group now. */
@@ -3197,6 +3323,7 @@ select.settings-select {
 }
 
 /* Ring arc grow-in transition, previously an inline literal duration. */
+
 .ring-arc {
   transition: stroke-dasharray var(--dur-slow) var(--ease-out);
 }

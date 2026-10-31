@@ -4,6 +4,7 @@ import { Onboarding } from "./views/Onboarding";
 import { AiringGrid } from "./views/AiringGrid";
 import { Pending } from "./views/Pending";
 import { ProgressBar } from "./views/ProgressBar";
+import { BusyLabel } from "./components/BusyLabel";
 import { WindowControls } from "./views/WindowControls";
 import { ShortcutsOverlay } from "./views/ShortcutsOverlay";
 import { UpdateBanner } from "./views/UpdateBanner";
@@ -573,8 +574,8 @@ export default function App() {
           {tab("settings", t("nav.settings"))}
         </div>
         <div className="spacer" data-tauri-drag-region />
-        <button className="btn btn-primary" onClick={doRefresh} disabled={refreshing}>
-          {refreshing ? t("common.refreshing") : t("common.refresh")}
+        <button className="btn btn-primary" onClick={doRefresh} disabled={refreshing} aria-busy={refreshing}>
+          <BusyLabel busy={refreshing} idle={t("common.refresh")} busyText={t("common.refreshing")} />
         </button>
         <WindowControls />
       </div>

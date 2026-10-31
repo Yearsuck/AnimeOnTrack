@@ -11,6 +11,7 @@ import {
   setSitePriority,
 } from "../../api";
 import { useT } from "../../i18n";
+import { BusyLabel } from "../../components/BusyLabel";
 import type { SiteSummary } from "../../types";
 
 interface SourcesSectionProps {
@@ -257,8 +258,8 @@ export function SourcesSection({ onSiteChanged }: SourcesSectionProps) {
                 placeholder="https://..."
                 aria-label={t("settings.addNewSiteLabel")}
               />
-              <button className="btn btn-primary" onClick={addFirstUrl} disabled={busy}>
-                {busy ? t("common.scanning") : t("common.scan")}
+              <button className="btn btn-primary" onClick={addFirstUrl} disabled={busy} aria-busy={busy}>
+                <BusyLabel busy={busy} idle={t("common.scan")} busyText={t("common.scanning")} />
               </button>
             </div>
           </div>
@@ -277,8 +278,8 @@ export function SourcesSection({ onSiteChanged }: SourcesSectionProps) {
               <button className="btn" onClick={saveMirrors} disabled={savingMirrors}>
                 {savingMirrors ? t("settings.saving") : t("settings.saveMirrors")}
               </button>
-              <button className="btn btn-primary" onClick={doRescan} disabled={busy}>
-                {busy ? t("common.scanning") : t("settings.rescan")}
+              <button className="btn btn-primary" onClick={doRescan} disabled={busy} aria-busy={busy}>
+                <BusyLabel busy={busy} idle={t("settings.rescan")} busyText={t("common.scanning")} />
               </button>
             </div>
           </div>
