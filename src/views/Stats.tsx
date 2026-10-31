@@ -54,7 +54,7 @@ export function Stats({
         item.seen_episodes > 0
           ? item.seen_episodes
           : item.watched_externally
-          ? Math.max(item.total_episodes, 1)
+          ? Math.max(item.total_episodes, 0)
           : 0;
       map.set(item.series.id, eps);
     }

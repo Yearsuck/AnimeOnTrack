@@ -444,7 +444,7 @@ export const es = {
 
   // Stats.tsx
   "stats.episodesWatched": "Episodios vistos",
-  "stats.episodesWatchedHelp": "{real} con seguimiento real · {external} estimados de «Ya vistas»",
+  "stats.episodesWatchedHelp": "+{external} de «Ya lo vi»",
   "stats.distinctAnime": "Animes vistos",
   "stats.distinctAnimeHelp": "temporadas contadas como una · incluye «Ya vistas»",
   "stats.titlesWithoutEpisodeData": "{n} títulos de «Ya vistas» sin número de episodios conocido no suman episodios ni tiempo.",
@@ -487,7 +487,9 @@ export const es = {
   // StatsInsights.tsx
   "stats.insightsHeading": "Resumen",
   "stats.timeWatched": "Tiempo visto (estimado)",
-  "stats.timeWatchedHelp": "estimación: 24 min/episodio (100 películas) · {done} de {total} «Ya vistas» con datos",
+  "stats.timeWatchedHelp": "{pct} % estimado con duraciones por defecto",
+  "stats.timeWatchedExact": "duraciones de AniList",
+  "stats.timeWatchedExternal": "+{time} de «Ya lo vi» (estimado)",
   "stats.completion": "Progreso global",
   "stats.avgEpisodes": "Media de episodios por serie",
   "stats.completionSpeed": "Velocidad media de finalización",
@@ -529,7 +531,8 @@ export const es = {
   "stats.popularityBiasLabel": "Promedio vs Underground",
   "stats.popularityBiasLow": "Underground",
   "stats.popularityBiasHigh": "Mainstream",
-  "stats.popularityBiasHelp": "Promedio de popularidad en AniList de tus series seguidas (enlazadas al catálogo), normalizado 0–10. Menos de 3 series con datos = sin puntuación. 0 = solo joyas ocultas, 10 = solo éxitos masivos.",
+  "stats.popularityPercentile": "más popular que el {pct} % del catálogo",
+  "stats.popularityBiasHelp": "Posición de la popularidad media en AniList de tus series seguidas (enlazadas al catálogo) frente a todo el catálogo local: el % de títulos menos populares. Menos de 3 series con datos = sin puntuación.",
   "stats.backlog": "Para ponerte al día",
   "stats.backlogEpisodes": "{n} episodios pendientes",
   "stats.backlogEpisodesOne": "{n} episodio pendiente",

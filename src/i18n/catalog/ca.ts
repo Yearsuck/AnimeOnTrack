@@ -440,7 +440,7 @@ export const ca: Messages = {
 
   // Stats.tsx
   "stats.episodesWatched": "Episodis vistos",
-  "stats.episodesWatchedHelp": "{real} amb seguiment real · {external} estimats de «Ja vistes»",
+  "stats.episodesWatchedHelp": "+{external} de «Ja ho he vist»",
   "stats.distinctAnime": "Animes vistos",
   "stats.distinctAnimeHelp": "temporades comptades com una · inclou «Ja vistes»",
   "stats.titlesWithoutEpisodeData": "{n} títols de «Ja vistes» sense nombre d'episodis conegut no sumen episodis ni temps.",
@@ -483,7 +483,9 @@ export const ca: Messages = {
   // StatsInsights.tsx
   "stats.insightsHeading": "Resum",
   "stats.timeWatched": "Temps vist (estimat)",
-  "stats.timeWatchedHelp": "estimació: 24 min/episodi (100 pel·lícules) · {done} de {total} «Ja vistes» amb dades",
+  "stats.timeWatchedHelp": "{pct} % estimat amb durades per defecte",
+  "stats.timeWatchedExact": "durades d'AniList",
+  "stats.timeWatchedExternal": "+{time} de «Ja l'he vist» (estimat)",
   "stats.completion": "Progrés global",
   "stats.avgEpisodes": "Mitjana d'episodis per sèrie",
   "stats.completionSpeed": "Velocitat mitjana de finalització",
@@ -525,7 +527,8 @@ export const ca: Messages = {
   "stats.popularityBiasLabel": "Mitjana vs Underground",
   "stats.popularityBiasLow": "Underground",
   "stats.popularityBiasHigh": "Mainstream",
-  "stats.popularityBiasHelp": "Mitjana de popularitat a AniList de les teves sèries seguides (enllaçades al catàleg), normalitzada 0–10. menys de 3 sèries amb dades = sense puntuació. 0 = només joves amagades, 10 = només èxits massius.",
+  "stats.popularityPercentile": "més popular que el {pct} % del catàleg",
+  "stats.popularityBiasHelp": "Posició de la popularitat mitjana a AniList de les teves sèries seguides (enllaçades al catàleg) respecte de tot el catàleg local: el % de títols menys populars. Menys de 3 sèries amb dades = sense puntuació.",
   "stats.backlog": "Per posar-te al dia",
   "stats.backlogEpisodes": "{n} episodis pendents",
   "stats.backlogEpisodesOne": "{n} episodi pendent",

@@ -160,6 +160,7 @@ export interface EraCount {
 export interface WatchInsights {
   estimated_minutes_tracked: number;
   estimated_minutes_external: number;
+  estimated_minutes_share: number;
   external_titles_estimated: number;
   external_titles_total: number;
   avg_episodes_per_series: number;
@@ -180,6 +181,7 @@ export interface WatchInsights {
 export interface PopularityBias {
   average_popularity: number | null;
   normalized_score: number | null;
+  percentile: number | null;
 }
 
 export interface YearlyActivity {

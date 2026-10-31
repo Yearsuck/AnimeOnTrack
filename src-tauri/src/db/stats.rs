@@ -415,6 +415,7 @@ fn merge_into_parent_franchises(
     merge_into_parent_groups(groups, parent_of, |existing, rollup| {
         existing.real_seen += rollup.real_seen;
         existing.real_minutes += rollup.real_minutes;
+        existing.real_minutes_estimated += rollup.real_minutes_estimated;
         existing.has_external |= rollup.has_external;
         if rollup.external_episodes > existing.external_episodes {
             existing.external_episodes = rollup.external_episodes;
@@ -481,6 +482,8 @@ pub(crate) struct FranchiseRollup {
     pub real_seen: i64,
     /// Minutes for exactly those episodes.
     pub real_minutes: i64,
+    /// Real minutes that used fallback/default duration rather than known AniList duration.
+    pub real_minutes_estimated: i64,
     /// Largest catalog episode count among members marked "Ya lo vi" that have
     /// no real seen episodes of their own. 0 when there is no such member.
     pub external_episodes: i64,
@@ -557,10 +560,10 @@ impl FranchiseRollup {
 struct RollupBuilder {
     rollup: FranchiseRollup,
     /// source_id -> (seen episodes, their minutes), every member row summed
-    per_site: HashMap<i64, (i64, i64)>,
+    per_site: HashMap<i64, (i64, i64, i64)>,
     /// canon_group -> canonical episode -> its minutes (the longest rate
     /// among the rows marking it, so row order never decides it)
-    distinct: HashMap<String, HashMap<String, i64>>,
+    distinct: HashMap<String, HashMap<String, (i64, bool)>>,
     /// canon_group -> its AniList episode count, when known (> 0)
     catalog_total: HashMap<String, i64>,
 }
@@ -572,6 +575,7 @@ impl RollupBuilder {
                 display_title,
                 real_seen: 0,
                 real_minutes: 0,
+                real_minutes_estimated: 0,
                 external_episodes: 0,
                 external_per_episode: 0,
                 has_external: false,
@@ -587,20 +591,27 @@ impl RollupBuilder {
         // linked to a synced catalog row that has a usable one; otherwise
         // estimate from the format, AniList's first (raw, so TV_SHORT keeps
         // its short-episode estimate) and the site's own kind as the fallback.
-        let per_episode = known_duration(row.catalog_duration).unwrap_or_else(|| {
+        let duration_opt = known_duration(row.catalog_duration);
+        let is_default = duration_opt.is_none();
+        let per_episode = duration_opt.unwrap_or_else(|| {
             minutes_per_episode(row.catalog_format.as_deref().or(row.kind.as_deref()))
         });
-        let bucket = self.per_site.entry(row.source_id).or_insert((0, 0));
+        let bucket = self.per_site.entry(row.source_id).or_insert((0, 0, 0));
         bucket.0 += row.seen_count;
         bucket.1 += row.seen_count * per_episode;
+        if is_default {
+            bucket.2 += row.seen_count * per_episode;
+        }
         if let Some(total) = row.catalog_episodes.filter(|&n| n > 0) {
             let cap = self.catalog_total.entry(row.canon_group.clone()).or_insert(total);
             *cap = (*cap).max(total);
         }
         let episodes = self.distinct.entry(row.canon_group.clone()).or_default();
         for label in &row.seen_episodes {
-            let minutes = episodes.entry(label.clone()).or_insert(per_episode);
-            *minutes = (*minutes).max(per_episode);
+            let entry = episodes.entry(label.clone()).or_insert((per_episode, is_default));
+            if per_episode > entry.0 || (per_episode == entry.0 && !is_default && entry.1) {
+                *entry = (per_episode, is_default);
+            }
         }
 
         // A "Ya lo vi" row contributes its catalog total regardless of
@@ -635,28 +646,41 @@ impl RollupBuilder {
     /// underlying episodes. Minutes follow whichever reading wins; a capped
     /// show's episodes are priced at its longest per-episode rate.
     fn finish(mut self) -> FranchiseRollup {
-        let (site_seen, site_minutes) =
-            self.per_site.values().copied().max_by_key(|&(seen, _)| seen).unwrap_or((0, 0));
-        let (mut distinct_seen, mut distinct_minutes) = (0, 0);
+        let (site_seen, site_minutes, site_estimated) =
+            self.per_site.values().copied().max_by_key(|&(seen, _, _)| seen).unwrap_or((0, 0, 0));
+        let (mut distinct_seen, mut distinct_minutes, mut distinct_estimated) = (0, 0, 0);
         for (group, episodes) in &self.distinct {
             let count = episodes.len() as i64;
             match self.catalog_total.get(group) {
                 Some(&cap) if count > cap => {
                     distinct_seen += cap;
-                    distinct_minutes += cap * episodes.values().copied().max().unwrap_or(0);
+                    let max_entry = episodes.values().copied().max_by_key(|&(m, is_def)| (m, !is_def));
+                    if let Some((max_m, is_def)) = max_entry {
+                        distinct_minutes += cap * max_m;
+                        if is_def {
+                            distinct_estimated += cap * max_m;
+                        }
+                    }
                 }
                 _ => {
                     distinct_seen += count;
-                    distinct_minutes += episodes.values().sum::<i64>();
+                    for &(m, is_def) in episodes.values() {
+                        distinct_minutes += m;
+                        if is_def {
+                            distinct_estimated += m;
+                        }
+                    }
                 }
             }
         }
         if distinct_seen > site_seen {
             self.rollup.real_seen = distinct_seen;
             self.rollup.real_minutes = distinct_minutes;
+            self.rollup.real_minutes_estimated = distinct_estimated;
         } else {
             self.rollup.real_seen = site_seen;
             self.rollup.real_minutes = site_minutes;
+            self.rollup.real_minutes_estimated = site_estimated;
         }
         self.rollup
     }
@@ -1828,6 +1852,12 @@ impl Db {
         let estimated_minutes_tracked: i64 = rollups.iter().map(|r| r.real_minutes).sum();
         let estimated_minutes_external: i64 =
             rollups.iter().map(|r| r.extra_external_minutes()).sum();
+        let estimated_tracked_default: i64 = rollups.iter().map(|r| r.real_minutes_estimated).sum();
+        let estimated_minutes_share = if estimated_minutes_tracked > 0 {
+            estimated_tracked_default as f64 / estimated_minutes_tracked as f64
+        } else {
+            0.0
+        };
         // "Estimated" means a catalog episode count was available for the
         // franchise, not that it happened to exceed the real marks. Counting
         // only the ones with a nonzero remainder made the "X of Y" ratio
@@ -2162,6 +2192,7 @@ impl Db {
         Ok(crate::models::WatchInsights {
             estimated_minutes_tracked,
             estimated_minutes_external,
+            estimated_minutes_share,
             external_titles_estimated,
             external_titles_total,
             avg_episodes_per_series,
@@ -2687,6 +2718,7 @@ impl Db {
             return Ok(crate::models::PopularityBias {
                 average_popularity: None,
                 normalized_score: None,
+                percentile: None,
             });
         }
 
@@ -2699,9 +2731,24 @@ impl Db {
         // break the 0-10 slider. Clamp to the scale's own bounds.
         let normalized = (average / 70_000.0).min(10.0);
 
+        let (count_below, total_catalog): (i64, i64) = self.conn.query_row(
+            "SELECT
+                (SELECT COUNT(*) FROM anilist_catalog WHERE popularity < ?1),
+                (SELECT COUNT(*) FROM anilist_catalog WHERE popularity IS NOT NULL)",
+            [average],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+
+        let percentile = if total_catalog > 0 {
+            (count_below as f64 / total_catalog as f64) * 100.0
+        } else {
+            0.0
+        };
+
         Ok(crate::models::PopularityBias {
             average_popularity: Some(average),
             normalized_score: Some(normalized),
+            percentile: Some(percentile),
         })
     }
 
@@ -3360,6 +3407,7 @@ mod tests {
         let insights = db.get_watch_insights().unwrap();
         assert_eq!(insights.estimated_minutes_tracked, 0);
         assert_eq!(insights.estimated_minutes_external, 0);
+        assert_eq!(insights.estimated_minutes_share, 0.0);
         assert_eq!(insights.external_titles_estimated, 0);
         assert_eq!(insights.external_titles_total, 0);
         assert_eq!(insights.avg_episodes_per_series, 0.0);
@@ -4532,6 +4580,7 @@ mod tests {
         let bias = db.get_popularity_bias().unwrap();
         assert_eq!(bias.average_popularity, None);
         assert_eq!(bias.normalized_score, None);
+        assert_eq!(bias.percentile, None);
     }
 
     #[test]
@@ -4552,6 +4601,7 @@ mod tests {
         let bias = db.get_popularity_bias().unwrap();
         assert_eq!(bias.average_popularity, None);
         assert_eq!(bias.normalized_score, None);
+        assert_eq!(bias.percentile, None);
     }
 
     #[test]
@@ -6748,6 +6798,7 @@ mod tests {
         backdate_seen(&db, s2, 1);
 
         assert!(db.get_dusty_watchlist().unwrap().is_empty());
+
     }
 
     #[test]
@@ -6916,6 +6967,114 @@ mod tests {
     }
 
     #[test]
+    fn estimated_minutes_share_mixed_matches_spec_example() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+
+        // Series A: 2 seen episodes, linked to AniList catalog row with duration = 23 -> 46 mins (0 estimated)
+        db.upsert_catalog_anime(
+            &crate::anilist::CatalogAnime {
+                id: 101, title: "Show A".into(), title_romaji: None, title_english: None,
+                synonyms: Vec::new(), cover_url: None, banner_url: None, format: Some("TV".into()),
+                genres: vec![], episodes: Some(12), average_score: None, popularity: None,
+                url: "https://anilist.co/anime/101".into(), status: None, duration: Some(23),
+                studio: None, start_date: None, next_airing_at: None, next_episode: None,
+                tags: Vec::new(), relations: Vec::new(),
+            },
+            0,
+        ).unwrap();
+        let sa = db.upsert_series(src, &mk_airing("sa", "Show A", None)).unwrap();
+        db.set_followed(sa, true).unwrap();
+        db.set_anilist_id(sa, 101).unwrap();
+        insert_eps_seen_up_to(&db, sa, 12, 2);
+
+        // Series B: 1 seen episode, unlinked (default TV = 24) -> 24 mins (24 estimated)
+        let sb = db.upsert_series(src, &mk_airing("sb", "Show B", None)).unwrap();
+        db.set_followed(sb, true).unwrap();
+        insert_eps_seen_up_to(&db, sb, 12, 1);
+
+        let insights = db.get_watch_insights().unwrap();
+        assert_eq!(insights.estimated_minutes_tracked, 70);
+        let expected_share = 24.0 / 70.0;
+        assert!(
+            (insights.estimated_minutes_share - expected_share).abs() < 1e-9,
+            "expected share {expected_share}, got {}",
+            insights.estimated_minutes_share
+        );
+    }
+
+    #[test]
+    fn estimated_minutes_share_all_known_gives_zero() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+
+        db.upsert_catalog_anime(
+            &crate::anilist::CatalogAnime {
+                id: 201, title: "Known Show".into(), title_romaji: None, title_english: None,
+                synonyms: Vec::new(), cover_url: None, banner_url: None, format: Some("TV".into()),
+                genres: vec![], episodes: Some(12), average_score: None, popularity: None,
+                url: "https://anilist.co/anime/201".into(), status: None, duration: Some(25),
+                studio: None, start_date: None, next_airing_at: None, next_episode: None,
+                tags: Vec::new(), relations: Vec::new(),
+            },
+            0,
+        ).unwrap();
+        let s = db.upsert_series(src, &mk_airing("s", "Known Show", None)).unwrap();
+        db.set_followed(s, true).unwrap();
+        db.set_anilist_id(s, 201).unwrap();
+        insert_eps_seen_up_to(&db, s, 12, 5);
+
+        let insights = db.get_watch_insights().unwrap();
+        assert_eq!(insights.estimated_minutes_tracked, 5 * 25);
+        assert_eq!(insights.estimated_minutes_share, 0.0);
+    }
+
+    #[test]
+    fn estimated_minutes_share_all_unlinked_gives_one() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+
+        let s = db.upsert_series(src, &mk_airing("s", "Unlinked Show", None)).unwrap();
+        db.set_followed(s, true).unwrap();
+        insert_eps_seen_up_to(&db, s, 12, 4);
+
+        let insights = db.get_watch_insights().unwrap();
+        assert_eq!(insights.estimated_minutes_tracked, 4 * 24);
+        assert_eq!(insights.estimated_minutes_share, 1.0);
+    }
+
+    #[test]
+    fn get_popularity_bias_percentile_matches_spec_example() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("A", "a", "animeytx").unwrap();
+
+        // Catalog popularities [10, 20, 30, 40]
+        for (id, pop) in [(1, 10), (2, 20), (3, 30), (4, 40)] {
+            db.upsert_catalog_anime(
+                &crate::anilist::CatalogAnime {
+                    id, title: format!("Pop Show {id}"), title_romaji: None, title_english: None,
+                    synonyms: Vec::new(), cover_url: None, banner_url: None, format: Some("TV".into()),
+                    genres: vec![], episodes: Some(12), average_score: None, popularity: Some(pop),
+                    url: format!("https://anilist.co/anime/{id}"), status: None, duration: Some(24),
+                    studio: None, start_date: None, next_airing_at: None, next_episode: None,
+                    tags: Vec::new(), relations: Vec::new(),
+                },
+                0,
+            ).unwrap();
+            let sid = db.upsert_series(src, &mk_airing(&format!("s{id}"), &format!("Pop Show {id}"), None)).unwrap();
+            db.set_followed(sid, true).unwrap();
+            db.set_anilist_id(sid, id).unwrap();
+        }
+
+        // User watched 4 series with popularities [10, 20, 30, 40]
+        // User average = (10 + 20 + 30 + 40) / 4 = 25.0
+        // Catalog popularities strictly below 25.0 are 10, 20 (2 out of 4) -> percentile 50.0
+        let bias = db.get_popularity_bias().unwrap();
+        assert_eq!(bias.average_popularity, Some(25.0));
+        assert_eq!(bias.percentile, Some(50.0));
+    }
+
+    #[test]
     fn get_dusty_watchlist_skips_a_finished_season_beside_a_never_started_one() {
         // S1 finished 120 days ago, S2 followed but never started: that's a
         // backlog entry, not an abandoned show — the only unseen episodes
@@ -6933,5 +7092,6 @@ mod tests {
         insert_eps_seen_up_to(&db, s2, 12, 0);
 
         assert!(db.get_dusty_watchlist().unwrap().is_empty());
+
     }
 }
