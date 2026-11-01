@@ -109,6 +109,7 @@ impl Db {
                     id: r.get(0)?,
                     anilist_id: r.get(1)?,
                     title: r.get(2)?,
+
                     followed: r.get::<_, i64>(3)? != 0,
                     watched_externally: r.get::<_, i64>(4)? != 0,
                     backlog_status: r.get(5)?,
@@ -584,11 +585,12 @@ impl Db {
         let group_keys = self.canonical_group_keys()?;
 
         let mut stmt = self.conn.prepare(
-            "SELECT s.id, s.anilist_id, s.title, s.sync_watermark_applied, s.sync_rollback_active
+            "SELECT s.id, s.anilist_id, s.title, s.slug, s.sync_watermark_applied, s.sync_rollback_active
              FROM series s
              WHERE s.followed=1",
         )?;
         struct BaseFollowed {
+            slug: String,
             id: i64,
             anilist_id: Option<i64>,
             title: String,
@@ -598,11 +600,13 @@ impl Db {
         let base_rows: Vec<BaseFollowed> = stmt
             .query_map([], |r| {
                 Ok(BaseFollowed {
+                    slug: r.get(3)?,
                     id: r.get(0)?,
                     anilist_id: r.get(1)?,
                     title: r.get(2)?,
-                    applied: r.get(3)?,
-                    rollback_active: r.get::<_, i64>(4)? != 0,
+
+                    applied: r.get(4)?,
+                    rollback_active: r.get::<_, i64>(5)? != 0,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -621,6 +625,7 @@ impl Db {
         }
 
         struct Row {
+            season: Option<u32>,
             id: i64,
             key: String,
             applied: Option<f64>,
@@ -652,7 +657,9 @@ impl Db {
                     }
                 }
             }
+            let season = crate::matching::effective_season(&base.title, &base.slug);
             rows.push(Row {
+                season,
                 id: base.id,
                 key,
                 applied: base.applied,
@@ -663,9 +670,9 @@ impl Db {
             });
         }
 
-        let mut canonical: HashMap<String, f64> = HashMap::new();
+        let mut canonical: HashMap<(String, Option<u32>), f64> = HashMap::new();
         for row in &rows {
-            let entry = canonical.entry(row.key.clone()).or_insert(0.0);
+            let entry = canonical.entry((row.key.clone(), row.season)).or_insert(0.0);
             if row.canon_watermark > *entry {
                 *entry = row.canon_watermark;
             }
@@ -673,7 +680,7 @@ impl Db {
 
         let mut advanced = 0usize;
         for row in &rows {
-            let ceiling = canonical[&row.key];
+            let ceiling = *canonical.get(&(row.key.clone(), row.season)).unwrap_or(&0.0);
 
             if row.rollback_active {
                 // Already flagged from an earlier cycle: stays suppressed
@@ -1981,5 +1988,71 @@ mod tests {
         let eps = db.list_series_episodes(row_b).unwrap();
         assert_eq!(eps.iter().filter(|e| e.seen).count(), 27, "episodes 1..=27 are marked seen");
         assert!(!eps.iter().find(|e| e.number == "28").unwrap().seen);
+    }
+
+    #[test]
+    fn test_sync_seen_progress_different_slug_seasons_do_not_cascade() {
+        let db = Db::open(":memory:").unwrap();
+        let src_a = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        let src_b = db.upsert_source("TioAnime", "b", "tioanime").unwrap();
+
+        let mk = |slug: &str, title: &str| crate::models::Series {
+            id: 0, slug: slug.into(), title: title.into(), url: format!("https://site/{slug}"),
+            cover_url: None, is_airing: true, followed: true, next_episode_at: None, site_episode_count: None,
+        };
+
+        // Row A: "Black Clover" slug `black-clover` (S1) with episode 170 seen
+        let row_a = db.upsert_series(src_a, &mk("black-clover", "Black Clover")).unwrap();
+        db.set_anilist_id(row_a, 97940).unwrap();
+        db.set_followed(row_a, true).unwrap();
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: row_a, number: "170".into(), title: None,
+            url: "https://site/bc-170".into(), released_at: None, seen: true,
+            download_path: None, download_status: None,
+        }).unwrap();
+
+        // Row B: "Black Clover" slug `black-clover-temporada-2` (S2) with episodes 1-5 unseen
+        let row_b = db.upsert_series(src_b, &mk("black-clover-temporada-2", "Black Clover")).unwrap();
+        db.set_anilist_id(row_b, 97940).unwrap();
+        db.set_followed(row_b, true).unwrap();
+        for i in 1..=5 {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: row_b, number: i.to_string(), title: None,
+                url: format!("https://site/bc-s2-{i}"), released_at: None, seen: false,
+                download_path: None, download_status: None,
+            }).unwrap();
+        }
+
+        // Same-season twin pair: Row C on src_a with seen 5, Row D on src_b with 1-5 unseen
+        let row_c = db.upsert_series(src_a, &mk("same-show", "Same Show")).unwrap();
+        db.set_anilist_id(row_c, 8888).unwrap();
+        db.set_followed(row_c, true).unwrap();
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: row_c, number: "5".into(), title: None,
+            url: "https://site/same-5".into(), released_at: None, seen: true,
+            download_path: None, download_status: None,
+        }).unwrap();
+
+        let row_d = db.upsert_series(src_b, &mk("same-show", "Same Show")).unwrap();
+        db.set_anilist_id(row_d, 8888).unwrap();
+        db.set_followed(row_d, true).unwrap();
+        for i in 1..=5 {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: row_d, number: i.to_string(), title: None,
+                url: format!("https://site/same-d-{i}"), released_at: None, seen: false,
+                download_path: None, download_status: None,
+            }).unwrap();
+        }
+
+        // Sync progress across sites
+        db.sync_seen_progress_across_sites().unwrap();
+
+        // Row B's episodes 1-5 must remain unseen!
+        let eps_b = db.list_series_episodes(row_b).unwrap();
+        assert!(eps_b.iter().all(|e| !e.seen), "differing slug seasons must NOT cascade progress: episodes 1-5 remain unseen");
+
+        // Row D's episodes must have advanced to 5!
+        let eps_d = db.list_series_episodes(row_d).unwrap();
+        assert_eq!(eps_d.iter().filter(|e| e.seen).count(), 5, "same-season twins still advance");
     }
 }
