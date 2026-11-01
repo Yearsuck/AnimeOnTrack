@@ -63,6 +63,15 @@ pub fn plan_carryover(
         if seasons_conflict(&s.title, followed_title) {
             continue;
         }
+        // A site that titles every season the same ("Black Clover") still names
+        // the season in its slug: never carry season 1's watermark onto it.
+        if !crate::matching::title_has_season_marker(&s.title) {
+            let slug_season = crate::matching::season_from_slug(&s.slug);
+            let followed_season = crate::matching::effective_season(followed_title, "");
+            if matches!((slug_season, followed_season), (Some(a), Some(b)) if a != b) {
+                continue;
+            }
+        }
         match best_per_followed.get(&m.index) {
             // `>=` keeps the earlier row on a tie (deterministic ordering).
             Some((_, best_score)) if *best_score >= m.score => {}
@@ -1376,6 +1385,17 @@ mod tests {
         // noise-suffixed duplicate at index 2 (both normalize to "bleach", a
         // 1.0 tie, so the earlier row wins deterministically).
         assert_eq!(out, vec![(0usize, 12i64), (1usize, 4i64)]);
+    }
+
+    #[test]
+    fn plan_carryover_does_not_carry_across_a_season_only_the_slug_names() {
+        // animeyt titles both seasons "Black Clover"; only the slug says season 2.
+        let mut s2 = scanned("Black Clover");
+        s2.slug = "black-clover-temporada-2".to_string();
+        let followed = vec![("Black Clover".to_string(), 170i64)];
+        assert!(plan_carryover(&[s2], &followed).is_empty());
+        // The season-1 row (no slug marker) still carries.
+        assert_eq!(plan_carryover(&[scanned("Black Clover")], &followed), vec![(0usize, 170i64)]);
     }
 
     #[test]

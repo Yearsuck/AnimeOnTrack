@@ -4,7 +4,7 @@ use rusqlite::types::Value;
 use std::collections::HashMap;
 
 /// (franchise key, season) -> linked series (id, title, anilist_id).
-type SiblingIndex = std::collections::HashMap<(String, i64), Vec<(i64, String, i64)>>;
+type SiblingIndex = std::collections::HashMap<(String, i64), Vec<(i64, String, String, i64)>>;
 
 /// Which generation of AniList fields `upsert_catalog_anime` writes.
 ///
@@ -319,16 +319,16 @@ impl Db {
     /// unions dedup by `anilist_id`, so a show must be linked on *every* site
     /// that has it, not just the active one — otherwise the same show appears
     /// twice (linked on one site, title-only on another).
-    pub fn series_needing_catalog_link(&self) -> Result<Vec<(i64, String)>> {
+    pub fn series_needing_catalog_link(&self) -> Result<Vec<(i64, String, String)>> {
         let mut stmt = self.conn.prepare(
-            "SELECT s.id, s.title FROM series s
+            "SELECT s.id, s.title, s.slug FROM series s
              WHERE s.anilist_id IS NULL
                AND (s.followed=1 OR s.watched_externally=1 OR s.is_airing=1
                     OR EXISTS (SELECT 1 FROM episodes e WHERE e.series_id=s.id AND e.seen=1))
              ORDER BY s.id",
         )?;
         let rows = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -427,15 +427,15 @@ impl Db {
     /// the sibling step is a hash lookup instead of re-normalising every linked
     /// title for every candidate (that O(n*m) loop cost seconds at real size
     /// while the DB mutex was held).
-    fn sibling_index(linked: &[(i64, String, i64)]) -> SiblingIndex {
+    fn sibling_index(linked: &[(i64, String, String, i64)]) -> SiblingIndex {
         let mut map: SiblingIndex = std::collections::HashMap::new();
-        for (id, title, anilist_id) in linked {
-            let norm = crate::matching::normalize_title(title);
+        for (id, title, slug, anilist_id) in linked {
+    
             // Ambiguous seasons ("The Final Season") must not pool with season 1.
-            let Some(season) = crate::matching::extract_season_number(&norm) else { continue };
+            let Some(season) = crate::matching::effective_season(title, slug) else { continue };
             map.entry((crate::matching::franchise_dedup_key(title), season as i64))
                 .or_default()
-                .push((*id, title.clone(), *anilist_id));
+                .push((*id, title.clone(), slug.clone(), *anilist_id));
         }
         map
     }
@@ -458,6 +458,7 @@ impl Db {
         &self,
 
         title: &str,
+        slug: &str,
         ignore_series_id: i64,
         index: &crate::matching::CatalogIndex,
         catalog_titles: &std::collections::HashMap<i64, Vec<String>>,
@@ -473,7 +474,7 @@ impl Db {
                     return false;
                 }
                 let refs: Vec<&str> = titles.iter().map(String::as_str).collect();
-                crate::matching::season_consistent(title, &refs)
+                crate::matching::season_consistent_with_slug(title, slug, &refs)
             } else {
                 false
             }
@@ -486,8 +487,8 @@ impl Db {
             if is_consistent(id) { return Ok(Some(id)); }
         }
 
-        let norm = crate::matching::normalize_title(title);
-        let s = crate::matching::extract_season_number(&norm);
+
+        let s = crate::matching::effective_season(title, slug);
         // Only a clearly season-1 title may fall back to its base ("X (2011)",
         // "X Part 1"); an ambiguous one ("X The Final Season") must stay unlinked
         // rather than join season 1.
@@ -509,9 +510,16 @@ impl Db {
             let tokens: Vec<&str> = title.split_whitespace().collect();
             let stem = crate::matching::strip_season_markers(tokens, crate::matching::normalize_title).join(" ");
             if !stem.is_empty() {
-                let bare = format!("{stem} {n}");
-                for id in [index.lookup(&[&bare]), index.fuzzy_lookup(&[&bare])].into_iter().flatten() {
+                let bare = format!("{stem} {n}"); let s_cand = format!("{stem} Season {n}");
+                for id in [index.lookup(&[&bare, &s_cand]), index.fuzzy_lookup(&[&bare, &s_cand])].into_iter().flatten() {
                     if is_consistent(id) {
+    
+
+
+
+
+
+
                         return Ok(Some(id));
                     }
                 }
@@ -523,11 +531,11 @@ impl Db {
         };
         let key = (crate::matching::franchise_dedup_key(title), season as i64);
         let mut candidate_ids = std::collections::HashSet::new();
-        for (sib_id, sib_title, sib_anilist_id) in siblings.get(&key).into_iter().flatten() {
+        for (sib_id, sib_title, sib_slug, sib_anilist_id) in siblings.get(&key).into_iter().flatten() {
             if *sib_id == ignore_series_id { continue; }
             if let Some(titles) = catalog_titles.get(sib_anilist_id) {
                 let refs: Vec<&str> = titles.iter().map(String::as_str).collect();
-                if crate::matching::season_consistent(sib_title, &refs) {
+                if crate::matching::season_consistent_with_slug(sib_title, sib_slug, &refs) {
                     candidate_ids.insert(*sib_anilist_id);
                 }
             }
@@ -567,18 +575,19 @@ impl Db {
         let mut to_repair = Vec::new();
         let mut live_action_mislinks = Vec::new();
 
-        let mut stmt = self.conn.prepare("SELECT id, title, anilist_id FROM series WHERE anilist_id IS NOT NULL")?;
+        let mut stmt = self.conn.prepare("SELECT id, title, slug, anilist_id FROM series WHERE anilist_id IS NOT NULL")?;
         let rows = stmt.query_map([], |r| {
             let id: i64 = r.get(0)?;
             let title: String = r.get(1)?;
-            let anilist_id: i64 = r.get(2)?;
-            Ok((id, title, anilist_id))
+            let slug: String = r.get(2)?;
+            let anilist_id: i64 = r.get(3)?;
+            Ok((id, title, slug, anilist_id))
         })?;
 
         let mut linked_series = Vec::new();
         for row in rows {
-            let (id, title, anilist_id) = row?;
-            linked_series.push((id, title.clone(), anilist_id));
+            let (id, title, slug, anilist_id) = row?;
+            linked_series.push((id, title.clone(), slug.clone(), anilist_id));
 
             // A live-action adaptation linked to the anime is a different work:
             // clear it (never re-resolve, fuzzy matching would pick the anime again).
@@ -594,7 +603,7 @@ impl Db {
             // The row's own season uses the strict reading (explicit markers, trailing
             // numerals): a numeral before a colon ("Lupin III: ...") names a work, not a
             // season, and this pass removes links, so it must not guess.
-            let s = crate::matching::extract_season_number(&crate::matching::normalize_title(&title));
+            let s = crate::matching::effective_season(&title, &slug);
             // A colon-qualified title linked to a short show can only have got
             // there through the base-title fallback (see `is_long_runner`): keep
             // it only when its own full title matches that entry.
@@ -624,7 +633,7 @@ impl Db {
                 // so it is season 1) or it explicitly names another season.
                 let contradicts = catalog_titles.get(&anilist_id).is_some_and(|titles| {
                     let refs: Vec<&str> = titles.iter().map(String::as_str).collect();
-                    if crate::matching::season_consistent(&title, &refs) {
+                    if crate::matching::season_consistent_with_slug(&title, &slug, &refs) {
                         return false;
                     }
                     let key = crate::matching::franchise_dedup_key(&title);
@@ -642,7 +651,7 @@ impl Db {
                     })
                 });
                 if contradicts {
-                    to_repair.push((id, title));
+                    to_repair.push((id, title, slug));
                 }
             }
         }
@@ -657,8 +666,8 @@ impl Db {
             changed += 1;
         }
         let siblings = Self::sibling_index(&linked_series);
-        for (id, title) in to_repair {
-            if let Some(new_id) = self.resolve_catalog_link(&title, id, index, catalog_titles, &siblings)? {
+        for (id, title, slug) in to_repair {
+            if let Some(new_id) = self.resolve_catalog_link(&title, &slug, id, index, catalog_titles, &siblings)? {
                 self.set_anilist_id(id, new_id)?;
             } else {
                 self.conn.execute("UPDATE series SET anilist_id = NULL WHERE id = ?1", [id])?;
@@ -696,13 +705,13 @@ impl Db {
         self.repair_season_mislinks_with(index, &catalog_titles)?;
 
         // Snapshot AFTER the repair so the sibling step sees the corrected links.
-        let mut stmt = self.conn.prepare("SELECT id, title, anilist_id FROM series WHERE anilist_id IS NOT NULL")?;
-        let linked_series: Vec<(i64, String, i64)> = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<rusqlite::Result<_>>()?;
+        let mut stmt = self.conn.prepare("SELECT id, title, slug, anilist_id FROM series WHERE anilist_id IS NOT NULL")?;
+        let linked_series: Vec<(i64, String, String, i64)> = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?.collect::<rusqlite::Result<_>>()?;
 
         let siblings = Self::sibling_index(&linked_series);
         let mut linked = 0i64;
-        for (series_id, title) in self.series_needing_catalog_link()? {
-            if let Some(new_id) = self.resolve_catalog_link(&title, series_id, index, &catalog_titles, &siblings)? {
+        for (series_id, title, slug) in self.series_needing_catalog_link()? {
+            if let Some(new_id) = self.resolve_catalog_link(&title, &slug, series_id, index, &catalog_titles, &siblings)? {
                 self.set_anilist_id(series_id, new_id)?;
                 linked += 1;
             }
@@ -3145,6 +3154,41 @@ mod tests {
 
         assert_eq!(db.repair_season_mislinks().unwrap(), 0);
         assert_eq!(linked_id(&db, s3), Some(101921));
+    }
+
+    #[test]
+    fn test_repair_season_mislinks_slug_season() {
+        let db = Db::open(":memory:").unwrap();
+        let src_a = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        let src_b = db.upsert_source("TioAnime", "b", "tioanime").unwrap();
+        db.upsert_catalog_anime(&catalog_anime(97940, "Black Clover", &[]), 0).unwrap();
+        db.upsert_catalog_anime(&catalog_anime(195604, "Black Clover Season 2", &[]), 1).unwrap();
+
+        let s1 = series_with(&db, src_a, "black-clover", "Black Clover");
+        db.set_anilist_id(s1, 97940).unwrap();
+
+        let s2 = series_with(&db, src_b, "black-clover-temporada-2", "Black Clover");
+        db.set_anilist_id(s2, 97940).unwrap();
+
+        assert_eq!(db.repair_season_mislinks().unwrap(), 1);
+        assert_eq!(linked_id(&db, s1), Some(97940), "S1 row must remain linked to S1");
+        assert_eq!(linked_id(&db, s2), Some(195604), "S2 slug row must be repaired to S2 entry");
+    }
+
+    #[test]
+    fn test_repair_season_mislinks_bare_digit_season() {
+        // Real case: series id 2222 "Farming Life in Another World 2",
+        // slug "isekai-nonbiri-nouka-temporada-2" linked to AniList 197824
+        // ("Farming Life in Another World 2") must NOT be selected or unlinked.
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        db.upsert_catalog_anime(&catalog_anime(197824, "Farming Life in Another World 2", &[]), 0).unwrap();
+
+        let s2 = series_with(&db, src, "isekai-nonbiri-nouka-temporada-2", "Farming Life in Another World 2");
+        db.set_anilist_id(s2, 197824).unwrap();
+
+        assert_eq!(db.repair_season_mislinks().unwrap(), 0, "correct S2 bare-number entry must not be selected for repair");
+        assert_eq!(linked_id(&db, s2), Some(197824));
     }
 
     #[test]
