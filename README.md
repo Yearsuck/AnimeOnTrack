@@ -69,7 +69,8 @@
     </li>
     <li><a href="#architecture--engineering-highlights">Architecture & Engineering Highlights</a></li>
     <li><a href="#project-layout">Project Layout</a></li>
-    <li><a href="#whats-new-in-v0240">What's New in v0.24.0</a></li>
+    <li><a href="#whats-new-in-v0241">What's New in v0.24.1</a></li>
+    <li><a href="#previous-release-v0240">Previous release: v0.24.0</a></li>
     <li><a href="#previous-release-v0230">Previous release: v0.23.0</a></li>
     <li><a href="#previous-releases-v0110-to-v0220-highlights">Previous releases: v0.11.0 to v0.22.0 highlights</a></li>
     <li><a href="#previous-release-v0100">Previous release: v0.10.0</a></li>
@@ -354,7 +355,18 @@ AnimeOnTrack/
 
 ---
 
-## What's New in v0.24.0
+## What's New in v0.24.1
+
+* **Seasons the site names only in the link**: some sites title every season the same (animeyt shows both seasons of Black Clover as just "Black Clover"; jkanime does it for Re:Zero, Mashle, Aharen-san and Classroom of the Elite). The season is now also read from the page link (`…-temporada-2`, `…-2nd-season`, `…-iii`), so those rows are linked to the right AniList season and repaired at startup if they were not.
+* **No more episodes marked seen by another season**: progress is only shared between sites for the same season. Before, a season-2 row linked to season 1 inherited season 1's progress and its new episodes were marked seen and never reached Pendientes. The fallback search and the first-follow carry-over got the same season check.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+---
+
+<a id="previous-release-v0240"></a>
+
+## Previous release: v0.24.0
 
 * **Statistics you can trust**: "pending" no longer counts series marked «Ya lo vi», the dusty list only shows shows you actually left half-watched (grouped by franchise, so a finished season 1 is not "abandoned" while you watch season 2), seasons watched on different sites now add up without double-counting mirrors or sites that number a whole show 1..25, an AniList duration of 0 no longer means 0 minutes, and the year list stays in order. Checked franchise by franchise against a real library.
 * **Estimates are marked as estimates**: watch time shows "≈" and the share that uses default episode lengths, «Ya lo vi» episodes and minutes are listed apart from what you really marked, next-episode dates extrapolated by a week carry "≈" and an explanation, and the popularity meter is now your percentile against the whole local AniList catalog instead of an arbitrary 0-10 scale.
