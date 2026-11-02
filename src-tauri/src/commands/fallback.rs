@@ -235,7 +235,9 @@ async fn run_episode_fallback(app: AppHandle) -> Result<(), String> {
                             all_refs.push(e.as_str());
                         }
 
-                        if !crate::matching::season_markers_compatible(&matched.title, &all_refs) {
+                        // new_slug bound above
+                        let new_slug = crate::commands::scan::slug_from_url(&matched.url);
+                        if !crate::matching::season_markers_compatible_with_slug(&matched.title, &new_slug, &all_refs) {
                             return SiteOutcome::DefinitiveMiss;
                         }
 
@@ -281,7 +283,7 @@ async fn run_episode_fallback(app: AppHandle) -> Result<(), String> {
                             (Some(d), k)
                         };
 
-                        let new_slug = crate::commands::scan::slug_from_url(&matched.url);
+                        // new_slug bound above
 
                         let is_releasing = if let Some(al_id) = candidate.anilist_id {
                             let db = state.db.lock().unwrap();
@@ -311,7 +313,11 @@ async fn run_episode_fallback(app: AppHandle) -> Result<(), String> {
                         if written {
                             let db = state.db.lock().unwrap();
                             if let Some(n) = db.take_carried_seen_number(target_id).unwrap_or(None) {
-                                let _ = db.set_seen_cascade(target_id, &n.to_string(), true);
+                                let matched_season = crate::matching::effective_season(&matched.title, &new_slug);
+                                let cand_season = crate::matching::effective_season(&candidate.title, "");
+                                if !matches!((matched_season, cand_season), (Some(a), Some(b)) if a != b) {
+                                    let _ = db.set_seen_cascade(target_id, &n.to_string(), true);
+                                }
                             }
                             let _ = db.sync_seen_progress_across_sites();
                             return SiteOutcome::FoundEpisodes;

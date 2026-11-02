@@ -977,6 +977,138 @@ pub fn best_match_season_aware(
     best
 }
 
+/// Extract an explicit season number from a slug or URL path (e.g. `temporada-2`,
+/// `2nd-season`, `part-2`). Bare numbers without a season marker word do NOT
+/// count (`steins-gate-0`, `86`, `capitulo-5` -> None).
+pub fn season_from_slug(slug_or_url: &str) -> Option<u32> {
+    let lower = slug_or_url.to_ascii_lowercase();
+    let tokens: Vec<&str> = lower
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    let primary_markers = ["temporada", "season"];
+    let secondary_markers = ["part", "parte", "cour"];
+
+    let parse_ordinal = |t: &str| -> Option<u32> {
+        if let Some(n) = spelled_ordinal_num(t) {
+            return Some(n);
+        }
+        let head = t
+            .strip_suffix("st")
+            .or_else(|| t.strip_suffix("nd"))
+            .or_else(|| t.strip_suffix("rd"))
+            .or_else(|| t.strip_suffix("th"))?;
+        if !head.is_empty() && head.chars().all(|c| c.is_ascii_digit()) {
+            head.parse().ok()
+        } else {
+            None
+        }
+    };
+
+    let parse_roman = |t: &str| -> Option<u32> {
+        ROMAN_NUMERALS.iter().position(|r| *r == t).map(|i| i as u32 + 2)
+    };
+
+    let parse_num = |t: &str| -> Option<u32> {
+        if is_ascii_int(t) {
+            t.parse::<u32>().ok().filter(|&n| n >= 1)
+        } else if let Some(n) = parse_ordinal(t) {
+            Some(n)
+        } else {
+            parse_roman(t)
+        }
+    };
+
+    let check_markers = |markers: &[&str]| -> Option<u32> {
+        for (i, &t) in tokens.iter().enumerate() {
+            if markers.contains(&t) {
+                // marker followed by number/ordinal/roman
+                if i + 1 < tokens.len() {
+                    if let Some(n) = parse_num(tokens[i + 1]) {
+                        return Some(n);
+                    }
+                }
+                // number/ordinal preceding marker
+                if i > 0 {
+                    if let Some(n) = parse_num(tokens[i - 1]) {
+                        return Some(n);
+                    }
+                }
+            }
+        }
+        None
+    };
+
+    // A Roman numeral ending the slug ("mob-psycho-100-iii"), or just before an
+    // episode suffix ("...-iii-capitulo-4"), names the season. "v" and "x" are
+    // left out: as a last slug word they are usually part of a name.
+    let terminal_roman = || -> Option<u32> {
+        let end = tokens
+            .iter()
+            .position(|t| matches!(*t, "capitulo" | "episodio" | "episode" | "ep"))
+            .unwrap_or(tokens.len());
+        let last = *tokens[..end].last()?;
+        if matches!(last, "v" | "x") { None } else { parse_roman(last) }
+    };
+
+    check_markers(&primary_markers)
+        .or_else(|| check_markers(&secondary_markers))
+        .or_else(terminal_roman)
+}
+
+/// Does the title carry an explicit season or stage indicator (e.g. "Season 2",
+/// "Temporada 2", "Part 2", Roman numeral "II", ordinals "2nd", "Second")?
+/// Unmarked titles ("Black Clover") return false.
+pub fn title_has_season_marker(title: &str) -> bool {
+    let has_marker_in_tokens = |toks: &[&str]| {
+        toks.iter().any(|&t| {
+            (SEASON_MARKERS.contains(&t) && t != "the")
+                || ROMAN_NUMERALS.contains(&t)
+                || spelled_ordinal_num(t).is_some()
+        }) || toks.last().is_some_and(|&last| {
+            last.strip_suffix("st")
+                .or_else(|| last.strip_suffix("nd"))
+                .or_else(|| last.strip_suffix("rd"))
+                .or_else(|| last.strip_suffix("th"))
+                .is_some_and(|h| !h.is_empty() && h.chars().all(|c| c.is_ascii_digit()))
+        })
+    };
+    let norm = normalize_title(title);
+    let tokens: Vec<&str> = norm.split_whitespace().collect();
+    has_marker_in_tokens(&tokens)
+        || title.split_once(':').is_some_and(|(head, _)| {
+            let head_norm = normalize_title(head);
+            let head_tokens: Vec<&str> = head_norm.split_whitespace().collect();
+            has_marker_in_tokens(&head_tokens)
+        })
+}
+
+/// Effective season number: explicit title season if the title has a marker,
+/// otherwise slug season marker, otherwise fallback to title convention.
+pub fn effective_season(title: &str, slug: &str) -> Option<u32> {
+    if title_has_season_marker(title) {
+        extract_season_number_from_title(title)
+    } else if let Some(s) = season_from_slug(slug) {
+        Some(s)
+    } else {
+        extract_season_number_from_title(title)
+    }
+}
+
+/// Bare trailing integer N in 2..=9 as the last whitespace-delimited token of a
+/// normalized title. Returns None for bare 0, 1, or >= 10 ("Mob Psycho 100" -> None).
+pub fn trailing_bare_digit_season(title: &str) -> Option<u32> {
+    let norm = normalize_title(title);
+    let last = norm.split_whitespace().last()?;
+    if let Ok(n) = last.parse::<u32>() {
+        if (2..=9).contains(&n) {
+            return Some(n);
+        }
+    }
+    None
+}
+
 /// Is the series' own season compatible with the catalog entry's titles?
 ///
 /// - `Some(n >= 2)` (explicit later season): some entry title must encode the
@@ -990,16 +1122,40 @@ pub fn best_match_season_aware(
 ///   is itself a "Final Season" (otherwise it would join the plain season-1
 ///   entry); any other ambiguous title ("The Promised Neverland") has no season
 ///   claim to check and is consistent.
-pub fn season_consistent(series_title: &str, catalog_titles: &[&str]) -> bool {
+pub fn season_consistent_with_slug(series_title: &str, series_slug: &str, catalog_titles: &[&str]) -> bool {
     let series_norm = normalize_title(series_title);
-    let s = extract_season_number_from_title(series_title);
-    let seasons = || catalog_titles.iter().map(|&ct| extract_season_number_from_title(ct));
+    let series_explicit = title_has_season_marker(series_title) || season_from_slug(series_slug).is_some();
+    let catalog_explicit = catalog_titles.iter().any(|&ct| {
+        title_has_season_marker(ct) || extract_season_number_from_title(ct).is_some_and(|n| n >= 2)
+    });
+    let s = {
+        let eff = effective_season(series_title, series_slug);
+        if catalog_explicit && eff.is_none_or(|n| n <= 1) {
+            trailing_bare_digit_season(series_title).or(eff)
+        } else {
+            eff
+        }
+    };
+    let catalog_title_season = |ct: &str| -> Option<u32> {
+        let base_s = extract_season_number_from_title(ct);
+        if series_explicit && base_s.is_none_or(|n| n <= 1) {
+            trailing_bare_digit_season(ct).or(base_s)
+        } else {
+            base_s
+        }
+    };
+    let seasons = || catalog_titles.iter().map(|&ct| catalog_title_season(ct));
     let is_final_season_entry = |ct: &str| {
         let norm = normalize_title(ct);
         extract_season_number(&norm).is_none() && norm.split_whitespace().any(|t| t == "final")
     };
+    let slug_has_final = || {
+        series_slug
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .any(|t| t.eq_ignore_ascii_case("final"))
+    };
     match s {
-        None if series_norm.split_whitespace().any(|t| t == "final") => {
+        None if series_norm.split_whitespace().any(|t| t == "final") || slug_has_final() => {
             catalog_titles.is_empty() || catalog_titles.iter().any(|&ct| is_final_season_entry(ct))
         }
         None => true,
@@ -1010,7 +1166,11 @@ pub fn season_consistent(series_title: &str, catalog_titles: &[&str]) -> bool {
     }
 }
 
-/// Stricter companion of `season_consistent` for a match whose title came from
+pub fn season_consistent(series_title: &str, catalog_titles: &[&str]) -> bool {
+    season_consistent_with_slug(series_title, "", catalog_titles)
+}
+
+/// Stricter companion of `season_consistent_with_slug` for a match whose title came from
 /// another site and will be used to fetch a specific episode: when the site's
 /// own title carries a season/stage marker, the AniList title must name the
 /// SAME one. `season_consistent` lets any unmarked or ambiguous site title
@@ -1018,26 +1178,45 @@ pub fn season_consistent(series_title: &str, catalog_titles: &[&str]) -> bool {
 /// accepted for the "1st STAGE" entry and its episode 1 stored as ours. A
 /// reject here only costs a missed fallback; a wrong accept stores the wrong
 /// episode.
-pub fn season_markers_compatible(site_title: &str, catalog_titles: &[&str]) -> bool {
-    if !season_consistent(site_title, catalog_titles) {
+pub fn season_markers_compatible_with_slug(site_title: &str, site_slug: &str, catalog_titles: &[&str]) -> bool {
+    if !season_consistent_with_slug(site_title, site_slug, catalog_titles) {
         return false;
     }
     let site_norm = normalize_title(site_title);
     let tokens: Vec<&str> = site_norm.split_whitespace().collect();
-    if strip_season_markers(tokens.clone(), normalize_title).len() == tokens.len() {
+    let title_has_markers = strip_season_markers(tokens.clone(), normalize_title).len() != tokens.len();
+    let slug_season = season_from_slug(site_slug);
+    if !title_has_markers && slug_season.is_none() {
         return true; // no marker of its own: season_consistent already decided
     }
+    let site_explicit = title_has_markers || slug_season.is_some();
     let catalog_numbers: Vec<Option<u32>> = catalog_titles
         .iter()
-        .map(|ct| extract_season_number(&normalize_title(ct)))
+        .map(|ct| {
+            let n = extract_season_number(&normalize_title(ct));
+            if site_explicit && n.is_none_or(|num| num <= 1) {
+                trailing_bare_digit_season(ct).or(n)
+            } else {
+                n
+            }
+        })
         .collect();
-    match extract_season_number(&site_norm) {
+    let site_season = if title_has_markers {
+        extract_season_number(&site_norm)
+    } else {
+        slug_season
+    };
+    match site_season {
         // Season 1 may be unmarked on the catalog side.
         Some(1) => catalog_numbers.iter().any(|c| c.is_none_or(|n| n == 1)),
         Some(n) => catalog_numbers.contains(&Some(n)),
         // Ambiguous marker (a range, "Final"): the catalog title must be ambiguous too.
         None => catalog_numbers.iter().all(|c| c.is_none()),
     }
+}
+
+pub fn season_markers_compatible(site_title: &str, catalog_titles: &[&str]) -> bool {
+    season_markers_compatible_with_slug(site_title, "", catalog_titles)
 }
 
 /// Checks if the title contains the words "live" and "action" as consecutive tokens.
@@ -2384,5 +2563,66 @@ mod tests {
         // one film only: still resolved without its number
         let one = [TitleCandidate { title: "Code Geass Movie 1 Hangyaku no Lelouch", url: "" }];
         assert!(best_match_season_aware(&["Code Geass: Hangyaku no Lelouch"], &one).is_some());
+    }
+
+    #[test]
+    fn test_season_from_slug() {
+        assert_eq!(season_from_slug("black-clover-temporada-2"), Some(2));
+        // A terminal Roman numeral is a season too (also before an episode suffix).
+        assert_eq!(season_from_slug("mob-psycho-100-iii"), Some(3));
+        assert_eq!(season_from_slug("youjo-senki-ii"), Some(2));
+        assert_eq!(season_from_slug("https://site/ver/mob-psycho-100-iii-capitulo-4/"), Some(3));
+        assert_eq!(season_from_slug("hunter-x-hunter"), None);
+        assert_eq!(season_from_slug("black-clover-2nd-season"), Some(2));
+        assert_eq!(season_from_slug("shingeki-season-3"), Some(3));
+        assert_eq!(season_from_slug("bleach-part-2"), Some(2));
+        assert_eq!(season_from_slug("black-clover"), None);
+        assert_eq!(season_from_slug("black-clover-tv"), None);
+        assert_eq!(season_from_slug("steins-gate-0"), None);
+        assert_eq!(
+            season_from_slug("https://animeyt.cc/116571/anime/black-clover-temporada-2-capitulo-1/"),
+            Some(2)
+        );
+        assert_eq!(season_from_slug("black-clover-capitulo-5"), None);
+    }
+
+    #[test]
+    fn test_season_consistent_with_slug() {
+        assert!(!season_consistent_with_slug(
+            "Black Clover",
+            "black-clover-temporada-2",
+            &["Black Clover"]
+        ));
+        assert!(season_consistent_with_slug(
+            "Black Clover",
+            "black-clover-temporada-2",
+            &["Black Clover Season 2"]
+        ));
+        assert!(season_consistent_with_slug(
+            "Black Clover",
+            "black-clover",
+            &["Black Clover"]
+        ));
+        assert!(season_consistent_with_slug(
+            "Black Clover Season 2",
+            "black-clover-temporada-2",
+            &["Black Clover Season 2"]
+        ));
+        assert!(season_consistent_with_slug(
+            "Farming Life in Another World 2",
+            "isekai-nonbiri-nouka-temporada-2",
+            &["Farming Life in Another World 2"]
+        ));
+        assert!(!season_consistent_with_slug(
+            "Mob Psycho 100",
+            "mob-psycho-temporada-2",
+            &["Mob Psycho 100"]
+        ));
+        assert_eq!(trailing_bare_digit_season("Mob Psycho 100"), None);
+        assert_eq!(
+            trailing_bare_digit_season("Farming Life in Another World 2"),
+            Some(2)
+        );
+        assert_eq!(trailing_bare_digit_season("Steins;Gate 0"), None);
     }
 }
