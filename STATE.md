@@ -1,11 +1,12 @@
 # Estado de AnimeOnTrack
 
-Instantánea del 2026-11-07, tras publicar v0.24.2. Se reescribe tras cada merge a `develop`, cada release y antes de compactar una
+Instantánea del 2026-11-07, tras publicar v0.24.3. Se reescribe tras cada merge a `develop`, cada release y antes de compactar una
 conversación (ver "Docs that travel with the code" en `AGENTS.md`). Lo que no está aquí hay que mirarlo en git.
 
 ## Publicado
-- Última versión: **v0.24.2** (2026-11-07): animeytx ya no guarda como pendiente el episodio sin emitir y borra los marcadores ya guardados (#144; ver abajo la nota sobre Goblin).
-- Anterior: **v0.24.1** (2026-11-02): la temporada se lee también del slug de la página cuando el título no la lleva
+- Última versión: **v0.24.3** (2026-11-07): las filas de catálogo sin enlazar (`anilist-<id>`) ya no se raspan como filas del sitio (animeyt.cc devolvía episodios de otras series que acababan en Pendientes: Goblin, Magic Repo Man...); se ignoran en Pendientes y una reparación única al arrancar borra los episodios ya guardados (510 en la base del autor) tras copiar la base a `animeontrack.sqlite.before-synthetic-repair` (#148).
+- Anterior: **v0.24.2** (2026-11-07): animeytx ya no guarda como pendiente el episodio sin emitir (#144).
+- Antes: **v0.24.1** (2026-11-02): la temporada se lee también del slug de la página cuando el título no la lleva
   (Black Clover en animeyt; Re:Zero, Mashle, Aharen-san y Classroom of the Elite en jkanime/animeflv) y lo visto ya no se
   sincroniza entre temporadas distintas (#140).
 - Antes: **v0.24.0** (2026-10-31; tag en `main`, instaladores firmados de Windows (.exe, .msi), macOS (.dmg) y Linux (.deb, .rpm, AppImage) y `latest.json` del updater en la release; actualización
@@ -14,7 +15,7 @@ conversación (ver "Docs that travel with the code" en `AGENTS.md`). Lo que no e
 - Android: compila y funciona en un móvil real, pero **no se publica instalador** todavía.
 
 ## En `develop` sin publicar
-- Nada sin publicar. Sin verificar con datos reales: Goblin ("So What's Wrong with Getting Reborn as a Goblin?") salía "corrupto" al usuario pero su base estaba limpia; revisar tras el fix.
+- Nada sin publicar. Sin verificar con datos reales: la reparación única de #148 (corre al primer arranque de v0.24.3) y cómo quedan Goblin y Magic Repo Man en la interfaz. Sin rastrear: por qué solo algunas filas sintéticas de animeytx estaban seguidas y se raspaban (carry_follow).
 
 ## Abierto
 - **Datos**: fechas extrapoladas por animeytx (+1 semana) sin marcar y fechas de estreno parciales de AniList
