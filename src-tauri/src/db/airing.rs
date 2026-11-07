@@ -338,7 +338,7 @@ impl Db {
     ) -> Result<Vec<(i64, Vec<i64>)>> {
         let mut stmt = self.conn.prepare(
             "SELECT s.id, s.source_id, s.anilist_id, s.title, c.title AS catalog_title,
-                    s.watched_externally, s.followed, so.site_id
+                    s.watched_externally, s.followed, so.site_id, s.slug
              FROM series s
              LEFT JOIN sources so ON so.id = s.source_id
              LEFT JOIN anilist_catalog c ON c.id = s.anilist_id",
@@ -351,6 +351,7 @@ impl Db {
             watched_externally: bool,
             followed: bool,
             site_id: Option<String>,
+            synthetic: bool,
         }
         let rows = stmt
             .query_map([], |r| {
@@ -361,6 +362,7 @@ impl Db {
                     catalog_title: r.get(4)?,
                     watched_externally: r.get::<_, i64>(5)? != 0,
                     followed: r.get::<_, i64>(6)? != 0,
+                    synthetic: r.get::<_, String>(8)?.starts_with("anilist-"),
                     site_id: r.get(7)?,
                 })
             })?
@@ -448,7 +450,7 @@ impl Db {
                 continue;
             }
             let candidate_members: Vec<&Row> =
-                group.iter().filter(|r| !r.watched_externally).collect();
+                group.iter().filter(|r| !r.watched_externally && !r.synthetic).collect();
             if candidate_members.is_empty() {
                 continue;
             }
@@ -1824,6 +1826,33 @@ mod tests {
         let pending = db.list_pending(src_a, PendingSort::RemainingAsc, &priority).unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].0.id, row_b);
+    }
+
+    #[test]
+    fn unlinked_catalog_rows_never_contribute_pending_episodes() {
+        // A row still on its synthetic `anilist-<id>` slug has no page on any
+        // site, so whatever episodes it holds were scraped from a wrong page
+        // (animeyt.cc answers /anime/<anilist id> with a feed of recent
+        // episodes of other shows). They must not reach Pendientes, while the
+        // real row of the same show still does.
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "https://a.example", "animeytx").unwrap();
+        let mk_ep = |sid: i64, n: &str| crate::models::Episode {
+            id: 0, series_id: sid, number: n.into(), title: None,
+            url: format!("u/{sid}/{n}"), released_at: None, seen: false, download_path: None, download_status: None,
+        };
+
+        let synthetic = db.upsert_series(src, &mk_airing("anilist-77", "Some Show", None)).unwrap();
+        db.set_anilist_id(synthetic, 77).unwrap();
+        db.set_followed(synthetic, true).unwrap();
+        db.insert_episode(&mk_ep(synthetic, "7")).unwrap();
+        db.insert_episode(&mk_ep(synthetic, "8")).unwrap();
+        assert_eq!(db.pending_count(src, &[]).unwrap(), 0);
+
+        let real = db.upsert_series(src, &mk_airing("some-show", "Some Show", None)).unwrap();
+        db.set_anilist_id(real, 77).unwrap();
+        db.insert_episode(&mk_ep(real, "1")).unwrap();
+        assert_eq!(db.pending_count(src, &[]).unwrap(), 1, "only the real row's episode");
     }
 
     #[test]

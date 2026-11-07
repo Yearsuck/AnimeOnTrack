@@ -1353,10 +1353,61 @@ impl Db {
         Ok(true)
     }
 
+    /// One-off repair of the damage `list_followed` used to do: a row still on
+    /// its synthetic `anilist-<id>` slug was scraped as if the site had a page
+    /// for it, so it holds other shows' episodes and a rewritten site url. A
+    /// synthetic row never has real episodes of its own (linking rewrites the
+    /// slug first), so they are all removed and the url goes back to
+    /// `https://anilist.co/anime/<id>`.
+    ///
+    /// Deletes rows, so it first writes a consistent copy of the database to
+    /// `backup_path` (when given) and aborts if that fails. Guarded by a
+    /// settings key so it runs once; a database with nothing to repair just
+    /// sets the key. Returns the number of episode rows removed.
+    pub fn repair_scraped_synthetic_rows(&self, backup_path: Option<&str>) -> Result<usize> {
+        const KEY: &str = "repair:synthetic_rows_v1";
+        if self.get_setting(KEY)?.is_some() {
+            return Ok(0);
+        }
+        let dirty: i64 = self.conn.query_row(
+            "SELECT (SELECT COUNT(*) FROM episodes e JOIN series s ON s.id=e.series_id
+                      WHERE s.slug LIKE 'anilist-%')
+                  + (SELECT COUNT(*) FROM series
+                      WHERE slug LIKE 'anilist-%' AND anilist_id IS NOT NULL
+                        AND url NOT LIKE 'https://anilist.co/%')",
+            [],
+            |r| r.get(0),
+        )?;
+        if dirty == 0 {
+            self.set_setting(KEY, "1")?;
+            return Ok(0);
+        }
+        if let Some(path) = backup_path {
+            self.snapshot_to(path)?;
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        let removed = self.conn.execute(
+            "DELETE FROM episodes WHERE series_id IN (SELECT id FROM series WHERE slug LIKE 'anilist-%')",
+            [],
+        )?;
+        self.conn.execute(
+            "UPDATE series SET url='https://anilist.co/anime/' || anilist_id
+             WHERE slug LIKE 'anilist-%' AND anilist_id IS NOT NULL AND url NOT LIKE 'https://anilist.co/%'",
+            [],
+        )?;
+        self.set_setting(KEY, "1")?;
+        tx.commit()?;
+        Ok(removed)
+    }
+
+    /// Every caller scrapes the series page, so a row still on its synthetic
+    /// `anilist-<id>` slug (its url is an anilist.co page, no site has it) is
+    /// left out: fetching `/anime/<id>` on the active site returned a feed of
+    /// other shows on animeyt.cc and filled the row with their episodes.
     pub fn list_followed(&self, source_id: i64) -> Result<Vec<crate::models::Series>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, slug, title, url, cover_url, is_airing, followed, next_episode_at, site_episode_count
-             FROM series WHERE source_id=?1 AND followed=1 ORDER BY title",
+             FROM series WHERE source_id=?1 AND followed=1 AND slug NOT LIKE 'anilist-%' ORDER BY title",
         )?;
         let rows = stmt
             .query_map([source_id], Self::row_to_series)?
@@ -1373,11 +1424,12 @@ impl Db {
     /// "Actualizar" — a site that only becomes active mid-session never got
     /// a chance, leaving its followed shows permanently at 0 episodes /
     /// 0 pending. See the pre-launch site-consistency investigation.
+    /// Synthetic `anilist-%` rows are excluded for the same reason as `list_followed`.
     pub fn followed_series_without_episodes(&self, source_id: i64) -> Result<Vec<crate::models::Series>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, slug, title, url, cover_url, is_airing, followed, next_episode_at, site_episode_count
              FROM series s
-             WHERE s.source_id=?1 AND s.followed=1
+             WHERE s.source_id=?1 AND s.followed=1 AND s.slug NOT LIKE 'anilist-%'
                AND NOT EXISTS (SELECT 1 FROM episodes e WHERE e.series_id=s.id)
              ORDER BY title",
         )?;
@@ -3776,5 +3828,94 @@ mod tests {
         let moving = db.upsert_series(src_a, &mk("anilist-77")).unwrap();
         let _left_behind = db.upsert_series(src_b, &mk("anilist-77")).unwrap();
         db.set_series_source(moving, src_b, "movie-77", "https://site-b.com/movie-77").unwrap();
+    }
+
+    #[test]
+    fn followed_listings_used_for_scraping_skip_unlinked_catalog_rows() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "https://a.example", "animeytx").unwrap();
+        let mk = |slug: &str| crate::models::Series {
+            id: 0, slug: slug.into(), title: slug.into(), url: format!("https://a.example/{slug}"),
+            cover_url: None, is_airing: true, followed: false, next_episode_at: None, site_episode_count: None,
+        };
+        let synthetic = db.upsert_series(src, &mk("anilist-77")).unwrap();
+        let real = db.upsert_series(src, &mk("some-show")).unwrap();
+        db.set_followed(synthetic, true).unwrap();
+        db.set_followed(real, true).unwrap();
+
+        let ids = |v: Vec<crate::models::Series>| v.into_iter().map(|s| s.id).collect::<Vec<_>>();
+        assert_eq!(ids(db.list_followed(src).unwrap()), vec![real]);
+        assert_eq!(ids(db.followed_series_without_episodes(src).unwrap()), vec![real]);
+    }
+
+    fn repair_fixture(db: &Db) -> (i64, i64) {
+        let src = db.upsert_source("AnimeYT", "https://animeyt.cc", "animeytx").unwrap();
+        let mk = |slug: &str, url: &str| crate::models::Series {
+            id: 0, slug: slug.into(), title: slug.into(), url: url.into(),
+            cover_url: None, is_airing: true, followed: false, next_episode_at: None, site_episode_count: None,
+        };
+        let synthetic = db.upsert_series(src, &mk("anilist-77", "https://anilist.co/anime/77")).unwrap();
+        db.set_anilist_id(synthetic, 77).unwrap();
+        db.set_followed(synthetic, true).unwrap();
+        // What the scrape left behind: foreign episodes and a rewritten url.
+        db.conn.execute("UPDATE series SET url='https://animeyt.cc/anime/77' WHERE id=?1", [synthetic]).unwrap();
+        let real = db.upsert_series(src, &mk("some-show", "https://animeyt.cc/tv/some-show/")).unwrap();
+        for (sid, n) in [(synthetic, "7"), (synthetic, "8"), (real, "1")] {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: sid, number: n.into(), title: None, url: format!("u/{sid}/{n}"),
+                released_at: None, seen: false, download_path: None, download_status: None,
+            }).unwrap();
+        }
+        (synthetic, real)
+    }
+
+    #[test]
+    fn repair_removes_scraped_episodes_of_unlinked_rows_once() {
+        let db = Db::open(":memory:").unwrap();
+        let (synthetic, real) = repair_fixture(&db);
+        db.delete_setting("repair:synthetic_rows_v1").unwrap();
+
+        assert_eq!(db.repair_scraped_synthetic_rows(None).unwrap(), 2);
+        let count = |sid: i64| -> i64 {
+            db.conn.query_row("SELECT COUNT(*) FROM episodes WHERE series_id=?1", [sid], |r| r.get(0)).unwrap()
+        };
+        assert_eq!(count(synthetic), 0);
+        assert_eq!(count(real), 1, "a real row is never touched");
+        let url: String = db.conn.query_row("SELECT url FROM series WHERE id=?1", [synthetic], |r| r.get(0)).unwrap();
+        assert_eq!(url, "https://anilist.co/anime/77");
+
+        // Runs once: episodes scraped afterwards are left for the other fixes.
+        db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: synthetic, number: "9".into(), title: None, url: "u/again".into(),
+            released_at: None, seen: false, download_path: None, download_status: None,
+        }).unwrap();
+        assert_eq!(db.repair_scraped_synthetic_rows(None).unwrap(), 0);
+        assert_eq!(count(synthetic), 1);
+    }
+
+    #[test]
+    fn repair_writes_a_backup_first_and_aborts_when_it_cannot() {
+        let dir = std::env::temp_dir().join(format!("aot-repair-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("db.sqlite");
+        let db = Db::open(db_path.to_str().unwrap()).unwrap();
+        let (synthetic, _) = repair_fixture(&db);
+        db.delete_setting("repair:synthetic_rows_v1").unwrap();
+
+        // A backup path in a directory that does not exist: nothing is deleted.
+        let bad = dir.join("missing").join("b.sqlite");
+        assert!(db.repair_scraped_synthetic_rows(Some(bad.to_str().unwrap())).is_err());
+        let n: i64 = db.conn.query_row("SELECT COUNT(*) FROM episodes WHERE series_id=?1", [synthetic], |r| r.get(0)).unwrap();
+        assert_eq!(n, 2);
+
+        let good = dir.join("backup.sqlite");
+        assert_eq!(db.repair_scraped_synthetic_rows(Some(good.to_str().unwrap())).unwrap(), 2);
+        // Plain connection: opening the copy through `Db::open` would run the repair on it too.
+        let backup = rusqlite::Connection::open(good.to_str().unwrap()).unwrap();
+        let kept: i64 = backup.query_row("SELECT COUNT(*) FROM episodes WHERE series_id=?1", [synthetic], |r| r.get(0)).unwrap();
+        assert_eq!(kept, 2, "the backup still has the rows the repair removed");
+        drop(backup);
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
