@@ -1,6 +1,6 @@
 # Estado de AnimeOnTrack
 
-Instantánea del 2026-11-02, tras publicar v0.24.1. Se reescribe tras cada merge a `develop`, cada release y antes de compactar una
+Instantánea del 2026-11-07, tras mergear #144 en develop (v0.24.1 sigue siendo la última publicada). Se reescribe tras cada merge a `develop`, cada release y antes de compactar una
 conversación (ver "Docs that travel with the code" en `AGENTS.md`). Lo que no está aquí hay que mirarlo en git.
 
 ## Publicado
@@ -13,7 +13,8 @@ conversación (ver "Docs that travel with the code" en `AGENTS.md`). Lo que no e
 - Android: compila y funciona en un móvil real, pero **no se publica instalador** todavía.
 
 ## En `develop` sin publicar
-- Nada.
+- **#144**: animeytx deja de guardar como pendiente el episodio sin emitir (tarjeta `is-upcoming`, "PRÓXIMO") y cada diff de episodios de animeytx borra los marcadores ya guardados (sin ver, sin fecha, sin descarga, solo el hueco justo tras el número más alto listado). Hacer copia de la base antes del primer escaneo real.
+- Sin verificar con datos reales: Goblin ("So What's Wrong with Getting Reborn as a Goblin?") salía "corrupto" al usuario pero su base estaba limpia; revisar tras el fix.
 
 ## Abierto
 - **Datos**: fechas extrapoladas por animeytx (+1 semana) sin marcar y fechas de estreno parciales de AniList
