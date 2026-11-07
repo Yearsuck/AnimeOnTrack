@@ -224,6 +224,30 @@ impl Db {
         Ok(nums)
     }
 
+    /// Remove the unaired-episode placeholders animeyt.cc rows were stored with
+    /// before the adapter learned to skip `is-upcoming` cards. The fresh
+    /// listing no longer contains them, so a row of an `animeytx` series that
+    /// is unseen, undated, has no download and is the one slot right after the highest listed
+    /// number (at most +1, so a partly rendered page cannot wipe real rows) can only be one of those placeholders (the site lists the next
+    /// episode, never a gap). An empty listing, or one with a number that does
+    /// not parse, proves nothing, so nothing is removed. Returns the rows dropped.
+    pub fn drop_unaired_placeholders(&self, series_id: i64, listed: &[crate::models::Episode]) -> Result<usize> {
+        let nums: Vec<f64> = listed.iter().filter_map(|e| e.number.parse::<f64>().ok()).collect();
+        if nums.is_empty() || nums.len() != listed.len() {
+            return Ok(0);
+        }
+        let highest = nums.into_iter().fold(f64::MIN, f64::max);
+        let n = self.conn.execute(
+            "DELETE FROM episodes
+             WHERE series_id=?1 AND seen=0 AND released_at IS NULL AND download_path IS NULL AND download_status IS NULL
+               AND CAST(number AS REAL) > ?2 AND CAST(number AS REAL) <= ?2 + 1
+               AND EXISTS (SELECT 1 FROM series s JOIN sources src ON src.id=s.source_id
+                           WHERE s.id=?1 AND src.site_id='animeytx')",
+            (series_id, highest),
+        )?;
+        Ok(n)
+    }
+
     /// Refresh the mutable metadata (url/title/released_at) of an episode
     /// identified by (series_id, number), leaving `seen`/`seen_at` untouched.
     /// Called during a re-scan for episodes whose number is already known, so a
@@ -914,6 +938,7 @@ impl Db {
                 Err(e2) => return Err(e2),
             }
         }
+        self.drop_unaired_placeholders(series_id, eps)?;
         self.set_last_checked_at(series_id)?;
         tx.commit()?;
         Ok(inserted)
@@ -1868,6 +1893,75 @@ mod tests {
             "SELECT COUNT(*) FROM episodes WHERE series_id=?1 AND number='1'", [sid], |r| r.get(0),
         ).unwrap();
         assert_eq!(n, 1);
+    }
+
+    // ---- unaired placeholders stored before the adapter skipped them ----
+
+    fn ep(sid: i64, n: &str, seen: bool) -> crate::models::Episode {
+        crate::models::Episode {
+            id: 0, series_id: sid, number: n.into(), title: None,
+            url: format!("https://animeyt.cc/x-capitulo-{n}/"), released_at: None, seen,
+            download_path: None, download_status: None,
+        }
+    }
+
+    fn numbers(db: &Db, sid: i64) -> Vec<String> {
+        let mut st = db.conn.prepare("SELECT number FROM episodes WHERE series_id=?1 ORDER BY CAST(number AS REAL)").unwrap();
+        st.query_map([sid], |r| r.get(0)).unwrap().map(|r| r.unwrap()).collect()
+    }
+
+    #[test]
+    fn drops_unseen_rows_ahead_of_the_fresh_animeytx_listing_only() {
+        let db = Db::open(":memory:").unwrap();
+        let yt = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let sid = db.upsert_series(yt, &mk_airing("a", "A", None)).unwrap();
+        for (n, seen) in [("1", true), ("2", true), ("3", false), ("4", false)] {
+            db.insert_episode(&ep(sid, n, seen)).unwrap();
+        }
+        // The page now lists 1..=3; 4 was the unaired placeholder.
+        let listed = vec![ep(sid, "3", false), ep(sid, "2", true), ep(sid, "1", true)];
+        assert_eq!(db.drop_unaired_placeholders(sid, &listed).unwrap(), 1);
+        assert_eq!(numbers(&db, sid), ["1", "2", "3"]);
+
+        // A seen row is never touched, even ahead of the listing.
+        db.insert_episode(&ep(sid, "9", true)).unwrap();
+        assert_eq!(db.drop_unaired_placeholders(sid, &listed).unwrap(), 0);
+        assert_eq!(numbers(&db, sid), ["1", "2", "3", "9"]);
+
+        // Only the slot right after the highest listed number is a placeholder:
+        // a row further ahead (a partly rendered page) is kept.
+        db.insert_episode(&ep(sid, "5", false)).unwrap();
+        assert_eq!(db.drop_unaired_placeholders(sid, &listed).unwrap(), 0);
+        assert_eq!(numbers(&db, sid), ["1", "2", "3", "5", "9"]);
+        db.conn.execute("DELETE FROM episodes WHERE series_id=?1 AND number='5'", [sid]).unwrap();
+        // An empty or unparsable listing proves nothing: keep everything.
+        db.insert_episode(&ep(sid, "10", false)).unwrap();
+        assert_eq!(db.drop_unaired_placeholders(sid, &[]).unwrap(), 0);
+        assert_eq!(db.drop_unaired_placeholders(sid, &[ep(sid, "x", false)]).unwrap(), 0);
+        assert_eq!(numbers(&db, sid).len(), 5);
+    }
+
+    #[test]
+    fn placeholder_cleanup_ignores_other_sites_and_rows_with_a_date_or_download() {
+        let db = Db::open(":memory:").unwrap();
+        let tio = db.upsert_source("TioAnime", "b", "tioanime").unwrap();
+        let other = db.upsert_series(tio, &mk_airing("a", "A", None)).unwrap();
+        db.insert_episode(&ep(other, "1", true)).unwrap();
+        db.insert_episode(&ep(other, "2", false)).unwrap();
+        assert_eq!(db.drop_unaired_placeholders(other, &[ep(other, "1", true)]).unwrap(), 0);
+
+        let yt = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        let sid = db.upsert_series(yt, &mk_airing("b", "B", None)).unwrap();
+        db.insert_episode(&ep(sid, "1", true)).unwrap();
+        let mut dated = ep(sid, "2", false);
+        dated.released_at = Some("2026-11-01".into());
+        db.insert_episode(&dated).unwrap();
+        db.insert_episode(&ep(sid, "3", false)).unwrap();
+        db.conn.execute("UPDATE episodes SET download_path='C:/x.mp4' WHERE series_id=?1 AND number='3'", [sid]).unwrap();
+        db.insert_episode(&ep(sid, "4", false)).unwrap();
+        db.conn.execute("UPDATE episodes SET download_status='downloading' WHERE series_id=?1 AND number='4'", [sid]).unwrap();
+        assert_eq!(db.drop_unaired_placeholders(sid, &[ep(sid, "1", true)]).unwrap(), 0);
+        assert_eq!(numbers(&db, sid), ["1", "2", "3", "4"]);
     }
 
     #[test]
