@@ -1353,10 +1353,14 @@ impl Db {
         Ok(true)
     }
 
+    /// Every caller scrapes the series page, so a row still on its synthetic
+    /// `anilist-<id>` slug (its url is an anilist.co page, no site has it) is
+    /// left out: fetching `/anime/<id>` on the active site returned a feed of
+    /// other shows on animeyt.cc and filled the row with their episodes.
     pub fn list_followed(&self, source_id: i64) -> Result<Vec<crate::models::Series>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, slug, title, url, cover_url, is_airing, followed, next_episode_at, site_episode_count
-             FROM series WHERE source_id=?1 AND followed=1 ORDER BY title",
+             FROM series WHERE source_id=?1 AND followed=1 AND slug NOT LIKE 'anilist-%' ORDER BY title",
         )?;
         let rows = stmt
             .query_map([source_id], Self::row_to_series)?
@@ -1373,11 +1377,12 @@ impl Db {
     /// "Actualizar" — a site that only becomes active mid-session never got
     /// a chance, leaving its followed shows permanently at 0 episodes /
     /// 0 pending. See the pre-launch site-consistency investigation.
+    /// Synthetic `anilist-%` rows are excluded for the same reason as `list_followed`.
     pub fn followed_series_without_episodes(&self, source_id: i64) -> Result<Vec<crate::models::Series>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, slug, title, url, cover_url, is_airing, followed, next_episode_at, site_episode_count
              FROM series s
-             WHERE s.source_id=?1 AND s.followed=1
+             WHERE s.source_id=?1 AND s.followed=1 AND s.slug NOT LIKE 'anilist-%'
                AND NOT EXISTS (SELECT 1 FROM episodes e WHERE e.series_id=s.id)
              ORDER BY title",
         )?;
@@ -3776,5 +3781,23 @@ mod tests {
         let moving = db.upsert_series(src_a, &mk("anilist-77")).unwrap();
         let _left_behind = db.upsert_series(src_b, &mk("anilist-77")).unwrap();
         db.set_series_source(moving, src_b, "movie-77", "https://site-b.com/movie-77").unwrap();
+    }
+
+    #[test]
+    fn followed_listings_used_for_scraping_skip_unlinked_catalog_rows() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "https://a.example", "animeytx").unwrap();
+        let mk = |slug: &str| crate::models::Series {
+            id: 0, slug: slug.into(), title: slug.into(), url: format!("https://a.example/{slug}"),
+            cover_url: None, is_airing: true, followed: false, next_episode_at: None, site_episode_count: None,
+        };
+        let synthetic = db.upsert_series(src, &mk("anilist-77")).unwrap();
+        let real = db.upsert_series(src, &mk("some-show")).unwrap();
+        db.set_followed(synthetic, true).unwrap();
+        db.set_followed(real, true).unwrap();
+
+        let ids = |v: Vec<crate::models::Series>| v.into_iter().map(|s| s.id).collect::<Vec<_>>();
+        assert_eq!(ids(db.list_followed(src).unwrap()), vec![real]);
+        assert_eq!(ids(db.followed_series_without_episodes(src).unwrap()), vec![real]);
     }
 }
