@@ -69,7 +69,8 @@
     </li>
     <li><a href="#architecture--engineering-highlights">Architecture & Engineering Highlights</a></li>
     <li><a href="#project-layout">Project Layout</a></li>
-    <li><a href="#whats-new-in-v0241">What's New in v0.24.1</a></li>
+    <li><a href="#whats-new-in-v0242">What's New in v0.24.2</a></li>
+    <li><a href="#previous-release-v0241">Previous release: v0.24.1</a></li>
     <li><a href="#previous-release-v0240">Previous release: v0.24.0</a></li>
     <li><a href="#previous-release-v0230">Previous release: v0.23.0</a></li>
     <li><a href="#previous-releases-v0110-to-v0220-highlights">Previous releases: v0.11.0 to v0.22.0 highlights</a></li>
@@ -355,7 +356,17 @@ AnimeOnTrack/
 
 ---
 
-## What's New in v0.24.1
+## What's New in v0.24.2
+
+* **No more phantom "next episode" from animeyt**: animeyt.cc lists the episode that has not aired yet as a normal card (only a countdown), and it ended up in Pendientes as an episode that does not exist. Those cards are now skipped, and the placeholders already stored are removed on the next scan of that series (only unseen, undated, undownloaded rows right after the last listed episode).
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+---
+
+<a id="previous-release-v0241"></a>
+
+## Previous release: v0.24.1
 
 * **Seasons the site names only in the link**: some sites title every season the same (animeyt shows both seasons of Black Clover as just "Black Clover"; jkanime does it for Re:Zero, Mashle, Aharen-san and Classroom of the Elite). The season is now also read from the page link (`…-temporada-2`, `…-2nd-season`, `…-iii`), so those rows are linked to the right AniList season and repaired at startup if they were not.
 * **No more episodes marked seen by another season**: progress is only shared between sites for the same season. Before, a season-2 row linked to season 1 inherited season 1's progress and its new episodes were marked seen and never reached Pendientes. The fallback search and the first-follow carry-over got the same season check.
