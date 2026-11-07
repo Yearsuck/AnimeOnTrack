@@ -167,6 +167,12 @@ fn new_episodes(doc: &Html) -> Option<Vec<Episode>> {
     let mut seen_urls = std::collections::HashSet::new();
     let mut out = Vec::new();
     for card in doc.select(&card_sel) {
+        // The next, unaired episode is marked with `is-upcoming` and only
+        // links to a countdown page rather than an actual video player. Skip
+        // it until the episode truly airs.
+        if card.value().has_class("is-upcoming", scraper::CaseSensitivity::CaseSensitive) {
+            continue;
+        }
         let Some(url) = card.select(&link_sel).next().and_then(|a| a.value().attr("href")) else {
             continue;
         };
@@ -668,6 +674,34 @@ mod tests {
         assert_eq!(eps[21].number, "1159");
         assert!(eps[0].url.starts_with("https://animeyt.cc/"));
         assert!(eps[0].title.is_none() && eps[0].released_at.is_none(), "links and numbers only");
+    }
+
+    #[test]
+    fn skips_unaired_upcoming_episode_cards() {
+        let html = r#"
+            <div>
+                <article class="aniyt-episode-card is-upcoming">
+                    <a class="aniyt-episode-media" href="https://animeyt.cc/1/anime/x-capitulo-5/">
+                        <span class="aniyt-card-code">EP 5</span>
+                    </a>
+                </article>
+                <article class="aniyt-episode-card">
+                    <a class="aniyt-episode-media" href="https://animeyt.cc/1/anime/x-capitulo-4/">
+                        <span class="aniyt-card-code">EP 4</span>
+                    </a>
+                </article>
+                <article class="aniyt-episode-card">
+                    <a class="aniyt-episode-media" href="https://animeyt.cc/1/anime/x-capitulo-3/">
+                        <span class="aniyt-card-code">EP 3</span>
+                    </a>
+                </article>
+            </div>
+        "#;
+        let eps = AnimeytxAdapter.parse_series(html).unwrap();
+        assert_eq!(eps.len(), 2);
+        assert_eq!(eps[0].number, "4");
+        assert_eq!(eps[1].number, "3");
+        assert!(!eps.iter().any(|e| e.url.contains("capitulo-5")));
     }
 
     #[test]
