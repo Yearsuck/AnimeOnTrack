@@ -69,7 +69,8 @@
     </li>
     <li><a href="#architecture--engineering-highlights">Architecture & Engineering Highlights</a></li>
     <li><a href="#project-layout">Project Layout</a></li>
-    <li><a href="#whats-new-in-v0242">What's New in v0.24.2</a></li>
+    <li><a href="#whats-new-in-v0243">What's New in v0.24.3</a></li>
+    <li><a href="#previous-release-v0242">Previous release: v0.24.2</a></li>
     <li><a href="#previous-release-v0241">Previous release: v0.24.1</a></li>
     <li><a href="#previous-release-v0240">Previous release: v0.24.0</a></li>
     <li><a href="#previous-release-v0230">Previous release: v0.23.0</a></li>
@@ -356,7 +357,17 @@ AnimeOnTrack/
 
 ---
 
-## What's New in v0.24.2
+## What's New in v0.24.3
+
+* **Catalog rows no longer filled with other shows' episodes**: a followed show that is not linked to a site yet was scraped as if the site had a page for it. On animeyt.cc that returned a feed of unrelated episodes, which ended up in Pendientes under the wrong show (Goblin, Magic Repo Man, Frieren 3 and more). Those rows are no longer scraped, their episodes are ignored in Pendientes, and the bad ones already stored are removed once at startup, after writing a copy of the database next to it (`animeontrack.sqlite.before-synthetic-repair`).
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+---
+
+<a id="previous-release-v0242"></a>
+
+## Previous release: v0.24.2
 
 * **No more phantom "next episode" from animeyt**: animeyt.cc lists the episode that has not aired yet as a normal card (only a countdown), and it ended up in Pendientes as an episode that does not exist. Those cards are now skipped, and the placeholders already stored are removed on the next scan of that series (only unseen, undated, undownloaded rows right after the last listed episode).
 
