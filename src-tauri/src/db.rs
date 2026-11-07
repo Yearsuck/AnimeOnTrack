@@ -61,6 +61,13 @@ impl Db {
         db.init_schema()?;
         db.migrate_animeytx_domain()?;
         db.migrate_animeflv_domain()?;
+        // Never fatal: a failed repair (or its backup) must not stop the app opening.
+        let backup = (path != ":memory:").then(|| format!("{path}.before-synthetic-repair"));
+        match db.repair_scraped_synthetic_rows(backup.as_deref()) {
+            Ok(0) => {}
+            Ok(n) => eprintln!("[db] removed {n} episodes scraped onto unlinked catalog rows (backup: {})", backup.as_deref().unwrap_or("none")),
+            Err(e) => eprintln!("[db] synthetic-row repair skipped: {e}"),
+        }
         Ok(db)
     }
 
