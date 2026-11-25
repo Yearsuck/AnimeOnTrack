@@ -23,10 +23,10 @@ pub trait EpisodePlayer {
     ) -> Result<()>;
 }
 
-/// Opens the URL in the user's default system browser. Kept for the
-/// swappable-trait design; no longer the one `open_episode` wires up (see
-/// `AppWindowPlayer`).
-#[allow(dead_code)]
+/// Opens the URL in the user's default system browser. What `open_episode` uses
+/// on Android, where an app window would cover the whole app (see
+/// `AppWindowPlayer` for desktop).
+#[cfg_attr(desktop, allow(dead_code))]
 pub struct BrowserPlayer;
 
 impl EpisodePlayer for BrowserPlayer {
@@ -99,6 +99,7 @@ pub fn resolve_target_monitor(
 /// a WebView2 window from a synchronous command's thread produced a blank
 /// window that closed itself; the async-command context is the proven-working
 /// one for window creation in this app.
+#[cfg_attr(mobile, allow(dead_code))]
 pub struct AppWindowPlayer;
 
 impl EpisodePlayer for AppWindowPlayer {

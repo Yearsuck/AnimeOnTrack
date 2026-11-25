@@ -2,7 +2,8 @@ use super::*;
 use rusqlite::OptionalExtension;
 
 /// Open an episode or info page in a visible, app-owned WebView2 window
-/// (separate from the user's browser — see `AppWindowPlayer`). Does NOT mark
+/// (separate from the user's browser — see `AppWindowPlayer`); on Android the
+/// system browser instead (`BrowserPlayer`). Does NOT mark
 /// it seen — the user marks seen/unseen explicitly via `set_seen`.
 ///
 /// `async` on purpose: creating a WebView2 window from a *synchronous* command
@@ -36,7 +37,15 @@ pub async fn open_episode(
         download_path: None,
         download_status: None,
     };
-    AppWindowPlayer
+    // On a phone an app window is the whole screen: the scraped page covered the
+    // app with no close button and the back key did nothing (seen on the
+    // emulator), so the only way out was killing the app. The system browser has
+    // its own back navigation.
+    #[cfg(mobile)]
+    let player = crate::player::BrowserPlayer;
+    #[cfg(desktop)]
+    let player = AppWindowPlayer;
+    player
         .open_with_options(&app, &ep, eff_monitor.as_deref(), eff_fullscreen, eff_clean)
         .map_err(|e| e.to_string())
 }
