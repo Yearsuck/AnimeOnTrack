@@ -69,7 +69,8 @@
     </li>
     <li><a href="#architecture--engineering-highlights">Architecture & Engineering Highlights</a></li>
     <li><a href="#project-layout">Project Layout</a></li>
-    <li><a href="#whats-new-in-v0243">What's New in v0.24.3</a></li>
+    <li><a href="#whats-new-in-v0250">What's New in v0.25.0</a></li>
+    <li><a href="#previous-release-v0243">Previous release: v0.24.3</a></li>
     <li><a href="#previous-release-v0242">Previous release: v0.24.2</a></li>
     <li><a href="#previous-release-v0241">Previous release: v0.24.1</a></li>
     <li><a href="#previous-release-v0240">Previous release: v0.24.0</a></li>
@@ -357,7 +358,21 @@ AnimeOnTrack/
 
 ---
 
-## What's New in v0.24.3
+## What's New in v0.25.0
+
+* **Pendientes no longer changes when you switch sites**: the list depends on the anime (AniList) and on what you have seen, not on which sites have it. A show you marked as watched and that AniList lists as finished stays out even if a newly scanned site still lists it as airing, and episodes past what AniList says has aired are hidden (nothing is deleted).
+* **"Ver" opens your main site, and every site is one click away**: "▶ Ver" opens the episode on your active site when it has it. Clicking the episode shows one "Open on …" button for each site that has that same episode.
+* **Never behind the Windows taskbar**: the main window and the episode viewer now fit inside the visible work area of the screen (on a 1080p screen at 125 % the bottom ~40 px used to sit behind the taskbar).
+* **Cleaner player on more sites**: MonosChinos keeps its server buttons in one row, AnimeYT's lazily loaded player no longer stays hidden, Gogoanime no longer jumps to fullscreen on load (hiding the close button), AnimeLand no longer mistakes the synopsis for the player, and server switchers keep their own layout.
+* **AniList decides, everywhere**: an airing show is no longer treated as a long runner (which could link a season 2 to season 1), following a show on a new site never carries progress between different AniList entries, and the library's progress and "completed" use AniList's episode total and status.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+---
+
+<a id="previous-release-v0243"></a>
+
+## Previous release: v0.24.3
 
 * **Catalog rows no longer filled with other shows' episodes**: a followed show that is not linked to a site yet was scraped as if the site had a page for it. On animeyt.cc that returned a feed of unrelated episodes, which ended up in Pendientes under the wrong show (Goblin, Magic Repo Man, Frieren 3 and more). Those rows are no longer scraped, their episodes are ignored in Pendientes, and the bad ones already stored are removed once at startup, after writing a copy of the database next to it (`animeontrack.sqlite.before-synthetic-repair`).
 
