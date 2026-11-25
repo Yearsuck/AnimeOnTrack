@@ -24,6 +24,7 @@ mod player;
 mod recommend;
 mod scraper_engine;
 mod swipe;
+mod sync;
 mod cover_cache;
 #[cfg(desktop)]
 mod ui_watchdog;
