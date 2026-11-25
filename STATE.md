@@ -1,6 +1,6 @@
 # Estado de AnimeOnTrack
 
-Instantánea del 2026-11-07, tras publicar v0.24.3. Se reescribe tras cada merge a `develop`, cada release y antes de compactar una
+Instantánea del 2026-11-25, con #151-#155 en `develop` sin publicar. Se reescribe tras cada merge a `develop`, cada release y antes de compactar una
 conversación (ver "Docs that travel with the code" en `AGENTS.md`). Lo que no está aquí hay que mirarlo en git.
 
 ## Publicado
@@ -15,7 +15,13 @@ conversación (ver "Docs that travel with the code" en `AGENTS.md`). Lo que no e
 - Android: compila y funciona en un móvil real, pero **no se publica instalador** todavía.
 
 ## En `develop` sin publicar
-- Nada sin publicar. Sin verificar con datos reales: la reparación única de #148 (corre al primer arranque de v0.24.3) y cómo quedan Goblin y Magic Repo Man en la interfaz. Sin rastrear: por qué solo algunas filas sintéticas de animeytx estaban seguidas y se raspaban (carry_follow).
+- **Pendientes independiente del sitio** (#153): cambiar de sitio activo ya no cambia la lista; un anime marcado "Ya lo vi" y acabado según AniList no vuelve aunque otro sitio lo liste en emisión (Seihantai 2); los episodios más allá de lo que AniList dice emitido se ocultan al leer (no se borra nada; sin datos de AniList, sin tope).
+- **"Ver" en el sitio principal + botones por web** (#155): `episode_sources` devuelve el mismo episodio en cada sitio que lo tiene, primero el activo; clic en el episodio muestra "Abrir en …".
+- **Ventana nunca bajo la barra de tareas** (#151): principal y visor caben en el área útil del monitor (antes 41 px tapados a 125 %).
+- **Reproductor limpio** (#152): MonosChinos (servidores en un bloque), AnimeYT (iframe perezoso visible), Gogoanime (sin pantalla completa al cargar), AnimeLand (ya no toma la sinopsis por reproductor), servidores conservan su diseño.
+- **Coherencia AniList** (#154): una serie en emisión ya no cuenta como "larga" (enlazaba temporadas 2 a la 1), el traspaso de seguimiento veta ids de AniList distintos, la biblioteca usa total y estado de AniList.
+- Versión propuesta: **0.25.0** (hay `feat`). Sin verificar: visor en un segundo monitor con otra escala (solo pantalla 1 por petición del autor), AnimeLand y AnimoraTV en vivo (sin episodios), vista Biblioteca en la app.
+- Plan y mediciones: `docs/superpowers/plans/2026-11-25-site-independent-pending.md`.
 
 ## Abierto
 - **Datos**: fechas extrapoladas por animeytx (+1 semana) sin marcar y fechas de estreno parciales de AniList
@@ -26,6 +32,7 @@ conversación (ver "Docs that travel with the code" en `AGENTS.md`). Lo que no e
   Compilar Android en Windows necesita el Modo desarrollador (enlaces simbólicos); sin él: compilar la lib, copiar el `.so`
   a `jniLibs/arm64-v8a` y `gradlew assembleArm64Debug -x rustBuildArm64Debug`; `CARGO_TARGET_DIR` corto.
 - **Snapshot del catálogo**: publicar la release `catalog-snapshot` con el archivo de `export_catalog_snapshot`.
+- **Aniwaves**: las URLs de episodio guardadas dan 404 (la web cambió rutas); el adaptador necesita revisión.
 - **Descargas no posibles**: Filemoon/Byse (captcha), Streamwish (anti-bot), Doodstream, Mega (cifrado), 1Fichier/Gofile/
   Fireload, AnimeLand.
 
