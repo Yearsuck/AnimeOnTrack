@@ -75,10 +75,25 @@ export function progressPct(seen: number, total: number): number {
   return Math.min(100, Math.max(0, Math.round((seen / total) * 100)));
 }
 
+export function isAiring(it: LibraryItem): boolean {
+  if (it.catalog_status) {
+    const s = it.catalog_status.toUpperCase();
+    if (s === "RELEASING" || s === "NOT_YET_RELEASED" || s === "HIATUS") return true;
+    if (s === "FINISHED" || s === "CANCELLED") return false;
+  }
+  return it.series.is_airing;
+}
+
+export function effectiveTotal(it: LibraryItem): number {
+  return Math.max(it.total_episodes, it.catalog_episodes ?? 0);
+}
+
 export function statusOf(it: LibraryItem): Status {
   if (it.watched_externally) return "completed";
-  const allSeen = it.total_episodes > 0 && it.seen_episodes >= it.total_episodes;
-  if (allSeen && !it.series.is_airing) return "completed";
+  const allScrapedSeen = it.total_episodes > 0 && it.seen_episodes >= it.total_episodes;
+  const catalogSeen = it.catalog_episodes != null ? it.seen_episodes >= it.catalog_episodes : true;
+  const allSeen = allScrapedSeen && catalogSeen;
+  if (allSeen && !isAiring(it)) return "completed";
   if (it.seen_episodes > 0) return "watching";
   return "plan";
 }
@@ -102,13 +117,15 @@ function byTitle(a: LibraryItem, b: LibraryItem): number {
   return a.series.title.localeCompare(b.series.title);
 }
 
-function progressRatio(it: LibraryItem): number {
+export function progressRatio(it: LibraryItem): number {
   if (it.watched_externally && it.total_episodes === 0) return 1;
-  return it.total_episodes ? it.seen_episodes / it.total_episodes : 0;
+  const total = effectiveTotal(it);
+  return total ? it.seen_episodes / total : 0;
 }
 
-function pendingCount(it: LibraryItem): number {
-  return Math.max(0, it.total_episodes - it.seen_episodes);
+export function pendingCount(it: LibraryItem): number {
+  const total = effectiveTotal(it);
+  return Math.max(0, total - it.seen_episodes);
 }
 
 // Most progress first; ties fall back to recency.
@@ -163,7 +180,7 @@ function LibraryCard({
   const noEpisodes = item.watched_externally && item.total_episodes === 0;
   const pct = noEpisodes
     ? 100
-    : progressPct(item.seen_episodes, item.total_episodes);
+    : progressPct(item.seen_episodes, effectiveTotal(item));
 
   // The play button sits in PosterCard's action slot, which already stops
   // click/keys from reaching the card, so Enter on it never also opens the
@@ -185,7 +202,7 @@ function LibraryCard({
       title={item.series.title}
       coverUrl={item.series.cover_url}
       genres={item.genres}
-      meta={noEpisodes ? t("library.watchedExternally") : formatProgress(item.seen_episodes, item.total_episodes)}
+      meta={noEpisodes ? t("library.watchedExternally") : formatProgress(item.seen_episodes, effectiveTotal(item))}
       selectable={selectMode}
       selected={selectMode && isSelected}
       onActivate={() => (selectMode ? onToggleSelect(item.series.id) : onOpenSeries(item.series))}
@@ -227,11 +244,11 @@ function LibraryCard({
             role="progressbar"
             aria-valuenow={item.seen_episodes}
             aria-valuemin={0}
-            aria-valuemax={item.total_episodes}
+            aria-valuemax={effectiveTotal(item)}
             aria-label={t("library.progressAria", {
               title: item.series.title,
               seen: item.seen_episodes,
-              total: item.total_episodes,
+              total: effectiveTotal(item),
             })}
           >
             <span style={{ width: `${pct}%` }} />

@@ -79,6 +79,8 @@ export interface LibraryItem {
    *  set) — scraped-only followed series have no native studio data and this
    *  stays null. */
   studio: string | null;
+  catalog_episodes?: number | null;
+  catalog_status?: string | null;
 }
 
 export interface GenreStat {

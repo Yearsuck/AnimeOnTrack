@@ -1059,7 +1059,7 @@ https://other.example")
         got.sort();
         assert_eq!(
             got,
-            vec![("Bocchi the Rock!".to_string(), 0), ("Frieren".to_string(), 3)]
+            vec![("Bocchi the Rock!".to_string(), 0, None), ("Frieren".to_string(), 3, None)]
         );
     }
 
