@@ -1,11 +1,12 @@
 # Estado de AnimeOnTrack
 
-Instantánea del 2026-11-25, con #151-#155 en `develop` sin publicar. Se reescribe tras cada merge a `develop`, cada release y antes de compactar una
+Instantánea del 2026-11-25, tras publicar v0.25.0. Se reescribe tras cada merge a `develop`, cada release y antes de compactar una
 conversación (ver "Docs that travel with the code" en `AGENTS.md`). Lo que no está aquí hay que mirarlo en git.
 
 ## Publicado
-- Última versión: **v0.24.3** (2026-11-07): las filas de catálogo sin enlazar (`anilist-<id>`) ya no se raspan como filas del sitio (animeyt.cc devolvía episodios de otras series que acababan en Pendientes: Goblin, Magic Repo Man...); se ignoran en Pendientes y una reparación única al arrancar borra los episodios ya guardados (510 en la base del autor) tras copiar la base a `animeontrack.sqlite.before-synthetic-repair` (#148).
-- Anterior: **v0.24.2** (2026-11-07): animeytx ya no guarda como pendiente el episodio sin emitir (#144).
+- Última versión: **v0.25.0** (2026-11-25): Pendientes ya no cambia al cambiar de sitio activo (#153); "Ver" abre el sitio principal y clic en el episodio muestra un botón por web (#155); ventana y visor nunca bajo la barra de tareas (#151); reproductor limpio en MonosChinos, AnimeYT, Gogoanime y AnimeLand (#152); coherencia AniList en enlaces, traspasos de seguimiento y biblioteca (#154). 14 archivos en la release (Windows, macOS, Linux, `latest.json`).
+- Anterior: **v0.24.3** (2026-11-07): las filas de catálogo sin enlazar (`anilist-<id>`) ya no se raspan como filas del sitio (animeyt.cc devolvía episodios de otras series que acababan en Pendientes: Goblin, Magic Repo Man...); se ignoran en Pendientes y una reparación única al arrancar borra los episodios ya guardados (510 en la base del autor) tras copiar la base a `animeontrack.sqlite.before-synthetic-repair` (#148).
+- Antes: **v0.24.2** (2026-11-07): animeytx ya no guarda como pendiente el episodio sin emitir (#144).
 - Antes: **v0.24.1** (2026-11-02): la temporada se lee también del slug de la página cuando el título no la lleva
   (Black Clover en animeyt; Re:Zero, Mashle, Aharen-san y Classroom of the Elite en jkanime/animeflv) y lo visto ya no se
   sincroniza entre temporadas distintas (#140).
@@ -15,13 +16,7 @@ conversación (ver "Docs that travel with the code" en `AGENTS.md`). Lo que no e
 - Android: compila y funciona en un móvil real, pero **no se publica instalador** todavía.
 
 ## En `develop` sin publicar
-- **Pendientes independiente del sitio** (#153): cambiar de sitio activo ya no cambia la lista; un anime marcado "Ya lo vi" y acabado según AniList no vuelve aunque otro sitio lo liste en emisión (Seihantai 2); los episodios más allá de lo que AniList dice emitido se ocultan al leer (no se borra nada; sin datos de AniList, sin tope).
-- **"Ver" en el sitio principal + botones por web** (#155): `episode_sources` devuelve el mismo episodio en cada sitio que lo tiene, primero el activo; clic en el episodio muestra "Abrir en …".
-- **Ventana nunca bajo la barra de tareas** (#151): principal y visor caben en el área útil del monitor (antes 41 px tapados a 125 %).
-- **Reproductor limpio** (#152): MonosChinos (servidores en un bloque), AnimeYT (iframe perezoso visible), Gogoanime (sin pantalla completa al cargar), AnimeLand (ya no toma la sinopsis por reproductor), servidores conservan su diseño.
-- **Coherencia AniList** (#154): una serie en emisión ya no cuenta como "larga" (enlazaba temporadas 2 a la 1), el traspaso de seguimiento veta ids de AniList distintos, la biblioteca usa total y estado de AniList.
-- Versión propuesta: **0.25.0** (hay `feat`). Sin verificar: visor en un segundo monitor con otra escala (solo pantalla 1 por petición del autor), AnimeLand y AnimoraTV en vivo (sin episodios), vista Biblioteca en la app.
-- Plan y mediciones: `docs/superpowers/plans/2026-11-25-site-independent-pending.md`.
+- Nada sin publicar. Sin verificar de v0.25.0: visor en un segundo monitor con otra escala, AnimeLand y AnimoraTV en vivo, vista Biblioteca en la app. En curso: orquestador de Android + sincronización entre dispositivos (plan `docs/superpowers/plans/2026-11-25-android-sync.md`).
 
 ## Abierto
 - **Datos**: fechas extrapoladas por animeytx (+1 semana) sin marcar y fechas de estreno parciales de AniList
