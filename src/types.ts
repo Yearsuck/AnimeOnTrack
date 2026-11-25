@@ -47,6 +47,13 @@ export interface Episode {
   download_status?: "downloading" | "downloaded" | "failed" | null;
 }
 
+export interface EpisodeSource {
+  episode_id: number;
+  site_id: string;
+  site_name: string;
+  url: string;
+}
+
 export interface PendingItem {
   series: Series;
   episode: Episode;

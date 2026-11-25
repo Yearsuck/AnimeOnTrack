@@ -6,6 +6,7 @@ import type {
   AiringItem,
   BingeRecord,
   Episode,
+  EpisodeSource,
   PendingItem,
   LibraryItem,
   GenreStat,
@@ -69,6 +70,9 @@ export const openEpisode = (
     monitor: options?.monitor ?? null,
     fullscreen: options?.fullscreen ?? null,
   });
+
+export const episodeSources = (episodeId: number) =>
+  invoke<EpisodeSource[]>("episode_sources", { episodeId });
 
 export const listMonitors = () => invoke<MonitorOption[]>("list_monitors");
 

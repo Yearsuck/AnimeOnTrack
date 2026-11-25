@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
-import { listPending, playDownload, setSeenCascade } from "../api";
+import { Fragment, useCallback, useEffect, useState } from "react";
+import { episodeSources, listPending, playDownload, setSeenCascade } from "../api";
 import { launchEpisode } from "../lib/launchEpisode";
 import { useT } from "../i18n";
-import type { PendingItem, Series } from "../types";
+import type { EpisodeSource, PendingItem, Series } from "../types";
 import { initials, resolveCoverUrl, useCoverFailure } from "../lib/posterFallback";
 import { CheckMark } from "../components/CheckMark";
 import { watchTarget } from "../lib/watchTarget";
@@ -53,6 +53,9 @@ export function Pending({
   const [removing, setRemoving] = useState<Set<number>>(new Set());
   const [sort, setSort] = useState<PendingSort>("remaining_asc");
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
+  const [openSources, setOpenSources] = useState<Set<number>>(new Set());
+  const [sourcesCache, setSourcesCache] = useState<Map<number, EpisodeSource[]>>(new Map());
+  const [loadingSources, setLoadingSources] = useState<Set<number>>(new Set());
 
   function toggleExpanded(seriesId: number) {
     setExpanded((prev) => {
@@ -62,8 +65,41 @@ export function Pending({
     });
   }
 
+  function toggleSources(episodeId: number) {
+    setOpenSources((prev) => {
+      const next = new Set(prev);
+      if (next.has(episodeId)) {
+        next.delete(episodeId);
+      } else {
+        next.add(episodeId);
+      }
+      return next;
+    });
+
+    if (!sourcesCache.has(episodeId) && !loadingSources.has(episodeId)) {
+      setLoadingSources((prev) => new Set(prev).add(episodeId));
+      episodeSources(episodeId)
+        .then((sources) => {
+          setSourcesCache((prev) => new Map(prev).set(episodeId, sources));
+        })
+        .catch((e) => {
+          // Not cached: toggling again retries.
+          console.error("episodeSources failed:", e);
+        })
+        .finally(() => {
+          setLoadingSources((prev) => {
+            const next = new Set(prev);
+            next.delete(episodeId);
+            return next;
+          });
+        });
+    }
+  }
+
   const load = useCallback(async () => {
     setItems(await listPending(sort));
+    // A refresh can add an episode on another site: re-resolve on next open.
+    setSourcesCache(new Map());
   }, [sort]);
 
   useEffect(() => {
@@ -82,8 +118,21 @@ export function Pending({
         console.error("playDownload failed, opening site:", e);
       }
     }
+    let targetUrl = it.episode.url;
+    try {
+      const cached = sourcesCache.get(it.episode.id);
+      const sources = cached ?? (await episodeSources(it.episode.id));
+      if (!cached && sources) {
+        setSourcesCache((prev) => new Map(prev).set(it.episode.id, sources));
+      }
+      if (sources && sources.length > 0 && sources[0].url) {
+        targetUrl = sources[0].url;
+      }
+    } catch {
+      // on failure or empty list fall back to it.episode.url
+    }
     await launchEpisode({
-      url: it.episode.url,
+      url: targetUrl,
       origin,
       title: it.series.title,
       episode: it.episode.number,
@@ -93,6 +142,11 @@ export function Pending({
 
   function markSeen(it: PendingItem) {
     setRemoving((r) => new Set(r).add(it.episode.id));
+    setOpenSources((prev) => {
+      const next = new Set(prev);
+      next.delete(it.episode.id);
+      return next;
+    });
     setTimeout(async () => {
       try {
         // A PendingItem's `series` is the representative row for the show,
@@ -210,32 +264,72 @@ export function Pending({
                   </span>
                 </button>
                 <div className="pending-eps">
-                {shown.map((it) => (
-                  <div
-                    key={it.episode.id}
-                    className={`ep-row ${removing.has(it.episode.id) ? "removing" : ""}`}
-                  >
-                    <span className="ep-num">{it.episode.number}</span>
-                    <div className="ep-main">
-                      <div className="ep-title" onClick={(e) => watch(it, e.currentTarget)}>
-                        {t("common.episodeNumber", { number: it.episode.number })}
+                {shown.map((it) => {
+                  const isSourcesOpen = openSources.has(it.episode.id);
+                  const epSources = sourcesCache.get(it.episode.id);
+                  const isLoadingSources = loadingSources.has(it.episode.id);
+                  return (
+                    <Fragment key={it.episode.id}>
+                    <div className={`ep-row ${removing.has(it.episode.id) ? "removing" : ""}`}>
+                      <span className="ep-num">{it.episode.number}</span>
+                      <div className="ep-main">
+                        <button
+                          type="button"
+                          className="ep-title"
+                          aria-expanded={isSourcesOpen}
+                          onClick={() => toggleSources(it.episode.id)}
+                        >
+                          {t("common.episodeNumber", { number: it.episode.number })}
+                        </button>
+                      </div>
+                      <div className="ep-actions">
+                        <button type="button" className="btn btn-sm" onClick={(e) => watch(it, e.currentTarget)}>
+                          {t("common.watch")}
+                        </button>
+                        <button
+                          className={`check ${removing.has(it.episode.id) ? "on" : ""}`}
+                          title={t("common.markSeen")}
+                          aria-label={t("common.markSeen")}
+                          onClick={() => markSeen(it)}
+                        >
+                          <CheckMark />
+                        </button>
                       </div>
                     </div>
-                    <div className="ep-actions">
-                      <button type="button" className="btn btn-sm" onClick={(e) => watch(it, e.currentTarget)}>
-                        {t("common.watch")}
-                      </button>
-                      <button
-                        className={`check ${removing.has(it.episode.id) ? "on" : ""}`}
-                        title={t("common.markSeen")}
-                        aria-label={t("common.markSeen")}
-                        onClick={() => markSeen(it)}
-                      >
-                        <CheckMark />
-                      </button>
-                    </div>
-                  </div>
-                ))}
+                    {/* Below the whole row, not inside the title column, so the
+                        buttons never run under "Ver" in the narrow episode card. */}
+                    {isSourcesOpen && (
+                      <div className="ep-sources">
+                        {isLoadingSources && !epSources ? (
+                          <span className="muted text-xs">…</span>
+                        ) : (
+                          epSources?.map((s) => (
+                            <button
+                              key={s.site_id}
+                              type="button"
+                              className="btn btn-sm"
+                              onClick={(e) =>
+                                launchEpisode({
+                                  url: s.url,
+                                  origin: e.currentTarget,
+                                  title: it.series.title,
+                                  episode: it.episode.number,
+                                  cover: resolveCoverUrl(it.series.cover_url),
+                                })
+                              }
+                            >
+                              {t("pending.openOn", { site: s.site_name })}
+                            </button>
+                          ))
+                        )}
+                        {epSources && epSources.length <= 1 && (
+                          <span className="muted text-xs">{t("pending.noSources")}</span>
+                        )}
+                      </div>
+                    )}
+                    </Fragment>
+                  );
+                })}
                 </div>
                 {canFold && (
                   <button
