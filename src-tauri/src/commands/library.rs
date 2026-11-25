@@ -20,7 +20,7 @@ pub async fn list_pending(
         Some("remaining_desc") => crate::db::PendingSort::RemainingDesc,
         _ => crate::db::PendingSort::RemainingAsc,
     };
-    let src = get_source_id(&state)?;
+    let src = state.source_id.lock().unwrap().unwrap_or(0);
     let db = state.db.lock().unwrap();
     let known: Vec<&str> = crate::adapter::all_sites().iter().map(|s| s.id).collect();
     let priority = db.get_site_priority(&known).map_err(|e| e.to_string())?;
@@ -39,7 +39,7 @@ pub struct PendingItem {
 
 #[tauri::command]
 pub async fn pending_count(state: State<'_, AppState>) -> Result<i64, String> {
-    let src = get_source_id(&state)?;
+    let src = state.source_id.lock().unwrap().unwrap_or(0);
     let db = state.db.lock().unwrap();
     let known: Vec<&str> = crate::adapter::all_sites().iter().map(|s| s.id).collect();
     let priority = db.get_site_priority(&known).map_err(|e| e.to_string())?;

@@ -326,6 +326,71 @@ impl EpKey {
     }
 }
 
+/// Compute the AniList-derived upper bound on aired canonical episode numbers.
+///
+/// Returns `Some(cap)` when AniList provides airing information (status, total episodes,
+/// upcoming episode countdown, or episode air dates in `anilist_episode_map`), or `None`
+/// when no AniList data is available (in which case no cap is applied, preserving existing
+/// behaviour).
+///
+/// Rules:
+/// - If no AniList catalog data is present (status, episodes, and next_episode are all None),
+///   the episode map alone is not trusted without catalog presence: return `None`.
+/// - `next_aired`: if `next_episode` is `Some(n)`, then `n` when `next_airing_at <= now`
+///   (stale catalog entry whose air date has passed), else `n - 1`.
+/// - If `status == Some("FINISHED")` and `episodes == Some(t)` with `t > 0`:
+///   `cap = max(t, map_aired, next_aired)`.
+/// - Otherwise: `cap = max(map_aired, next_aired)` when a countdown is known, else `None`
+///   (the map alone undercounts when ani.zip lacks dates, so it never sets a cap by itself).
+///
+/// `now` and `next_airing_at` are unix seconds.
+pub(crate) fn anilist_aired_cap(
+    status: Option<&str>,
+    episodes: Option<i64>,
+    next_episode: Option<i64>,
+    next_airing_at: Option<i64>,
+    map_aired: Option<i64>,
+    now: i64,
+) -> Option<f64> {
+    if status.is_none() && episodes.is_none() && next_episode.is_none() {
+        return None;
+    }
+
+    // A catalog row whose countdown is already in the past is stale: episode
+    // `n` has aired, and if the row was not refreshed for weeks, later ones
+    // have too. Assume the usual weekly cadence so a stale row never hides an
+    // episode that is really out.
+    let next_aired = next_episode.map(|n| match next_airing_at {
+        Some(ts) if ts <= now => n + (now - ts) / (7 * 86_400),
+        _ => n - 1,
+    });
+
+    let known_map = map_aired.filter(|&c| c > 0);
+    let known_next = next_aired.filter(|&c| c > 0);
+
+    if status == Some("FINISHED") {
+        if let Some(t) = episodes.filter(|&c| c > 0) {
+            let mut cap = t;
+            if let Some(m) = known_map {
+                cap = cap.max(m);
+            }
+            if let Some(n) = known_next {
+                cap = cap.max(n);
+            }
+            return Some(cap as f64);
+        }
+    }
+
+    // The episode map only RAISES a countdown-based cap: it counts dated
+    // entries only, and ani.zip often lacks dates for some aired episodes, so
+    // on its own it undercounts and would hide episodes that are out.
+    match (known_map, known_next) {
+        (Some(m), Some(n)) => Some(m.max(n) as f64),
+        (None, Some(n)) => Some(n as f64),
+        (_, None) => None,
+    }
+}
+
 impl Db {
     fn merged_pending_episodes(&self, priority: &[String]) -> Result<Vec<(i64, Vec<i64>)>> {
         self.merged_pending_episodes_at(priority, chrono::Utc::now().timestamp())
@@ -338,7 +403,8 @@ impl Db {
     ) -> Result<Vec<(i64, Vec<i64>)>> {
         let mut stmt = self.conn.prepare(
             "SELECT s.id, s.source_id, s.anilist_id, s.title, c.title AS catalog_title,
-                    s.watched_externally, s.followed, so.site_id, s.slug
+                    s.watched_externally, s.followed, so.site_id, s.slug,
+                    c.status, c.episodes, c.next_episode, c.next_airing_at
              FROM series s
              LEFT JOIN sources so ON so.id = s.source_id
              LEFT JOIN anilist_catalog c ON c.id = s.anilist_id",
@@ -352,6 +418,10 @@ impl Db {
             followed: bool,
             site_id: Option<String>,
             synthetic: bool,
+            catalog_status: Option<String>,
+            catalog_episodes: Option<i64>,
+            catalog_next_episode: Option<i64>,
+            catalog_next_airing_at: Option<i64>,
         }
         let rows = stmt
             .query_map([], |r| {
@@ -362,8 +432,12 @@ impl Db {
                     catalog_title: r.get(4)?,
                     watched_externally: r.get::<_, i64>(5)? != 0,
                     followed: r.get::<_, i64>(6)? != 0,
-                    synthetic: r.get::<_, String>(8)?.starts_with("anilist-"),
                     site_id: r.get(7)?,
+                    synthetic: r.get::<_, String>(8)?.starts_with("anilist-"),
+                    catalog_status: r.get(9)?,
+                    catalog_episodes: r.get(10)?,
+                    catalog_next_episode: r.get(11)?,
+                    catalog_next_airing_at: r.get(12)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -402,6 +476,11 @@ impl Db {
         let mut candidate_ids = Vec::new();
         for group in groups.values() {
             if group.iter().any(|r| r.followed) {
+                let catalog_status = group.iter().find_map(|r| r.catalog_status.as_deref());
+                let is_finished_or_cancelled = matches!(catalog_status, Some("FINISHED" | "CANCELLED"));
+                if is_finished_or_cancelled && group.iter().any(|r| r.watched_externally) {
+                    continue;
+                }
                 for r in group {
                     if !r.watched_externally {
                         candidate_ids.push(r.id);
@@ -449,11 +528,43 @@ impl Db {
             if !group.iter().any(|r| r.followed) {
                 continue;
             }
+            let catalog_status = group.iter().find_map(|r| r.catalog_status.as_deref());
+            let is_finished_or_cancelled = matches!(catalog_status, Some("FINISHED" | "CANCELLED"));
+            if is_finished_or_cancelled && group.iter().any(|r| r.watched_externally) {
+                continue;
+            }
             let candidate_members: Vec<&Row> =
                 group.iter().filter(|r| !r.watched_externally && !r.synthetic).collect();
             if candidate_members.is_empty() {
                 continue;
             }
+
+            // AniList aired cap (read-time only). Groups linked to an AniList id compute a cap
+            // from the catalog's episode count, upcoming episode countdown, and/or episode map.
+            let group_al_id = group.iter().find_map(|r| r.anilist_id).or_else(|| {
+                _group_key.strip_prefix("al:").and_then(|s| s.parse::<i64>().ok())
+            });
+            let group_cap = if let Some(al_id) = group_al_id {
+                let map_aired_count: i64 = self.conn.query_row(
+                    "SELECT COUNT(*) FROM anilist_episode_map WHERE anilist_id = ?1 AND air_at IS NOT NULL AND air_at <= ?2",
+                    rusqlite::params![al_id, now],
+                    |r| r.get(0),
+                )?;
+                let map_aired = if map_aired_count > 0 { Some(map_aired_count) } else { None };
+                let catalog_episodes = group.iter().find_map(|r| r.catalog_episodes);
+                let catalog_next_episode = group.iter().find_map(|r| r.catalog_next_episode);
+                let catalog_next_airing_at = group.iter().find_map(|r| r.catalog_next_airing_at);
+                anilist_aired_cap(
+                    catalog_status,
+                    catalog_episodes,
+                    catalog_next_episode,
+                    catalog_next_airing_at,
+                    map_aired,
+                    now,
+                )
+            } else {
+                None
+            };
 
             // Compute row_align once for every candidate member.
             let mut member_align: std::collections::HashMap<i64, super::episode_align::RowAlign> =
@@ -492,6 +603,18 @@ impl Db {
                 let align = &member_align[&m.id];
                 let rank = site_rank(m.site_id.as_deref(), priority);
                 if let Some(eps) = eps_by_series.get(&m.id) {
+                    // A row whose lowest episode is already past the cap numbers
+                    // the season differently (cumulative numbering with an unknown
+                    // offset, e.g. 13-24 for a 12-episode entry): the cap does not
+                    // describe it, so it is not applied to that row at all.
+                    let member_cap = group_cap.filter(|&cap| {
+                        eps.iter()
+                            .filter_map(|e| crate::db::episodes::parse_ep_number(&e.number))
+                            .filter_map(|v| align.to_canonical(v))
+                            .fold(f64::INFINITY, f64::min)
+                            .floor()
+                            <= cap
+                    });
                     for ep in eps {
                         if ep.seen {
                             continue;
@@ -504,6 +627,11 @@ impl Db {
                                 };
                                 if canon <= w {
                                     continue;
+                                }
+                                if let Some(cap) = member_cap {
+                                    if canon.floor() > cap {
+                                        continue;
+                                    }
                                 }
                                 EpKey::Numeric(canon.to_bits())
                             }
@@ -2496,5 +2624,364 @@ mod tests {
         let (series2, rolled2) = db.list_airing_with_rolled(src).unwrap();
         assert_eq!(series2.len(), 1);
         assert!(!rolled2.contains(&s1));
+    }
+
+    #[test]
+    fn pending_skips_finished_show_with_any_watched_externally_seihantai() {
+        // Seihantai case: catalog 210031 FINISHED episodes=13; row A (animeytx, wx=1, eps 1..13
+        // with 1..12 seen), row B (tioanime, wx=0, followed, eps 1..13 with 1..12 seen), row C
+        // synthetic slug `anilist-210031` wx=1. Must skip the whole group (0 episodes in pending).
+        let db = Db::open(":memory:").unwrap();
+        let src_a = db.upsert_source("AnimeYT", "https://a.example", "animeytx").unwrap();
+        let src_b = db.upsert_source("TioAnime", "https://b.example", "tioanime").unwrap();
+        let now = 10_000_000;
+
+        let mut cat = crate::db::test_support::catalog_anime(210031, "Seihantai na Kimi to Boku 2nd Season", &[]);
+        cat.status = Some("FINISHED".into());
+        cat.episodes = Some(13);
+        db.upsert_catalog_anime(&cat, 0).unwrap();
+
+        let mk = |slug: &str, title: &str| crate::models::Series {
+            id: 0, slug: slug.into(), title: title.into(), url: format!("https://site/{slug}"),
+            cover_url: None, is_airing: true, followed: false, next_episode_at: None, site_episode_count: None,
+        };
+
+        // Row A: site animeytx, watched_externally=1, followed=false, eps 1..13 with 1..12 seen
+        let s_a = db.upsert_series(src_a, &mk("seihantai-a", "Seihantai na Kimi to Boku 2nd Season")).unwrap();
+        db.set_anilist_id(s_a, 210031).unwrap();
+        db.set_watched_externally(s_a, true).unwrap();
+        for i in 1..=13 {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: s_a, number: i.to_string(), title: None,
+                url: format!("https://a/{i}"), released_at: None, seen: i <= 12,
+                download_path: None, download_status: None,
+            }).unwrap();
+        }
+
+        // Row B: site tioanime, watched_externally=0, followed=true, eps 1..13 with 1..12 seen
+        let s_b = db.upsert_series(src_b, &mk("seihantai-b", "Seihantai na Kimi to Boku 2nd Season")).unwrap();
+        db.set_anilist_id(s_b, 210031).unwrap();
+        db.set_followed(s_b, true).unwrap();
+        for i in 1..=13 {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: s_b, number: i.to_string(), title: None,
+                url: format!("https://b/{i}"), released_at: None, seen: i <= 12,
+                download_path: None, download_status: None,
+            }).unwrap();
+        }
+
+        // Row C: synthetic slug `anilist-210031` wx=1
+        let s_c = db.upsert_series(src_a, &mk("anilist-210031", "Seihantai na Kimi to Boku 2nd Season")).unwrap();
+        db.set_anilist_id(s_c, 210031).unwrap();
+        db.set_watched_externally(s_c, true).unwrap();
+
+        let priority = vec!["animeytx".to_string(), "tioanime".to_string()];
+        let pending = db.merged_pending_episodes_at(&priority, now).unwrap();
+        assert!(pending.is_empty(), "FINISHED show marked watched_externally on any row must not appear in pending");
+        assert_eq!(db.pending_count(src_a, &priority).unwrap(), 0);
+    }
+
+    #[test]
+    fn pending_releasing_guard_keeps_unseen_episodes_when_another_row_watched_externally() {
+        // Airing guard: same rows as Seihantai case but catalog status is RELEASING
+        // (next_episode=14, next_airing_at=now+3600). Episode 13 from row B must stay pending.
+        let db = Db::open(":memory:").unwrap();
+        let src_a = db.upsert_source("AnimeYT", "https://a.example", "animeytx").unwrap();
+        let src_b = db.upsert_source("TioAnime", "https://b.example", "tioanime").unwrap();
+        let now = 10_000_000;
+
+        let mut cat = crate::db::test_support::catalog_anime(210031, "Seihantai na Kimi to Boku 2nd Season", &[]);
+        cat.status = Some("RELEASING".into());
+        cat.next_episode = Some(14);
+        cat.next_airing_at = Some(now + 3600);
+        db.upsert_catalog_anime(&cat, 0).unwrap();
+
+        let mk = |slug: &str, title: &str| crate::models::Series {
+            id: 0, slug: slug.into(), title: title.into(), url: format!("https://site/{slug}"),
+            cover_url: None, is_airing: true, followed: false, next_episode_at: None, site_episode_count: None,
+        };
+
+        // Row A: site animeytx, watched_externally=1, followed=false, eps 1..13 with 1..12 seen
+        let s_a = db.upsert_series(src_a, &mk("seihantai-a", "Seihantai na Kimi to Boku 2nd Season")).unwrap();
+        db.set_anilist_id(s_a, 210031).unwrap();
+        db.set_watched_externally(s_a, true).unwrap();
+        for i in 1..=13 {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: s_a, number: i.to_string(), title: None,
+                url: format!("https://a/{i}"), released_at: None, seen: i <= 12,
+                download_path: None, download_status: None,
+            }).unwrap();
+        }
+
+        // Row B: site tioanime, watched_externally=0, followed=true, eps 1..13 with 1..12 seen
+        let s_b = db.upsert_series(src_b, &mk("seihantai-b", "Seihantai na Kimi to Boku 2nd Season")).unwrap();
+        db.set_anilist_id(s_b, 210031).unwrap();
+        db.set_followed(s_b, true).unwrap();
+        for i in 1..=13 {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: s_b, number: i.to_string(), title: None,
+                url: format!("https://b/{i}"), released_at: None, seen: i <= 12,
+                download_path: None, download_status: None,
+            }).unwrap();
+        }
+
+        // Row C: synthetic slug `anilist-210031` wx=1
+        let s_c = db.upsert_series(src_a, &mk("anilist-210031", "Seihantai na Kimi to Boku 2nd Season")).unwrap();
+        db.set_anilist_id(s_c, 210031).unwrap();
+        db.set_watched_externally(s_c, true).unwrap();
+
+        let priority = vec!["animeytx".to_string(), "tioanime".to_string()];
+        let pending = db.merged_pending_episodes_at(&priority, now).unwrap();
+        assert_eq!(pending.len(), 1);
+        let (rep_id, ep_ids) = &pending[0];
+        assert_eq!(*rep_id, s_b);
+        assert_eq!(ep_ids.len(), 1);
+        let ep = db.get_episode(ep_ids[0]).unwrap();
+        assert_eq!(ep.number, "13");
+        assert_eq!(ep.series_id, s_b);
+        assert_eq!(db.pending_count(src_a, &priority).unwrap(), 1);
+    }
+
+    #[test]
+    fn pending_caps_unaired_episodes_per_anilist() {
+        // Unaired per AniList: catalog RELEASING next_episode=9 next_airing_at=now+3600,
+        // map has 7 aired; site row has unseen 7, 8, 9 -> pending is [7, 8] (cap = max(7, 8) = 8).
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "https://a.example", "animeytx").unwrap();
+        let now = 10_000_000;
+
+        let mut cat = crate::db::test_support::catalog_anime(3001, "Tensei Goblin", &[]);
+        cat.status = Some("RELEASING".into());
+        cat.next_episode = Some(9);
+        cat.next_airing_at = Some(now + 3600);
+        db.upsert_catalog_anime(&cat, 0).unwrap();
+
+        let entries: Vec<crate::anizip::MapEntry> = (1..=7)
+            .map(|i| crate::anizip::MapEntry {
+                episode: i,
+                season: 1,
+                absolute: Some(i),
+                air_at: Some(now - (8 - i) * 86400),
+            })
+            .collect();
+        db.replace_episode_map(3001, &entries, now).unwrap();
+
+        let mk = |slug: &str, title: &str| crate::models::Series {
+            id: 0, slug: slug.into(), title: title.into(), url: format!("https://site/{slug}"),
+            cover_url: None, is_airing: true, followed: true, next_episode_at: None, site_episode_count: None,
+        };
+
+        let sid = db.upsert_series(src, &mk("goblin", "Tensei Goblin")).unwrap();
+        db.set_anilist_id(sid, 3001).unwrap();
+        db.set_followed(sid, true).unwrap();
+
+        for ep in [7, 8, 9] {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: sid, number: ep.to_string(), title: None,
+                url: format!("https://a/{ep}"), released_at: None, seen: false,
+                download_path: None, download_status: None,
+            }).unwrap();
+        }
+
+        let priority = vec!["animeytx".to_string()];
+        let pending = db.merged_pending_episodes_at(&priority, now).unwrap();
+        assert_eq!(pending.len(), 1);
+        let (_, ep_ids) = &pending[0];
+        let nums: Vec<String> = ep_ids.iter().map(|id| db.get_episode(*id).unwrap().number).collect();
+        assert_eq!(nums, vec!["7", "8"], "episode 9 has not aired yet per AniList");
+    }
+
+    #[test]
+    fn pending_includes_stale_catalog_aired_episode() {
+        // Stale catalog: same as above but next_airing_at=now-60 -> cap 9 -> pending [7, 8, 9].
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "https://a.example", "animeytx").unwrap();
+        let now = 10_000_000;
+
+        let mut cat = crate::db::test_support::catalog_anime(3002, "Tensei Goblin 2", &[]);
+        cat.status = Some("RELEASING".into());
+        cat.next_episode = Some(9);
+        cat.next_airing_at = Some(now - 60);
+        db.upsert_catalog_anime(&cat, 0).unwrap();
+
+        let entries: Vec<crate::anizip::MapEntry> = (1..=7)
+            .map(|i| crate::anizip::MapEntry {
+                episode: i,
+                season: 1,
+                absolute: Some(i),
+                air_at: Some(now - (8 - i) * 86400),
+            })
+            .collect();
+        db.replace_episode_map(3002, &entries, now).unwrap();
+
+        let mk = |slug: &str, title: &str| crate::models::Series {
+            id: 0, slug: slug.into(), title: title.into(), url: format!("https://site/{slug}"),
+            cover_url: None, is_airing: true, followed: true, next_episode_at: None, site_episode_count: None,
+        };
+
+        let sid = db.upsert_series(src, &mk("goblin2", "Tensei Goblin 2")).unwrap();
+        db.set_anilist_id(sid, 3002).unwrap();
+        db.set_followed(sid, true).unwrap();
+
+        for ep in [7, 8, 9] {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: sid, number: ep.to_string(), title: None,
+                url: format!("https://a/{ep}"), released_at: None, seen: false,
+                download_path: None, download_status: None,
+            }).unwrap();
+        }
+
+        let priority = vec!["animeytx".to_string()];
+        let pending = db.merged_pending_episodes_at(&priority, now).unwrap();
+        assert_eq!(pending.len(), 1);
+        let (_, ep_ids) = &pending[0];
+        let nums: Vec<String> = ep_ids.iter().map(|id| db.get_episode(*id).unwrap().number).collect();
+        assert_eq!(nums, vec!["7", "8", "9"], "stale catalog countdown means ep 9 has aired");
+    }
+
+    #[test]
+    fn pending_caps_finished_season_numbered_past_total_preserving_fractional() {
+        // Finished season numbered past total: FINISHED episodes=12, unseen 11, 12, 12.5, 13
+        // -> pending [11, 12, 12.5] (cap = 12.0; 12.5.floor() == 12.0 <= 12.0).
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "https://a.example", "animeytx").unwrap();
+        let now = 10_000_000;
+
+        let mut cat = crate::db::test_support::catalog_anime(4001, "Finished Season", &[]);
+        cat.status = Some("FINISHED".into());
+        cat.episodes = Some(12);
+        db.upsert_catalog_anime(&cat, 0).unwrap();
+
+        let mk = |slug: &str, title: &str| crate::models::Series {
+            id: 0, slug: slug.into(), title: title.into(), url: format!("https://site/{slug}"),
+            cover_url: None, is_airing: true, followed: true, next_episode_at: None, site_episode_count: None,
+        };
+
+        let sid = db.upsert_series(src, &mk("finished-season", "Finished Season")).unwrap();
+        db.set_anilist_id(sid, 4001).unwrap();
+        db.set_followed(sid, true).unwrap();
+
+        for ep in ["11", "12", "12.5", "13"] {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: sid, number: ep.to_string(), title: None,
+                url: format!("https://a/{ep}"), released_at: None, seen: false,
+                download_path: None, download_status: None,
+            }).unwrap();
+        }
+
+        let priority = vec!["animeytx".to_string()];
+        let pending = db.merged_pending_episodes_at(&priority, now).unwrap();
+        assert_eq!(pending.len(), 1);
+        let (_, ep_ids) = &pending[0];
+        let nums: Vec<String> = ep_ids.iter().map(|id| db.get_episode(*id).unwrap().number).collect();
+        assert_eq!(nums, vec!["11", "12", "12.5"], "12.5 recap stays under cap 12; 13 is dropped");
+    }
+
+    #[test]
+    fn pending_without_anilist_data_keeps_all_unseen_episodes() {
+        // No AniList data (series without anilist_id, or catalog row with status NULL,
+        // episodes NULL, next_episode NULL and empty map) -> every unseen episode stays.
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "https://a.example", "animeytx").unwrap();
+        let now = 10_000_000;
+
+        let mk = |slug: &str, title: &str| crate::models::Series {
+            id: 0, slug: slug.into(), title: title.into(), url: format!("https://site/{slug}"),
+            cover_url: None, is_airing: true, followed: true, next_episode_at: None, site_episode_count: None,
+        };
+
+        // Series A: no anilist_id
+        let s_a = db.upsert_series(src, &mk("no-anilist", "No AniList Show")).unwrap();
+        db.set_followed(s_a, true).unwrap();
+        for ep in ["1", "2", "3"] {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: s_a, number: ep.to_string(), title: None,
+                url: format!("https://a/no-al/{ep}"), released_at: None, seen: false,
+                download_path: None, download_status: None,
+            }).unwrap();
+        }
+
+        // Series B: catalog row with status NULL, episodes NULL, next_episode NULL, empty map
+        let mut cat = crate::db::test_support::catalog_anime(5001, "Null Catalog Show", &[]);
+        cat.status = None;
+        cat.episodes = None;
+        cat.next_episode = None;
+        cat.next_airing_at = None;
+        db.upsert_catalog_anime(&cat, 0).unwrap();
+
+        let s_b = db.upsert_series(src, &mk("null-catalog", "Null Catalog Show")).unwrap();
+        db.set_anilist_id(s_b, 5001).unwrap();
+        db.set_followed(s_b, true).unwrap();
+        for ep in ["1", "2"] {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: s_b, number: ep.to_string(), title: None,
+                url: format!("https://a/null-cat/{ep}"), released_at: None, seen: false,
+                download_path: None, download_status: None,
+            }).unwrap();
+        }
+
+        let priority = vec!["animeytx".to_string()];
+        let pending = db.merged_pending_episodes_at(&priority, now).unwrap();
+        assert_eq!(pending.len(), 2);
+        let total_eps: usize = pending.iter().map(|(_, eps)| eps.len()).sum();
+        assert_eq!(total_eps, 5, "all 3 + 2 unseen episodes stay when AniList data is absent");
+    }
+
+    #[test]
+    fn anilist_aired_cap_calculation_rules() {
+        let now = 10_000_000;
+
+        // No catalog data -> None
+        assert_eq!(anilist_aired_cap(None, None, None, None, None, now), None);
+        assert_eq!(anilist_aired_cap(None, None, None, None, Some(7), now), None);
+
+        // FINISHED with total episodes
+        assert_eq!(anilist_aired_cap(Some("FINISHED"), Some(12), None, None, None, now), Some(12.0));
+        assert_eq!(anilist_aired_cap(Some("FINISHED"), Some(12), None, None, Some(14), now), Some(14.0));
+
+        // RELEASING upcoming
+        assert_eq!(anilist_aired_cap(Some("RELEASING"), None, Some(9), Some(now + 3600), Some(7), now), Some(8.0));
+        // RELEASING stale (air date passed)
+        assert_eq!(anilist_aired_cap(Some("RELEASING"), None, Some(9), Some(now - 60), Some(7), now), Some(9.0));
+        // Countdown for ep 9 passed 15 days ago: weekly eps 10 and 11 have aired too.
+        assert_eq!(
+            anilist_aired_cap(Some("RELEASING"), None, Some(9), Some(now - 15 * 86_400), Some(7), now),
+            Some(11.0)
+        );
+
+        // Map alone (no countdown, not finished) undercounts when dates are
+        // missing: no cap rather than hiding aired episodes.
+        assert_eq!(anilist_aired_cap(Some("RELEASING"), None, None, None, Some(5), now), None);
+    }
+
+    #[test]
+    fn pending_does_not_cap_a_row_numbered_past_the_season_total() {
+        // FINISHED entry with 12 episodes, but the site numbers this season
+        // 13..24 (cumulative) and no ani.zip offset is known: the cap does not
+        // describe that row, so its unseen episodes stay pending.
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("TioAnime", "https://b.example", "tioanime").unwrap();
+        let now = 10_000_000;
+        let mut cat = crate::db::test_support::catalog_anime(4001, "Some Show 2nd Season", &[]);
+        cat.status = Some("FINISHED".into());
+        cat.episodes = Some(12);
+        db.upsert_catalog_anime(&cat, 0).unwrap();
+        let sid = db.upsert_series(src, &crate::models::Series {
+            id: 0, slug: "some-show-2".into(), title: "Some Show 2nd Season".into(),
+            url: "https://site/some-show-2".into(), cover_url: None, is_airing: false,
+            followed: true, next_episode_at: None, site_episode_count: None,
+        }).unwrap();
+        db.set_anilist_id(sid, 4001).unwrap();
+        db.set_followed(sid, true).unwrap();
+        for i in 13..=24 {
+            db.insert_episode(&crate::models::Episode {
+                id: 0, series_id: sid, number: i.to_string(), title: None,
+                url: format!("https://b/{i}"), released_at: None, seen: false,
+                download_path: None, download_status: None,
+            }).unwrap();
+        }
+        let pending = db.merged_pending_episodes_at(&["tioanime".to_string()], now).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].1.len(), 12);
     }
 }
