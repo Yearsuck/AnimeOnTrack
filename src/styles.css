@@ -1489,6 +1489,20 @@ textarea.input {
 .ep-title:hover {
   color: var(--accent);
 }
+button.ep-title {
+  background: transparent;
+  border: none;
+  padding: 0;
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+  text-align: left;
+}
+button.ep-title:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
 .ep-date {
   font-size: var(--fs-sm);
   color: var(--muted-2);
@@ -3022,6 +3036,13 @@ select.settings-select {
 }
 .pending-eps .ep-row.removing {
   opacity: 0;
+}
+.ep-sources {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+  grid-column: 1 / -1;
+  padding-left: var(--sp-3);
 }
 .pending-more {
   align-self: flex-start;

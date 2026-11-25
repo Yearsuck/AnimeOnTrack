@@ -224,6 +224,7 @@ pub fn run() {
             commands::list_pending,
             commands::pending_count,
             commands::open_episode,
+            commands::episode_sources,
             commands::list_monitors,
             commands::get_player_settings,
             commands::set_player_settings,
