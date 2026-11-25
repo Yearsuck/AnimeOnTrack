@@ -1,4 +1,5 @@
 use super::*;
+use rusqlite::OptionalExtension;
 
 /// Open an episode or info page in a visible, app-owned WebView2 window
 /// (separate from the user's browser — see `AppWindowPlayer`). Does NOT mark
@@ -97,6 +98,124 @@ pub async fn set_player_settings(
         crate::ad_block::set_engine_enabled(adblock);
     }
     Ok(())
+}
+
+/// A streaming site source for an episode.
+#[derive(serde::Serialize, Clone, Debug, PartialEq)]
+pub struct EpisodeSource {
+    pub episode_id: i64,
+    pub site_id: String,
+    pub site_name: String,
+    pub url: String,
+}
+
+/// Helper to get a human-friendly display name for a site slug.
+fn site_display_name(site_id: &str) -> String {
+    crate::adapter::all_sites()
+        .iter()
+        .find(|s| s.id == site_id)
+        .map(|s| s.name.to_string())
+        .unwrap_or_else(|| site_id.to_string())
+}
+
+/// Pure ordering of episode sources:
+/// 1. De-duplicates by `site_id` (keeping the first occurrence).
+/// 2. Sorts:
+///    - Active site first (if present).
+///    - Then by position in the configured `priority` list.
+///    - Then unknown sites (not in `priority`) ordered alphabetically by `site_id`.
+///
+/// Stable sort.
+pub(crate) fn order_sources(
+    list: Vec<EpisodeSource>,
+    active: &str,
+    priority: &[String],
+) -> Vec<EpisodeSource> {
+    let mut deduped = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for item in list {
+        if seen.insert(item.site_id.clone()) {
+            deduped.push(item);
+        }
+    }
+
+    fn key<'a>(s: &'a EpisodeSource, active: &str, priority: &[String]) -> (u8, usize, &'a str) {
+        if !active.is_empty() && s.site_id == active {
+            (0, 0, "")
+        } else if let Some(pos) = priority.iter().position(|p| p == &s.site_id) {
+            (1, pos, "")
+        } else {
+            (2, 0, s.site_id.as_str())
+        }
+    }
+    deduped.sort_by(|a, b| key(a, active, priority).cmp(&key(b, active, priority)));
+
+    deduped
+}
+
+/// Assemble sources for `episode_id` by querying its row from the database
+/// (its url and site_id) plus any sibling episodes in the same canonical group.
+/// Returns an empty Vec if the episode id does not exist.
+pub fn assemble_episode_sources(db: &crate::db::Db, episode_id: i64) -> Result<Vec<EpisodeSource>, String> {
+    let clicked: Option<(String, String)> = db
+        .conn
+        .query_row(
+            "SELECT COALESCE(so.site_id, ''), e.url
+             FROM episodes e
+             JOIN series s ON s.id = e.series_id
+             LEFT JOIN sources so ON so.id = s.source_id
+             WHERE e.id = ?1",
+            [episode_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+
+    let (clicked_site_id, clicked_url) = match clicked {
+        Some(v) => v,
+        None => return Ok(vec![]),
+    };
+
+    let mut sources = Vec::new();
+    sources.push(EpisodeSource {
+        episode_id,
+        site_id: clicked_site_id.clone(),
+        site_name: site_display_name(&clicked_site_id),
+        url: clicked_url,
+    });
+
+    let siblings = db.sibling_episodes(episode_id).map_err(|e| e.to_string())?;
+    for sib in siblings.into_iter().filter(|s| !s.site_id.is_empty()) {
+        sources.push(EpisodeSource {
+            episode_id: sib.episode_id,
+            site_id: sib.site_id.clone(),
+            site_name: site_display_name(&sib.site_id),
+            url: sib.url,
+        });
+    }
+
+    Ok(sources)
+}
+
+/// Retrieves all compatible site sources for an episode, with the active site
+/// first, followed by priority order.
+#[tauri::command]
+pub async fn episode_sources(
+    state: State<'_, AppState>,
+    episode_id: i64,
+) -> Result<Vec<EpisodeSource>, String> {
+    let active = state.active_site_id.lock().unwrap().clone();
+    let (sources, priority) = {
+        let db = state.db.lock().unwrap();
+        let sources = assemble_episode_sources(&db, episode_id)?;
+        if sources.is_empty() {
+            return Ok(vec![]);
+        }
+        let known: Vec<&str> = crate::adapter::all_sites().iter().map(|s| s.id).collect();
+        let priority = db.get_site_priority(&known).map_err(|e| e.to_string())?;
+        (sources, priority)
+    };
+    Ok(order_sources(sources, &active, &priority))
 }
 
 
@@ -421,6 +540,110 @@ mod tests {
         assert!(file2.exists());
         assert!(series_dir.exists(), "Series folder should remain when other files are present");
         let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    fn order_sources_active_first_and_priority() {
+        let list = vec![
+            EpisodeSource { episode_id: 1, site_id: "tioanime".into(), site_name: "TioAnime".into(), url: "u1".into() },
+            EpisodeSource { episode_id: 2, site_id: "animeflv".into(), site_name: "AnimeFLV".into(), url: "u2".into() },
+            EpisodeSource { episode_id: 3, site_id: "animeytx".into(), site_name: "AnimeYT".into(), url: "u3".into() },
+        ];
+        let priority = vec!["animeytx".into(), "tioanime".into(), "animeflv".into()];
+        let ordered = order_sources(list, "animeflv", &priority);
+        let ids: Vec<&str> = ordered.iter().map(|s| s.site_id.as_str()).collect();
+        assert_eq!(ids, vec!["animeflv", "animeytx", "tioanime"]);
+    }
+
+    #[test]
+    fn order_sources_active_absent_pure_priority() {
+        let list = vec![
+            EpisodeSource { episode_id: 1, site_id: "tioanime".into(), site_name: "TioAnime".into(), url: "u1".into() },
+            EpisodeSource { episode_id: 2, site_id: "animeytx".into(), site_name: "AnimeYT".into(), url: "u2".into() },
+        ];
+        let priority = vec!["animeytx".into(), "tioanime".into(), "animeflv".into()];
+        let ordered = order_sources(list, "jkanime", &priority);
+        let ids: Vec<&str> = ordered.iter().map(|s| s.site_id.as_str()).collect();
+        assert_eq!(ids, vec!["animeytx", "tioanime"]);
+    }
+
+    #[test]
+    fn order_sources_deduplicates_by_site_id_keeping_first() {
+        let list = vec![
+            EpisodeSource { episode_id: 1, site_id: "tioanime".into(), site_name: "TioAnime 1".into(), url: "u1".into() },
+            EpisodeSource { episode_id: 2, site_id: "tioanime".into(), site_name: "TioAnime 2".into(), url: "u2".into() },
+            EpisodeSource { episode_id: 3, site_id: "animeflv".into(), site_name: "AnimeFLV".into(), url: "u3".into() },
+        ];
+        let priority = vec!["tioanime".into(), "animeflv".into()];
+        let ordered = order_sources(list, "tioanime", &priority);
+        assert_eq!(ordered.len(), 2);
+        assert_eq!(ordered[0].episode_id, 1);
+        assert_eq!(ordered[0].site_id, "tioanime");
+        assert_eq!(ordered[1].episode_id, 3);
+        assert_eq!(ordered[1].site_id, "animeflv");
+    }
+
+    #[test]
+    fn order_sources_unknown_sites_after_known_ordered_by_site_id() {
+        let list = vec![
+            EpisodeSource { episode_id: 1, site_id: "zzz_unknown".into(), site_name: "ZZZ".into(), url: "u1".into() },
+            EpisodeSource { episode_id: 2, site_id: "tioanime".into(), site_name: "TioAnime".into(), url: "u2".into() },
+            EpisodeSource { episode_id: 3, site_id: "aaa_unknown".into(), site_name: "AAA".into(), url: "u3".into() },
+        ];
+        let priority = vec!["tioanime".into()];
+        let ordered = order_sources(list, "none", &priority);
+        let ids: Vec<&str> = ordered.iter().map(|s| s.site_id.as_str()).collect();
+        assert_eq!(ids, vec!["tioanime", "aaa_unknown", "zzz_unknown"]);
+    }
+
+    #[test]
+    fn assemble_episode_sources_includes_clicked_and_siblings() {
+        let db = Db::open(":memory:").unwrap();
+        let src_a = db.upsert_source("AnimeYT", "https://animeyt.cc", "animeytx").unwrap();
+        let src_b = db.upsert_source("TioAnime", "https://tioanime.com", "tioanime").unwrap();
+
+        let s_a = crate::models::Series {
+            id: 0, slug: "frieren-yt".into(), title: "Sousou no Frieren".into(),
+            url: "https://animeyt.cc/tv/frieren/".into(), cover_url: None, is_airing: true, followed: true, next_episode_at: None, site_episode_count: None,
+        };
+        let sid_a = db.upsert_series(src_a, &s_a).unwrap();
+
+        let s_b = crate::models::Series {
+            id: 0, slug: "frieren-tio".into(), title: "Sousou no Frieren".into(),
+            url: "https://tioanime.com/anime/frieren".into(), cover_url: None, is_airing: true, followed: true, next_episode_at: None, site_episode_count: None,
+        };
+        let sid_b = db.upsert_series(src_b, &s_b).unwrap();
+
+        // Link both series to the same anilist_id
+        db.conn.execute("UPDATE series SET anilist_id = 154587 WHERE id IN (?1, ?2)", [sid_a, sid_b]).unwrap();
+
+        let (ep_a, _) = db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: sid_a, number: "3".into(), title: None,
+            url: "https://animeyt.cc/tv/frieren-3/".into(), released_at: None, seen: false,
+            download_path: None, download_status: None,
+        }).unwrap();
+
+        let (ep_b, _) = db.insert_episode(&crate::models::Episode {
+            id: 0, series_id: sid_b, number: "3".into(), title: None,
+            url: "https://tioanime.com/ver/frieren-3".into(), released_at: None, seen: false,
+            download_path: None, download_status: None,
+        }).unwrap();
+
+        let sources = assemble_episode_sources(&db, ep_a).unwrap();
+        assert_eq!(sources.len(), 2);
+        assert_eq!(sources[0].episode_id, ep_a);
+        assert_eq!(sources[0].site_id, "animeytx");
+        assert_eq!(sources[0].site_name, "AnimeYT");
+        assert_eq!(sources[0].url, "https://animeyt.cc/tv/frieren-3/");
+
+        assert_eq!(sources[1].episode_id, ep_b);
+        assert_eq!(sources[1].site_id, "tioanime");
+        assert_eq!(sources[1].site_name, "TioAnime");
+        assert_eq!(sources[1].url, "https://tioanime.com/ver/frieren-3");
+
+        // Unknown episode id returns empty vec
+        let unknown = assemble_episode_sources(&db, 99999).unwrap();
+        assert!(unknown.is_empty());
     }
 }
 

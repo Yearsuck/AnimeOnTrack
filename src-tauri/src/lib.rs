@@ -27,6 +27,7 @@ mod swipe;
 mod cover_cache;
 #[cfg(desktop)]
 mod ui_watchdog;
+mod window_fit;
 
 use commands::AppState;
 use std::sync::Mutex;
@@ -175,6 +176,12 @@ pub fn run() {
                 extras_guard: extras_guard::ExtrasGuard::default(),
             });
 
+            // Adjust initial main-window size and position if it sits behind
+            // the Windows taskbar or off-screen on the current display.
+            if let Some(main_win) = app.get_webview_window("main") {
+                window_fit::fit_window_to_work_area(&main_win);
+            }
+
             // Start the main-thread liveness watchdog. It posts a tiny
             // closure via run_on_main_thread every 2 s; if the main thread
             // does not acknowledge within 25 s the stall is logged to
@@ -224,6 +231,7 @@ pub fn run() {
             commands::list_pending,
             commands::pending_count,
             commands::open_episode,
+            commands::episode_sources,
             commands::list_monitors,
             commands::get_player_settings,
             commands::set_player_settings,

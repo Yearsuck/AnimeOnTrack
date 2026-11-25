@@ -85,6 +85,8 @@ export const es = {
   "pending.newPlural": "{count} nuevos",
   "pending.showMore": "Mostrar {count} más",
   "pending.showLess": "Mostrar menos",
+  "pending.openOn": "Abrir en {site}",
+  "pending.noSources": "No está en ninguna otra web",
 
   // Onboarding.tsx
   "onboarding.title": "Sigue tus animes en emisión",

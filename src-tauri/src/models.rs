@@ -104,6 +104,15 @@ pub struct LibraryItem {
     /// studio data and this stays `None`.
     #[serde(default)]
     pub studio: Option<String>,
+    /// AniList's total episode count (`anilist_catalog.episodes`), or `None`
+    /// when unlinked or still airing without an established episode total.
+    #[serde(default)]
+    pub catalog_episodes: Option<i64>,
+    /// AniList's airing status (`anilist_catalog.status`, e.g. "RELEASING",
+    /// "FINISHED", "NOT_YET_RELEASED", "CANCELLED", "HIATUS"), or `None` when
+    /// unlinked.
+    #[serde(default)]
+    pub catalog_status: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -42,24 +42,32 @@ fn seasons_conflict(a: &str, b: &str) -> bool {
 /// best-scoring row per followed title is carried; ties resolve to the
 /// earliest-scanned row so the plan is deterministic. Pairs naming two different explicit
 /// seasons are skipped (`seasons_conflict`) so that a followed Season 1 watermark is not
-/// carried onto a lone Season 4 row on the new site.
+/// carried onto a lone Season 4 row on the new site. Pairs linked to conflicting AniList ids
+/// are also skipped.
 pub fn plan_carryover(
     new_site_series: &[Series],
-    followed_elsewhere: &[(String, i64)],
+    new_site_anilist: &[Option<i64>],
+    followed_elsewhere: &[(String, i64, Option<i64>)],
 ) -> Vec<(usize, i64)> {
     if followed_elsewhere.is_empty() {
         return Vec::new();
     }
     let candidates: Vec<crate::matching::TitleCandidate> = followed_elsewhere
         .iter()
-        .map(|(title, _)| crate::matching::TitleCandidate { title, url: "" })
+        .map(|(title, _, _)| crate::matching::TitleCandidate { title, url: "" })
         .collect();
     // followed-title index -> (best new-site index so far, its score).
     let mut best_per_followed: std::collections::HashMap<usize, (usize, f64)> =
         std::collections::HashMap::new();
     for (i, s) in new_site_series.iter().enumerate() {
         let Some(m) = crate::matching::best_match(&[&s.title], &candidates) else { continue };
-        let followed_title = &followed_elsewhere[m.index].0;
+        let (followed_title, _, followed_anilist) = &followed_elsewhere[m.index];
+        let new_anilist = new_site_anilist.get(i).copied().flatten();
+        if let (Some(new_id), Some(f_id)) = (new_anilist, *followed_anilist) {
+            if new_id != f_id {
+                continue;
+            }
+        }
         if seasons_conflict(&s.title, followed_title) {
             continue;
         }
@@ -1294,8 +1302,8 @@ mod tests {
     #[test]
     fn plan_carryover_matches_exact_title_and_returns_its_watermark() {
         let new_site = vec![scanned("Frieren Sub Español"), scanned("Totally Unrelated Show")];
-        let followed = vec![("Frieren".to_string(), 12i64), ("Some Other".to_string(), 3)];
-        let out = plan_carryover(&new_site, &followed);
+        let followed = vec![("Frieren".to_string(), 12i64, None), ("Some Other".to_string(), 3, None)];
+        let out = plan_carryover(&new_site, &vec![None; new_site.len()], &followed);
         // Only the Frieren card matches; it carries index 0 with watermark 12.
         assert_eq!(out, vec![(0usize, 12i64)]);
     }
@@ -1303,8 +1311,8 @@ mod tests {
     #[test]
     fn plan_carryover_does_not_carry_a_decoy_below_threshold() {
         let new_site = vec![scanned("Kaiju No. 8")];
-        let followed = vec![("Monster Musume".to_string(), 5i64)];
-        assert!(plan_carryover(&new_site, &followed).is_empty());
+        let followed = vec![("Monster Musume".to_string(), 5i64, None)];
+        assert!(plan_carryover(&new_site, &vec![None; new_site.len()], &followed).is_empty());
     }
 
     #[test]
@@ -1314,10 +1322,10 @@ mod tests {
         // exact-after-normalization one and return ITS watermark (7), not the
         // decoy's.
         let followed = vec![
-            ("Overlord".to_string(), 39i64),      // shorter, lower score
-            ("Overlord IV".to_string(), 7i64),    // exact normalized match
+            ("Overlord".to_string(), 39i64, None),      // shorter, lower score
+            ("Overlord IV".to_string(), 7i64, None),    // exact normalized match
         ];
-        let out = plan_carryover(&new_site, &followed);
+        let out = plan_carryover(&new_site, &vec![None; new_site.len()], &followed);
         assert_eq!(out, vec![(0usize, 7i64)]);
     }
 
@@ -1334,40 +1342,40 @@ mod tests {
             scanned("Overlord"),       // exact match, scores 1.0
             scanned("Overlord II"),    // another season variant, scores 0.9
         ];
-        let followed = vec![("Overlord".to_string(), 39i64)];
+        let followed = vec![("Overlord".to_string(), 39i64, None)];
         // Season variants alone must NOT carry onto an unmarked/season-1 followed title.
-        assert!(plan_carryover(&[scanned("Overlord IV")], &followed).is_empty());
-        assert!(plan_carryover(&[scanned("Overlord II")], &followed).is_empty());
+        assert!(plan_carryover(&[scanned("Overlord IV")], &[None], &followed).is_empty());
+        assert!(plan_carryover(&[scanned("Overlord II")], &[None], &followed).is_empty());
         // Only the exact/same-season row carries in isolation.
         assert_eq!(
-            plan_carryover(&[scanned("Overlord")], &followed),
+            plan_carryover(&[scanned("Overlord")], &[None], &followed),
             vec![(0usize, 39i64)]
         );
-        let out = plan_carryover(&new_site, &followed);
+        let out = plan_carryover(&new_site, &vec![None; new_site.len()], &followed);
         assert_eq!(out, vec![(1usize, 39i64)], "only the exact 'Overlord' row carries");
     }
 
     #[test]
     fn plan_carryover_still_carries_ambiguous_season_naming_across_sites() {
         let final_s = scanned("Attack on Titan The Final Season");
-        let followed = vec![("Attack on Titan Season 4".to_string(), 12i64)];
-        assert_eq!(plan_carryover(std::slice::from_ref(&final_s), &followed), vec![(0usize, 12i64)]);
+        let followed = vec![("Attack on Titan Season 4".to_string(), 12i64, None)];
+        assert_eq!(plan_carryover(std::slice::from_ref(&final_s), &[None], &followed), vec![(0usize, 12i64)]);
     }
 
     #[test]
     fn plan_carryover_carries_exact_season_variants_when_followed() {
         let s4 = scanned("Overlord IV");
-        let followed_s4 = vec![("Overlord IV".to_string(), 7i64)];
+        let followed_s4 = vec![("Overlord IV".to_string(), 7i64, None)];
         assert_eq!(
-            plan_carryover(std::slice::from_ref(&s4), &followed_s4),
+            plan_carryover(std::slice::from_ref(&s4), &[None], &followed_s4),
             vec![(0usize, 7i64)],
             "Overlord IV carries onto followed Overlord IV"
         );
 
         let s2 = scanned("Some Show 2nd Season");
-        let followed_s2 = vec![("Some Show 2nd Season".to_string(), 15i64)];
+        let followed_s2 = vec![("Some Show 2nd Season".to_string(), 15i64, None)];
         assert_eq!(
-            plan_carryover(std::slice::from_ref(&s2), &followed_s2),
+            plan_carryover(std::slice::from_ref(&s2), &[None], &followed_s2),
             vec![(0usize, 15i64)],
             "Some Show 2nd Season carries onto followed Some Show 2nd Season"
         );
@@ -1379,8 +1387,8 @@ mod tests {
     #[test]
     fn plan_carryover_still_carries_one_row_for_each_distinct_followed_title() {
         let new_site = vec![scanned("Frieren"), scanned("Bleach"), scanned("Bleach Sub Español")];
-        let followed = vec![("Frieren".to_string(), 12i64), ("Bleach".to_string(), 4i64)];
-        let out = plan_carryover(&new_site, &followed);
+        let followed = vec![("Frieren".to_string(), 12i64, None), ("Bleach".to_string(), 4i64, None)];
+        let out = plan_carryover(&new_site, &vec![None; new_site.len()], &followed);
         // Frieren -> index 0 (12); Bleach -> index 1, the exact row, not the
         // noise-suffixed duplicate at index 2 (both normalize to "bleach", a
         // 1.0 tie, so the earlier row wins deterministically).
@@ -1392,16 +1400,37 @@ mod tests {
         // animeyt titles both seasons "Black Clover"; only the slug says season 2.
         let mut s2 = scanned("Black Clover");
         s2.slug = "black-clover-temporada-2".to_string();
-        let followed = vec![("Black Clover".to_string(), 170i64)];
-        assert!(plan_carryover(&[s2], &followed).is_empty());
+        let followed = vec![("Black Clover".to_string(), 170i64, None)];
+        assert!(plan_carryover(&[s2], &[None], &followed).is_empty());
         // The season-1 row (no slug marker) still carries.
-        assert_eq!(plan_carryover(&[scanned("Black Clover")], &followed), vec![(0usize, 170i64)]);
+        assert_eq!(plan_carryover(&[scanned("Black Clover")], &[None], &followed), vec![(0usize, 170i64)]);
     }
 
     #[test]
     fn plan_carryover_empty_when_nothing_followed_elsewhere() {
         let new_site = vec![scanned("Anything")];
-        assert!(plan_carryover(&new_site, &[]).is_empty());
+        assert!(plan_carryover(&new_site, &vec![None; new_site.len()], &[]).is_empty());
+    }
+
+    #[test]
+    fn plan_carryover_vetoes_conflicting_anilist_ids() {
+        let new_site = vec![scanned("Show X")];
+        let followed = vec![("Show X".to_string(), 10i64, Some(100))];
+
+        // new-site 200 vs followed 100 -> conflicting, must be empty
+        assert!(plan_carryover(&new_site, &[Some(200)], &followed).is_empty());
+
+        // new-site None vs followed 100 -> carried (unchanged behaviour)
+        assert_eq!(
+            plan_carryover(&new_site, &[None], &followed),
+            vec![(0usize, 10i64)]
+        );
+
+        // Both 100 -> carried
+        assert_eq!(
+            plan_carryover(&new_site, &[Some(100)], &followed),
+            vec![(0usize, 10i64)]
+        );
     }
 
     #[test]

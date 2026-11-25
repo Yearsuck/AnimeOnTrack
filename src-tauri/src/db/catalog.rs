@@ -444,8 +444,42 @@ impl Db {
     /// ("One Piece: Arco de Elbaph"). Only those may inherit their parent's
     /// link from the colon-stripped base title; for a short show the colon
     /// tail is a season ("Kami no Tou: Ouji no Kikan" is Tower of God season
-    /// 2, not season 1). AniList leaves `episodes` empty while a show airs.
+    /// 2, not season 1). AniList leaves `episodes` empty while a show airs,
+    /// so a NULL episode count alone does not make a show a long runner: we
+    /// require `next_episode > 60` or >60 rows in `anilist_episode_map`.
     fn is_long_runner(&self, anilist_id: i64) -> Result<bool> {
+        let row: Option<(Option<i64>, Option<i64>)> = self
+            .conn
+            .query_row(
+                "SELECT episodes, next_episode FROM anilist_catalog WHERE id=?1",
+                [anilist_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let Some((episodes, next_episode)) = row else {
+            return Ok(false);
+        };
+        if let Some(n) = episodes {
+            return Ok(n >= 60);
+        }
+        if next_episode.is_some_and(|ne| ne > 60) {
+            return Ok(true);
+        }
+        let map_count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM anilist_episode_map WHERE anilist_id=?1",
+            [anilist_id],
+            |r| r.get(0),
+        )?;
+        Ok(map_count > 60)
+    }
+
+    /// The permissive counterpart of `is_long_runner`, for the repair pass that
+    /// CLEARS existing links: there a missing total (or a missing catalog row)
+    /// must keep the link. A long runner between airings or on hiatus has no
+    /// countdown and may not have its episode map yet, and wiping a correct
+    /// "One Piece: Arco de Elbaph" link on startup is worse than keeping a
+    /// doubtful one. Creating new links uses the strict `is_long_runner`.
+    fn may_be_long_runner(&self, anilist_id: i64) -> Result<bool> {
         let episodes: Option<i64> = self
             .conn
             .query_row("SELECT episodes FROM anilist_catalog WHERE id=?1", [anilist_id], |r| r.get(0))
@@ -616,7 +650,7 @@ impl Db {
                     let variants = crate::matching::title_variants_norm(&title);
                     titles.iter().any(|t| variants.contains(&crate::matching::normalize_title(t)))
                 });
-                let justified = self.is_long_runner(anilist_id)?
+                let justified = self.may_be_long_runner(anilist_id)?
                     || own_title_matches
                     || index.lookup(&[&title]) == Some(anilist_id)
                     || index.fuzzy_lookup(&[&title]) == Some(anilist_id);
@@ -2983,9 +3017,10 @@ mod tests {
         // fuzzy), so this must still fall back to the parent show's entry.
         let db = Db::open(":memory:").unwrap();
         let src = db.upsert_source("TioAnime", "t", "tioanime").unwrap();
-        // One Piece airs: AniList has no episode total yet (None), i.e. a long-runner.
+        // One Piece airs: no episode total yet (None), next episode in the 1000s: a long-runner.
         let mut op = catalog_anime(21, "One Piece", &["Action"]);
         op.episodes = None;
+        op.next_episode = Some(1181);
         db.upsert_catalog_anime(&op, 0).unwrap();
 
         let sid = db.upsert_series(src, &crate::models::Series {
@@ -3039,6 +3074,7 @@ mod tests {
         let src = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
         let mut op = catalog_anime(21, "One Piece", &[]);
         op.episodes = None;
+        op.next_episode = Some(1181);
         db.upsert_catalog_anime(&op, 0).unwrap();
         let live = series_with(&db, src, "op-live", "One Piece: Live Action (2023)");
         let arc = series_with(&db, src, "op-arc", "One Piece: Arco de Elbaph");
@@ -3145,6 +3181,24 @@ mod tests {
     }
 
     #[test]
+    fn repair_keeps_an_arc_link_of_a_long_runner_without_countdown() {
+        // Between airings / on hiatus AniList has no countdown and the episode
+        // map may be empty: the strict long-runner rule says "no", but the
+        // repair pass must not wipe a correct arc link because of that.
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("TioAnime", "t", "tioanime").unwrap();
+        let mut op = catalog_anime(21, "One Piece", &[]);
+        op.episodes = None;
+        op.next_episode = None;
+        db.upsert_catalog_anime(&op, 0).unwrap();
+        let arc = series_with(&db, src, "op-elbaph", "One Piece: Arco de Elbaph");
+        db.set_anilist_id(arc, 21).unwrap();
+
+        assert_eq!(db.repair_season_mislinks().unwrap(), 0);
+        assert_eq!(linked_id(&db, arc), Some(21));
+    }
+
+    #[test]
     fn repair_keeps_a_link_to_a_subtitled_sequel_entry() {
         let db = Db::open(":memory:").unwrap();
         let src = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
@@ -3216,6 +3270,7 @@ mod tests {
         db.set_anilist_id(s2, 115230).unwrap();
         let mut op = catalog_anime(21, "One Piece", &[]);
         op.episodes = None;
+        op.next_episode = Some(1100);
         db.upsert_catalog_anime(&op, 1).unwrap();
         let arc = series_with(&db, src, "op-arc", "One Piece: Arco de Elbaph");
         db.set_anilist_id(arc, 21).unwrap();
@@ -5508,5 +5563,75 @@ mod tests {
         assert_eq!(5u32.clamp(1, 20), 5);
         assert_eq!(1u32.clamp(1, 20), 1);
         assert_eq!(20u32.clamp(1, 20), 20);
+    }
+
+    #[test]
+    fn is_long_runner_null_episodes_low_next_episode_is_false() {
+        let db = Db::open(":memory:").unwrap();
+        let mut anime = catalog_anime(1001, "Airing Short", &[]);
+        anime.episodes = None;
+        anime.next_episode = Some(4);
+        db.upsert_catalog_anime(&anime, 0).unwrap();
+        assert!(!db.is_long_runner(1001).unwrap());
+    }
+
+    #[test]
+    fn is_long_runner_null_episodes_high_next_episode_is_true() {
+        let db = Db::open(":memory:").unwrap();
+        let mut anime = catalog_anime(1002, "Airing Long", &[]);
+        anime.episodes = None;
+        anime.next_episode = Some(1100);
+        db.upsert_catalog_anime(&anime, 0).unwrap();
+        assert!(db.is_long_runner(1002).unwrap());
+    }
+
+    #[test]
+    fn is_long_runner_null_episodes_high_map_count_is_true() {
+        let db = Db::open(":memory:").unwrap();
+        let mut anime = catalog_anime(1003, "Mapped Long", &[]);
+        anime.episodes = None;
+        anime.next_episode = None;
+        db.upsert_catalog_anime(&anime, 0).unwrap();
+        for ep in 1..=70 {
+            db.conn.execute(
+                "INSERT INTO anilist_episode_map (anilist_id, episode, season) VALUES (?1, ?2, 1)",
+                [1003, ep],
+            ).unwrap();
+        }
+        assert!(db.is_long_runner(1003).unwrap());
+    }
+
+    #[test]
+    fn is_long_runner_short_episodes_is_false() {
+        let db = Db::open(":memory:").unwrap();
+        let mut anime = catalog_anime(1004, "Short Show", &[]);
+        anime.episodes = Some(24);
+        db.upsert_catalog_anime(&anime, 0).unwrap();
+        assert!(!db.is_long_runner(1004).unwrap());
+    }
+
+    #[test]
+    fn is_long_runner_long_episodes_is_true() {
+        let db = Db::open(":memory:").unwrap();
+        let mut anime = catalog_anime(1005, "Long Show", &[]);
+        anime.episodes = Some(1100);
+        db.upsert_catalog_anime(&anime, 0).unwrap();
+        assert!(db.is_long_runner(1005).unwrap());
+    }
+
+    #[test]
+    fn a_colon_subtitle_never_inherits_airing_short_show_link() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "a", "animeytx").unwrap();
+        let mut tog = catalog_anime(115230, "Tower of God", &[]);
+        tog.title_romaji = Some("Kami no Tou: Tower of God".into());
+        tog.synonyms = vec!["Kami no Tou".into()];
+        tog.episodes = None;
+        tog.next_episode = Some(5);
+        db.upsert_catalog_anime(&tog, 0).unwrap();
+        let s2 = series_with(&db, src, "tog2", "Kami no Tou: Ouji no Kikan");
+
+        db.link_series_to_catalog().unwrap();
+        assert_eq!(linked_id(&db, s2), None);
     }
 }

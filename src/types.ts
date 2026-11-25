@@ -47,6 +47,13 @@ export interface Episode {
   download_status?: "downloading" | "downloaded" | "failed" | null;
 }
 
+export interface EpisodeSource {
+  episode_id: number;
+  site_id: string;
+  site_name: string;
+  url: string;
+}
+
 export interface PendingItem {
   series: Series;
   episode: Episode;
@@ -79,6 +86,8 @@ export interface LibraryItem {
    *  set) — scraped-only followed series have no native studio data and this
    *  stays null. */
   studio: string | null;
+  catalog_episodes?: number | null;
+  catalog_status?: string | null;
 }
 
 export interface GenreStat {

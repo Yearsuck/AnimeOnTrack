@@ -141,7 +141,6 @@ impl EpisodePlayer for AppWindowPlayer {
 
         if let Some(m) = selected_monitor {
             let pos = *m.position();
-            let size = *m.size();
             let scale = m.scale_factor();
 
             if fullscreen {
@@ -153,11 +152,39 @@ impl EpisodePlayer for AppWindowPlayer {
                 #[cfg(desktop)]
                 let _ = win.maximize();
             } else {
-                let win_phys_w = (1280.0 * scale) as i32;
-                let win_phys_h = (800.0 * scale) as i32;
-                let center_x = pos.x + ((size.width as i32 - win_phys_w).max(0) / 2);
-                let center_y = pos.y + ((size.height as i32 - win_phys_h).max(0) / 2);
-                let _ = win.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(center_x, center_y)));
+                let work_area = m.work_area();
+                let work: crate::window_fit::Rect = (
+                    work_area.position.x,
+                    work_area.position.y,
+                    work_area.size.width,
+                    work_area.size.height,
+                );
+                // The window was built at the DEFAULT monitor's scale. Move it
+                // onto the target monitor first so a DPI change (e.g. a 125 %
+                // laptop screen and a 100 % external one) is applied before
+                // sizing, then size it from the target scale: 1280x800 logical
+                // client area plus the frame.
+                let _ = win.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(
+                    work.0, work.1,
+                )));
+                let frame = match (win.outer_size(), win.inner_size()) {
+                    (Ok(o), Ok(i)) => (
+                        o.width.saturating_sub(i.width),
+                        o.height.saturating_sub(i.height),
+                    ),
+                    _ => (0, 0),
+                };
+                let outer = tauri::PhysicalSize::new(
+                    (1280.0 * scale) as u32 + frame.0,
+                    (800.0 * scale) as u32 + frame.1,
+                );
+                let (new_x, new_y, new_w, new_h) =
+                    crate::window_fit::centered_in((outer.width, outer.height), work);
+                let _ = win.set_size(tauri::Size::Physical(tauri::PhysicalSize::new(
+                    new_w.saturating_sub(frame.0).max(1),
+                    new_h.saturating_sub(frame.1).max(1),
+                )));
+                let _ = win.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(new_x, new_y)));
             }
         } else if fullscreen {
             #[cfg(desktop)]
