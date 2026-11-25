@@ -557,18 +557,20 @@ impl Db {
     }
 
     /// Every followed series on a source OTHER than `exclude_source_id`, with
-    /// its title and the highest *seen* episode number (0 when nothing's been
-    /// watched). Non-numeric / recap episode numbers never inflate the
-    /// watermark (`CAST(number AS INTEGER)` parses leading digits, "Recap"→0).
-    /// Powers cross-site follow carry-over: matched by title against the newly
-    /// scanned site's airing list. See the carry-over design doc.
+    /// its title, highest *seen* episode number (0 when nothing's been
+    /// watched), and its optional `anilist_id`. Non-numeric / recap episode
+    /// numbers never inflate the watermark (`CAST(number AS INTEGER)` parses
+    /// leading digits, "Recap"→0). Powers cross-site follow carry-over: matched
+    /// by title against the newly scanned site's airing list, with a veto if
+    /// both sides have an AniList id and they differ.
     pub(crate) fn followed_titles_with_watermark(
         &self,
         exclude_source_id: i64,
-    ) -> Result<Vec<(String, i64)>> {
+    ) -> Result<Vec<(String, i64, Option<i64>)>> {
         let mut stmt = self.conn.prepare(
             "SELECT s.title,
-                    COALESCE(MAX(CASE WHEN e.seen=1 THEN CAST(e.number AS INTEGER) END), 0) AS watermark
+                    COALESCE(MAX(CASE WHEN e.seen=1 THEN CAST(e.number AS INTEGER) END), 0) AS watermark,
+                    s.anilist_id
              FROM series s
              LEFT JOIN episodes e ON e.series_id = s.id
              WHERE s.followed=1 AND s.source_id <> ?1
@@ -576,9 +578,29 @@ impl Db {
              ORDER BY s.title",
         )?;
         let rows = stmt
-            .query_map([exclude_source_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
+            .query_map([exclude_source_id], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, Option<i64>>(2)?,
+                ))
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
+    }
+
+    /// Look up the optional `anilist_id` for each series id in order.
+    pub(crate) fn anilist_ids_for_series(&self, series_ids: &[i64]) -> Result<Vec<Option<i64>>> {
+        let mut stmt = self.conn.prepare("SELECT anilist_id FROM series WHERE id=?1")?;
+        let mut out = Vec::with_capacity(series_ids.len());
+        for &id in series_ids {
+            let anilist_id: Option<i64> = stmt
+                .query_row([id], |r| r.get(0))
+                .optional()?
+                .flatten();
+            out.push(anilist_id);
+        }
+        Ok(out)
     }
 
     /// Carry a follow onto a new-site series row: set it followed and stash
@@ -1034,7 +1056,9 @@ impl Db {
                     SUM(CASE WHEN e.seen=1 THEN 1 ELSE 0 END) AS seen,
                     MAX(e.added_at) AS last_added,
                     MAX(e.seen_at) AS last_watched_at,
-                    c.studio AS studio
+                    c.studio AS studio,
+                    c.episodes AS catalog_episodes,
+                    c.status AS catalog_status
              FROM series s
              LEFT JOIN episodes e ON e.series_id = s.id
              LEFT JOIN anilist_catalog c ON c.id = s.anilist_id
@@ -1052,6 +1076,8 @@ impl Db {
             last_added: Option<String>,
             last_watched_at: Option<String>,
             studio: Option<String>,
+            catalog_episodes: Option<i64>,
+            catalog_status: Option<String>,
         }
         let members = stmt
             .query_map([], |r| {
@@ -1066,6 +1092,8 @@ impl Db {
                     last_added: r.get::<_, Option<String>>("last_added")?,
                     last_watched_at: r.get::<_, Option<String>>("last_watched_at")?,
                     studio: r.get::<_, Option<String>>("studio")?,
+                    catalog_episodes: r.get::<_, Option<i64>>("catalog_episodes")?,
+                    catalog_status: r.get::<_, Option<String>>("catalog_status")?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1091,6 +1119,8 @@ impl Db {
             watched_externally: bool,
             last_added: Option<String>,
             last_watched_at: Option<String>,
+            catalog_episodes: Option<i64>,
+            catalog_status: Option<String>,
         }
         let mut reps: Vec<Rep> = Vec::new();
         for key in &order {
@@ -1100,6 +1130,13 @@ impl Db {
             let watched_externally = group.iter().any(|m| m.watched_externally);
             let last_added = group.iter().filter_map(|m| m.last_added.clone()).max();
             let last_watched_at = group.iter().filter_map(|m| m.last_watched_at.clone()).max();
+            // Both fields from the SAME catalog row, so a title-grouped show
+            // never mixes one entry's total with another entry's status.
+            let (catalog_episodes, catalog_status) = group
+                .iter()
+                .find(|m| m.catalog_episodes.is_some() || m.catalog_status.is_some())
+                .map(|m| (m.catalog_episodes, m.catalog_status.clone()))
+                .unwrap_or((None, None));
             group.sort_by(|a, b| {
                 let a_active = (a.source_id == active_source_id) as u8;
                 let b_active = (b.source_id == active_source_id) as u8;
@@ -1110,7 +1147,16 @@ impl Db {
                     .then(a.series.id.cmp(&b.series.id))
             });
             let member = group.into_iter().next().unwrap();
-            reps.push(Rep { member, total_episodes, seen_episodes, watched_externally, last_added, last_watched_at });
+            reps.push(Rep {
+                member,
+                total_episodes,
+                seen_episodes,
+                watched_externally,
+                last_added,
+                last_watched_at,
+                catalog_episodes,
+                catalog_status,
+            });
         }
 
         // Bulk-fetch genres for the representative rows only (one statement, not
@@ -1137,6 +1183,8 @@ impl Db {
                 kind: r.member.kind,
                 genres,
                 studio: r.member.studio,
+                catalog_episodes: r.catalog_episodes,
+                catalog_status: r.catalog_status,
             });
         }
         out.sort_by_key(|item| item.series.title.to_lowercase());
@@ -2628,6 +2676,69 @@ mod tests {
 
         let unlinked_item = items.iter().find(|it| it.series.id == sid_unlinked).unwrap();
         assert_eq!(unlinked_item.studio, None);
+    }
+
+    #[test]
+    fn list_library_returns_catalog_episodes_and_status_for_linked_series() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+
+        let mut linked_anime = catalog_anime_with_popularity(600, "Linked Show", &["Action"], Some(100));
+        linked_anime.episodes = Some(24);
+        linked_anime.status = Some("FINISHED".into());
+        db.upsert_catalog_anime(&linked_anime, 0).unwrap();
+
+        let linked = crate::models::Series {
+            id: 0, slug: "linked-show".into(), title: "Linked Show".into(),
+            url: "u1".into(), cover_url: None, is_airing: false, followed: false, next_episode_at: None, site_episode_count: None,
+        };
+        let sid_linked = db.upsert_series(src, &linked).unwrap();
+        db.set_followed(sid_linked, true).unwrap();
+        db.set_anilist_id(sid_linked, 600).unwrap();
+
+        let unlinked = crate::models::Series {
+            id: 0, slug: "unlinked-show".into(), title: "Unlinked Show".into(),
+            url: "u2".into(), cover_url: None, is_airing: false, followed: false, next_episode_at: None, site_episode_count: None,
+        };
+        let sid_unlinked = db.upsert_series(src, &unlinked).unwrap();
+        db.set_followed(sid_unlinked, true).unwrap();
+
+        let items = db.list_library(src).unwrap();
+        let linked_item = items.iter().find(|it| it.series.id == sid_linked).unwrap();
+        assert_eq!(linked_item.catalog_episodes, Some(24));
+        assert_eq!(linked_item.catalog_status.as_deref(), Some("FINISHED"));
+
+        let unlinked_item = items.iter().find(|it| it.series.id == sid_unlinked).unwrap();
+        assert_eq!(unlinked_item.catalog_episodes, None);
+        assert_eq!(unlinked_item.catalog_status, None);
+    }
+
+    #[test]
+    fn followed_titles_with_watermark_returns_anilist_id_and_anilist_ids_for_series() {
+        let db = Db::open(":memory:").unwrap();
+        let src_a = db.upsert_source("A", "a", "animeytx").unwrap();
+        let src_b = db.upsert_source("B", "b", "tioanime").unwrap();
+
+        let s1 = db.upsert_series(src_a, &mk_airing("s1", "Show One", None)).unwrap();
+        db.set_followed(s1, true).unwrap();
+        db.set_anilist_id(s1, 100).unwrap();
+        insert_eps_seen_up_to(&db, s1, 3, 2);
+
+        let s2 = db.upsert_series(src_a, &mk_airing("s2", "Show Two", None)).unwrap();
+        db.set_followed(s2, true).unwrap();
+
+        let mut got = db.followed_titles_with_watermark(src_b).unwrap();
+        got.sort();
+        assert_eq!(
+            got,
+            vec![
+                ("Show One".to_string(), 2, Some(100)),
+                ("Show Two".to_string(), 0, None),
+            ]
+        );
+
+        let ids = db.anilist_ids_for_series(&[s1, s2]).unwrap();
+        assert_eq!(ids, vec![Some(100), None]);
     }
 
     #[test]

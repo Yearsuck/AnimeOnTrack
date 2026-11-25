@@ -322,7 +322,10 @@ async fn scan_airing_via_mirrors(
         .followed_titles_with_watermark(src)
         .map_err(|e| e.to_string())?;
     if !followed_elsewhere.is_empty() {
-        for (idx, watermark) in plan_carryover(&series, &followed_elsewhere) {
+        let new_site_anilist = db
+            .anilist_ids_for_series(&upserted_ids)
+            .map_err(|e| e.to_string())?;
+        for (idx, watermark) in plan_carryover(&series, &new_site_anilist, &followed_elsewhere) {
             db.carry_follow(upserted_ids[idx], watermark).map_err(|e| e.to_string())?;
         }
     }
