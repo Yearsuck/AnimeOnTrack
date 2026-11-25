@@ -78,7 +78,7 @@ pub const SELECTORS: &[SiteSelectors] = &[
     // fallback (largest iframe/video) is what normally does the work.
     SiteSelectors {
         site: "animeland",
-        players: &[".video_wrapper_container", ".video_wrapper", "#player", ".player", "#video-player"],
+        players: &["#player", ".player", "#video-player", "iframe[src*='embed'] <"],
         switchers: &[".servers", "#servers"],
         dynamic: true,
         anchor: "",
@@ -280,7 +280,7 @@ try{
   undoRef=function(){ if(typeof undo==='function') undo(); };
   if(W.__aotClean){
     if(W.__aotClean.apply()) return 'already';
-    undo(); return 'noplayer';
+    W.__aotClean.undo(); return 'noplayer';
   }
   if(!document.body) return 'noplayer';
 
@@ -291,7 +291,20 @@ try{
     var e=null; try{e=document.querySelector(sel);}catch(x){}
     return parent&&e?e.parentElement:e;
   }
-  function qa(sel){ try{return Array.prototype.slice.call(document.querySelectorAll(String(sel).replace(/<\s*$/,'')));}catch(x){return [];} }
+  function qa(sel){
+    sel=String(sel).replace(/^\s+|\s+$/g,'');
+    var parent=false;
+    if(sel.charAt(sel.length-1)==='<'){parent=true;sel=sel.slice(0,-1).replace(/\s+$/,'');}
+    var l;
+    try{l=document.querySelectorAll(sel);}catch(x){return [];}
+    if(!parent) return Array.prototype.slice.call(l);
+    var res=[],i;
+    for(i=0;i<l.length;i++){
+      var p=l[i].parentElement;
+      if(p&&res.indexOf(p)<0) res.push(p);
+    }
+    return res;
+  }
   function big(e){ if(!e||e===document.body||e===document.documentElement) return false;
     var r=e.getBoundingClientRect(); return r.width>=150&&r.height>=80; }
   function area(e){ var r=e.getBoundingClientRect(); return r.width*r.height; }
@@ -364,7 +377,7 @@ try{
         el.style.setProperty('background','#111','important');
         el.style.setProperty('z-index','2147483600','important');
         el.style.setProperty('box-sizing','border-box','important');
-        el.style.setProperty('display','block','important');
+        if(getComputedStyle(el).display==='none') el.style.setProperty('display','block','important');
       }
       el.style.setProperty('bottom',off+'px','important');
       off+=Math.min(el.getBoundingClientRect().height,cap);
@@ -397,7 +410,12 @@ try{
       e.setAttribute('data-aot-hide','1');
     }
     var f=player.querySelectorAll('iframe');
-    for(i=0;i<f.length;i++){ if(f[i]!==S.media&&/^(blob:|javascript:|about:blank)/i.test(f[i].getAttribute('src')||'')) f[i].setAttribute('data-aot-hide','1'); }
+    for(i=0;i<f.length;i++){
+      var ifr=f[i];
+      if(ifr===S.media) continue;
+      if(ifr.hasAttribute('data-src')||ifr.hasAttribute('data-lazy-src')||ifr.hasAttribute('data-lazyloaded')||(ifr.getAttribute('loading')||'').toLowerCase()==='lazy') continue;
+      if(/^(blob:|javascript:|about:blank)/i.test(ifr.getAttribute('src')||'')) ifr.setAttribute('data-aot-hide','1');
+    }
   }
   // A switcher must receive clicks: if some other layer sits on top of it
   // (ad shim, transparent hijack), hide that layer. Nodes are never moved.
@@ -428,6 +446,15 @@ try{
   function apply(){
     var player=(S.player&&document.documentElement.contains(S.player))?S.player:findPlayer();
     if(!player) return false;
+    var rifs=player.querySelectorAll('iframe'),ri;
+    for(ri=0;ri<rifs.length;ri++){
+      if(rifs[ri].hasAttribute('data-aot-hide')&&/^https?:/i.test(rifs[ri].getAttribute('src')||'')){
+        rifs[ri].removeAttribute('data-aot-hide');
+      }
+    }
+    if(player.hasAttribute&&player.hasAttribute('data-aot-hide')&&/^https?:/i.test(player.getAttribute('src')||'')){
+      player.removeAttribute('data-aot-hide');
+    }
     if(!S.title) S.title=pickTitle();
     if(!document.getElementById('aot-style')){
       var st=document.createElement('style'); st.id='aot-style'; st.textContent=css(); (document.head||document.documentElement).appendChild(st);
@@ -454,16 +481,40 @@ try{
   var pr=found.getBoundingClientRect();
   if(!(pr.width>=Math.min(150,window.innerWidth*0.4))){ undo(); return 'noplayer'; }
 
-  var pending=0, misses=0;
-  var mo=new MutationObserver(function(){
+  var pending=0, misses=0, mo=null;
+  mo=new MutationObserver(function(){
     if(pending) return;
     pending=setTimeout(function(){
       pending=0;
-      try{ if(apply()) misses=0; else if(++misses>=10){ undo(); S.player=null; } }catch(e){}
+      try{
+        if(apply()) misses=0;
+        else if(++misses>=10){
+          if(mo) mo.disconnect();
+          undo();
+          S.player=null;
+          W.__aotClean=null;
+        }
+      }catch(e){}
     },400);
   });
   mo.observe(document.documentElement,{childList:true,subtree:true});
-  W.__aotClean={apply:apply,undo:function(){mo.disconnect();undo();W.__aotClean=null;}};
+  // Some players (Gogoanime) put their iframe in fullscreen on load, which
+  // hides the title bar and the window's close button. Undo a fullscreen that
+  // happens before the viewer touched anything; a click inside the player
+  // iframe blurs this window, so the viewer's own fullscreen button still works.
+  var t0=Date.now(), touched=!document.hasFocus()||!!(document.activeElement&&document.activeElement.tagName==='IFRAME');
+  function touch(){ touched=true; }
+  function noAutoFs(){
+    if(document.fullscreenElement&&!touched&&Date.now()-t0<15000&&document.exitFullscreen){
+      try{ document.exitFullscreen(); }catch(e){}
+    }
+  }
+  document.addEventListener('pointerdown',touch,true);
+  document.addEventListener('keydown',touch,true);
+  W.addEventListener('blur',touch);
+  document.addEventListener('fullscreenchange',noAutoFs);
+  noAutoFs();
+  W.__aotClean={apply:apply,undo:function(){if(mo) mo.disconnect();document.removeEventListener('fullscreenchange',noAutoFs);undo();W.__aotClean=null;}};
   return 'ok';
 }catch(err){
   try{ if(window.__aotClean) window.__aotClean.undo(); else if(undoRef) undoRef(); }catch(e2){}
@@ -655,5 +706,38 @@ mod tests {
         assert!(s.contains("#video-container"));
         assert_eq!(s.matches('{').count(), s.matches('}').count(), "unbalanced braces");
         assert!(!s.contains("await ") && !s.contains("Promise"), "script must be synchronous");
+    }
+
+    #[test]
+    fn animeland_players_do_not_match_synopsis_container() {
+        let animeland = SELECTORS
+            .iter()
+            .find(|r| r.site == "animeland")
+            .expect("animeland row");
+        let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures")
+            .join("animeland_series.html");
+        let bytes = std::fs::read(p).expect("animeland_series.html");
+        let doc = Html::parse_document(&String::from_utf8_lossy(&bytes));
+
+        for s in animeland.players {
+            assert!(
+                !s.contains(".video_wrapper_container") && !s.contains(".video_wrapper"),
+                "animeland players should not contain synopsis container selector: {s}"
+            );
+            let s_sel = sel(s);
+            assert!(
+                doc.select(&s_sel).next().is_none(),
+                "animeland player selector {s:?} unexpectedly matched element in animeland_series.html"
+            );
+        }
+    }
+
+    #[test]
+    fn clean_script_contains_no_es2015_syntax() {
+        assert!(!CLEAN_SCRIPT.contains("=>"), "script must not contain arrow functions (=>)");
+        assert!(!CLEAN_SCRIPT.contains("let "), "script must not contain 'let '");
+        assert!(!CLEAN_SCRIPT.contains("const "), "script must not contain 'const '");
+        assert!(!CLEAN_SCRIPT.contains('`'), "script must not contain backtick character");
     }
 }
