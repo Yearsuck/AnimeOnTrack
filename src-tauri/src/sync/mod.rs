@@ -4,3 +4,5 @@
 // Nothing calls into this module until the sync command lands; drop this then.
 #![allow(dead_code)]
 pub mod doc;
+pub mod merge;
+pub mod remote;
