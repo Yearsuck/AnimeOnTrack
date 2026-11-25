@@ -347,9 +347,10 @@ impl Db {
             )?;
             return Ok(());
         };
-        let tx = self.conn.unchecked_transaction()?;
+        // Reuse an enclosing transaction (sync apply wraps a whole batch); SQLite has no nested BEGIN.
+        let tx = if self.conn.is_autocommit() { Some(self.conn.unchecked_transaction()?) } else { None };
         let rows: Vec<(i64, String)> = {
-            let mut stmt = tx.prepare("SELECT id, number FROM episodes WHERE series_id=?1")?;
+            let mut stmt = self.conn.prepare("SELECT id, number FROM episodes WHERE series_id=?1")?;
             let collected = stmt
                 .query_map([series_id], |r| Ok((r.get(0)?, r.get(1)?)))?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -373,14 +374,16 @@ impl Db {
                 // series' watch history to today, corrupting every
                 // date-bucketed stat (30-day heatmap, yearly activity,
                 // hourly distribution, dusty-watchlist ranges).
-                tx.execute(
+                self.conn.execute(
                     "UPDATE episodes SET seen=?1, seen_at = CASE WHEN ?1=1 THEN COALESCE(seen_at, datetime('now')) ELSE NULL END
                      WHERE id=?2",
                     (seen as i64, id),
                 )?;
             }
         }
-        tx.commit()?;
+        if let Some(tx) = tx {
+            tx.commit()?;
+        }
         Ok(())
     }
 
