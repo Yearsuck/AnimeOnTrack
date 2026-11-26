@@ -143,6 +143,11 @@ pub struct SyncOutcome {
     pub etag: String,
 }
 
+/// The shows that `to_bytes` would actually upload (records with no stamps are dropped).
+fn live_shows(d: &SyncDoc) -> impl Iterator<Item = (&String, &crate::sync::doc::ShowRecord)> {
+    d.shows.iter().filter(|(_, r)| !r.is_empty())
+}
+
 /// get -> parse -> merge -> put, retrying the whole cycle on `Conflict` up to 3 attempts.
 /// `merge_fn` receives the parsed remote document and returns the merge output.
 pub async fn run_cycle<R: SyncRemote>(
@@ -161,6 +166,13 @@ pub async fn run_cycle<R: SyncRemote>(
         };
 
         let output = merge_fn(&doc);
+        // Nothing new for the shared doc: skip the upload (a Drive sync runs after every
+        // refresh and the doc can be hundreds of KB). updated_at/by are bookkeeping only.
+        if let Some(etag) = &if_match {
+            if output.doc.schema == doc.schema && live_shows(&output.doc).eq(live_shows(&doc)) {
+                return Ok(SyncOutcome { output, etag: etag.clone() });
+            }
+        }
         let bytes = to_bytes(&output.doc);
 
         match remote.put(&bytes, if_match.as_deref()).await {
@@ -349,5 +361,58 @@ mod tests {
                 assert_eq!(fake.put_count.load(Ordering::SeqCst), 3);
             });
         }
+    }
+
+    #[test]
+    fn run_cycle_skips_upload_when_doc_content_is_unchanged() {
+        let fake = FakeConflictRemote::new(0);
+        let mut existing = SyncDoc { updated_at: 10, updated_by: "pc".into(), ..Default::default() };
+        existing.shows.insert(
+            "al:1".into(),
+            crate::sync::doc::ShowRecord {
+                anilist_id: Some(1),
+                title: "One".into(),
+                followed: Some(crate::sync::doc::Stamp { v: true, at: 5, dev: "pc".into() }),
+                ..Default::default()
+            },
+        );
+        let bytes = to_bytes(&existing);
+        *fake.doc.lock().unwrap() = Some((bytes, "etag-1".into()));
+        tauri::async_runtime::block_on(async {
+            // Same shows, only the bookkeeping (updated_at/by) differs: nothing to upload.
+            let res = run_cycle(&fake, |doc| MergeOutput {
+                doc: SyncDoc { updated_at: 99, updated_by: "phone".into(), ..doc.clone() },
+                apply: Vec::new(),
+                local_changes: 0,
+                remote_changes: 0,
+            })
+            .await
+            .unwrap();
+            assert_eq!(fake.put_count.load(Ordering::SeqCst), 0);
+            assert_eq!(res.etag, "etag-1");
+
+            // A real change is still uploaded.
+            let res = run_cycle(&fake, |doc| MergeOutput {
+                doc: {
+                    let mut d = doc.clone();
+                    d.shows.insert(
+                        "al:2".into(),
+                        crate::sync::doc::ShowRecord {
+                            anilist_id: Some(2),
+                            title: "Two".into(),
+                            followed: Some(crate::sync::doc::Stamp { v: true, at: 6, dev: "pc".into() }),
+                            ..Default::default()
+                        },
+                    );
+                    d
+                },
+                apply: Vec::new(),
+                local_changes: 1,
+                remote_changes: 0,
+            })
+            .await;
+            assert!(res.is_ok());
+            assert_eq!(fake.put_count.load(Ordering::SeqCst), 1);
+        });
     }
 }
