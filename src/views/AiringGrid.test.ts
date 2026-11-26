@@ -30,3 +30,19 @@ describe("isWithinLastThreeMonths", () => {
     expect(isWithinLastThreeMonths(sec(new Date(2025, 9, 14, 12)))).toBe(false);
   });
 });
+
+import { sortAiringItems } from "./AiringGrid";
+import type { AiringItem } from "../types";
+
+const mk = (id: number, title: string, score: number | null): AiringItem =>
+  ({ series: { id, title, next_episode_at: 100 - id }, score }) as unknown as AiringItem;
+
+describe("sortAiringItems", () => {
+  const items = [mk(1, "A", 70), mk(2, "B", null), mk(3, "C", 90), mk(4, "D", 70), mk(5, "E", 0)];
+  it("release keeps the incoming order", () => {
+    expect(sortAiringItems(items, "release").map((i) => i.series.id)).toEqual([1, 2, 3, 4, 5]);
+  });
+  it("score sorts desc, ties keep order, missing scores go last", () => {
+    expect(sortAiringItems(items, "score").map((i) => i.series.id)).toEqual([3, 1, 4, 5, 2]);
+  });
+});

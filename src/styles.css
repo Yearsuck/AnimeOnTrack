@@ -700,6 +700,14 @@ textarea.input {
   color: var(--text);
   font-weight: var(--fw-semibold);
 }
+/* AniList score, bottom-left so it never collides with the two top chips. */
+.poster .chip.chip-score {
+  top: auto;
+  bottom: 8px;
+  color: var(--text);
+  font-weight: var(--fw-semibold);
+  font-variant-numeric: tabular-nums;
+}
 .card-body {
   padding: 10px 10px 12px;
 }
