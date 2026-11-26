@@ -18,6 +18,11 @@ import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.Manifest
+import android.content.Context
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import app.tauri.annotation.Command
 import app.tauri.annotation.InvokeArg
@@ -174,9 +179,31 @@ class WebFetchPlugin(private val activity: Activity) : Plugin(activity) {
         }
     }
 
+    /**
+     * Android 13+ hides a foreground service's notification until POST_NOTIFICATIONS is
+     * granted. Ask once, on the first scan (the app is in the foreground then); the scan
+     * service runs either way, so a refusal is respected and never asked again.
+     */
+    private fun askNotificationPermissionOnce() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        val granted = ContextCompat.checkSelfPermission(
+            activity, Manifest.permission.POST_NOTIFICATIONS
+        ) == PackageManager.PERMISSION_GRANTED
+        if (granted) return
+        val prefs = activity.getSharedPreferences("aot_webfetch", Context.MODE_PRIVATE)
+        if (prefs.getBoolean("asked_post_notifications", false)) return
+        prefs.edit().putBoolean("asked_post_notifications", true).apply()
+        activity.runOnUiThread {
+            ActivityCompat.requestPermissions(
+                activity, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 4711
+            )
+        }
+    }
+
     @Command
     fun startScanService(invoke: Invoke) {
         try {
+            askNotificationPermissionOnce()
             val intent = Intent(activity, ScanService::class.java)
             ContextCompat.startForegroundService(activity, intent)
             invoke.resolve(JSObject())
