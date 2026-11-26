@@ -2,6 +2,7 @@ package com.animeontrack.webfetch
 
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
 import android.net.http.SslError
@@ -17,6 +18,12 @@ import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.Manifest
+import android.content.Context
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import app.tauri.annotation.Command
 import app.tauri.annotation.InvokeArg
 import app.tauri.annotation.TauriPlugin
@@ -157,6 +164,62 @@ class WebFetchPlugin(private val activity: Activity) : Plugin(activity) {
             } catch (e: Exception) {
                 invoke.reject("webfetch failed to start: " + e.message)
             }
+        }
+    }
+
+    @Command
+    fun secretsKey(invoke: Invoke) {
+        try {
+            val key = SecretsKey.get(activity.applicationContext)
+            val res = JSObject()
+            res.put("key", key)
+            invoke.resolve(res)
+        } catch (e: Exception) {
+            invoke.reject(e.message ?: e.toString())
+        }
+    }
+
+    /**
+     * Android 13+ hides a foreground service's notification until POST_NOTIFICATIONS is
+     * granted. Ask once, on the first scan (the app is in the foreground then); the scan
+     * service runs either way, so a refusal is respected and never asked again.
+     */
+    private fun askNotificationPermissionOnce() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        val granted = ContextCompat.checkSelfPermission(
+            activity, Manifest.permission.POST_NOTIFICATIONS
+        ) == PackageManager.PERMISSION_GRANTED
+        if (granted) return
+        val prefs = activity.getSharedPreferences("aot_webfetch", Context.MODE_PRIVATE)
+        if (prefs.getBoolean("asked_post_notifications", false)) return
+        prefs.edit().putBoolean("asked_post_notifications", true).apply()
+        activity.runOnUiThread {
+            ActivityCompat.requestPermissions(
+                activity, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 4711
+            )
+        }
+    }
+
+    @Command
+    fun startScanService(invoke: Invoke) {
+        try {
+            askNotificationPermissionOnce()
+            val intent = Intent(activity, ScanService::class.java)
+            ContextCompat.startForegroundService(activity, intent)
+            invoke.resolve(JSObject())
+        } catch (e: Exception) {
+            invoke.reject(e.message ?: e.toString())
+        }
+    }
+
+    @Command
+    fun stopScanService(invoke: Invoke) {
+        try {
+            val intent = Intent(activity, ScanService::class.java)
+            activity.stopService(intent)
+            invoke.resolve(JSObject())
+        } catch (e: Exception) {
+            invoke.reject(e.message ?: e.toString())
         }
     }
 

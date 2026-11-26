@@ -555,6 +555,11 @@ impl Db {
                 backlog_status TEXT,
                 watched_externally INTEGER NOT NULL DEFAULT 0,
                 seen_watermark INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS sync_base (
+                canon_key TEXT PRIMARY KEY,
+                merged TEXT NOT NULL,
+                observed TEXT NOT NULL
             );",
         )?;
 
@@ -674,6 +679,7 @@ mod airing;
 mod series;
 pub(crate) mod library;
 pub(crate) mod episode_align;
+pub mod sync_state;
 
 pub use series::SwipeHistoryRow;
 pub use catalog::CatalogFilter;

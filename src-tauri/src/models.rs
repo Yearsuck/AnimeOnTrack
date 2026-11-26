@@ -582,6 +582,32 @@ pub struct PlayerSettings {
     pub adblock: bool,
 }
 
+/// One sync cycle's outcome, returned by [`sync_now`] and stored in
+/// `sync_last_report`.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct SyncReport {
+    pub local_changes: usize,
+    pub remote_changes: usize,
+    pub applied: usize,
+    pub materialized: usize,
+    pub skipped: usize,
+    pub at: i64,
+}
+
+/// Snapshot of device-sync state shown in Settings.
+#[derive(serde::Serialize, Clone, Debug)]
+pub struct SyncStatus {
+    /// `"off"`, `"folder"` or `"drive"`.
+    pub transport: String,
+    pub folder: Option<String>,
+    pub drive_connected: bool,
+    pub device_id: String,
+    pub last_at: Option<i64>,
+    pub last_error: Option<String>,
+    pub last_report: Option<SyncReport>,
+    pub running: bool,
+}
+
 /// Extended metadata for Discover list entries, joining series with catalog data.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ListEntryMeta {

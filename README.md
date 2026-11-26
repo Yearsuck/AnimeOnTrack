@@ -69,7 +69,8 @@
     </li>
     <li><a href="#architecture--engineering-highlights">Architecture & Engineering Highlights</a></li>
     <li><a href="#project-layout">Project Layout</a></li>
-    <li><a href="#whats-new-in-v0250">What's New in v0.25.0</a></li>
+    <li><a href="#whats-new-in-v0260">What's New in v0.26.0</a></li>
+    <li><a href="#previous-release-v0250">Previous release: v0.25.0</a></li>
     <li><a href="#previous-release-v0243">Previous release: v0.24.3</a></li>
     <li><a href="#previous-release-v0242">Previous release: v0.24.2</a></li>
     <li><a href="#previous-release-v0241">Previous release: v0.24.1</a></li>
@@ -154,6 +155,11 @@ Crucially, the app maintains an **offline mirror of the AniList catalog (~22,000
 * **Zero Cloud Lock-In**: End-to-end database backups saved to a private, hidden folder in your own Google Drive.
 * **PKCE OAuth**: Easy one-click setup directly within Settings without custom compilation or baked-in secrets.
 * **Cross-Machine Migration**: Restoring on a fresh installation detects your snapshot and stages it safely.
+
+### 🔁 Device Sync
+* **Conflict-Free Merge**: Follows and "Ya lo vi" status win over removal, the highest watched episode watermark always wins, and *Want* takes precedence over *Discarded*.
+* **Flexible Transports**: Sync effortlessly through any shared folder (OneDrive, Syncthing, Google Drive for desktop...) or directly via your Google Drive's hidden app folder.
+* **Privacy by Design**: Nothing else leaves your device — settings, paths, downloads, and credentials stay strictly local.
 
 ### 🌐 Tri-Lingual Support
 * Full localization in **English (`en`)**, **Spanish (`es`)**, and **Catalan (`ca`)**, verified at compile time with 100% key coverage.
@@ -358,7 +364,20 @@ AnimeOnTrack/
 
 ---
 
-## What's New in v0.25.0
+## What's New in v0.26.0
+
+* **Sync between your devices**: Settings → Data & backup → "Sync between devices" keeps followed shows, watched episodes, "Ya lo vi" and your want/discarded lists in step across PC and Android, through a shared folder (OneDrive, Syncthing, Google Drive for desktop…) or your Google Drive. Changes from each device are merged field by field; an old or out-of-date copy of the sync file never undoes newer progress, and a show you removed on one device is not brought back. Settings, downloads and credentials stay on each device. Nothing is uploaded when nothing changed.
+* **Android: scans keep going with the screen off**: a scan runs as a foreground service with a "Buscando episodios nuevos…" notification, so Android no longer pauses it when the screen turns off. The first scan asks once for permission to show that notification.
+* **Android: episodes open in your browser**: the in-app window covered the whole screen with the site's ads, had no close button and ignored the back key; the system browser has its own back navigation.
+* **Android: Google Drive secrets are kept in the Android Keystore**.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+---
+
+<a id="previous-release-v0250"></a>
+
+## Previous release: v0.25.0
 
 * **Pendientes no longer changes when you switch sites**: the list depends on the anime (AniList) and on what you have seen, not on which sites have it. A show you marked as watched and that AniList lists as finished stays out even if a newly scanned site still lists it as airing, and episodes past what AniList says has aired are hidden (nothing is deleted).
 * **"Ver" opens your main site, and every site is one click away**: "▶ Ver" opens the episode on your active site when it has it. Clicking the episode shows one "Open on …" button for each site that has that same episode.

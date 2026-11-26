@@ -4,13 +4,13 @@ import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { stripCloudSettings } from './sanitize.mjs';
 
-test('strips only the Google Drive / backup settings', () => {
+test('strips only the Google Drive / backup / sync settings', () => {
   const db = new DatabaseSync(':memory:');
   db.exec('CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT)');
   const insert = db.prepare('INSERT INTO settings VALUES (?, ?)');
-  const doomed = ['google_client_id', 'google_client_secret', 'google_refresh_token', 'gdrive_file_id', 'backup_signature', 'backup_last_at'];
+  const doomed = ['google_client_id', 'google_client_secret', 'google_refresh_token', 'gdrive_file_id', 'backup_signature', 'backup_last_at', 'sync_device_id', 'sync_folder_path'];
   // Look-alikes that must survive: `_` is a LIKE wildcard, and a prefix match must not be a substring match.
-  const kept = ['active_site_id', 'banned_genres', 'mirror_urls:animeytx', 'googleish', 'gdrivefoo', 'my_backup_note', 'catalog_sync_state'];
+  const kept = ['active_site_id', 'banned_genres', 'mirror_urls:animeytx', 'googleish', 'gdrivefoo', 'my_backup_note', 'catalog_sync_state', 'syncish'];
   for (const k of [...doomed, ...kept]) insert.run(k, 'v');
 
   assert.equal(stripCloudSettings(db), doomed.length);

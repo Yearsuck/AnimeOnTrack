@@ -374,6 +374,7 @@ pub async fn scan_airing(
     state: State<'_, AppState>,
     base_url: String,
 ) -> Result<Vec<Series>, String> {
+    let _keep_alive = crate::scraper_engine::keep_alive::scan_keep_alive(&app);
     let site_id = get_active_site_id(&state);
     let a = get_active_adapter(&state)?;
     let existing = {
@@ -917,6 +918,7 @@ async fn fetch_single_cover_with_fallback(
 /// A/B-verification path for the skip logic itself.
 #[tauri::command]
 pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) -> Result<i64, String> {
+    let _keep_alive = crate::scraper_engine::keep_alive::scan_keep_alive(&app);
     let refresh_started = std::time::Instant::now();
     let src = get_source_id(&state)?;
     let site_id = get_active_site_id(&state);
@@ -1336,6 +1338,14 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
         let app2 = app.clone();
         tauri::async_runtime::spawn(async move {
             let _ = auto_backup_if_due(app2).await;
+        });
+    }
+
+    // Opportunistic device sync after every refresh.
+    {
+        let app3 = app.clone();
+        tauri::async_runtime::spawn(async move {
+            crate::commands::sync::auto_sync(app3).await;
         });
     }
 

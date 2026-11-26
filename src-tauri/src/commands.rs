@@ -6,7 +6,9 @@ use crate::models::{
     AiringItem, BackupStatus, BingeRecord, Episode, FinishedCard, GenreAffinity, GenreStat, HourCount,
     Series, SeriesDetail, SeriesGraphNode, TypeStat, WatchInsights, WatchSummary,
 };
-use crate::player::{AppWindowPlayer, EpisodePlayer};
+#[cfg(desktop)]
+use crate::player::AppWindowPlayer;
+use crate::player::EpisodePlayer;
 use crate::scraper_engine::{fetch_cover_image, fetch_html_with_script, is_safe_external_url, ScrapeResult};
 use crate::swipe::{pick_index, shuffle, undecided_cards, weighted_pick_index};
 use serde::Serialize;
@@ -43,6 +45,9 @@ pub use priority::*;
 
 mod scan;
 pub use scan::*;
+
+mod sync;
+pub use sync::*;
 
 mod maintenance;
 pub use maintenance::*;

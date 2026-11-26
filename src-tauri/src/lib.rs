@@ -24,6 +24,7 @@ mod player;
 mod recommend;
 mod scraper_engine;
 mod swipe;
+mod sync;
 mod cover_cache;
 #[cfg(desktop)]
 mod ui_watchdog;
@@ -176,6 +177,45 @@ pub fn run() {
                 extras_guard: extras_guard::ExtrasGuard::default(),
             });
 
+            // On Android, retrieve the wrapped data key from Android KeyStore via
+            // the WebFetch plugin, install it into secure_store, and upgrade any
+            // legacy plaintext secrets in the database.
+            #[cfg(target_os = "android")]
+            {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    let key = handle
+                        .try_state::<tauri_plugin_webfetch::WebFetch<tauri::Wry>>()
+                        .ok_or_else(|| "webfetch plugin not registered".to_string())
+                        .and_then(|webfetch| webfetch.secrets_key())
+                        .and_then(|b64| backup::secure_store::install_data_key(&b64));
+                    if let Err(e) = key {
+                        backup::secure_store::mark_data_key_unavailable();
+                        file_log::info(&format!("[secure_store] no secrets key: {e}"));
+                        return;
+                    }
+                    let Some(state) = handle.try_state::<AppState>() else { return };
+                    for key in ["google_client_secret", "gdrive_refresh_token"] {
+                        let Some(v) = state.db.lock().ok().and_then(|db| db.get_setting(key).ok().flatten()) else {
+                            continue;
+                        };
+                        if !backup::secure_store::needs_upgrade(&v) {
+                            continue;
+                        }
+                        // Sealed outside the lock; written only if nobody saved a new
+                        // value meanwhile, or this would restore the old secret.
+                        let sealed = backup::secure_store::protect(&v);
+                        if let Ok(db) = state.db.lock() {
+                            if db.get_setting(key).ok().flatten().as_deref() == Some(v.as_str()) {
+                                if let Err(e) = db.set_setting(key, &sealed) {
+                                    file_log::info(&format!("[secure_store] could not upgrade {key}: {e}"));
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+
             // Adjust initial main-window size and position if it sits behind
             // the Windows taskbar or off-screen on the current display.
             if let Some(main_win) = app.get_webview_window("main") {
@@ -199,6 +239,16 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 let _ = commands::auto_backup_if_due(handle).await;
             });
+
+            // Delayed auto-sync: let startup work (catalog link, library
+            // rebuild) finish before the first sync.
+            {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+                    commands::auto_sync(handle).await;
+                });
+            }
 
             anizip::spawn_sync(app.handle().clone());
             ad_block::init_engine_in_background();
@@ -311,6 +361,9 @@ pub fn run() {
             commands::set_auto_delete_seen_downloads,
             commands::get_download_quality,
             commands::set_download_quality,
+            commands::sync_status,
+            commands::set_sync_transport,
+            commands::sync_now,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -373,6 +373,28 @@ export interface BackupStatus {
   last_error: string | null;
 }
 
+export type SyncTransport = "off" | "folder" | "drive";
+
+export interface SyncReport {
+  local_changes: number;
+  remote_changes: number;
+  applied: number;
+  materialized: number;
+  skipped: number;
+  at: number;
+}
+
+export interface SyncStatus {
+  transport: SyncTransport;
+  folder: string | null;
+  drive_connected: boolean;
+  device_id: string;
+  last_at: number | null;
+  last_error: string | null;
+  last_report: SyncReport | null;
+  running: boolean;
+}
+
 export interface MonitorOption {
   id: string;
   name: string;
