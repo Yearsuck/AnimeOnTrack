@@ -4,6 +4,8 @@
 //! place of the hidden WebView2 window it opens on Windows (Android has no hidden
 //! windows: a `WebviewWindowBuilder` window covers the whole app there).
 //!
+//! Also provides the Android Keystore-wrapped data key for `secure_store`.
+//!
 //! The app depends on this crate only for `target_os = "android"`.
 
 use serde::{Deserialize, Serialize};
@@ -47,6 +49,11 @@ pub struct FetchResponse {
     pub polls: i64,
 }
 
+#[derive(Deserialize)]
+struct SecretsKeyResponse {
+    key: String,
+}
+
 pub struct WebFetch<R: Runtime>(PluginHandle<R>);
 
 impl<R: Runtime> WebFetch<R> {
@@ -56,6 +63,17 @@ impl<R: Runtime> WebFetch<R> {
         self.0
             .run_mobile_plugin("fetchRendered", request)
             .map_err(|e| e.to_string())
+    }
+
+    /// Blocking: fetches the data key wrapped by Android KeyStore. Call it from a
+    /// worker thread (`std::thread::spawn` / `spawn_blocking`), never from the main
+    /// thread or an async task.
+    pub fn secrets_key(&self) -> Result<String, String> {
+        let res: SecretsKeyResponse = self
+            .0
+            .run_mobile_plugin("secretsKey", ())
+            .map_err(|e| e.to_string())?;
+        Ok(res.key)
     }
 }
 

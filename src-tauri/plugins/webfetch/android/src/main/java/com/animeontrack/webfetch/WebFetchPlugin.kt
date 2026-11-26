@@ -160,6 +160,18 @@ class WebFetchPlugin(private val activity: Activity) : Plugin(activity) {
         }
     }
 
+    @Command
+    fun secretsKey(invoke: Invoke) {
+        try {
+            val key = SecretsKey.get(activity.applicationContext)
+            val res = JSObject()
+            res.put("key", key)
+            invoke.resolve(res)
+        } catch (e: Exception) {
+            invoke.reject(e.message ?: e.toString())
+        }
+    }
+
     /** `evaluateJavascript` hands back a JSON value; a JS string comes back quoted. Null if not a string. */
     private fun unquote(raw: String?): String? =
         try { JSONTokener(raw ?: "null").nextValue() as? String } catch (e: Exception) { null }
