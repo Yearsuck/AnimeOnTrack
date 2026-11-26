@@ -82,7 +82,8 @@ export const ca: Messages = {
   "pending.showMore": "Mostra'n {count} més",
   "pending.showLess": "Mostra menys",
   "pending.openOn": "Obre a {site}",
-  "pending.noSources": "No és a cap altra web",
+  "pending.noSources": "Només és en aquesta web",
+  "pending.mainSite": "Principal",
 
   // Onboarding.tsx
   "onboarding.title": "Segueix els teus animes en emissió",
