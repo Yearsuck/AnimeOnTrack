@@ -31,6 +31,9 @@ import type {
   SwipeHistoryItem,
   DeckBans,
   BackupStatus,
+  SyncTransport,
+  SyncStatus,
+  SyncReport,
   HourCount,
   GenreCard,
   MonitorOption,
@@ -299,6 +302,11 @@ export const connectDrive = () => invoke<BackupStatus>("connect_drive");
 export const disconnectDrive = () => invoke<BackupStatus>("disconnect_drive");
 export const backupNow = () => invoke<BackupStatus>("backup_now");
 export const restoreLatest = () => invoke<void>("restore_latest");
+
+export const syncStatus = () => invoke<SyncStatus>("sync_status");
+export const setSyncTransport = (transport: SyncTransport, folder: string | null = null) =>
+  invoke<SyncStatus>("set_sync_transport", { transport, folder });
+export const syncNow = () => invoke<SyncReport>("sync_now");
 
 // Stores the Google OAuth client the backup authenticates with, so Drive can
 // be set up without rebuilding. Passing empty strings clears it back to

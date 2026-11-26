@@ -1,4 +1,5 @@
 import { Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { BackLevel, useBackLayer } from "./lib/backStack";
 import { Onboarding } from "./views/Onboarding";
 import { AiringGrid } from "./views/AiringGrid";
@@ -38,11 +39,13 @@ import {
   backfillCatalogMetadata,
   refreshCatalogStatus,
   listLibrary,
+  syncNow,
 } from "./api";
 import { notifyNewEpisodes, readNotifyPref, shouldNotify } from "./lib/notify";
 import { useT } from "./i18n";
-import type { Series } from "./types";
+import type { Series, SyncReport } from "./types";
 import { isMobile } from "./lib/platform";
+import { createAutoSync } from "./lib/autoSync";
 
 const loadLibrary = () => import("./views/Library");
 const Library = lazy(() => loadLibrary().then((m) => ({ default: m.Library })));
@@ -72,6 +75,11 @@ const loadSeriesDetail = () =>
 const SeriesDetail = lazy(() => loadSeriesDetail().then((m) => ({ default: m.SeriesDetail })));
 
 const TAB_ORDER: readonly string[] = ["pending", "airing", "library", "catalog", "stats", "settings"];
+
+const autoSync = createAutoSync({
+  run: syncNow,
+  minIntervalMs: 120_000,
+});
 
 type View =
   | "loading"
@@ -261,6 +269,7 @@ export default function App() {
     const onVisibilityChange = () => {
       if (document.visibilityState === "visible") {
         trigger();
+        void autoSync.trigger();
       }
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
@@ -269,6 +278,16 @@ export default function App() {
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, []);
+
+  useEffect(() => {
+    const unlisten = listen<SyncReport>("sync-applied", () => {
+      void onPendingDataChanged();
+      setAiringRefreshSignal((n) => n + 1);
+    });
+    return () => {
+      unlisten.then((f) => f());
+    };
+  }, [onPendingDataChanged]);
 
   // Everyone who has not seen the tutorial gets it once, existing users
   // updating from a build without it included.
