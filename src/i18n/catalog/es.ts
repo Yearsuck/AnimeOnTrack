@@ -44,6 +44,10 @@ export const es = {
 
   // AiringGrid.tsx
   "airing.followingFilter": "★ Siguiendo ({count})",
+  "airing.sortLabel": "Ordenar:",
+  "airing.sortRelease": "Más recientes",
+  "airing.sortScore": "Mejor puntuadas",
+  "airing.scoreTooltip": "Puntuación media en AniList",
   "airing.followingChip": "Siguiendo",
   "airing.followingBtn": "✓ Siguiendo",
   "airing.followBtn": "+ Seguir",

@@ -40,6 +40,10 @@ export const ca: Messages = {
 
   // AiringGrid.tsx
   "airing.followingFilter": "★ Seguint ({count})",
+  "airing.sortLabel": "Ordena:",
+  "airing.sortRelease": "Més recents",
+  "airing.sortScore": "Millor puntuades",
+  "airing.scoreTooltip": "Puntuació mitjana a AniList",
   "airing.followingChip": "Seguint",
   "airing.followingBtn": "✓ Seguint",
   "airing.followBtn": "+ Segueix",

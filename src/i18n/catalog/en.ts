@@ -36,6 +36,10 @@ export const en: Messages = {
   "errors.generic": "Error: {detail}",
 
   "airing.followingFilter": "★ Following ({count})",
+  "airing.sortLabel": "Sort:",
+  "airing.sortRelease": "Newest",
+  "airing.sortScore": "Top rated",
+  "airing.scoreTooltip": "AniList average score",
   "airing.followingChip": "Following",
   "airing.followingBtn": "✓ Following",
   "airing.followBtn": "+ Follow",
