@@ -2,6 +2,7 @@ package com.animeontrack.webfetch
 
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
 import android.net.http.SslError
@@ -17,6 +18,7 @@ import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.core.content.ContextCompat
 import app.tauri.annotation.Command
 import app.tauri.annotation.InvokeArg
 import app.tauri.annotation.TauriPlugin
@@ -167,6 +169,28 @@ class WebFetchPlugin(private val activity: Activity) : Plugin(activity) {
             val res = JSObject()
             res.put("key", key)
             invoke.resolve(res)
+        } catch (e: Exception) {
+            invoke.reject(e.message ?: e.toString())
+        }
+    }
+
+    @Command
+    fun startScanService(invoke: Invoke) {
+        try {
+            val intent = Intent(activity, ScanService::class.java)
+            ContextCompat.startForegroundService(activity, intent)
+            invoke.resolve(JSObject())
+        } catch (e: Exception) {
+            invoke.reject(e.message ?: e.toString())
+        }
+    }
+
+    @Command
+    fun stopScanService(invoke: Invoke) {
+        try {
+            val intent = Intent(activity, ScanService::class.java)
+            activity.stopService(intent)
+            invoke.resolve(JSObject())
         } catch (e: Exception) {
             invoke.reject(e.message ?: e.toString())
         }
