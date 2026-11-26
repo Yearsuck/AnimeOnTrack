@@ -75,6 +75,26 @@ impl<R: Runtime> WebFetch<R> {
             .map_err(|e| e.to_string())?;
         Ok(res.key)
     }
+
+    /// Blocking: starts the foreground scan service. Call it from a worker
+    /// thread (`spawn_blocking`), never from the main thread or an async task.
+    pub fn start_scan_service(&self) -> Result<(), String> {
+        let _: serde_json::Value = self
+            .0
+            .run_mobile_plugin("startScanService", ())
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Blocking: stops the foreground scan service. Call it from a worker
+    /// thread (`spawn_blocking`), never from the main thread or an async task.
+    pub fn stop_scan_service(&self) -> Result<(), String> {
+        let _: serde_json::Value = self
+            .0
+            .run_mobile_plugin("stopScanService", ())
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
 }
 
 pub fn init<R: Runtime>() -> TauriPlugin<R> {

@@ -755,6 +755,7 @@ pub(crate) async fn eval(window: &WebviewWindow, script: &str, timeout_secs: u64
 
 #[cfg(any(test, target_os = "android"))]
 mod android;
+pub mod keep_alive;
 
 #[cfg(not(target_os = "android"))]
 fn uuid_like() -> u128 {
