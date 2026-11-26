@@ -104,6 +104,7 @@ dependencies = [
  "flate2",
  "getrandom 0.3.4",
  "reqwest 0.12.28",
+ "ring",
  "rusqlite",
  "scraper",
  "serde",
