@@ -1,7 +1,5 @@
 //! Database side of device sync (see `crate::sync`): read this device's state per
 //! canonical key, remember the last sync's base, apply merged changes.
-// Nothing calls into this module until the sync command lands; drop this then.
-#![allow(dead_code)]
 use super::*;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use crate::db::episode_align::format_ep_number;

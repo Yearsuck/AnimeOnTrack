@@ -240,6 +240,16 @@ pub fn run() {
                 let _ = commands::auto_backup_if_due(handle).await;
             });
 
+            // Delayed auto-sync: let startup work (catalog link, library
+            // rebuild) finish before the first sync.
+            {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+                    commands::auto_sync(handle).await;
+                });
+            }
+
             anizip::spawn_sync(app.handle().clone());
             ad_block::init_engine_in_background();
 
@@ -351,6 +361,9 @@ pub fn run() {
             commands::set_auto_delete_seen_downloads,
             commands::get_download_quality,
             commands::set_download_quality,
+            commands::sync_status,
+            commands::set_sync_transport,
+            commands::sync_now,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

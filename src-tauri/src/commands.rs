@@ -46,6 +46,9 @@ pub use priority::*;
 mod scan;
 pub use scan::*;
 
+mod sync;
+pub use sync::*;
+
 mod maintenance;
 pub use maintenance::*;
 
