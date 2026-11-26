@@ -1237,16 +1237,65 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
     let airing_needing = {
         let db = state.db.lock().unwrap();
         // No source_id argument: the query now spans all sites.
-        db.airing_series_needing_cover_fetch(AIRING_COVER_BATCH_LIMIT)
+        // Only AnimeFLV series pages are parsed for a missing cover (see below).
+        let null_cover_source = (site_id == "animeflv").then_some(src);
+        db.airing_series_needing_cover_fetch(AIRING_COVER_BATCH_LIMIT, null_cover_source)
             .map_err(|e| e.to_string())?
     };
+
+    // NULL-cover rows need to discover a remote poster before the existing
+    // direct-download/cache pipeline can run. AnimeFLV is the one adapter that
+    // contributes rows from an airing sidebar without a poster; fetch only for
+    // the active site, reusing the normal mirrored series-page path.
+    // Each lookup loads a whole series page, so only a few per refresh: the
+    // backlog drains over successive refreshes (rows are picked at random).
+    const NULL_COVER_PAGE_FETCH_CAP: usize = 6;
+    let mut null_cover_fetches = 0usize;
+    let mut resolved_airing_needing: Vec<(i64, String, String, i64)> = Vec::new();
+    for (id, title, cover, row_src, series_url) in airing_needing {
+        if let Some(remote) = cover {
+            resolved_airing_needing.push((id, title, remote, row_src));
+        } else if row_src == src && site_id == "animeflv" && null_cover_fetches < NULL_COVER_PAGE_FETCH_CAP {
+            null_cover_fetches += 1;
+            let path = match url::Url::parse(&series_url) {
+                Ok(u) => u.path().to_string(),
+                Err(_) => {
+                    let _ = state.db.lock().unwrap().record_cover_failure(id, &series_url);
+                    continue;
+                }
+            };
+            match scrape_via_mirrors(&app, &mirrors, &path, true, |scraped| {
+                match crate::adapter::animeflv::parse_series_cover_html(&scraped.html) {
+                    Some(cover) => Ok(vec![cover]),
+                    None => Err(anyhow::anyhow!("animeflv series page has no cover")),
+                }
+            })
+            .await
+            {
+                Ok((_scraped, covers, working_mirror)) => {
+                    if let Some(remote) = covers.into_iter().next() {
+                        let remote = rebase_to_mirror(&remote, &working_mirror);
+                        // Persist it so a failed download backs off on this URL
+                        // instead of re-loading the series page every refresh.
+                        let _ = state.db.lock().unwrap().set_missing_cover_url(id, &remote);
+                        resolved_airing_needing.push((id, title, remote, row_src));
+                    } else {
+                        let _ = state.db.lock().unwrap().record_cover_failure(id, &series_url);
+                    }
+                }
+                Err(_) => {
+                    let _ = state.db.lock().unwrap().record_cover_failure(id, &series_url);
+                }
+            }
+        }
+    }
 
     // (id, title, remote_url) of rows the browser might get past: active-site
     // rows (generous cap) and other-site rows (small cap).
     let mut cf_blocked: Vec<(i64, String, String)> = Vec::new();
     let mut cf_blocked_other: Vec<(i64, String, String)> = Vec::new();
     let airing_needing: Vec<(i64, String, String, i64)> =
-        airing_needing.into_iter().filter(|(id, _, _, _)| !cover_attempted.contains(id)).collect();
+        resolved_airing_needing.into_iter().filter(|(id, _, _, _)| !cover_attempted.contains(id)).collect();
     if !airing_needing.is_empty() {
         let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(4));
         let mut tasks = Vec::with_capacity(airing_needing.len());

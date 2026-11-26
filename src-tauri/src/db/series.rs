@@ -119,6 +119,10 @@ impl SeriesForLink {
     }
 }
 
+/// `(id, title, cover_url, source_id, series_url)` of an airing row whose cover
+/// still has to be fetched (`cover_url` is None when the listing had none).
+pub type AiringCoverRow = (i64, String, Option<String>, i64, String);
+
 impl Db {
     /// `next_episode_at`/`site_episode_count` are written here just like the
     /// rest of the scanned fields (unlike `followed`, which is deliberately
@@ -678,21 +682,30 @@ impl Db {
     /// would pin the window to the same ids forever and starve every later
     /// series. Shuffling lets the whole backlog drain over a few cycles.
     ///
-    /// Returns `(id, title, cover_url, source_id)` so the caller can apply
-    /// the WebView2 fallback only to rows belonging to the active site.
-    pub fn airing_series_needing_cover_fetch(&self, limit: i64) -> Result<Vec<(i64, String, String, i64)>> {
+    /// Returns `(id, title, cover_url, source_id, series_url)` so the caller can
+    /// fetch a cover from the series page when the airing listing has no cover.
+    ///
+    /// Rows with no cover at all are only returned for `null_cover_source` (the
+    /// active site, when its series pages can supply one): the caller has no way
+    /// to fill them for other sites, and returning them would only take slots
+    /// from the batch.
+    pub fn airing_series_needing_cover_fetch(
+        &self,
+        limit: i64,
+        null_cover_source: Option<i64>,
+    ) -> Result<Vec<AiringCoverRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, title, cover_url, source_id FROM series
+            "SELECT id, title, cover_url, source_id, url FROM series
              WHERE is_airing=1 AND anilist_id IS NULL
-               AND cover_url IS NOT NULL
-               AND cover_url NOT LIKE 'data:%'
-               AND cover_url NOT LIKE 'file:%'
-               AND cover_url NOT LIKE 'asset:%'
+               AND ((cover_url IS NULL AND source_id = ?2)
+                 OR (cover_url NOT LIKE 'data:%'
+                     AND cover_url NOT LIKE 'file:%'
+                     AND cover_url NOT LIKE 'asset:%'))
                -- Back off a URL that already failed: 6 h, doubling per
                -- consecutive failure, capped at 7 days (`record_cover_failure`).
                AND (
                  cover_failed_url IS NULL OR cover_failed_at IS NULL
-                 OR cover_failed_url <> cover_url
+                 OR cover_failed_url <> COALESCE(cover_url, url)
                  OR strftime('%s','now') - strftime('%s', cover_failed_at)
                      >= MIN(21600 * (1 << MIN(MAX(cover_fail_count, 1) - 1, 5)), 604800)
                )
@@ -700,9 +713,21 @@ impl Db {
              LIMIT ?1",
         )?;
         let rows = stmt
-            .query_map([limit], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+            .query_map(rusqlite::params![limit, null_cover_source], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
+    }
+
+    /// Store a cover URL found on the series page for a row that had none, so the
+    /// regular download (and its failure back-off on that URL) takes over.
+    pub fn set_missing_cover_url(&self, series_id: i64, url: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE series SET cover_url = ?2 WHERE id = ?1 AND cover_url IS NULL",
+            rusqlite::params![series_id, url],
+        )?;
+        Ok(())
     }
 
     /// Remember that fetching `url` as this series' cover failed (direct
@@ -1782,31 +1807,31 @@ mod tests {
         let mut dead = mk_airing("dead", "Dead Cover", None);
         dead.cover_url = Some("https://dead.example/a.jpg".into());
         let sid = db.upsert_series(src, &dead).unwrap();
-        assert_eq!(db.airing_series_needing_cover_fetch(20).unwrap().len(), 1);
+        assert_eq!(db.airing_series_needing_cover_fetch(20, None).unwrap().len(), 1);
 
         db.record_cover_failure(sid, "https://dead.example/a.jpg").unwrap();
-        assert!(db.airing_series_needing_cover_fetch(20).unwrap().is_empty(), "just failed -> skipped");
+        assert!(db.airing_series_needing_cover_fetch(20, None).unwrap().is_empty(), "just failed -> skipped");
 
         // First backoff is 6 h.
         db.conn.execute("UPDATE series SET cover_failed_at=datetime('now','-7 hours') WHERE id=?1", [sid]).unwrap();
-        assert_eq!(db.airing_series_needing_cover_fetch(20).unwrap().len(), 1, "6 h passed -> retried");
+        assert_eq!(db.airing_series_needing_cover_fetch(20, None).unwrap().len(), 1, "6 h passed -> retried");
 
         // Second failure of the same URL doubles it to 12 h.
         db.record_cover_failure(sid, "https://dead.example/a.jpg").unwrap();
         db.conn.execute("UPDATE series SET cover_failed_at=datetime('now','-7 hours') WHERE id=?1", [sid]).unwrap();
-        assert!(db.airing_series_needing_cover_fetch(20).unwrap().is_empty(), "12 h backoff after 2 failures");
+        assert!(db.airing_series_needing_cover_fetch(20, None).unwrap().is_empty(), "12 h backoff after 2 failures");
 
         // Capped at 7 days however many failures.
         for _ in 0..20 {
             db.record_cover_failure(sid, "https://dead.example/a.jpg").unwrap();
         }
         db.conn.execute("UPDATE series SET cover_failed_at=datetime('now','-8 days') WHERE id=?1", [sid]).unwrap();
-        assert_eq!(db.airing_series_needing_cover_fetch(20).unwrap().len(), 1, "cap is 7 days");
+        assert_eq!(db.airing_series_needing_cover_fetch(20, None).unwrap().len(), 1, "cap is 7 days");
 
         // A new URL from the site is tried at once.
         db.record_cover_failure(sid, "https://dead.example/a.jpg").unwrap();
         db.conn.execute("UPDATE series SET cover_url='https://cdn.example/new.jpg' WHERE id=?1", [sid]).unwrap();
-        assert_eq!(db.airing_series_needing_cover_fetch(20).unwrap().len(), 1, "different url -> no backoff");
+        assert_eq!(db.airing_series_needing_cover_fetch(20, None).unwrap().len(), 1, "different url -> no backoff");
     }
 
     #[test]
@@ -1833,14 +1858,14 @@ mod tests {
 
         // AniList-linked: list_airing shows the catalog's own cover for
         // these instead (see db/airing.rs), so fetching this column would
-        // be wasted work.
+        // be wasted work, even if it has no cover in the airing listing.
         let mut linked = mk_airing("linked", "Linked Show", None);
-        linked.cover_url = Some("https://site/linked.jpg".into());
+        linked.cover_url = None;
         let sid_linked = db.upsert_series(src, &linked).unwrap();
         db.set_anilist_id(sid_linked, 999).unwrap();
 
-        // No cover at all: nothing to fetch.
-        db.upsert_series(src, &mk_airing("no-cover", "No Cover", None)).unwrap();
+        // Unlinked with no cover: select it so its series page can fill the cover.
+        let sid_no_cover = db.upsert_series(src, &mk_airing("no-cover", "No Cover", None)).unwrap();
 
         // Not airing: out of scope for this backlog (finished shows are the
         // followed-only backlog's job, not this one's).
@@ -1849,11 +1874,15 @@ mod tests {
         finished.is_airing = false;
         db.upsert_series(src, &finished).unwrap();
 
-        let rows = db.airing_series_needing_cover_fetch(20).unwrap();
-        assert_eq!(rows.len(), 1, "only the unfollowed/unlinked/remote-cover/airing row qualifies");
-        assert_eq!(rows[0].0, sid_needs);
-        // Tuple is now (id, title, cover_url, source_id); .2 is still cover_url.
-        assert_eq!(rows[0].2, "https://site/needs-fetch.jpg");
+        let rows = db.airing_series_needing_cover_fetch(20, None).unwrap();
+        assert_eq!(rows.len(), 1, "a NULL cover is only picked for the site that can fill it");
+        let rows = db.airing_series_needing_cover_fetch(20, Some(src)).unwrap();
+        assert_eq!(rows.len(), 2, "remote-cover and NULL-cover unlinked airing rows qualify");
+        assert!(rows.iter().any(|row| row.0 == sid_needs));
+        assert!(rows.iter().any(|row| row.0 == sid_no_cover));
+        assert!(!rows.iter().any(|row| row.0 == sid_linked));
+        let needs = rows.iter().find(|row| row.0 == sid_needs).unwrap();
+        assert_eq!(needs.2.as_deref(), Some("https://site/needs-fetch.jpg"));
 
         // The cap is real, not just a LIMIT that happens not to bite here.
         for i in 0..5 {
@@ -1861,7 +1890,7 @@ mod tests {
             s.cover_url = Some(format!("https://site/more-{i}.jpg"));
             db.upsert_series(src, &s).unwrap();
         }
-        assert_eq!(db.airing_series_needing_cover_fetch(3).unwrap().len(), 3);
+        assert_eq!(db.airing_series_needing_cover_fetch(3, None).unwrap().len(), 3);
     }
 
     #[test]
@@ -3287,12 +3316,14 @@ mod tests {
         // Null cover
         db.upsert_series(src, &make("null-cover", None)).unwrap();
 
-        let needing = db.airing_series_needing_cover_fetch(60).unwrap();
-        assert_eq!(needing.len(), 1);
-        // Tuple is now (id, title, cover_url, source_id); title == slug in
-        // these fixtures, so the assertion is unchanged in substance.
-        assert_eq!(needing[0].1, "remote");
-        assert_eq!(needing[0].3, src);
+        let needing = db.airing_series_needing_cover_fetch(60, Some(src)).unwrap();
+        assert_eq!(needing.len(), 2);
+        let remote = needing.iter().find(|row| row.1 == "remote").unwrap();
+        let null = needing.iter().find(|row| row.1 == "null-cover").unwrap();
+        assert_eq!(remote.3, src);
+        assert_eq!(remote.2.as_deref(), Some("https://example.com/cover.jpg"));
+        assert_eq!(null.2, None);
+        assert_eq!(null.4, "https://example.com/null-cover");
     }
 
     #[test]
@@ -3334,16 +3365,16 @@ mod tests {
         not_air.slug = "show-not-airing".into();
         db.upsert_series(src_a, &not_air).unwrap();
 
-        let needing = db.airing_series_needing_cover_fetch(60).unwrap();
+        let needing = db.airing_series_needing_cover_fetch(60, None).unwrap();
 
-        let ids: std::collections::HashSet<i64> = needing.iter().map(|(id, _, _, _)| *id).collect();
+        let ids: std::collections::HashSet<i64> = needing.iter().map(|(id, _, _, _, _)| *id).collect();
         assert!(ids.contains(&id_a), "show-a (site animeytx) must be selected");
         assert!(ids.contains(&id_b), "show-b (site tioanime) must be selected");
         assert!(!ids.contains(&id_linked), "linked row must not be selected");
         assert_eq!(needing.len(), 2, "only the two unlinked airing remote-cover rows");
 
         // Each tuple carries its own source_id.
-        let src_for = |id: i64| needing.iter().find(|(i, _, _, _)| *i == id).unwrap().3;
+        let src_for = |id: i64| needing.iter().find(|(i, _, _, _, _)| *i == id).unwrap().3;
         assert_eq!(src_for(id_a), src_a);
         assert_eq!(src_for(id_b), src_b);
     }
