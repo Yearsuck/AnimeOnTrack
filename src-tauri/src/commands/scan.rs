@@ -1341,6 +1341,14 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
         });
     }
 
+    // Opportunistic device sync after every refresh.
+    {
+        let app3 = app.clone();
+        tauri::async_runtime::spawn(async move {
+            crate::commands::sync::auto_sync(app3).await;
+        });
+    }
+
     crate::commands::fallback::spawn_episode_fallback(app.clone());
 
     Ok(total_new)

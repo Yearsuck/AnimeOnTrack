@@ -155,6 +155,11 @@ Crucially, the app maintains an **offline mirror of the AniList catalog (~22,000
 * **PKCE OAuth**: Easy one-click setup directly within Settings without custom compilation or baked-in secrets.
 * **Cross-Machine Migration**: Restoring on a fresh installation detects your snapshot and stages it safely.
 
+### 🔁 Device Sync
+* **Conflict-Free Merge**: Follows and "Ya lo vi" status win over removal, the highest watched episode watermark always wins, and *Want* takes precedence over *Discarded*.
+* **Flexible Transports**: Sync effortlessly through any shared folder (OneDrive, Syncthing, Google Drive for desktop...) or directly via your Google Drive's hidden app folder.
+* **Privacy by Design**: Nothing else leaves your device — settings, paths, downloads, and credentials stay strictly local.
+
 ### 🌐 Tri-Lingual Support
 * Full localization in **English (`en`)**, **Spanish (`es`)**, and **Catalan (`ca`)**, verified at compile time with 100% key coverage.
 
