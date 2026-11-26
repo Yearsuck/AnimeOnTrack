@@ -77,7 +77,8 @@ export const en: Messages = {
   "pending.showMore": "Show {count} more",
   "pending.showLess": "Show less",
   "pending.openOn": "Open on {site}",
-  "pending.noSources": "Not on any other site",
+  "pending.noSources": "Only on this site",
+  "pending.mainSite": "Main",
 
   "onboarding.title": "Track your airing anime",
   "onboarding.subtitle": "Enter the site URL to scan for airing anime.",

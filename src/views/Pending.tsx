@@ -1,5 +1,5 @@
-import { Fragment, useCallback, useEffect, useState } from "react";
-import { episodeSources, listPending, playDownload, setSeenCascade } from "../api";
+import { useCallback, useEffect, useState } from "react";
+import { episodeSources, getActiveSite, listPending, playDownload, setSeenCascade } from "../api";
 import { launchEpisode } from "../lib/launchEpisode";
 import { useT } from "../i18n";
 import type { EpisodeSource, PendingItem, Series } from "../types";
@@ -55,6 +55,12 @@ export function Pending({
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [openSources, setOpenSources] = useState<Set<number>>(new Set());
   const [sourcesCache, setSourcesCache] = useState<Map<number, EpisodeSource[]>>(new Map());
+  const [activeSiteId, setActiveSiteId] = useState<string | null>(null);
+  useEffect(() => {
+    getActiveSite()
+      .then((site) => setActiveSiteId(site.id))
+      .catch(() => setActiveSiteId(null));
+  }, [refreshSignal]);
   const [loadingSources, setLoadingSources] = useState<Set<number>>(new Set());
 
   function toggleExpanded(seriesId: number) {
@@ -161,7 +167,7 @@ export function Pending({
         // Release the fade-out marker. The set only ever grew before, so an
         // id that came BACK into the list — un-marked from the SeriesDetail
         // overlay while this view stays mounted, then reloaded through
-        // `refreshSignal` — still matched `.ep-row.removing { opacity: 0 }`
+        // `refreshSignal` — still matched `.ep-item.removing { opacity: 0 }`
         // and rendered invisible-but-present. In `finally` so a failed
         // cascade (where the row legitimately stays in the list) can't hide
         // it either.
@@ -269,8 +275,11 @@ export function Pending({
                   const epSources = sourcesCache.get(it.episode.id);
                   const isLoadingSources = loadingSources.has(it.episode.id);
                   return (
-                    <Fragment key={it.episode.id}>
-                    <div className={`ep-row ${removing.has(it.episode.id) ? "removing" : ""}`}>
+                    <div
+                      key={it.episode.id}
+                      className={`ep-item ${isSourcesOpen ? "is-open" : ""} ${removing.has(it.episode.id) ? "removing" : ""}`}
+                    >
+                    <div className="ep-row">
                       <span className="ep-num">{it.episode.number}</span>
                       <div className="ep-main">
                         <button
@@ -280,6 +289,9 @@ export function Pending({
                           onClick={() => toggleSources(it.episode.id)}
                         >
                           {t("common.episodeNumber", { number: it.episode.number })}
+                          <svg className="ep-title-chevron" viewBox="0 0 12 12" aria-hidden="true">
+                            <path d="M3 4.5 6 7.5 9 4.5" />
+                          </svg>
                         </button>
                       </div>
                       <div className="ep-actions">
@@ -296,38 +308,53 @@ export function Pending({
                         </button>
                       </div>
                     </div>
-                    {/* Below the whole row, not inside the title column, so the
-                        buttons never run under "Ver" in the narrow episode card. */}
                     {isSourcesOpen && (
                       <div className="ep-sources">
                         {isLoadingSources && !epSources ? (
-                          <span className="muted text-xs">…</span>
+                          <span className="ep-sources-note">…</span>
                         ) : (
-                          epSources?.map((s) => (
-                            <button
-                              key={s.site_id}
-                              type="button"
-                              className="btn btn-sm"
-                              onClick={(e) =>
-                                launchEpisode({
-                                  url: s.url,
-                                  origin: e.currentTarget,
-                                  title: it.series.title,
-                                  episode: it.episode.number,
-                                  cover: resolveCoverUrl(it.series.cover_url),
-                                })
-                              }
-                            >
-                              {t("pending.openOn", { site: s.site_name })}
-                            </button>
-                          ))
-                        )}
-                        {epSources && epSources.length <= 1 && (
-                          <span className="muted text-xs">{t("pending.noSources")}</span>
+                          <>
+                            <ul className="ep-hosts">
+                              {epSources?.map((s) => (
+                                <li key={s.site_id}>
+                                  <button
+                                    type="button"
+                                    className="ep-host"
+                                    style={{ "--host-hue": siteHue(s.site_id) } as React.CSSProperties}
+                                    aria-label={
+                                      s.site_id === activeSiteId
+                                        ? `${t("pending.openOn", { site: s.site_name })} (${t("pending.mainSite")})`
+                                        : t("pending.openOn", { site: s.site_name })
+                                    }
+                                    onClick={(e) =>
+                                      launchEpisode({
+                                        url: s.url,
+                                        origin: e.currentTarget,
+                                        title: it.series.title,
+                                        episode: it.episode.number,
+                                        cover: resolveCoverUrl(it.series.cover_url),
+                                      })
+                                    }
+                                  >
+                                    <span className="ep-host-mark" aria-hidden="true">
+                                      {siteMonogram(s.site_name)}
+                                    </span>
+                                    <span className="ep-host-name">{s.site_name}</span>
+                                    {s.site_id === activeSiteId && (
+                                      <span className="ep-host-tag">{t("pending.mainSite")}</span>
+                                    )}
+                                  </button>
+                                </li>
+                              ))}
+                            </ul>
+                            {epSources && epSources.length <= 1 && (
+                              <span className="ep-sources-note">{t("pending.noSources")}</span>
+                            )}
+                          </>
                         )}
                       </div>
                     )}
-                    </Fragment>
+                    </div>
                   );
                 })}
                 </div>
@@ -350,4 +377,34 @@ export function Pending({
       )}
     </div>
   );
+}
+
+/** Hue per supported site, spaced around the wheel so two hosts never look alike. */
+const SITE_HUES: Record<string, number> = {
+  animeflv: 210,
+  tioanime: 28,
+  jkanime: 140,
+  animeyt: 265,
+  monoschinos: 300,
+  animefenix: 48,
+  gogoanime: 95,
+  animeland: 330,
+  animoratv: 180,
+  aniwaves: 240,
+  animeytx: 0,
+};
+
+/** Stable hue per site so each host keeps its colour across episodes and sessions. */
+function siteHue(siteId: string): number {
+  const known = SITE_HUES[siteId];
+  if (known !== undefined) return known;
+  let h = 0;
+  for (let i = 0; i < siteId.length; i++) h = (h * 31 + siteId.charCodeAt(i)) >>> 0;
+  return Math.round((h * 137.508) % 360);
+}
+
+/** Two letters from the site name: capitals when it has them (AnimeFLV -> AF), else the first two. */
+function siteMonogram(name: string): string {
+  const caps = name.replace(/[^A-Z]/g, "");
+  return (caps.length >= 2 ? caps.slice(0, 2) : name.slice(0, 2)).toUpperCase();
 }
