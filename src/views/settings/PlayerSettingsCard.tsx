@@ -70,8 +70,8 @@ export function PlayerSettingsCard() {
       <p className="settings-section-desc">{t("settings.playerDesc")}</p>
 
       <div className="settings-field">
-        <label className="settings-field-label">{t("settings.playerMonitor")}</label>
-        <select
+        <label className="settings-field-label" htmlFor="sf-settings-playerMonitor">{t("settings.playerMonitor")}</label>
+        <select id="sf-settings-playerMonitor"
           className="input settings-select"
           value={targetMonitor}
           onChange={(e) => handleMonitorChange(e.target.value)}
@@ -94,8 +94,8 @@ export function PlayerSettingsCard() {
       </div>
 
       <div className="settings-field">
-        <label className="settings-field-label">{t("settings.playerMode")}</label>
-        <div className="row">
+        <span className="settings-field-label" id="sf-settings-playerMode">{t("settings.playerMode")}</span>
+        <div role="group" aria-labelledby="sf-settings-playerMode" className="row">
           <button
             type="button"
             className={`chip-toggle ${!fullscreen ? "active" : ""}`}
@@ -113,8 +113,8 @@ export function PlayerSettingsCard() {
         </div>
       </div>
 
-      <div className="settings-field">
-        <label className="settings-field-label">{t("settings.playerClean")}</label>
+      <div className="settings-field" role="group" aria-labelledby="sf-settings-playerClean">
+        <span className="settings-field-label" id="sf-settings-playerClean">{t("settings.playerClean")}</span>
         <p className="settings-section-desc">{t("settings.playerCleanHelp")}</p>
         <div className="row">
           <button
@@ -129,8 +129,8 @@ export function PlayerSettingsCard() {
         </div>
       </div>
 
-      <div className="settings-field">
-        <label className="settings-field-label">{t("settings.playerAdblock")}</label>
+      <div className="settings-field" role="group" aria-labelledby="sf-settings-playerAdblock">
+        <span className="settings-field-label" id="sf-settings-playerAdblock">{t("settings.playerAdblock")}</span>
         <p className="settings-section-desc">{t("settings.playerAdblockHelp")}</p>
         <div className="row">
           <button

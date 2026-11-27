@@ -97,8 +97,8 @@ export function SyncCard() {
       <p className="settings-section-desc">{t("settings.syncDesc")}</p>
 
       <div className="settings-field">
-        <label className="settings-field-label">{t("settings.syncTransportLabel")}</label>
-        <div className="row">
+        <span className="settings-field-label" id="sf-settings-syncTransportLabel">{t("settings.syncTransportLabel")}</span>
+        <div role="group" aria-labelledby="sf-settings-syncTransportLabel" className="row">
           <button
             type="button"
             className={`chip-toggle ${currentTransport === "off" ? "active" : ""}`}
@@ -131,8 +131,8 @@ export function SyncCard() {
 
       {currentTransport === "folder" && (
         <div className="settings-field">
-          <label className="settings-field-label">{t("settings.syncFolderLabel")}</label>
-          <div className="row settings-cred-row">
+          <span className="settings-field-label" id="sf-settings-syncFolderLabel">{t("settings.syncFolderLabel")}</span>
+          <div role="group" aria-labelledby="sf-settings-syncFolderLabel" className="row settings-cred-row">
             <input
               className="input settings-url-input"
               value={folderInput}

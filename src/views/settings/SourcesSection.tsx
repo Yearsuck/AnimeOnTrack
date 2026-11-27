@@ -174,8 +174,8 @@ export function SourcesSection({ onSiteChanged }: SourcesSectionProps) {
       <p className="settings-section-desc">{t("settings.sourcesIntro")}</p>
 
       <div className="settings-field">
-        <label className="settings-field-label">{t("settings.sourcesActiveLabel")}</label>
-        <select
+        <label className="settings-field-label" htmlFor="sf-settings-sourcesActiveLabel">{t("settings.sourcesActiveLabel")}</label>
+        <select id="sf-settings-sourcesActiveLabel"
           className="input settings-select"
           value={pendingSiteId ?? activeSite?.id ?? ""}
           disabled={switchingSite || sites.length === 0}
@@ -212,8 +212,8 @@ export function SourcesSection({ onSiteChanged }: SourcesSectionProps) {
         )}
       </div>
 
-      <div className="settings-field">
-        <label className="settings-field-label">{t("settings.sitePriorityHeading")}</label>
+      <div className="settings-field" role="group" aria-labelledby="sf-settings-sitePriorityHeading">
+        <span className="settings-field-label" id="sf-settings-sitePriorityHeading">{t("settings.sitePriorityHeading")}</span>
         <p className="settings-section-desc">{t("settings.sitePriorityHint")}</p>
         {priorityOrder.map((siteId, index) => {
           const site = sites.find((s) => s.id === siteId);
@@ -249,8 +249,8 @@ export function SourcesSection({ onSiteChanged }: SourcesSectionProps) {
         <summary className="settings-details-summary">{t("settings.sourcesAdvanced")}</summary>
         <div className="settings-details-body">
           <div className="settings-field">
-            <label className="settings-field-label">{t("settings.addNewSiteDesc")}</label>
-            <div className="row">
+            <span className="settings-field-label" id="sf-settings-addNewSiteDesc">{t("settings.addNewSiteDesc")}</span>
+            <div role="group" aria-labelledby="sf-settings-addNewSiteDesc" className="row">
               <input
                 className="input settings-url-input"
                 value={firstUrl}
@@ -265,10 +265,10 @@ export function SourcesSection({ onSiteChanged }: SourcesSectionProps) {
           </div>
 
           <div className="settings-field">
-            <label className="settings-field-label">
+            <label className="settings-field-label" htmlFor="sf-settings-mirrorsDesc">
               {t("settings.mirrorsDesc", { site: activeSite?.name ?? t("settings.activeSiteFallback") })}
             </label>
-            <textarea
+            <textarea id="sf-settings-mirrorsDesc"
               className="input textarea-mono"
               rows={5}
               value={mirrorsText}

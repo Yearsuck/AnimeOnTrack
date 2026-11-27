@@ -52,8 +52,8 @@ export function AppearanceSection({ onReplayTutorial }: { onReplayTutorial?: () 
       <p className="settings-section-desc">{t("settings.appearanceDesc")}</p>
 
       <div className="settings-field">
-        <label className="settings-field-label">{t("settings.theme")}</label>
-        <div className="row">
+        <span className="settings-field-label" id="sf-settings-theme">{t("settings.theme")}</span>
+        <div role="group" aria-labelledby="sf-settings-theme" className="row">
           {THEMES.map((th) => (
             <button
               key={th.code}
@@ -68,8 +68,8 @@ export function AppearanceSection({ onReplayTutorial }: { onReplayTutorial?: () 
       </div>
 
       <div className="settings-field">
-        <label className="settings-field-label">{t("settings.language")}</label>
-        <div className="row">
+        <span className="settings-field-label" id="sf-settings-language">{t("settings.language")}</span>
+        <div role="group" aria-labelledby="sf-settings-language" className="row">
           {LANGS.map((l) => (
             <button
               key={l.code}
@@ -84,8 +84,8 @@ export function AppearanceSection({ onReplayTutorial }: { onReplayTutorial?: () 
       </div>
 
       <div className="settings-field">
-        <label className="settings-field-label">{t("settings.notifyLabel")}</label>
-        <div className="row">
+        <span className="settings-field-label" id="sf-settings-notifyLabel">{t("settings.notifyLabel")}</span>
+        <div role="group" aria-labelledby="sf-settings-notifyLabel" className="row">
           <button
             type="button"
             className={`chip-toggle ${notifyEnabled ? "active" : ""}`}
@@ -106,8 +106,8 @@ export function AppearanceSection({ onReplayTutorial }: { onReplayTutorial?: () 
 
       {!isMobile && (
         <div className="settings-field">
-          <label className="settings-field-label">{t("settings.updateLabel")}</label>
-          <div className="row">
+          <span className="settings-field-label" id="sf-settings-updateLabel">{t("settings.updateLabel")}</span>
+          <div role="group" aria-labelledby="sf-settings-updateLabel" className="row">
             <button
               type="button"
               className={`chip-toggle ${updateAuto ? "active" : ""}`}
@@ -153,8 +153,8 @@ export function AppearanceSection({ onReplayTutorial }: { onReplayTutorial?: () 
 
       {onReplayTutorial && (
         <div className="settings-field">
-          <label className="settings-field-label">{t("settings.tutorialLabel")}</label>
-          <div className="row">
+          <span className="settings-field-label" id="sf-settings-tutorialLabel">{t("settings.tutorialLabel")}</span>
+          <div role="group" aria-labelledby="sf-settings-tutorialLabel" className="row">
             <button type="button" className="btn" onClick={onReplayTutorial}>
               {t("settings.tutorialButton")}
             </button>
