@@ -942,33 +942,11 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
     let listing_slugs: Option<std::collections::HashSet<String>> =
         match scrape_airing_listing(&app, &mirrors, a.as_ref()).await {
             Ok((series, _working_mirror, listing_complete)) => {
-                let db = state.db.lock().unwrap();
-                // Drop `file:` covers whose cached file vanished (cleared
-                // AppData, DB restored on another machine) so the upsert
-                // below puts the remote thumbnail back and the cover step
-                // re-downloads it. Only for series in THIS successful
-                // listing: anything else has no remote URL to come back
-                // from, so clearing it would lose the cover for good.
-                let listed: std::collections::HashSet<&str> = series.iter().map(|s| s.slug.as_str()).collect();
-                match db.heal_missing_cached_covers(src, &listed) {
-                    Ok(0) => {}
-                    Ok(n) => eprintln!("[cover] cleared {n} cached cover(s) whose file is missing"),
-                    Err(e) => eprintln!("[cover] heal_missing_cached_covers failed: {e}"),
-                }
-                if listing_complete {
-                    match db.mark_unlisted_not_airing(src, &listed) {
-                        Ok(0) => {}
-                        Ok(n) => eprintln!("[scan] {n} unlinked show(s) no longer listed by the site: not airing"),
-                        Err(e) => eprintln!("[scan] mark_unlisted_not_airing failed: {e}"),
-                    }
-                }
-                match db.clear_placeholder_covers() {
-                    Ok(0) => {}
-                    Ok(n) => eprintln!("[cover] cleared {n} placeholder data uri(s) across all sites"),
-                    Err(e) => eprintln!("[cover] clear_placeholder_covers failed: {e}"),
-                }
-                for s in &series {
-                    db.upsert_series(src, s).map_err(|e| e.to_string())?;
+                // One synchronous lock scope, one transaction, no await while
+                // the lock is held (see `Db::persist_listing`).
+                {
+                    let db = state.db.lock().unwrap();
+                    db.persist_listing(src, &series, listing_complete).map_err(|e| e.to_string())?;
                 }
                 Some(series.into_iter().map(|s| s.slug).collect())
             }

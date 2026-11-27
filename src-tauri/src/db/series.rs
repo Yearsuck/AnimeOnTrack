@@ -123,7 +123,69 @@ impl SeriesForLink {
 /// still has to be fetched (`cover_url` is None when the listing had none).
 pub type AiringCoverRow = (i64, String, Option<String>, i64, String);
 
+/// What `Db::persist_listing` did, for logging and tests.
+#[derive(Debug, Default, PartialEq)]
+pub struct ListingOutcome {
+    pub upserted: usize,
+    pub covers_healed: usize,
+    pub placeholders_cleared: usize,
+    pub unlisted: usize,
+}
+
 impl Db {
+    /// Persist a scraped airing listing in ONE transaction: every row lands or
+    /// none does (a failure on row N used to leave rows 1..N-1 committed).
+    /// Same steps and order `refresh` ran inline: heal dead cached covers
+    /// (only for series in THIS listing), mark unlisted shows not airing (only
+    /// if `complete`), clear placeholder covers, then upsert every row. The
+    /// housekeeping steps stay non-fatal (logged); an upsert error rolls back
+    /// everything. Callees that open their own transaction reuse this one.
+    pub fn persist_listing(
+        &self,
+        source_id: i64,
+        series: &[crate::models::Series],
+        complete: bool,
+    ) -> Result<ListingOutcome> {
+        let tx = self.conn.unchecked_transaction()?;
+        let listed: std::collections::HashSet<&str> = series.iter().map(|s| s.slug.as_str()).collect();
+        let mut out = ListingOutcome::default();
+        match self.heal_missing_cached_covers(source_id, &listed) {
+            Ok(n) => {
+                out.covers_healed = n;
+                if n > 0 {
+                    eprintln!("[cover] cleared {n} cached cover(s) whose file is missing");
+                }
+            }
+            Err(e) => eprintln!("[cover] heal_missing_cached_covers failed: {e}"),
+        }
+        if complete {
+            match self.mark_unlisted_not_airing(source_id, &listed) {
+                Ok(n) => {
+                    out.unlisted = n;
+                    if n > 0 {
+                        eprintln!("[scan] {n} unlinked show(s) no longer listed by the site: not airing");
+                    }
+                }
+                Err(e) => eprintln!("[scan] mark_unlisted_not_airing failed: {e}"),
+            }
+        }
+        match self.clear_placeholder_covers() {
+            Ok(n) => {
+                out.placeholders_cleared = n;
+                if n > 0 {
+                    eprintln!("[cover] cleared {n} placeholder data uri(s) across all sites");
+                }
+            }
+            Err(e) => eprintln!("[cover] clear_placeholder_covers failed: {e}"),
+        }
+        for s in series {
+            self.upsert_series(source_id, s)?;
+            out.upserted += 1;
+        }
+        tx.commit()?;
+        Ok(out)
+    }
+
     /// `next_episode_at`/`site_episode_count` are written here just like the
     /// rest of the scanned fields (unlike `followed`, which is deliberately
     /// excluded from the UPDATE so re-scanning never un-follows anything) —
@@ -813,17 +875,20 @@ impl Db {
             }
         }
 
-        let tx = self.conn.unchecked_transaction()?;
+        // Reuse an enclosing transaction (`persist_listing`); SQLite has no nested BEGIN.
+        let tx = if self.conn.is_autocommit() { Some(self.conn.unchecked_transaction()?) } else { None };
         let mut cleared = 0;
         for (id, url) in &rows {
             let widely_shared =
                 titles_by_cover.get(url.as_str()).map_or(0, |f| f.len()) >= SHARED_COVER_MIN_SERIES;
             if widely_shared || crate::cover_cache::is_placeholder_data_uri(url) {
-                tx.execute("UPDATE series SET cover_url=NULL WHERE id=?1", [id])?;
+                self.conn.execute("UPDATE series SET cover_url=NULL WHERE id=?1", [id])?;
                 cleared += 1;
             }
         }
-        tx.commit()?;
+        if let Some(tx) = tx {
+            tx.commit()?;
+        }
         Ok(cleared)
     }
 
@@ -860,11 +925,14 @@ impl Db {
             .filter(|(_, slug, followed)| !followed && !listed_slugs.contains(slug.as_str()))
             .map(|(id, _, _)| id)
             .collect();
-        let tx = self.conn.unchecked_transaction()?;
+        // Reuse an enclosing transaction (`persist_listing`); SQLite has no nested BEGIN.
+        let tx = if self.conn.is_autocommit() { Some(self.conn.unchecked_transaction()?) } else { None };
         for id in &stale {
-            tx.execute("UPDATE series SET is_airing=0 WHERE id=?1", [id])?;
+            self.conn.execute("UPDATE series SET is_airing=0 WHERE id=?1", [id])?;
         }
-        tx.commit()?;
+        if let Some(tx) = tx {
+            tx.commit()?;
+        }
         Ok(stale.len())
     }
 
@@ -4059,5 +4127,55 @@ mod tests {
         drop(backup);
         drop(db);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn listing_row(slug: &str) -> crate::models::Series {
+        crate::models::Series {
+            id: 0, slug: slug.into(), title: slug.into(), url: format!("https://x/{slug}"),
+            cover_url: None, is_airing: true, followed: false,
+            next_episode_at: None, site_episode_count: None,
+        }
+    }
+
+    #[test]
+    fn persist_listing_upserts_all_and_marks_unlisted_not_airing() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        for i in 0..12 {
+            db.upsert_series(src, &listing_row(&format!("old{i}"))).unwrap();
+        }
+        let listing: Vec<_> = (0..11).map(|i| listing_row(&format!("old{i}"))).collect();
+        let out = db.persist_listing(src, &listing, true).unwrap();
+        assert_eq!(out.upserted, 11);
+        assert_eq!(out.unlisted, 1);
+        let gone: i64 = db.conn.query_row("SELECT is_airing FROM series WHERE slug='old11'", [], |r| r.get(0)).unwrap();
+        assert_eq!(gone, 0);
+        let kept: i64 = db.conn.query_row("SELECT is_airing FROM series WHERE slug='old0'", [], |r| r.get(0)).unwrap();
+        assert_eq!(kept, 1);
+        // An incomplete listing never unmarks anything.
+        let out = db.persist_listing(src, &listing[..1], false).unwrap();
+        assert_eq!((out.upserted, out.unlisted), (1, 0));
+    }
+
+    #[test]
+    fn persist_listing_rolls_back_everything_when_one_row_fails() {
+        let db = Db::open(":memory:").unwrap();
+        let src = db.upsert_source("AnimeYT", "b", "animeytx").unwrap();
+        db.upsert_series(src, &listing_row("existing")).unwrap();
+        db.conn
+            .execute_batch(
+                "CREATE TRIGGER boom BEFORE INSERT ON series WHEN NEW.slug='boom'
+                 BEGIN SELECT RAISE(ABORT, 'forced failure'); END;",
+            )
+            .unwrap();
+        let mut existing = listing_row("existing");
+        existing.title = "changed".into();
+        let listing = vec![listing_row("a"), existing, listing_row("boom"), listing_row("z")];
+        assert!(db.persist_listing(src, &listing, true).is_err());
+        let n: i64 = db.conn.query_row("SELECT count(*) FROM series", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1, "no partial rows");
+        let title: String = db.conn.query_row("SELECT title FROM series WHERE slug='existing'", [], |r| r.get(0)).unwrap();
+        assert_eq!(title, "existing", "earlier update rolled back");
+        assert!(db.conn.is_autocommit(), "transaction closed");
     }
 }
