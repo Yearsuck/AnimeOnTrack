@@ -365,7 +365,7 @@
   bottom: 8px;
   z-index: 1;
   max-width: calc(100% - 16px);
-  padding: 2px 8px;
+  padding: 2px var(--sp-2);
   border-radius: 6px;
   background: var(--overlay-strong);
   color: var(--text);
@@ -426,7 +426,7 @@
   align-items: center;
   gap: 6px;
   height: 28px;
-  padding: 0 10px 0 12px;
+  padding: 0 10px 0 var(--sp-3);
   border-radius: var(--radius-round);
   border: 1px solid var(--border);
   background: var(--surface-2);
