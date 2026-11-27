@@ -495,6 +495,7 @@ impl Db {
         }
 
         let mut candidate_ids = Vec::new();
+        let mut align_anilist_ids: std::collections::BTreeSet<i64> = std::collections::BTreeSet::new();
         for group in groups.values() {
             if group.iter().any(|r| r.followed) {
                 let catalog_status = group.iter().find_map(|r| r.catalog_status.as_deref());
@@ -503,6 +504,9 @@ impl Db {
                     continue;
                 }
                 for r in group {
+                    if let Some(al) = r.anilist_id {
+                        align_anilist_ids.insert(al);
+                    }
                     if !r.watched_externally {
                         candidate_ids.push(r.id);
                     }
@@ -543,6 +547,11 @@ impl Db {
             }
         }
 
+        // Episode-map facts for every AniList id involved, in two statements
+        // (replaces the per-group and per-member lookups).
+        let align_ids: Vec<i64> = align_anilist_ids.into_iter().collect();
+        let preload = self.align_preload(&align_ids, now)?;
+
         let mut show_results = Vec::new();
 
         for (_group_key, group) in groups {
@@ -566,12 +575,7 @@ impl Db {
                 _group_key.strip_prefix("al:").and_then(|s| s.parse::<i64>().ok())
             });
             let group_cap = if let Some(al_id) = group_al_id {
-                let map_aired_count: i64 = self.conn.query_row(
-                    "SELECT COUNT(*) FROM anilist_episode_map WHERE anilist_id = ?1 AND air_at IS NOT NULL AND air_at <= ?2",
-                    rusqlite::params![al_id, now],
-                    |r| r.get(0),
-                )?;
-                let map_aired = if map_aired_count > 0 { Some(map_aired_count) } else { None };
+                let map_aired = preload.aired(al_id);
                 let catalog_episodes = group.iter().find_map(|r| r.catalog_episodes);
                 let catalog_next_episode = group.iter().find_map(|r| r.catalog_next_episode);
                 let catalog_next_airing_at = group.iter().find_map(|r| r.catalog_next_airing_at);
@@ -591,7 +595,14 @@ impl Db {
             let mut member_align: std::collections::HashMap<i64, super::episode_align::RowAlign> =
                 std::collections::HashMap::new();
             for m in &candidate_members {
-                let align = self.row_align(m.id, now)?;
+                let align = preload.row_align(
+                    m.anilist_id,
+                    eps_by_series
+                        .get(&m.id)
+                        .into_iter()
+                        .flatten()
+                        .map(|e| e.number.as_str()),
+                );
                 member_align.insert(m.id, align);
             }
 

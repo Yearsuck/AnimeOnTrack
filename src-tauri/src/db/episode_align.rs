@@ -124,6 +124,86 @@ impl Db {
     }
 }
 
+/// Episode-map facts for a batch of AniList ids, loaded with two statements so
+/// callers that align many rows (Pendientes) avoid the per-row queries of
+/// [`Db::row_align`]. Results are identical to `row_align`.
+pub(crate) struct AlignPreload {
+    offset: std::collections::HashMap<i64, i64>,
+    aired: std::collections::HashMap<i64, i64>,
+}
+
+impl AlignPreload {
+    /// Episode map entries already aired at `now` for `anilist_id`
+    /// (`None` when zero, like the per-row query).
+    pub(crate) fn aired(&self, anilist_id: i64) -> Option<i64> {
+        self.aired.get(&anilist_id).copied().filter(|&c| c > 0)
+    }
+
+    /// Same result as `Db::row_align`, from already-loaded data: the row's
+    /// `anilist_id` and all of its episode numbers.
+    pub(crate) fn row_align<'a>(
+        &self,
+        anilist_id: Option<i64>,
+        numbers: impl Iterator<Item = &'a str>,
+    ) -> RowAlign {
+        let Some(al_id) = anilist_id else {
+            return RowAlign { offset: 0, cumulative: false };
+        };
+        let offset = self.offset.get(&al_id).copied().unwrap_or(0);
+        let mut row_max: Option<f64> = None;
+        for n in numbers {
+            if let Some(v) = crate::db::episodes::parse_ep_number(n) {
+                row_max = Some(match row_max {
+                    Some(cur) => if v > cur { v } else { cur },
+                    None => v,
+                });
+            }
+        }
+        RowAlign::decide(offset, self.aired(al_id), row_max)
+    }
+}
+
+impl Db {
+    /// Batched equivalent of `episode_offset` + the aired-count query of
+    /// `row_align` for every id in `anilist_ids`.
+    pub(crate) fn align_preload(&self, anilist_ids: &[i64], now: i64) -> Result<AlignPreload> {
+        let mut pre = AlignPreload {
+            offset: std::collections::HashMap::new(),
+            aired: std::collections::HashMap::new(),
+        };
+        for chunk in anilist_ids.chunks(5000) {
+            let ids = chunk.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(",");
+            // Offset comes from the lowest mapped episode (PK is (anilist_id, episode)).
+            let mut stmt = self.conn.prepare(&format!(
+                "SELECT m.anilist_id, m.episode, m.absolute FROM anilist_episode_map m
+                 WHERE m.anilist_id IN ({ids})
+                   AND m.episode = (SELECT MIN(episode) FROM anilist_episode_map
+                                    WHERE anilist_id = m.anilist_id)"
+            ))?;
+            let rows = stmt.query_map([], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, Option<i64>>(2)?))
+            })?;
+            for row in rows {
+                let (al, ep, abs) = row?;
+                if let Some(abs) = abs {
+                    pre.offset.insert(al, abs - ep);
+                }
+            }
+            let mut stmt = self.conn.prepare(&format!(
+                "SELECT anilist_id, COUNT(*) FROM anilist_episode_map
+                 WHERE anilist_id IN ({ids}) AND air_at IS NOT NULL AND air_at <= ?1
+                 GROUP BY anilist_id"
+            ))?;
+            let rows = stmt.query_map([now], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?;
+            for row in rows {
+                let (al, c) = row?;
+                pre.aired.insert(al, c);
+            }
+        }
+        Ok(pre)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -206,5 +286,44 @@ mod tests {
         // Unlinked row returns offset 0, cumulative false
         let sid_unlinked = db.upsert_series(src_a, &crate::db::test_support::mk_airing("unlinked", "Unlinked", None)).unwrap();
         assert_eq!(db.row_align(sid_unlinked, now).unwrap(), RowAlign { offset: 0, cumulative: false });
+    }
+
+    #[test]
+    fn align_preload_matches_row_align() {
+        let db = Db::open(":memory:").unwrap();
+        let now = 1_700_000_000;
+        let src_a = db.upsert_source("AnimeYT", "https://animeyt.cc", "animeytx").unwrap();
+        let mut ids = Vec::new();
+        let mut al_ids = vec![777_777]; // no map at all
+        for (al, abs_off, aired_all) in [(1i64, Some(24i64), true), (2, None, true), (3, Some(0), false)] {
+            let entries: Vec<crate::anizip::MapEntry> = (1..=4)
+                .map(|e| crate::anizip::MapEntry {
+                    episode: e, season: 2, absolute: abs_off.map(|o| e + o),
+                    air_at: if aired_all || e == 1 { Some(now - 86400) } else { Some(now + 86400) },
+                })
+                .collect();
+            db.replace_episode_map(al, &entries, now).unwrap();
+            al_ids.push(al);
+        }
+        for (i, (al, max)) in [(Some(1i64), 3), (Some(1), 27), (Some(2), 30), (Some(3), 2), (Some(777_777), 5), (None, 9)]
+            .into_iter().enumerate()
+        {
+            let sid = db.upsert_series(src_a, &crate::db::test_support::mk_airing(&format!("s{i}"), "T", None)).unwrap();
+            if let Some(al) = al { db.set_anilist_id(sid, al).unwrap(); }
+            for n in 1..=max {
+                db.insert_episode(&crate::models::Episode {
+                    id: 0, series_id: sid, number: n.to_string(), title: None,
+                    url: format!("u/{i}/{n}"), released_at: None, seen: false,
+                    download_path: None, download_status: None,
+                }).unwrap();
+            }
+            ids.push((sid, al, max));
+        }
+        let pre = db.align_preload(&al_ids, now).unwrap();
+        for (sid, al, max) in ids {
+            let nums: Vec<String> = (1..=max).map(|n| n.to_string()).collect();
+            let got = pre.row_align(al, nums.iter().map(|s| s.as_str()));
+            assert_eq!(got, db.row_align(sid, now).unwrap(), "series {sid}");
+        }
     }
 }

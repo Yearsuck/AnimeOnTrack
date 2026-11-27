@@ -2076,3 +2076,53 @@ fn pending_does_not_cap_a_row_numbered_past_the_season_total() {
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].1.len(), 12);
 }
+
+static STMT_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+fn count_stmt(_sql: &str) {
+    STMT_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// One Pendientes call must cost a bounded number of SQL statements, not
+/// O(members): 50 followed groups x 2 members, all linked to AniList with an
+/// episode map (cumulative row on one site, per-season on the other).
+#[test]
+fn merged_pending_statement_count_is_bounded() {
+    let mut db = Db::open(":memory:").unwrap();
+    let src_a = db.upsert_source("AnimeYT", "https://a.example", "animeytx").unwrap();
+    let src_b = db.upsert_source("TioAnime", "https://b.example", "tioanime").unwrap();
+    let now = 1_700_000_000;
+    for g in 0..50i64 {
+        let al = 9000 + g;
+        db.upsert_catalog_anime(&catalog_anime(al, &format!("Group {g}"), &[]), 0).unwrap();
+        let entries: Vec<crate::anizip::MapEntry> = (1..=4)
+            .map(|e| crate::anizip::MapEntry {
+                episode: e, season: 2, absolute: Some(e + 12),
+                air_at: Some(now - (5 - e) * 86400),
+            })
+            .collect();
+        db.replace_episode_map(al, &entries, now).unwrap();
+        for (src, from, to) in [(src_a, 1, 4), (src_b, 1, 16)] {
+            let sid = db
+                .upsert_series(src, &mk_airing(&format!("g{g}-{src}"), &format!("Group {g}"), None))
+                .unwrap();
+            db.set_anilist_id(sid, al).unwrap();
+            db.set_followed(sid, true).unwrap();
+            for n in from..=to {
+                db.insert_episode(&crate::models::Episode {
+                    id: 0, series_id: sid, number: n.to_string(), title: None,
+                    url: format!("u/{g}/{src}/{n}"), released_at: None, seen: false,
+                    download_path: None, download_status: None,
+                }).unwrap();
+            }
+        }
+    }
+    let priority = vec!["animeytx".to_string(), "tioanime".to_string()];
+    STMT_COUNT.store(0, std::sync::atomic::Ordering::SeqCst);
+    db.conn.trace(Some(count_stmt));
+    let res = db.merged_pending_episodes_at(&priority, now).unwrap();
+    db.conn.trace(None);
+    let n = STMT_COUNT.load(std::sync::atomic::Ordering::SeqCst);
+    eprintln!("merged_pending_episodes_at statements: {n}");
+    assert_eq!(res.len(), 50);
+    assert!(n <= 12, "statement count must not grow with members, got {n}");
+}

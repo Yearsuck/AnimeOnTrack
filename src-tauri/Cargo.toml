@@ -78,3 +78,7 @@ opt-level = 1
 # keep our own crate at opt-level 0 for fast incremental builds.
 [profile.dev.package."*"]
 opt-level = 2
+
+[dev-dependencies]
+# Statement counting in db tests (Connection::trace).
+rusqlite = { version = "0.32", features = ["bundled", "trace"] }
