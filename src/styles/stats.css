@@ -671,10 +671,11 @@
 }
 
 .popbias-fill {
+  width: 100%;
   height: 100%;
   background: var(--accent);
-  border-radius: inherit;
-  transition: width var(--dur-slow) var(--ease-out);
+  transform-origin: left center;
+  transition: transform var(--dur-slow) var(--ease-out);
 }
 
 .popbias-marker {

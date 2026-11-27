@@ -236,7 +236,7 @@ function LibraryCard({
       footer={
         noEpisodes ? (
           <div className="progress lib-progress" aria-hidden="true">
-            <span style={{ width: `${pct}%` }} />
+            <span style={{ transform: `scaleX(${pct / 100})` }} />
           </div>
         ) : (
           <div
@@ -251,7 +251,7 @@ function LibraryCard({
               total: effectiveTotal(item),
             })}
           >
-            <span style={{ width: `${pct}%` }} />
+            <span style={{ transform: `scaleX(${pct / 100})` }} />
           </div>
         )
       }

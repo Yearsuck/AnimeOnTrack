@@ -563,7 +563,7 @@ export function SeriesDetail({
                 })}
               </div>
               <div className="progress">
-                <span style={{ width: `${pct}%` }} />
+                <span style={{ transform: `scaleX(${pct / 100})` }} />
               </div>
             </div>
             <div className="detail-actions">
@@ -798,7 +798,7 @@ export function SeriesDetail({
                     <div className="dl-progress">
                       <div
                         className="dl-progress-fill"
-                        style={{ width: `${dl[ep.id]?.percent}%` }}
+                        style={{ transform: `scaleX(${(dl[ep.id]?.percent ?? 0) / 100})` }}
                       />
                     </div>
                   )}

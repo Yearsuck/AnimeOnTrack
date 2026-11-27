@@ -78,14 +78,10 @@
     transform: translateX(250%);
   }
 }
-@keyframes launch-pulse {
-  50% {
-    opacity: 0.35;
-  }
-}
 @media (prefers-reduced-motion: reduce) {
   .launch-bar span {
     width: 100%;
-    animation: launch-pulse 1.4s ease-in-out infinite;
+    animation: none;
+    opacity: 0.6;
   }
 }
