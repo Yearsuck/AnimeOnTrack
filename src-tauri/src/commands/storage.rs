@@ -284,8 +284,7 @@ pub fn rotate_log_if_exceeds(log_path: &Path, max_bytes: u64) -> std::io::Result
 fn tracked_downloads(state: &State<'_, AppState>) -> Result<Tracked, String> {
     let active_ids = crate::commands::download::active_episode_ids();
     let raw_paths = {
-        let db = state.db.lock().unwrap();
-        db.downloaded_episode_canonical_paths().map_err(|e| e.to_string())?
+        state.with_db(|db| Ok(db.downloaded_episode_canonical_paths()?))?
     };
     let mut paths = HashSet::with_capacity(raw_paths.len() * 2);
     for p in raw_paths {
@@ -350,8 +349,9 @@ pub async fn get_storage_report(
 pub async fn get_auto_delete_seen_downloads(
     state: State<'_, AppState>,
 ) -> Result<bool, String> {
-    let db = state.db.lock().unwrap();
-    db.get_auto_delete_seen_downloads().map_err(|e| e.to_string())
+    state
+        .with_db(|db| Ok(db.get_auto_delete_seen_downloads()?))
+        .map_err(String::from)
 }
 
 /// Persists the auto-delete on seen preference.
@@ -360,8 +360,9 @@ pub async fn set_auto_delete_seen_downloads(
     state: State<'_, AppState>,
     enabled: bool,
 ) -> Result<(), String> {
-    let db = state.db.lock().unwrap();
-    db.set_auto_delete_seen_downloads(enabled).map_err(|e| e.to_string())
+    state
+        .with_db(|db| Ok(db.set_auto_delete_seen_downloads(enabled)?))
+        .map_err(String::from)
 }
 
 /// Retrieves the preferred download quality (best, 1080, 720, 480). Default: best.
@@ -369,8 +370,9 @@ pub async fn set_auto_delete_seen_downloads(
 pub async fn get_download_quality(
     state: State<'_, AppState>,
 ) -> Result<String, String> {
-    let db = state.db.lock().unwrap();
-    db.get_download_quality().map_err(|e| e.to_string())
+    state
+        .with_db(|db| Ok(db.get_download_quality()?))
+        .map_err(String::from)
 }
 
 /// Persists the preferred download quality (best, 1080, 720, 480).
@@ -379,8 +381,9 @@ pub async fn set_download_quality(
     state: State<'_, AppState>,
     quality: String,
 ) -> Result<(), String> {
-    let db = state.db.lock().unwrap();
-    db.set_download_quality(&quality).map_err(|e| e.to_string())
+    state
+        .with_db(|db| Ok(db.set_download_quality(&quality)?))
+        .map_err(String::from)
 }
 
 #[cfg(test)]
