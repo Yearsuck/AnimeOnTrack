@@ -52,6 +52,8 @@
 .cat-hero {
   --hero-ink: #ffffff;
   --hero-ink-soft: rgba(255, 255, 255, 0.78);
+  --hero-bg: #0b1521;
+  --hero-live: #46d19e;
   --hero-ground: rgba(8, 14, 22, 0.94);
   position: relative;
   display: flex;
@@ -60,7 +62,7 @@
   border-radius: 16px;
   overflow: hidden;
   border: 1px solid var(--border);
-  background: #0b1521;
+  background: var(--hero-bg);
   color: var(--hero-ink);
 }
 .cat-hero-banner {
@@ -145,7 +147,7 @@
   display: flex;
   align-items: center;
   gap: var(--sp-2);
-  color: #46d19e;
+  color: var(--hero-live);
   font-weight: var(--fw-semibold);
 }
 .cat-hero-dot {
