@@ -50,15 +50,17 @@ pub async fn download_episode(
 fn enqueue(app: &AppHandle, episode_id: i64) -> Result<(), String> {
     {
         let state = app.state::<AppState>();
-        let db = state.db.lock().unwrap();
-        let ep = db.get_episode(episode_id).map_err(|e| e.to_string())?;
-        if ep.download_status.as_deref() == Some("downloading") {
-            return Err("Already downloading this episode".into());
-        }
-        if ep.download_status.as_deref() == Some("downloaded") {
-            return Err("Episode is already downloaded".into());
-        }
-        db.set_download_status(episode_id, "downloading", None).map_err(|e| e.to_string())?;
+        state.with_db(|db| {
+            let ep = db.get_episode(episode_id)?;
+            if ep.download_status.as_deref() == Some("downloading") {
+                return Err(crate::error::AppError::Other("Already downloading this episode".into()));
+            }
+            if ep.download_status.as_deref() == Some("downloaded") {
+                return Err(crate::error::AppError::Other("Episode is already downloaded".into()));
+            }
+            db.set_download_status(episode_id, "downloading", None)?;
+            Ok(())
+        })?;
     }
 
     let cancel = Arc::new(AtomicBool::new(false));
@@ -246,11 +248,12 @@ pub async fn download_pending(
     series_id: i64,
 ) -> Result<DownloadBatch, String> {
     let (episodes, priority) = {
-        let db = state.db.lock().unwrap();
-        let eps = db.list_series_episodes(series_id).map_err(|e| e.to_string())?;
-        let known: Vec<&str> = crate::adapter::all_sites().iter().map(|s| s.id).collect();
-        let priority = db.get_site_priority(&known).unwrap_or_default();
-        (eps, priority)
+        state.with_db(|db| {
+            let eps = db.list_series_episodes(series_id)?;
+            let known: Vec<&str> = crate::adapter::all_sites().iter().map(|s| s.id).collect();
+            let priority = db.get_site_priority(&known).unwrap_or_default();
+            Ok((eps, priority))
+        })?
     };
     let mut batch = DownloadBatch { queued: 0, unsupported: 0, already: 0 };
     let mut cached_sids: Option<Vec<i64>> = None;
@@ -264,23 +267,18 @@ pub async fn download_pending(
                     let sids = match &cached_sids {
                         Some(s) => s.as_slice(),
                         None => {
-                            let s = {
-                                let db = state.db.lock().unwrap();
-                                db.canonical_series_ids(series_id)
-                                    .map_err(|e| e.to_string())?
-                            };
+                            let s = state.with_db(|db| Ok(db.canonical_series_ids(series_id)?))?;
                             cached_sids = Some(s);
                             cached_sids.as_deref().unwrap()
                         }
                     };
-                    let siblings = {
-                        let db = state.db.lock().unwrap();
-                        db.sibling_episodes_in(ep.id, sids)
-                            .map_err(|e| e.to_string())?
+                    let siblings = state.with_db(|db| {
+                        Ok(db
+                            .sibling_episodes_in(ep.id, sids)?
                             .into_iter()
                             .map(|s| (s.site_id, s.url))
-                            .collect::<Vec<_>>()
-                    };
+                            .collect::<Vec<_>>())
+                    })?;
                     !plan_download_urls(&ep.url, &siblings, &priority).is_empty()
                 };
 
@@ -305,10 +303,11 @@ pub async fn delete_series_downloads(
     series_id: i64,
 ) -> Result<u32, String> {
     let (episodes, downloads_dir) = {
-        let db = state.db.lock().unwrap();
-        let eps = db.list_series_episodes(series_id).map_err(|e| e.to_string())?;
-        let dir = app.path().app_data_dir().ok().map(|d| d.join("downloads"));
-        (eps, dir)
+        state.with_db(|db| {
+            let eps = db.list_series_episodes(series_id)?;
+            let dir = app.path().app_data_dir().ok().map(|d| d.join("downloads"));
+            Ok((eps, dir))
+        })?
     };
     let mut cleaned = 0u32;
     for ep in &episodes {
@@ -320,8 +319,7 @@ pub async fn delete_series_downloads(
             match flag {
                 Some(flag) => flag.store(true, Ordering::SeqCst),
                 None => {
-                    let db = state.db.lock().unwrap();
-                    db.clear_download_columns(&[ep.id]).map_err(|e| e.to_string())?;
+                    state.with_db(|db| Ok(db.clear_download_columns(&[ep.id])?))?;
                 }
             }
             cleaned += 1;
@@ -348,8 +346,7 @@ pub async fn delete_series_downloads(
                     }
                 }
             }
-            let db = state.db.lock().unwrap();
-            db.clear_download_columns(&[ep.id]).map_err(|e| e.to_string())?;
+            state.with_db(|db| Ok(db.clear_download_columns(&[ep.id])?))?;
             cleaned += 1;
         }
     }
@@ -1314,13 +1311,13 @@ pub async fn play_download(
 ) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
     let path = {
-        let db = state.db.lock().unwrap();
-        db.downloaded_paths(&[episode_id])
-            .map_err(|e| e.to_string())?
-            .into_iter()
-            .next()
-            .map(|(_, p)| p)
-            .ok_or_else(|| "this episode is not downloaded".to_string())?
+        state.with_db(|db| {
+            db.downloaded_paths(&[episode_id])?
+                .into_iter()
+                .next()
+                .map(|(_, p)| p)
+                .ok_or_else(|| crate::error::AppError::Other("this episode is not downloaded".to_string()))
+        })?
     };
     let downloads = app.path().app_data_dir().map_err(|e| e.to_string())?.join("downloads");
     let file = std::path::PathBuf::from(&path);
@@ -1345,8 +1342,8 @@ pub async fn cancel_download(
             Ok(())
         }
         None => {
-            let db = state.db.lock().unwrap();
-            db.clear_download_columns(&[episode_id]).map_err(|e| e.to_string())
+            state.with_db(|db| Ok(db.clear_download_columns(&[episode_id])?))?;
+            Ok(())
         }
     }
 }
@@ -1365,10 +1362,11 @@ pub async fn delete_download(
         return Ok(());
     }
     let (paths, downloads_dir) = {
-        let db = state.db.lock().unwrap();
-        let paths = db.downloaded_paths(&[episode_id]).unwrap_or_default();
-        let dir = app.path().app_data_dir().ok().map(|d| d.join("downloads"));
-        (paths, dir)
+        state.with_db(|db| {
+            let paths = db.downloaded_paths(&[episode_id]).unwrap_or_default();
+            let dir = app.path().app_data_dir().ok().map(|d| d.join("downloads"));
+            Ok((paths, dir))
+        })?
     };
     for (_, path) in &paths {
         let p = std::path::Path::new(path);
@@ -1398,9 +1396,8 @@ pub async fn delete_download(
         // A path outside the downloads dir is never ours to delete; only the
         // row is cleared below, exactly as before.
     }
-    let db = state.db.lock().unwrap();
-    db.clear_download_columns(&[episode_id])
-        .map_err(|e| e.to_string())
+    state.with_db(|db| Ok(db.clear_download_columns(&[episode_id])?))?;
+    Ok(())
 }
 
 /// Total disk space used by all downloaded episode files.
@@ -1408,8 +1405,7 @@ pub async fn delete_download(
 pub async fn get_downloads_size(
     state: State<'_, AppState>,
 ) -> Result<u64, String> {
-    let db = state.db.lock().unwrap();
-    db.downloads_disk_size().map_err(|e| e.to_string())
+    Ok(state.with_db(|db| Ok(db.downloads_disk_size()?))?)
 }
 
 /// Delete ALL downloaded files and clear their DB columns.
@@ -1425,8 +1421,7 @@ pub async fn clear_all_downloads(
         .join("downloads");
     // Running transfers would otherwise finish after the wipe and bring files back.
     cancel_active(&active_episode_ids().into_iter().collect::<Vec<_>>());
-    let db = state.db.lock().unwrap();
-    db.clear_all_downloads(&dir).map_err(|e| e.to_string())
+    Ok(state.with_db(|db| Ok(db.clear_all_downloads(&dir)?))?)
 }
 
 #[cfg(test)]
