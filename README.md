@@ -69,7 +69,8 @@
     </li>
     <li><a href="#architecture--engineering-highlights">Architecture & Engineering Highlights</a></li>
     <li><a href="#project-layout">Project Layout</a></li>
-    <li><a href="#whats-new-in-v0260">What's New in v0.26.0</a></li>
+    <li><a href="#whats-new-in-v0270">What's New in v0.27.0</a></li>
+    <li><a href="#previous-release-v0260">Previous release: v0.26.0</a></li>
     <li><a href="#previous-release-v0250">Previous release: v0.25.0</a></li>
     <li><a href="#previous-release-v0243">Previous release: v0.24.3</a></li>
     <li><a href="#previous-release-v0242">Previous release: v0.24.2</a></li>
@@ -364,7 +365,24 @@ AnimeOnTrack/
 
 ---
 
-## What's New in v0.26.0
+## What's New in v0.27.0
+
+* **En emisión sorted by score**: airing shows can be ordered by their AniList score, shown as a badge on each card.
+* **Episode sources as chips**: opening an episode in Pendientes shows one chip per streaming site, with your main site tagged "Principal".
+* **Covers and airing status fixed**: missing AnimeFLV covers are fetched from the series page, and unfollowed shows AniList marks finished no longer appear as airing.
+* **Clearer empty and loading screens**: empty views offer one action, and loading placeholders keep their size so content no longer jumps.
+* **Accessibility and touch**: colours meet WCAG AA contrast in both themes, the shortcuts dialog keeps keyboard focus, settings controls are labelled, and buttons are at least 44 px on touch screens.
+* **Android**: desktop-only settings (player monitor, window mode, uninstall) are hidden.
+* **Settings that fail to save say so**: a player setting that could not be saved shows an error and goes back to its previous value.
+* **More robust internals**: many commands return an error instead of crashing when the database lock is poisoned, each scan's listing is saved in one transaction, and AniList rate limits use a shared retry policy.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+---
+
+<a id="previous-release-v0260"></a>
+
+## Previous release: v0.26.0
 
 * **Sync between your devices**: Settings → Data & backup → "Sync between devices" keeps followed shows, watched episodes, "Ya lo vi" and your want/discarded lists in step across PC and Android, through a shared folder (OneDrive, Syncthing, Google Drive for desktop…) or your Google Drive. Changes from each device are merged field by field; an old or out-of-date copy of the sync file never undoes newer progress, and a show you removed on one device is not brought back. Settings, downloads and credentials stay on each device. Nothing is uploaded when nothing changed.
 * **Android: scans keep going with the screen off**: a scan runs as a foreground service with a "Buscando episodios nuevos…" notification, so Android no longer pauses it when the screen turns off. The first scan asks once for permission to show that notification.
