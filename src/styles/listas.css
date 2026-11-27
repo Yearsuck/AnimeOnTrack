@@ -409,3 +409,10 @@
   margin-top: auto;
   padding-top: var(--sp-2);
 }
+
+@media (prefers-reduced-motion: reduce) {
+  .listas-skeleton-dense-title,
+  .listas-skeleton-dense-sub {
+    animation: none;
+  }
+}

@@ -1271,9 +1271,11 @@ button.ep-title:focus-visible {
 }
 .dl-progress-fill {
   height: 100%;
+  width: 100%;
   background: var(--accent-solid);
-  border-radius: inherit;
-  transition: width var(--dur-fast) var(--ease);
+  /* Scaled fill: radius would distort; the track (overflow:hidden) rounds it. */
+  transform-origin: left center;
+  transition: transform var(--dur-fast) var(--ease);
 }
 .dl-error {
   color: var(--danger);
@@ -1335,10 +1337,11 @@ button.ep-title:focus-visible {
 }
 .progress > span {
   display: block;
+  width: 100%;
   height: 100%;
-  border-radius: inherit;
   background: var(--success);
-  transition: width var(--dur-slow) var(--ease-out);
+  transform-origin: left center;
+  transition: transform var(--dur-slow) var(--ease-out);
 }
 
 /* ---------- Onboarding ---------- */
@@ -1548,6 +1551,10 @@ button.ep-title:focus-visible {
   .spinner {
     animation: none;
     opacity: 0.6;
+  }
+  .skeleton,
+  .dl-badge.dl-active {
+    animation: none;
   }
 }
 
@@ -1782,9 +1789,9 @@ button.ep-title:focus-visible {
   left: 0;
   top: 0;
   height: 100%;
-  min-width: 4px;
-  border-radius: var(--radius-round);
-  transition: width var(--dur-slow) cubic-bezier(0.16, 1, 0.3, 1);
+  width: 100%;
+  transform-origin: left center;
+  transition: transform var(--dur-slow) cubic-bezier(0.16, 1, 0.3, 1);
 }
 .bar-val {
   font-size: var(--fs-sm);
@@ -1918,15 +1925,16 @@ button.ep-title:focus-visible {
   align-items: flex-end;
   /* Faint track so quiet days still read as "a day", not a gap. */
   background: linear-gradient(var(--surface-2), var(--surface-2)) bottom / 100% 2px no-repeat;
+  overflow: hidden;
   border-radius: var(--radius-sm) var(--radius-sm) 0 0;
   cursor: default;
 }
 .dayact-fill {
   width: 100%;
-  min-height: 0;
+  height: 100%;
   background: var(--surface-3);
-  border-radius: var(--radius-sm) var(--radius-sm) 2px 2px;
-  transition: height var(--dur-slow) var(--ease-out), background var(--dur-fast) var(--ease);
+  transform-origin: center bottom;
+  transition: transform var(--dur-slow) var(--ease-out), background var(--dur-fast) var(--ease);
 }
 /* A day with real activity gets the accent; hover lifts any column. */
 .dayact-col.has .dayact-fill {
@@ -2009,15 +2017,16 @@ button.ep-title:focus-visible {
   display: flex;
   align-items: flex-end;
   background: linear-gradient(var(--surface-2), var(--surface-2)) bottom / 100% 2px no-repeat;
+  overflow: hidden;
   border-radius: var(--radius-sm) var(--radius-sm) 0 0;
   cursor: default;
 }
 .hourly-fill {
   width: 100%;
-  min-height: 0;
+  height: 100%;
   background: var(--surface-3);
-  border-radius: var(--radius-sm) var(--radius-sm) 2px 2px;
-  transition: height var(--dur-slow) var(--ease-out), background var(--dur-fast) var(--ease);
+  transform-origin: center bottom;
+  transition: transform var(--dur-slow) var(--ease-out), background var(--dur-fast) var(--ease);
 }
 .hourly-col.has .hourly-fill {
   background: var(--accent);

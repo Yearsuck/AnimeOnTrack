@@ -47,7 +47,7 @@ export function BarChart({ data }: { data: Datum[] }) {
             >
               <div
                 className="bar-fill"
-                style={{ width: grown ? `${pct}%` : 0, background: categoryColor(d.name) }}
+                style={{ transform: `scaleX(${grown ? pct / 100 : 0})`, background: categoryColor(d.name) }}
               />
             </div>
             <div className="bar-val">{d.count}</div>
