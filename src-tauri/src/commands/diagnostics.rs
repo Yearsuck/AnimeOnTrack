@@ -176,14 +176,13 @@ fn read_log_tail(path: &Path) -> Option<String> {
 
 #[tauri::command]
 pub async fn export_diagnostics(app: AppHandle, state: State<'_, AppState>) -> Result<String, String> {
-    let (series_count, followed_count, catalog_count, raw_keys) = {
-        let db = state.db.lock().unwrap();
+    let (series_count, followed_count, catalog_count, raw_keys) = state.with_db(|db| {
         let s_count = query_series_count(&db.conn).unwrap_or(0);
         let f_count = query_followed_count(&db.conn).unwrap_or(0);
         let c_count = query_catalog_count(&db.conn).unwrap_or(0);
         let keys = query_setting_keys(&db.conn).unwrap_or_default();
-        (s_count, f_count, c_count, keys)
-    };
+        Ok((s_count, f_count, c_count, keys))
+    })?;
 
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;

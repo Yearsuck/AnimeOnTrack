@@ -25,9 +25,10 @@ pub(crate) fn connected_token(db: &crate::db::Db) -> Option<String> {
 /// Drive that is still there, and keeping it means reconnecting the same
 /// account updates that backup instead of creating a second one.
 fn forget_rejected_grant(state: &AppState) {
-    if let Ok(db) = state.db.lock() {
+    let _ = state.with_db(|db| {
         db.delete_setting("gdrive_refresh_token").ok();
-    }
+        Ok(())
+    });
 }
 
 /// `backup::access_token`, plus the cleanup that turns a permanently-dead
@@ -51,22 +52,24 @@ pub(crate) async fn access_token_or_disconnect(
 
 #[tauri::command]
 pub async fn backup_status(state: State<'_, AppState>) -> Result<BackupStatus, String> {
-    let db = state.db.lock().unwrap();
-    let refresh = connected_token(&db);
-    let last_at = db.get_setting("backup_last_at_iso").ok().flatten();
-    let size = db
-        .get_setting("backup_size_bytes")
-        .ok()
-        .flatten()
-        .and_then(|s| s.parse::<i64>().ok());
-    let last_error = db.get_setting("backup_last_error").ok().flatten();
-    Ok(BackupStatus {
-        configured: backup::configured_client(&db).is_some(),
-        connected: refresh.is_some(),
-        last_at,
-        size_bytes: size,
-        last_error,
+    state.with_db(|db| {
+        let refresh = connected_token(db);
+        let last_at = db.get_setting("backup_last_at_iso").ok().flatten();
+        let size = db
+            .get_setting("backup_size_bytes")
+            .ok()
+            .flatten()
+            .and_then(|s| s.parse::<i64>().ok());
+        let last_error = db.get_setting("backup_last_error").ok().flatten();
+        Ok(BackupStatus {
+            configured: backup::configured_client(db).is_some(),
+            connected: refresh.is_some(),
+            last_at,
+            size_bytes: size,
+            last_error,
+        })
     })
+    .map_err(String::from)
 }
 
 /// Store (or clear) the Google OAuth client the backup authenticates with, so
@@ -85,26 +88,25 @@ pub async fn set_google_credentials(
     client_id: String,
     client_secret: String,
 ) -> Result<BackupStatus, String> {
-    {
-        let db = state.db.lock().unwrap();
-        let previous = backup::configured_client(&db);
-        db.set_setting("google_client_id", client_id.trim()).map_err(|e| e.to_string())?;
-        db.set_setting("google_client_secret", &backup::secure_store::protect(client_secret.trim()))
-            .map_err(|e| e.to_string())?;
-        if backup::configured_client(&db) != previous {
-            db.delete_setting("gdrive_refresh_token").map_err(|e| e.to_string())?;
-            db.delete_setting("gdrive_file_id").map_err(|e| e.to_string())?;
+    state.with_db(|db| {
+        let previous = backup::configured_client(db);
+        db.set_setting("google_client_id", client_id.trim())?;
+        db.set_setting("google_client_secret", &backup::secure_store::protect(client_secret.trim()))?;
+        if backup::configured_client(db) != previous {
+            db.delete_setting("gdrive_refresh_token")?;
+            db.delete_setting("gdrive_file_id")?;
         }
-    }
+        Ok(())
+    })?;
     backup_status(state).await
 }
 
 #[tauri::command]
 pub async fn connect_drive(app: AppHandle, state: State<'_, AppState>) -> Result<BackupStatus, String> {
-    let (cid, secret) = {
-        let db = state.db.lock().unwrap();
-        backup::configured_client(&db).ok_or("Google credentials not configured")?
-    };
+    let (cid, secret) = state.with_db(|db| {
+        backup::configured_client(db)
+            .ok_or_else(|| crate::error::AppError::Other("Google credentials not configured".to_string()))
+    })?;
     let pkce = backup::oauth::pkce_pair();
     let app_for_open = app.clone();
     let (code, redirect_uri) = backup::oauth::run_loopback_and_get_code(&cid, &pkce.challenge, |url| {
@@ -113,41 +115,37 @@ pub async fn connect_drive(app: AppHandle, state: State<'_, AppState>) -> Result
     .await?;
     let tokens = backup::oauth::exchange_code(&cid, &secret, &code, &pkce.verifier, &redirect_uri).await?;
     let refresh = tokens.refresh_token.ok_or("Google did not return a refresh token")?;
-    {
-        let db = state.db.lock().unwrap();
-        db.set_setting("gdrive_refresh_token", &backup::secure_store::protect(&refresh))
-            .map_err(|e| e.to_string())?;
-    }
+    state.with_db(|db| {
+        db.set_setting("gdrive_refresh_token", &backup::secure_store::protect(&refresh))?;
+        Ok(())
+    })?;
     backup_status(state).await
 }
 
 #[tauri::command]
 pub async fn disconnect_drive(state: State<'_, AppState>) -> Result<BackupStatus, String> {
-    {
-        let db = state.db.lock().unwrap();
-        db.delete_setting("gdrive_refresh_token").map_err(|e| e.to_string())?;
-        db.delete_setting("gdrive_file_id").map_err(|e| e.to_string())?;
-    }
+    state.with_db(|db| {
+        db.delete_setting("gdrive_refresh_token")?;
+        db.delete_setting("gdrive_file_id")?;
+        Ok(())
+    })?;
     backup_status(state).await
 }
 
 #[tauri::command]
 pub async fn backup_now(app: AppHandle, state: State<'_, AppState>) -> Result<BackupStatus, String> {
     let dir = backup_dir(&app)?;
-    let (client, refresh, sig) = {
-        let db = state.db.lock().unwrap();
-        let client = backup::configured_client(&db)
-            .ok_or("Google credentials not configured")?;
-        let refresh = connected_token(&db).ok_or("Not connected to Google Drive")?;
-        let sig = backup::signature_string(db.signature_counts().map_err(|e| e.to_string())?);
-        (client, refresh, sig)
-    };
+    let (client, refresh, sig) = state.with_db(|db| {
+        let client = backup::configured_client(db)
+            .ok_or_else(|| crate::error::AppError::Other("Google credentials not configured".to_string()))?;
+        let refresh = connected_token(db)
+            .ok_or_else(|| crate::error::AppError::Other("Not connected to Google Drive".to_string()))?;
+        let sig = backup::signature_string(db.signature_counts()?);
+        Ok((client, refresh, sig))
+    })?;
     let bytes = backup::snapshot_bytes(&state.db, &dir)?;
     let token = access_token_or_disconnect(&state, &client, &refresh).await?;
-    let existing = {
-        let db = state.db.lock().unwrap();
-        db.get_setting("gdrive_file_id").ok().flatten()
-    };
+    let existing = state.with_db(|db| Ok(db.get_setting("gdrive_file_id").ok().flatten()))?;
     // Same reason as `restore_latest`: without the by-name lookup, backing up
     // from a second machine (or after a restore, which replaces the settings
     // table with the snapshot's) would upload a *second* file into
@@ -164,19 +162,19 @@ pub async fn backup_now(app: AppHandle, state: State<'_, AppState>) -> Result<Ba
         None => backup::drive::create_backup(&token, bytes).await?,
     };
     let meta = backup::drive::get_metadata(&token, &file_id).await.ok();
-    {
-        let db = state.db.lock().unwrap();
-        db.set_setting("gdrive_file_id", &file_id).map_err(|e| e.to_string())?;
-        db.set_setting("backup_last_at_unix", &backup_now_unix().to_string()).map_err(|e| e.to_string())?;
-        db.set_setting("backup_last_at_iso", &backup_now_iso()).map_err(|e| e.to_string())?;
-        db.set_setting("backup_signature", &sig).map_err(|e| e.to_string())?;
+    state.with_db(|db| {
+        db.set_setting("gdrive_file_id", &file_id)?;
+        db.set_setting("backup_last_at_unix", &backup_now_unix().to_string())?;
+        db.set_setting("backup_last_at_iso", &backup_now_iso())?;
+        db.set_setting("backup_signature", &sig)?;
         if let Some(m) = meta.as_ref().and_then(|m| m.size.clone()) {
             db.set_setting("backup_size_bytes", &m).ok();
         }
         // A successful backup clears any previously-recorded failure — the
         // Settings warning banner is about the *current* state, not history.
         db.delete_setting("backup_last_error").ok();
-    }
+        Ok(())
+    })?;
     backup_status(state).await
 }
 
@@ -216,19 +214,18 @@ pub async fn auto_backup_if_due(app: AppHandle) -> Result<(), String> {
     // for the rest of the session.
     let _clear = crate::commands::follow::RunningGuard(&state.backup_running);
 
-    let (last_at, last_sig, cur_sig, connected) = {
-        let db = state.db.lock().unwrap();
+    let (last_at, last_sig, cur_sig, connected) = state.with_db(|db| {
         let connected =
-            backup::configured_client(&db).is_some() && connected_token(&db).is_some();
+            backup::configured_client(db).is_some() && connected_token(db).is_some();
         let last_at = db
             .get_setting("backup_last_at_unix")
             .ok()
             .flatten()
             .and_then(|s| s.parse::<i64>().ok());
         let last_sig = db.get_setting("backup_signature").ok().flatten().unwrap_or_default();
-        let cur_sig = backup::signature_string(db.signature_counts().map_err(|e| e.to_string())?);
-        (last_at, last_sig, cur_sig, connected)
-    };
+        let cur_sig = backup::signature_string(db.signature_counts()?);
+        Ok((last_at, last_sig, cur_sig, connected))
+    })?;
     if !connected {
         return Ok(());
     }
@@ -244,8 +241,10 @@ pub async fn auto_backup_if_due(app: AppHandle) -> Result<(), String> {
     // every future cycle (expired OAuth grant, quota, a Drive API change).
     if let Err(e) = backup_now(app.clone(), app.state::<AppState>()).await {
         let state = app.state::<AppState>();
-        let db = state.db.lock().unwrap();
-        db.set_setting("backup_last_error", &e).ok();
+        let _ = state.with_db(|db| {
+            db.set_setting("backup_last_error", &e).ok();
+            Ok(())
+        });
     }
     Ok(())
 }
