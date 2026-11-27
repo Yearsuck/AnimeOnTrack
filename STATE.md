@@ -1,6 +1,6 @@
 # Estado de AnimeOnTrack
 
-Instantánea del 2026-11-27 (v0.26.0 publicada; cambios en develop sin publicar). Se reescribe tras cada merge a `develop`, cada release y antes de compactar una
+Instantánea del 2026-11-27 06:00 (v0.26.0 publicada; muchos cambios en develop sin publicar). Se reescribe tras cada merge a `develop`, cada release y antes de compactar una
 conversación (ver "Docs that travel with the code" en `AGENTS.md`). Lo que no está aquí hay que mirarlo en git.
 
 ## Publicado
@@ -19,6 +19,8 @@ conversación (ver "Docs that travel with the code" en `AGENTS.md`). Lo que no e
 ## En `develop` sin publicar
 - Pendientes: las webs de cada episodio salen como botones con color por web dentro de la tarjeta abierta, con la etiqueta "Principal" (#168).
 - En emisión: ordenar por puntuación de AniList con la puntuación en cada tarjeta; se ocultan las series no seguidas que AniList da por terminadas salvo que la web tenga episodios por encima del total (#169); portadas de AnimeFLV leídas de la página de la serie para las filas sin enlazar (#170).
+- Trabajo nocturno 2026-11-27 (#172-#191): auditoría UI/UX con sus 11 PRs aplicados y auditoría de arquitectura con los
+  hitos 0-1 y parte de 2-4; detalle en `docs/superpowers/plans/2026-11-27-overnight-progress.md`.
 - Sin verificar de v0.26.0: sincronización entre dos dispositivos reales y con Drive real (probada en sandbox con carpeta). Sin verificar de v0.25.0: visor en un segundo monitor con otra escala, AnimeLand y AnimoraTV en vivo.
 
 ## Abierto
