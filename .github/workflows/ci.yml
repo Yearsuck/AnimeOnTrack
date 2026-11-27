@@ -95,6 +95,9 @@ jobs:
       - name: Architecture rules (db must not import commands/adapter/scraper_engine)
         run: node tools/arch-check.mjs
 
+      - name: CSS token ratchet (no new colour literals outside :root)
+        run: node tools/check-css-tokens.mjs
+
       - name: Type-check
         run: npx tsc --noEmit
 

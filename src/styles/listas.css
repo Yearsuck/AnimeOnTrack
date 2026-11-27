@@ -93,7 +93,7 @@
   flex-shrink: 0;
   font-size: var(--fs-xs);
   font-weight: var(--fw-bold);
-  padding: 2px 8px;
+  padding: 2px var(--sp-2);
   border-radius: 6px;
   background: var(--surface-2);
   color: var(--accent);
