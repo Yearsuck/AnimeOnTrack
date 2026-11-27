@@ -4,8 +4,7 @@ use super::*;
 #[tauri::command]
 pub async fn list_library(state: State<'_, AppState>) -> Result<Vec<crate::models::LibraryItem>, String> {
     let src = get_source_id(&state)?;
-    let db = state.db.lock().unwrap();
-    db.list_library(src).map_err(|e| e.to_string())
+    Ok(state.with_db(|db| Ok(db.list_library(src)?))?)
 }
 
 /// Pending queue, ordered by episodes-remaining per series. `sort` is the
@@ -21,10 +20,11 @@ pub async fn list_pending(
         _ => crate::db::PendingSort::RemainingAsc,
     };
     let src = state.source_id.lock().unwrap().unwrap_or(0);
-    let db = state.db.lock().unwrap();
-    let known: Vec<&str> = crate::adapter::all_sites().iter().map(|s| s.id).collect();
-    let priority = db.get_site_priority(&known).map_err(|e| e.to_string())?;
-    let rows = db.list_pending(src, sort, &priority).map_err(|e| e.to_string())?;
+    let rows = state.with_db(|db| {
+        let known: Vec<&str> = crate::adapter::all_sites().iter().map(|s| s.id).collect();
+        let priority = db.get_site_priority(&known)?;
+        Ok(db.list_pending(src, sort, &priority)?)
+    })?;
     Ok(rows
         .into_iter()
         .map(|(s, e)| PendingItem { series: s, episode: e })
@@ -40,10 +40,11 @@ pub struct PendingItem {
 #[tauri::command]
 pub async fn pending_count(state: State<'_, AppState>) -> Result<i64, String> {
     let src = state.source_id.lock().unwrap().unwrap_or(0);
-    let db = state.db.lock().unwrap();
-    let known: Vec<&str> = crate::adapter::all_sites().iter().map(|s| s.id).collect();
-    let priority = db.get_site_priority(&known).map_err(|e| e.to_string())?;
-    db.pending_count(src, &priority).map_err(|e| e.to_string())
+    Ok(state.with_db(|db| {
+        let known: Vec<&str> = crate::adapter::all_sites().iter().map(|s| s.id).collect();
+        let priority = db.get_site_priority(&known)?;
+        Ok(db.pending_count(src, &priority)?)
+    })?)
 }
 
 /// Series with the given backlog status ('want' or 'discarded'), for the
@@ -51,8 +52,7 @@ pub async fn pending_count(state: State<'_, AppState>) -> Result<i64, String> {
 #[tauri::command]
 pub async fn list_backlog(state: State<'_, AppState>, status: String) -> Result<Vec<Series>, String> {
     let src = get_source_id(&state)?;
-    let db = state.db.lock().unwrap();
-    db.list_backlog(src, &status).map_err(|e| e.to_string())
+    Ok(state.with_db(|db| Ok(db.list_backlog(src, &status)?))?)
 }
 
 /// Series marked "watched outside the app" (the catalog "Ya lo vi" swipe),
@@ -60,6 +60,5 @@ pub async fn list_backlog(state: State<'_, AppState>, status: String) -> Result<
 #[tauri::command]
 pub async fn list_watched_externally(state: State<'_, AppState>) -> Result<Vec<Series>, String> {
     let src = get_source_id(&state)?;
-    let db = state.db.lock().unwrap();
-    db.list_watched_externally(src).map_err(|e| e.to_string())
+    Ok(state.with_db(|db| Ok(db.list_watched_externally(src)?))?)
 }

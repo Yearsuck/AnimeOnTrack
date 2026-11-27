@@ -11,6 +11,7 @@ mod extras_guard;
 mod db;
 mod diff;
 mod domain_breaker;
+mod error;
 mod download_safety;
 mod download_sources;
 mod downloader;
