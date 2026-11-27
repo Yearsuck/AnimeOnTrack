@@ -109,10 +109,10 @@ fn enqueue(app: &AppHandle, episode_id: i64) -> Result<(), String> {
                 if !committed {
                     if let Ok(dir) = app.path().app_data_dir().map(|d| d.join("downloads")) {
                         let p = std::path::Path::new(&path);
-                        if crate::commands::storage::is_safe_file_in_dir(&dir, p) {
+                        if crate::download_safety::is_safe_file_in_dir(&dir, p) {
                             let _ = std::fs::remove_file(p);
                             if let Some(parent) = p.parent() {
-                                crate::commands::storage::remove_empty_dir_in_dir(&dir, parent);
+                                crate::download_safety::remove_empty_dir_in_dir(&dir, parent);
                             }
                         }
                     }
@@ -329,7 +329,7 @@ pub async fn delete_series_downloads(
             if let Some(path) = &ep.download_path {
                 let p = std::path::Path::new(path);
                 let can_delete = match &downloads_dir {
-                    Some(base) => crate::commands::storage::is_safe_file_in_dir(base, p),
+                    Some(base) => crate::download_safety::is_safe_file_in_dir(base, p),
                     None => p.is_file(),
                 };
                 if can_delete {
@@ -355,7 +355,7 @@ pub async fn delete_series_downloads(
     }
     if let Some(ref base) = downloads_dir {
         let series_dir = base.join(series_id.to_string());
-        crate::commands::storage::remove_empty_dir_in_dir(base, &series_dir);
+        crate::download_safety::remove_empty_dir_in_dir(base, &series_dir);
     }
     Ok(cleaned)
 }
@@ -1373,7 +1373,7 @@ pub async fn delete_download(
     for (_, path) in &paths {
         let p = std::path::Path::new(path);
         let can_delete = match &downloads_dir {
-            Some(base) => crate::commands::storage::is_safe_file_in_dir(base, p),
+            Some(base) => crate::download_safety::is_safe_file_in_dir(base, p),
             None => p.is_file(),
         };
         if can_delete {
@@ -1381,7 +1381,7 @@ pub async fn delete_download(
                 Ok(()) => {
                     if let Some(parent) = p.parent() {
                         if let Some(base) = &downloads_dir {
-                            crate::commands::storage::remove_empty_dir_in_dir(base, parent);
+                            crate::download_safety::remove_empty_dir_in_dir(base, parent);
                         } else {
                             let _ = std::fs::remove_dir(parent);
                         }

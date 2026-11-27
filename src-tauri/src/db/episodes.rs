@@ -128,7 +128,7 @@ impl Db {
     }
 
     /// Highest numeric episode number we have for a series — the correct DB
-    /// side of refresh()'s skip decision (see `commands::should_fetch_series`),
+    /// side of refresh()'s skip decision (see `refresh_plan::should_fetch_series`),
     /// unlike `episode_count` which is a row COUNT and gets inflated by
     /// recap/"0"/version-reupload rows (Bug B, 2026-07-12 airing-refresh fix).
     /// SQLite's `CAST(x AS INTEGER)` parses a leading integer and stops at the
@@ -1087,7 +1087,7 @@ impl Db {
         let mut failed = 0;
         for (id, path) in &rows {
             let p = std::path::Path::new(path);
-            let can_delete = crate::commands::is_safe_file_in_dir(downloads_dir, p);
+            let can_delete = crate::download_safety::is_safe_file_in_dir(downloads_dir, p);
             if can_delete {
                 match std::fs::remove_file(p) {
                     Ok(()) => {
@@ -1097,7 +1097,7 @@ impl Db {
                         )?;
                         cleaned += 1;
                         if let Some(parent) = p.parent() {
-                            crate::commands::remove_empty_dir_in_dir(downloads_dir, parent);
+                            crate::download_safety::remove_empty_dir_in_dir(downloads_dir, parent);
                         }
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => {

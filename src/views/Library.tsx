@@ -236,7 +236,7 @@ function LibraryCard({
       footer={
         noEpisodes ? (
           <div className="progress lib-progress" aria-hidden="true">
-            <span style={{ width: `${pct}%` }} />
+            <span style={{ transform: `scaleX(${pct / 100})` }} />
           </div>
         ) : (
           <div
@@ -251,7 +251,7 @@ function LibraryCard({
               total: effectiveTotal(item),
             })}
           >
-            <span style={{ width: `${pct}%` }} />
+            <span style={{ transform: `scaleX(${pct / 100})` }} />
           </div>
         )
       }
@@ -273,12 +273,17 @@ const libraryFilterCache = createFilterCache<{
 export function Library({
   onOpenSeries,
   onGoToListas,
+  onGoAiring,
 }: {
   onOpenSeries: (s: Series) => void;
   onGoToListas?: () => void;
+  onGoAiring?: () => void;
 }) {
   const t = useT();
   const [items, setItems] = useState<LibraryItem[]>([]);
+  // False until the first listLibrary settles: skeleton cards hold the grid's
+  // space instead of flashing the empty state.
+  const [loaded, setLoaded] = useState(false);
   const [query, setQuery] = useState(() => libraryFilterCache.current?.query ?? "");
   const [debouncedQuery, setDebouncedQuery] = useState(query);
 
@@ -414,7 +419,9 @@ export function Library({
   }
 
   const load = useCallback(() => {
-    listLibrary().then(setItems);
+    listLibrary()
+      .then(setItems)
+      .finally(() => setLoaded(true));
   }, []);
 
   useEffect(() => {
@@ -571,11 +578,24 @@ export function Library({
         )}
       </div>
 
-      {items.length === 0 ? (
+      {!loaded ? (
+        <div className="grid" role="status" aria-label={t("common.loading")}>
+          {Array.from({ length: 12 }, (_, i) => (
+            <div className="skeleton skeleton-poster" key={i} aria-hidden="true" />
+          ))}
+        </div>
+      ) : items.length === 0 ? (
         <div className="empty">
           {t("library.emptyTitle")}
           <br />
           {t("library.emptyHint")}
+          {onGoAiring && (
+            <div className="empty-actions">
+              <button type="button" className="btn btn-primary" onClick={onGoAiring}>
+                {t("library.goAiring")}
+              </button>
+            </div>
+          )}
         </div>
       ) : (
         <>
@@ -776,6 +796,13 @@ export function Library({
                         ? "library.emptyPlan"
                         : "library.emptyCompleted"
                   )}
+              {statusFilter === "watching" && !anyFilterActive && (
+                <div className="empty-actions">
+                  <button type="button" className="btn btn-primary" onClick={() => setStatusFilter("plan")}>
+                    {t("library.goPlan")}
+                  </button>
+                </div>
+              )}
               {statusFilter === "plan" && !anyFilterActive && onGoToListas && (
                 <>
                   <br />

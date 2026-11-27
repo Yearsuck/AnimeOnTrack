@@ -8,3 +8,8 @@ export function detectMobile(userAgent?: string): boolean {
 
 // Single place to tell whether the app runs on a phone (Tauri Android WebView).
 export const isMobile: boolean = detectMobile();
+
+/** Settings cards/controls that only work on desktop (window placement, uninstaller, explorer reveal). */
+export function showDesktopOnlySettings(mobile: boolean = isMobile): boolean {
+  return !mobile;
+}

@@ -84,11 +84,14 @@ function getWeekdayName(day: number, t: ReturnType<typeof useT>): string {
 function AiringCard({
   series: s,
   estimated,
+  score,
   onOpen,
   onToggle,
 }: {
   series: Series;
   estimated?: boolean;
+  /** AniList average score (0-100), shown so the "best rated" order reads at a glance. */
+  score?: number | null;
   onOpen: (s: Series) => void;
   onToggle: (e: React.SyntheticEvent, s: Series) => void;
 }) {
@@ -122,6 +125,11 @@ function AiringCard({
             {label}
           </span>
         )}
+        {score != null && score > 0 && (
+          <span className="chip chip-score" title={t("airing.scoreTooltip")}>
+            ★ {Math.round(score)}%
+          </span>
+        )}
         <AiringPoster title={s.title} coverUrl={s.cover_url} />
       </div>
       <div className="card-body">
@@ -141,6 +149,29 @@ function AiringCard({
 }
 
 type AiringViewMode = "all" | "season" | "week";
+
+export type AiringSort = "release" | "score";
+const SORT_KEY = "aot.airingSort";
+
+function loadSort(): AiringSort {
+  try {
+    return localStorage.getItem(SORT_KEY) === "score" ? "score" : "release";
+  } catch {
+    return "release";
+  }
+}
+
+// "release" keeps the backend order (newest next-episode first); "score" sorts by
+// AniList average score, highest first. Unscored shows go last; ties keep order.
+export function sortAiringItems(items: AiringItem[], sort: AiringSort): AiringItem[] {
+  if (sort !== "score") return items;
+  return [...items].sort((a, b) => {
+    const sa = a.score ?? null;
+    const sb = b.score ?? null;
+    if (sa == null || sb == null) return (sa == null ? 1 : 0) - (sb == null ? 1 : 0);
+    return sb - sa;
+  });
+}
 
 export function AiringGrid({
   onOpenSeries,
@@ -171,6 +202,15 @@ export function AiringGrid({
 
   const [onlyFollowed, setOnlyFollowed] = useState(false);
   const [viewMode, setViewMode] = useState<AiringViewMode>("all");
+  const [sort, setSortState] = useState<AiringSort>(loadSort);
+  const setSort = (s: AiringSort) => {
+    setSortState(s);
+    try {
+      localStorage.setItem(SORT_KEY, s);
+    } catch {
+      /* preference just won't persist */
+    }
+  };
   const [syncing, setSyncing] = useState(false);
   const throttleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const syncTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -297,8 +337,8 @@ export function AiringGrid({
     } else if (viewMode === "week") {
       base = base.filter((it) => it.series.next_episode_at != null);
     }
-    return base;
-  }, [items, debouncedQuery, onlyFollowed, viewMode]);
+    return sortAiringItems(base, sort);
+  }, [items, debouncedQuery, onlyFollowed, viewMode, sort]);
 
   const followedCount = items.filter((it) => it.series.followed).length;
 
@@ -365,6 +405,23 @@ export function AiringGrid({
         >
           {t("airing.followingFilter", { count: followedCount })}
         </button>
+        <span className="muted text-sm">{t("airing.sortLabel")}</span>
+        <div className="seg">
+          <button
+            type="button"
+            className={`seg-btn${sort === "release" ? " active" : ""}`}
+            onClick={() => setSort("release")}
+          >
+            {t("airing.sortRelease")}
+          </button>
+          <button
+            type="button"
+            className={`seg-btn${sort === "score" ? " active" : ""}`}
+            onClick={() => setSort("score")}
+          >
+            {t("airing.sortScore")}
+          </button>
+        </div>
         <div className="spacer" />
         {!isMobile && <span className="muted">{t("common.seriesCount", { count: filtered.length })}</span>}
       </div>
@@ -408,6 +465,7 @@ export function AiringGrid({
                         key={it.series.id}
                         series={it.series}
                         estimated={it.next_episode_estimated}
+                        score={it.score}
                         onOpen={onOpenSeries}
                         onToggle={toggle}
                       />
@@ -425,6 +483,7 @@ export function AiringGrid({
               key={it.series.id}
               series={it.series}
               estimated={it.next_episode_estimated}
+              score={it.score}
               onOpen={onOpenSeries}
               onToggle={toggle}
             />

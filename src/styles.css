@@ -6,9 +6,11 @@
   --surface-3: #223447;
   --surface-4: #2b415699;
   --border: #24384a;
+  /* Outline of controls whose border is the only boundary (>= 3:1, WCAG 1.4.11). */
+  --border-strong: #56738f;
   --text: #e9eff5;
   --muted: #90a4b7;
-  --muted-2: #6b7f92;
+  --muted-2: #7d91a4;
   /* Brand red, matching the AOT logo. Dark theme uses a brighter red so it
      reads as text/border/icon against the navy ground; the fill (--accent-
      solid) is the logo's own red with white text on top. */
@@ -19,10 +21,12 @@
      A red fill is dark enough for white text in both themes, so --on-accent
      is white throughout (unlike the old bright-blue accent, which needed
      dark text). */
-  --accent-solid: #e23b3b;
-  --accent-solid-hover: #f04848;
+  --accent-solid: #d83030;
+  --accent-solid-hover: #db3434;
   --on-accent: #ffffff;
   --on-success: #04140d;
+  --info: #5aa2ff;
+  --info-dim: rgba(90, 162, 255, 0.16);
   --success: #46d19e;
   --success-dim: rgba(70, 209, 158, 0.16);
   --danger: #ff5c7c;
@@ -54,6 +58,9 @@
 
   --radius: 12px;
   --radius-sm: 8px;
+  /* Was referenced (.batch-bar) but never defined, so border-radius computed
+     to 0. Defined as 0 to keep the rendered look; raise it deliberately. */
+  --radius-md: 0;
   --radius-round: 999px;
 
   /* Elevation scale */
@@ -116,9 +123,10 @@
   --surface-3: #e2e8f0;
   --surface-4: #dbe3ec99;
   --border: #d3dde8;
+  --border-strong: #7a8b9e;
   --text: #17222e;
-  --muted: #5a6b7d;
-  --muted-2: #8394a5;
+  --muted: #566778;
+  --muted-2: #5e6f80;
   /* Brand red on a light ground: darkened from the logo's #e23b3b so red
      text/borders clear 4.5:1 on white, and so white text clears it on the
      filled variant. */
@@ -129,9 +137,11 @@
   --accent-solid-hover: #b31f1f;
   --on-accent: #ffffff;
   --on-success: #04140d;
-  --success: #1f9d6b;
+  --info: #1d5fd1;
+  --info-dim: rgba(29, 95, 209, 0.1);
+  --success: #15774f;
   --success-dim: rgba(31, 157, 107, 0.14);
-  --danger: #d83a5a;
+  --danger: #c42d4d;
   --danger-dim: rgba(216, 58, 90, 0.1);
   --danger-border: rgba(216, 58, 90, 0.35);
 
@@ -423,385 +433,51 @@ a:focus-visible {
 }
 
 /* ---------- Inputs ---------- */
-.input,
-select.input {
-  width: 100%;
-  min-height: 32px;
-  padding: 0 var(--sp-3);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  color: var(--text);
-  font-family: inherit;
-  font-size: var(--fs-base);
-  outline: none;
-  transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
-}
 /* A textarea can't be a single line, so it keeps vertical padding and its own
    line height. */
-textarea.input {
-  padding: var(--sp-2) var(--sp-3);
-  line-height: var(--lh-base);
-}
-.input::placeholder {
-  color: var(--muted-2);
-}
-.input:hover:not(:focus) {
-  border-color: var(--muted-2);
-}
-.input:focus {
-  border-color: var(--accent);
-  box-shadow: var(--focus-ring);
-}
-.input:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-.search {
-  position: relative;
-  max-width: 340px;
-  flex: 1;
-}
-.search .input {
-  padding-left: 34px;
-}
-.search .icon {
-  position: absolute;
-  left: 11px;
-  top: 50%;
-  transform: translateY(-50%);
-  color: var(--muted-2);
-}
 
 /* ---------- Filter bar (Catálogo search/filters) ---------- */
-.filter-bar {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-3);
-  margin-bottom: var(--sp-5);
-}
-.filter-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--sp-3);
-}
-.chip-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--sp-2);
-}
-.chip-toggle {
-  border: 1px solid var(--border);
-  background: var(--surface-2);
-  color: var(--muted);
-  padding: 6px 13px;
-  border-radius: var(--radius-round);
-  font-size: var(--fs-sm);
-  font-weight: var(--fw-semibold);
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-1);
-  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
-}
-.chip-toggle:hover {
-  color: var(--text);
-  background: var(--surface-3);
-}
-.chip-toggle.active {
-  color: var(--accent);
-  border-color: var(--accent);
-  background: var(--accent-dim);
-}
-.chip-toggle.chip-include.active {
-  color: var(--accent);
-  border-color: var(--accent);
-  background: var(--accent-dim);
-}
-.chip-toggle.chip-exclude.active {
-  color: var(--danger);
-  border-color: var(--danger);
-  background: var(--danger-dim);
-}
-.chip-state {
-  font-size: var(--fs-xs);
-  font-weight: var(--fw-bold);
-  line-height: 1;
-}
 
 /* ---------- Layout ---------- */
-.page {
-  padding: 20px;
-  padding-bottom: 40vh;
-  max-width: 1600px;
-  margin: 0 auto;
-}
-.page-head {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-4);
-  margin-bottom: var(--sp-5);
-  min-height: 32px;
-}
-.page-title {
-  font-size: var(--fs-xl);
-  font-weight: var(--fw-bold);
-  line-height: var(--lh-tight);
-  letter-spacing: -0.015em;
-  margin: 0;
-}
 /* One-line explanation under a page title. Optional, but when a view uses it
    the treatment is the same everywhere instead of an inline muted span. */
-.page-subtitle {
-  color: var(--muted);
-  font-size: var(--fs-base);
-  margin: var(--sp-1) 0 0;
-}
-.muted {
-  color: var(--muted);
-}
 /* Generic flex row used to lay out a button/input group inline. Was
    previously only defined in the unimported App.css, so every `.row` usage
    across the app (Settings, DeckPanel, Onboarding) silently rendered
    unstyled — fixed here instead of patched per-view. */
-.row {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  flex-wrap: wrap;
-}
-.empty {
-  text-align: center;
-  color: var(--muted);
-  font-size: var(--fs-base);
-  padding: var(--sp-8) var(--sp-5);
-}
 
 /* ---------- Loading skeletons ----------
    A grey block that pulses where content will land, instead of an empty page
    that suddenly reflows when data arrives. Sized by the caller; the shimmer
    is shared. Respects prefers-reduced-motion via the global override above. */
-.skeleton {
-  background: linear-gradient(
-    90deg,
-    var(--surface-2) 25%,
-    var(--surface-3) 50%,
-    var(--surface-2) 75%
-  );
-  background-size: 200% 100%;
-  animation: skeleton-shimmer 1.4s var(--ease) infinite;
-  border-radius: var(--radius-sm);
-}
-@keyframes skeleton-shimmer {
-  from {
-    background-position: 200% 0;
-  }
-  to {
-    background-position: -200% 0;
-  }
-}
-.skeleton-text {
-  height: 12px;
-  margin-bottom: var(--sp-2);
-}
-.skeleton-title {
-  height: 18px;
-  width: 40%;
-  margin-bottom: var(--sp-3);
-}
 
 /* ---------- Stat tile ----------
    The dashboard number card, previously assembled from four inline styles
    per instance in Stats.tsx and StatsInsights.tsx. */
-.stat-card {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: var(--sp-4);
-  transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
-}
-.stat-card:hover {
-  border-color: var(--surface-3);
-  box-shadow: var(--shadow-sm);
-}
-.stat-label {
-  color: var(--muted);
-  font-size: var(--fs-sm);
-  font-weight: var(--fw-medium);
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
-}
-.stat-value {
-  font-size: var(--fs-2xl);
-  font-weight: var(--fw-bold);
-  line-height: var(--lh-tight);
-  letter-spacing: -0.02em;
-  font-variant-numeric: tabular-nums;
-  margin-top: var(--sp-1);
-}
-.stat-help {
-  color: var(--muted);
-  font-size: var(--fs-xs);
-  margin-top: var(--sp-1);
-}
 
 /* ---------- Poster grid (airing) ---------- */
-.grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-  gap: 18px;
-}
-.card {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  overflow: hidden;
-  transition: transform var(--dur) var(--ease-out), border-color var(--dur-fast) var(--ease),
-    box-shadow var(--dur) var(--ease-out);
-  content-visibility: auto;
-  contain-intrinsic-size: 150px 300px;
-}
-.card:hover {
-  transform: translateY(-5px);
-  border-color: var(--surface-3);
-  box-shadow: var(--shadow-md), 0 0 0 1px var(--accent-dim);
-}
-.poster {
-  position: relative;
-  aspect-ratio: 2 / 3;
-  background: var(--surface-2);
-  overflow: hidden;
-}
-.poster img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  display: block;
-}
-.poster .chip {
-  position: absolute;
-  top: 8px;
-  left: 8px;
-  padding: 3px 8px;
-  border-radius: 6px;
-  background: var(--overlay-strong);
-  font-size: var(--fs-xs);
-  font-weight: var(--fw-bold);
-  color: var(--accent);
-  backdrop-filter: blur(4px);
-}
 /* Next-episode countdown ("en 2 h" / "hace 5 h") — same chip treatment as
    SIGUIENDO but anchored to the opposite corner so both can coexist, and in
    the neutral text color: it's schedule info, not a followed-state accent. */
-.poster .chip.chip-countdown {
-  left: auto;
-  right: 8px;
+/* AniList score, bottom-left so it never collides with the two top chips. */
+.poster .chip.chip-score {
+  top: auto;
+  bottom: 8px;
   color: var(--text);
   font-weight: var(--fw-semibold);
-}
-.card-body {
-  padding: 10px 10px 12px;
-}
-.card-title {
-  font-size: var(--fs-base);
-  font-weight: var(--fw-semibold);
-  line-height: 1.3;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  min-height: 34px;
-  margin-bottom: 8px;
-}
-.follow-btn {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-}
-.follow-btn.on {
-  background: var(--accent-dim);
-  border-color: var(--accent);
-  color: var(--accent);
+  font-variant-numeric: tabular-nums;
 }
 
 /* ---------- Pending / episode lists ---------- */
-.series-block {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  margin-bottom: var(--sp-4);
-  overflow: hidden;
-}
 /* Last block in a stack owns no trailing margin — the container's own spacing
    ends the section. Saves the `style={{ marginBottom: 0 }}` overrides that
    were sprinkled across the stats views. */
-.series-block:last-child {
-  margin-bottom: 0;
-}
-.series-head {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-3);
-  padding: var(--sp-3) var(--sp-4);
-  border-bottom: 1px solid var(--border);
-  background: var(--surface-2);
-}
-.series-head img {
-  width: 110px;
-  height: 156px;
-  object-fit: cover;
-  border-radius: 8px;
-  background: var(--surface-3);
-  box-shadow: var(--shadow-sm);
-  flex-shrink: 0;
-}
 /* Initials tile shown instead of the poster when the cover is missing or blocked: same box as the
  * <img> above (the generic .poster-fallback is 100% x 100%, which in this flex row would swell and
  * squeeze the name/count). */
-.series-head .poster-fallback {
-  width: 110px;
-  height: 156px;
-  flex-shrink: 0;
-  border-radius: 8px;
-  box-shadow: var(--shadow-sm);
-}
-.series-head .name {
-  font-weight: var(--fw-bold);
-  font-size: var(--fs-lg);
-  letter-spacing: -0.01em;
-}
-.series-head .count {
-  color: var(--muted);
-  font-size: var(--fs-sm);
-  font-variant-numeric: tabular-nums;
-}
 /* Heading for a bordered block or a group of tiles. One weight and size for
    all of them; several views were reusing `.card-title`, which is the poster
    card's clamped two-line title and carries a min-height meant for that. */
-.section-title {
-  font-size: var(--fs-md);
-  font-weight: var(--fw-semibold);
-  letter-spacing: -0.01em;
-  margin: 0;
-}
-.ep-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--border-soft);
-  transition: background var(--dur-fast) var(--ease), opacity var(--dur) var(--ease),
-    transform var(--dur) var(--ease);
-}
-.ep-row:last-child {
-  border-bottom: none;
-}
-.ep-row:hover {
-  background: var(--surface-2);
-}
 /* ---------- Library ---------- */
 /* Status-grouped disclosures ("Viendo" / "Pendientes de empezar" /
    "Completadas") — <details>/<summary> gives keyboard + screen-reader
@@ -827,7 +503,7 @@ select.input {
   min-height: 32px;
   padding: 0 var(--sp-3);
   background: var(--surface);
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
   color: var(--text);
   font-family: inherit;
@@ -890,7 +566,7 @@ textarea.input {
   gap: var(--sp-2);
 }
 .chip-toggle {
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong);
   background: var(--surface-2);
   color: var(--muted);
   padding: 6px 13px;
@@ -930,7 +606,7 @@ textarea.input {
 
 /* ---------- Layout ---------- */
 .page {
-  padding: 20px;
+  padding: var(--sp-5);
   padding-bottom: 40vh;
   max-width: 1600px;
   margin: 0 auto;
@@ -1002,6 +678,20 @@ textarea.input {
 .skeleton-text {
   height: 12px;
   margin-bottom: var(--sp-2);
+}
+.skeleton-poster {
+  aspect-ratio: 2 / 3;
+  border-radius: var(--radius);
+}
+/* Pendientes loading row: same 120x180 thumb as .pending-thumb. */
+.pending-skeleton-thumb {
+  flex: none;
+  width: 120px;
+  height: 180px;
+}
+.pending-skeleton-body {
+  flex: 1;
+  min-width: 0;
 }
 .skeleton-title {
   height: 18px;
@@ -1081,7 +771,7 @@ textarea.input {
   position: absolute;
   top: 8px;
   left: 8px;
-  padding: 3px 8px;
+  padding: 3px var(--sp-2);
   border-radius: 6px;
   background: var(--overlay-strong);
   font-size: var(--fs-xs);
@@ -1099,7 +789,7 @@ textarea.input {
   font-weight: var(--fw-semibold);
 }
 .card-body {
-  padding: 10px 10px 12px;
+  padding: 10px 10px var(--sp-3);
 }
 .card-title {
   font-size: var(--fs-base);
@@ -1110,7 +800,7 @@ textarea.input {
   -webkit-box-orient: vertical;
   overflow: hidden;
   min-height: 34px;
-  margin-bottom: 8px;
+  margin-bottom: var(--sp-2);
 }
 .follow-btn {
   width: 100%;
@@ -1151,7 +841,7 @@ textarea.input {
   width: 110px;
   height: 156px;
   object-fit: cover;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   background: var(--surface-3);
   box-shadow: var(--shadow-sm);
   flex-shrink: 0;
@@ -1163,7 +853,7 @@ textarea.input {
   width: 110px;
   height: 156px;
   flex-shrink: 0;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   box-shadow: var(--shadow-sm);
 }
 .series-head .name {
@@ -1188,7 +878,7 @@ textarea.input {
 .ep-row {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--sp-3);
   padding: 10px 14px;
   border-bottom: 1px solid var(--border-soft);
   transition: background var(--dur-fast) var(--ease), opacity var(--dur) var(--ease),
@@ -1230,7 +920,7 @@ textarea.input {
   color: var(--muted);
   font-size: var(--fs-sm);
   font-weight: var(--fw-semibold);
-  padding: 5px 12px;
+  padding: 5px var(--sp-3);
   cursor: pointer;
 }
 .seg-btn:not(:last-child) {
@@ -1458,14 +1148,10 @@ textarea.input {
   border: 0;
 }
 
-.ep-row.removing {
-  opacity: 0;
-  transform: translateX(8px) scale(0.98);
-}
 .ep-num {
   min-width: 30px;
   height: 30px;
-  padding: 0 8px;
+  padding: 0 var(--sp-2);
   border-radius: 7px;
   background: var(--surface-3);
   color: var(--text);
@@ -1602,9 +1288,11 @@ button.ep-title:focus-visible {
 }
 .dl-progress-fill {
   height: 100%;
+  width: 100%;
   background: var(--accent-solid);
-  border-radius: inherit;
-  transition: width var(--dur-fast) var(--ease);
+  /* Scaled fill: radius would distort; the track (overflow:hidden) rounds it. */
+  transform-origin: left center;
+  transition: transform var(--dur-fast) var(--ease);
 }
 .dl-error {
   color: var(--danger);
@@ -1666,10 +1354,11 @@ button.ep-title:focus-visible {
 }
 .progress > span {
   display: block;
+  width: 100%;
   height: 100%;
-  border-radius: inherit;
   background: var(--success);
-  transition: width var(--dur-slow) var(--ease-out);
+  transform-origin: left center;
+  transition: transform var(--dur-slow) var(--ease-out);
 }
 
 /* ---------- Onboarding ---------- */
@@ -1880,6 +1569,10 @@ button.ep-title:focus-visible {
     animation: none;
     opacity: 0.6;
   }
+  .skeleton,
+  .dl-badge.dl-active {
+    animation: none;
+  }
 }
 
 /* ---------- Settings ---------- */
@@ -1896,7 +1589,7 @@ button.ep-title:focus-visible {
 .settings-section-title {
   font-size: var(--fs-md);
   font-weight: var(--fw-bold);
-  margin: 0 0 4px 0;
+  margin: 0 0 var(--sp-1) 0;
 }
 .settings-section-desc {
   color: var(--muted);
@@ -1927,8 +1620,8 @@ button.ep-title:focus-visible {
 .backlog-row {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 10px 16px;
+  gap: var(--sp-3);
+  padding: 10px var(--sp-4);
   border-bottom: 1px solid var(--border);
 }
 .backlog-row:last-child {
@@ -1957,7 +1650,7 @@ button.ep-title:focus-visible {
 }
 .backlog-actions {
   display: flex;
-  gap: 8px;
+  gap: var(--sp-2);
   flex-shrink: 0;
 }
 
@@ -1965,8 +1658,8 @@ button.ep-title:focus-visible {
 .listas-card {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 10px 12px;
+  gap: var(--sp-3);
+  padding: 10px var(--sp-3);
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -2012,7 +1705,7 @@ button.ep-title:focus-visible {
 .listas-card-head {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-2);
   min-width: 0;
   flex-wrap: wrap;
 }
@@ -2026,7 +1719,7 @@ button.ep-title:focus-visible {
 .listas-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-2);
   flex-shrink: 0;
 }
 .listas-chip {
@@ -2034,7 +1727,7 @@ button.ep-title:focus-visible {
   font-weight: var(--fw-bold);
   text-transform: uppercase;
   letter-spacing: 0.4px;
-  padding: 2px 8px;
+  padding: 2px var(--sp-2);
   border-radius: var(--radius-round);
   flex-shrink: 0;
 }
@@ -2051,8 +1744,8 @@ button.ep-title:focus-visible {
   color: var(--success);
 }
 .listas-chip-airing {
-  background: rgba(59, 130, 246, 0.15);
-  color: #60a5fa;
+  background: var(--info-dim);
+  color: var(--info);
 }
 .listas-chip-eps {
   background: var(--surface-3);
@@ -2082,7 +1775,7 @@ button.ep-title:focus-visible {
 
 /* ---------- Stats · bar chart & ring grid ---------- */
 .barchart {
-  padding: 14px 16px;
+  padding: 14px var(--sp-4);
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -2091,7 +1784,7 @@ button.ep-title:focus-visible {
   display: grid;
   grid-template-columns: 130px 1fr 46px;
   align-items: center;
-  gap: 12px;
+  gap: var(--sp-3);
 }
 .bar-label {
   font-size: var(--fs-sm);
@@ -2113,9 +1806,9 @@ button.ep-title:focus-visible {
   left: 0;
   top: 0;
   height: 100%;
-  min-width: 4px;
-  border-radius: var(--radius-round);
-  transition: width var(--dur-slow) cubic-bezier(0.16, 1, 0.3, 1);
+  width: 100%;
+  transform-origin: left center;
+  transition: transform var(--dur-slow) cubic-bezier(0.16, 1, 0.3, 1);
 }
 .bar-val {
   font-size: var(--fs-sm);
@@ -2127,8 +1820,8 @@ button.ep-title:focus-visible {
 .ringgrid {
   display: flex;
   flex-wrap: wrap;
-  gap: 16px;
-  padding: 14px 16px;
+  gap: var(--sp-4);
+  padding: 14px var(--sp-4);
 }
 .ringcell {
   display: flex;
@@ -2249,15 +1942,16 @@ button.ep-title:focus-visible {
   align-items: flex-end;
   /* Faint track so quiet days still read as "a day", not a gap. */
   background: linear-gradient(var(--surface-2), var(--surface-2)) bottom / 100% 2px no-repeat;
+  overflow: hidden;
   border-radius: var(--radius-sm) var(--radius-sm) 0 0;
   cursor: default;
 }
 .dayact-fill {
   width: 100%;
-  min-height: 0;
+  height: 100%;
   background: var(--surface-3);
-  border-radius: var(--radius-sm) var(--radius-sm) 2px 2px;
-  transition: height var(--dur-slow) var(--ease-out), background var(--dur-fast) var(--ease);
+  transform-origin: center bottom;
+  transition: transform var(--dur-slow) var(--ease-out), background var(--dur-fast) var(--ease);
 }
 /* A day with real activity gets the accent; hover lifts any column. */
 .dayact-col.has .dayact-fill {
@@ -2284,7 +1978,7 @@ button.ep-title:focus-visible {
 }
 /* Room for the tick labels that hang below the bars. */
 .dayact {
-  padding-bottom: 20px;
+  padding-bottom: var(--sp-5);
 }
 
 /* ---------- Dusty watchlist (2026-08-24) ---------- */
@@ -2340,15 +2034,16 @@ button.ep-title:focus-visible {
   display: flex;
   align-items: flex-end;
   background: linear-gradient(var(--surface-2), var(--surface-2)) bottom / 100% 2px no-repeat;
+  overflow: hidden;
   border-radius: var(--radius-sm) var(--radius-sm) 0 0;
   cursor: default;
 }
 .hourly-fill {
   width: 100%;
-  min-height: 0;
+  height: 100%;
   background: var(--surface-3);
-  border-radius: var(--radius-sm) var(--radius-sm) 2px 2px;
-  transition: height var(--dur-slow) var(--ease-out), background var(--dur-fast) var(--ease);
+  transform-origin: center bottom;
+  transition: transform var(--dur-slow) var(--ease-out), background var(--dur-fast) var(--ease);
 }
 .hourly-col.has .hourly-fill {
   background: var(--accent);
@@ -3022,27 +2717,140 @@ select.settings-select {
   gap: var(--sp-2);
   align-content: start;
 }
-.pending-eps .ep-row {
-  padding: var(--sp-2) var(--sp-3);
+/* One tile per episode. Opening it (title click) widens the tile to the whole
+   row and reveals the sites that have this episode inside the same tile. */
+.pending-eps .ep-item {
+  min-width: 0;
   border: 1px solid var(--border-soft);
   border-radius: var(--radius-sm);
   background: var(--surface-2);
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease),
+    opacity var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
 }
-.pending-eps .ep-row:last-child {
-  border-bottom: 1px solid var(--border-soft);
-}
-.pending-eps .ep-row:hover {
+.pending-eps .ep-item:hover {
   background: var(--surface-3);
 }
-.pending-eps .ep-row.removing {
+.pending-eps .ep-item.removing {
   opacity: 0;
+  transform: translateX(8px) scale(0.98);
 }
+.pending-eps .ep-item.is-open {
+  grid-column: 1 / -1;
+  border-color: var(--accent-dim);
+  background: var(--surface-3);
+}
+.pending-eps .ep-row,
+.pending-eps .ep-row:last-child {
+  padding: var(--sp-2) var(--sp-3);
+  border: 0;
+  background: none;
+}
+.pending-eps .ep-row:hover {
+  background: none;
+}
+.ep-title-chevron {
+  width: 12px;
+  height: 12px;
+  margin-left: var(--sp-1);
+  vertical-align: -1px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.55;
+  transition: transform var(--dur-fast) var(--ease), opacity var(--dur-fast) var(--ease);
+}
+.ep-title:hover .ep-title-chevron,
+.ep-item.is-open .ep-title-chevron {
+  opacity: 1;
+}
+.ep-item.is-open .ep-title-chevron {
+  transform: rotate(180deg);
+}
+
 .ep-sources {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--sp-1);
-  grid-column: 1 / -1;
-  padding-left: var(--sp-3);
+  align-items: center;
+  gap: var(--sp-2) var(--sp-3);
+  margin: 0 var(--sp-3);
+  padding: var(--sp-3) 0;
+  border-top: 1px solid var(--border-soft);
+  animation: ep-sources-in 160ms var(--ease-out);
+}
+@keyframes ep-sources-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+.ep-hosts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+/* Each host gets its own hue (set inline from the site id) so a site is
+   recognisable at a glance, the same colour on every episode. */
+.ep-host {
+  --host-fg: hsl(var(--host-hue) 75% 72%);
+  --host-bg: hsl(var(--host-hue) 45% 22%);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: 36px;
+  padding: var(--sp-1) var(--sp-3) var(--sp-1) var(--sp-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-round);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease),
+    transform var(--dur-fast) var(--ease);
+}
+.ep-host:hover {
+  border-color: var(--host-fg);
+  background: var(--surface-2);
+}
+.ep-host:active {
+  transform: scale(0.97);
+}
+.ep-host:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.ep-host-mark {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--host-bg);
+  color: var(--host-fg);
+  font-size: 11px;
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0.02em;
+}
+.ep-host-name {
+  font-weight: var(--fw-medium, 500);
+  white-space: nowrap;
+}
+.ep-host-tag {
+  padding: 1px var(--sp-2);
+  border-radius: var(--radius-round);
+  background: var(--accent-dim);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: var(--fw-semibold);
+}
+.ep-sources-note {
+  color: var(--muted);
+  font-size: var(--fs-sm);
 }
 .pending-more {
   align-self: flex-start;
@@ -3066,8 +2874,13 @@ select.settings-select {
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .pending-eps .ep-row {
+  .pending-eps .ep-item,
+  .ep-host,
+  .ep-title-chevron {
     transition: none;
+  }
+  .ep-sources {
+    animation: none;
   }
 }
 
@@ -3205,7 +3018,7 @@ select.settings-select {
 .spotlight-badge {
   font-size: var(--fs-xs);
   font-weight: var(--fw-semibold);
-  padding: 3px 8px;
+  padding: 3px var(--sp-2);
   border-radius: 6px;
   background: var(--overlay-strong);
   color: var(--text);
@@ -3394,7 +3207,7 @@ select.settings-select {
 /* Close goes red on hover, the universal signal. */
 .win-btn-close:hover {
   background: var(--danger);
-  color: #fff;
+  color: var(--on-accent);
 }
 
 /* Slim drag strip for screens without the main topbar. */
@@ -4132,4 +3945,11 @@ html[data-vt] .detail-cover {
     animation-name: soft-in;
     animation-delay: 0ms;
   }
+}
+
+/* inline, recoverable save/load error for settings cards (role="alert") */
+.settings-error {
+  color: var(--danger);
+  font-size: var(--fs-sm);
+  margin: 0 0 var(--sp-4) 0;
 }

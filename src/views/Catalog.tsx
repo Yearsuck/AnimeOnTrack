@@ -786,9 +786,20 @@ export function Catalog({
           {batchMsg && <p className="muted catalog-count">{batchMsg}</p>}
 
           {items.length === 0 && loading ? (
-            <div className="empty">{t("common.loading")}</div>
+            <div className="grid" role="status" aria-label={t("common.loading")}>
+              {Array.from({ length: 12 }, (_, i) => (
+                <div className="skeleton skeleton-poster" key={i} aria-hidden="true" />
+              ))}
+            </div>
           ) : totalSynced === 0 ? (
-            <div className="empty">{t("catalog.emptyNotSynced")}</div>
+            <div className="empty">
+              {t("catalog.emptyNotSynced")}
+              <div className="empty-actions">
+                <button type="button" className="btn btn-primary" onClick={runSync} disabled={syncing} aria-busy={syncing}>
+                  {syncing ? t("catalog.syncing") : t("catalog.syncButton")}
+                </button>
+              </div>
+            </div>
           ) : browse ? (
             <div className="cat-browse">
               {thisWeek.length > 0 && (

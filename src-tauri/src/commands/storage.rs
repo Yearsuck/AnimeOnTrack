@@ -1,6 +1,7 @@
 use super::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use crate::download_safety::{is_safe_file_in_dir, remove_empty_dir_in_dir};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -68,33 +69,6 @@ impl Tracked {
             || self.paths.iter().any(|tracked| strip_verbatim(tracked) == stripped)
             || episode_id_of(p).is_some_and(|id| self.active_ids.contains(&id))
     }
-}
-
-/// Validates that `file_path` is a regular file located strictly inside `base_dir`
-/// without symlink escape.
-pub fn is_safe_file_in_dir(base_dir: &Path, file_path: &Path) -> bool {
-    if !file_path.is_file() {
-        return false;
-    }
-    let (Ok(canon_base), Ok(canon_file)) = (base_dir.canonicalize(), file_path.canonicalize()) else {
-        return false;
-    };
-    canon_file.starts_with(&canon_base) && canon_file != canon_base
-}
-
-/// Attempts to remove an empty directory strictly inside `base_dir` using `std::fs::remove_dir`.
-/// Never uses `remove_dir_all`. Returns true if the directory was removed.
-pub fn remove_empty_dir_in_dir(base_dir: &Path, dir_path: &Path) -> bool {
-    if !dir_path.is_dir() {
-        return false;
-    }
-    let (Ok(canon_base), Ok(canon_dir)) = (base_dir.canonicalize(), dir_path.canonicalize()) else {
-        return false;
-    };
-    if !canon_dir.starts_with(&canon_base) || canon_dir == canon_base {
-        return false;
-    }
-    std::fs::remove_dir(&canon_dir).is_ok()
 }
 
 /// Deletes the given downloaded file paths for a series and removes `<downloads_dir>/<series_id>`
@@ -310,8 +284,7 @@ pub fn rotate_log_if_exceeds(log_path: &Path, max_bytes: u64) -> std::io::Result
 fn tracked_downloads(state: &State<'_, AppState>) -> Result<Tracked, String> {
     let active_ids = crate::commands::download::active_episode_ids();
     let raw_paths = {
-        let db = state.db.lock().unwrap();
-        db.downloaded_episode_canonical_paths().map_err(|e| e.to_string())?
+        state.with_db(|db| Ok(db.downloaded_episode_canonical_paths()?))?
     };
     let mut paths = HashSet::with_capacity(raw_paths.len() * 2);
     for p in raw_paths {
@@ -376,8 +349,9 @@ pub async fn get_storage_report(
 pub async fn get_auto_delete_seen_downloads(
     state: State<'_, AppState>,
 ) -> Result<bool, String> {
-    let db = state.db.lock().unwrap();
-    db.get_auto_delete_seen_downloads().map_err(|e| e.to_string())
+    state
+        .with_db(|db| Ok(db.get_auto_delete_seen_downloads()?))
+        .map_err(String::from)
 }
 
 /// Persists the auto-delete on seen preference.
@@ -386,8 +360,9 @@ pub async fn set_auto_delete_seen_downloads(
     state: State<'_, AppState>,
     enabled: bool,
 ) -> Result<(), String> {
-    let db = state.db.lock().unwrap();
-    db.set_auto_delete_seen_downloads(enabled).map_err(|e| e.to_string())
+    state
+        .with_db(|db| Ok(db.set_auto_delete_seen_downloads(enabled)?))
+        .map_err(String::from)
 }
 
 /// Retrieves the preferred download quality (best, 1080, 720, 480). Default: best.
@@ -395,8 +370,9 @@ pub async fn set_auto_delete_seen_downloads(
 pub async fn get_download_quality(
     state: State<'_, AppState>,
 ) -> Result<String, String> {
-    let db = state.db.lock().unwrap();
-    db.get_download_quality().map_err(|e| e.to_string())
+    state
+        .with_db(|db| Ok(db.get_download_quality()?))
+        .map_err(String::from)
 }
 
 /// Persists the preferred download quality (best, 1080, 720, 480).
@@ -405,8 +381,9 @@ pub async fn set_download_quality(
     state: State<'_, AppState>,
     quality: String,
 ) -> Result<(), String> {
-    let db = state.db.lock().unwrap();
-    db.set_download_quality(&quality).map_err(|e| e.to_string())
+    state
+        .with_db(|db| Ok(db.set_download_quality(&quality)?))
+        .map_err(String::from)
 }
 
 #[cfg(test)]
@@ -470,58 +447,6 @@ mod tests {
                 PathBuf::from("/x/1.mp4")
             );
         }
-    }
-
-    #[test]
-    fn is_safe_file_in_dir_validates_path_boundaries() {
-        let temp = create_test_dir("safe_path");
-        let downloads = temp.join("downloads");
-        let series_dir = downloads.join("42");
-        std::fs::create_dir_all(&series_dir).unwrap();
-
-        let valid_file = series_dir.join("101.mp4");
-        std::fs::write(&valid_file, b"content").unwrap();
-
-        // Valid file inside downloads
-        assert!(is_safe_file_in_dir(&downloads, &valid_file));
-
-        // Directory itself is not a safe file
-        assert!(!is_safe_file_in_dir(&downloads, &series_dir));
-
-        // Non-existent file is not safe
-        assert!(!is_safe_file_in_dir(&downloads, &series_dir.join("missing.mp4")));
-
-        // File outside downloads directory is rejected
-        let outside_file = temp.join("outside.txt");
-        std::fs::write(&outside_file, b"secret").unwrap();
-        assert!(!is_safe_file_in_dir(&downloads, &outside_file));
-
-        let _ = std::fs::remove_dir_all(&temp);
-    }
-
-    #[test]
-    fn remove_empty_dir_only_removes_empty_subdirs() {
-        let temp = create_test_dir("remove_empty");
-        let downloads = temp.join("downloads");
-        let series_empty = downloads.join("empty_series");
-        let series_with_file = downloads.join("full_series");
-        std::fs::create_dir_all(&series_empty).unwrap();
-        std::fs::create_dir_all(&series_with_file).unwrap();
-        std::fs::write(series_with_file.join("ep.mp4"), b"video").unwrap();
-
-        // Empty dir is removed
-        assert!(remove_empty_dir_in_dir(&downloads, &series_empty));
-        assert!(!series_empty.exists());
-
-        // Non-empty dir is NOT removed
-        assert!(!remove_empty_dir_in_dir(&downloads, &series_with_file));
-        assert!(series_with_file.exists());
-
-        // Base dir itself is never removed
-        assert!(!remove_empty_dir_in_dir(&downloads, &downloads));
-        assert!(downloads.exists());
-
-        let _ = std::fs::remove_dir_all(&temp);
     }
 
     #[test]

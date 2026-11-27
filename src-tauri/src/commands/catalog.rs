@@ -3,8 +3,7 @@ use super::*;
 /// Full genre list for one series, for the Listas view's "Quiero ver" rows.
 #[tauri::command]
 pub async fn get_series_genres(state: State<'_, AppState>, series_id: i64) -> Result<Vec<String>, String> {
-    let db = state.db.lock().unwrap();
-    db.list_series_genres(series_id).map_err(|e| e.to_string())
+    Ok(state.with_db(|db| Ok(db.list_series_genres(series_id)?))?)
 }
 
 /// Bulk-fetch genre lists for multiple series ids in one call.
@@ -13,8 +12,7 @@ pub async fn get_series_genres_batch(
     state: State<'_, AppState>,
     series_ids: Vec<i64>,
 ) -> Result<std::collections::HashMap<i64, Vec<String>>, String> {
-    let db = state.db.lock().unwrap();
-    db.list_series_genres_batch(&series_ids).map_err(|e| e.to_string())
+    Ok(state.with_db(|db| Ok(db.list_series_genres_batch(&series_ids)?))?)
 }
 
 
@@ -30,8 +28,7 @@ pub async fn get_series_genres_batch(
 /// sites. See `Db::get_genre_affinity_across_sites`.
 #[tauri::command]
 pub async fn get_top_genres(state: State<'_, AppState>, limit: usize) -> Result<Vec<GenreAffinity>, String> {
-    let db = state.db.lock().unwrap();
-    db.get_favorite_genres(limit).map_err(|e| e.to_string())
+    Ok(state.with_db(|db| Ok(db.get_favorite_genres(limit)?))?)
 }
 
 /// Full matched AniList catalog entry for a series (cover/genres/format/
@@ -43,8 +40,7 @@ pub async fn get_catalog_info_for_series(
     state: State<'_, AppState>,
     series_id: i64,
 ) -> Result<Option<crate::anilist::CatalogAnime>, String> {
-    let db = state.db.lock().unwrap();
-    db.catalog_info_for_series(series_id).map_err(|e| e.to_string())
+    Ok(state.with_db(|db| Ok(db.catalog_info_for_series(series_id)?))?)
 }
 
 #[derive(Serialize)]
@@ -59,11 +55,16 @@ pub struct SeriesSiteInfo {
 /// an honestly labelled "open on <site>" link) and its synopsis. Local only.
 #[tauri::command]
 pub async fn get_series_site_info(state: State<'_, AppState>, series_id: i64) -> Result<SeriesSiteInfo, String> {
-    let db = state.db.lock().unwrap();
-    Ok(SeriesSiteInfo {
-        site_name: db.series_site_name(series_id).map_err(|e| e.to_string())?,
-        synopsis: db.series_synopsis(series_id).map_err(|e| e.to_string())?,
-    })
+    Ok(state.with_db(|db| {
+        let site_id = db.series_site_id(series_id)?;
+        let site_name = site_id.and_then(|id| {
+            crate::adapter::all_sites().iter().find(|s| s.id == id).map(|s| s.name.to_string())
+        });
+        Ok(SeriesSiteInfo {
+            site_name,
+            synopsis: db.series_synopsis(series_id)?,
+        })
+    })?)
 }
 
 #[derive(Serialize)]
@@ -89,7 +90,7 @@ pub async fn get_anime_extras(state: State<'_, AppState>, anilist_id: i64) -> Re
         return Ok(AnimeExtras { description: None, relations: Vec::new(), trailer: None });
     }
     let now = chrono::Utc::now().timestamp();
-    let cached = state.db.lock().unwrap().cached_media_extras(anilist_id).map_err(|e| e.to_string())?;
+    let cached = state.with_db(|db| Ok(db.cached_media_extras(anilist_id)?))?;
     let extras = match cached {
         Some((extras, fetched_at)) if now - fetched_at < MEDIA_EXTRAS_MAX_AGE_SECS => Some(extras),
         // A recent failure or a request already in flight for this id: serve
@@ -100,10 +101,12 @@ pub async fn get_anime_extras(state: State<'_, AppState>, anilist_id: i64) -> Re
             state.extras_guard.finish(anilist_id, chrono::Utc::now().timestamp(), result.is_err());
             match result {
                 Ok(fetched) => {
-                    let db = state.db.lock().unwrap();
-                    if let Err(e) = db.store_media_extras(anilist_id, fetched.as_ref(), now) {
-                        eprintln!("[anilist] caching extras for {anilist_id} failed: {e}");
-                    }
+                    state.with_db(|db| {
+                        if let Err(e) = db.store_media_extras(anilist_id, fetched.as_ref(), now) {
+                            eprintln!("[anilist] caching extras for {anilist_id} failed: {e}");
+                        }
+                        Ok(())
+                    })?;
                     fetched
                 }
                 Err(e) => {
@@ -117,8 +120,7 @@ pub async fn get_anime_extras(state: State<'_, AppState>, anilist_id: i64) -> Re
         Some(e) => (e.description, e.relations, e.trailer),
         None => (None, Vec::new(), None),
     };
-    let db = state.db.lock().unwrap();
-    let relations = db.related_anime(anilist_id, &fetched_relations).map_err(|e| e.to_string())?;
+    let relations = state.with_db(|db| Ok(db.related_anime(anilist_id, &fetched_relations)?))?;
     Ok(AnimeExtras { description, relations, trailer })
 }
 
@@ -138,17 +140,17 @@ pub struct NextAir {
 #[tauri::command]
 pub async fn get_next_air(state: State<'_, AppState>, anilist_id: i64) -> Result<Option<NextAir>, String> {
     let now = chrono::Utc::now().timestamp();
-    let db = state.db.lock().unwrap();
-    let next = match db.catalog_next_airing(anilist_id, now).map_err(|e| e.to_string())? {
-        Some((episode, air_at)) => Some(NextAir { episode, air_at, estimated: false }),
-        None => match db.next_airing_episode(anilist_id, now).map_err(|e| e.to_string())? {
+    let next = state.with_db(|db| {
+        Ok(match db.catalog_next_airing(anilist_id, now)? {
             Some((episode, air_at)) => Some(NextAir { episode, air_at, estimated: false }),
-            None => db
-                .catalog_next_airing_rolled(anilist_id, now)
-                .map_err(|e| e.to_string())?
-                .map(|(episode, air_at, estimated)| NextAir { episode, air_at, estimated }),
-        },
-    };
+            None => match db.next_airing_episode(anilist_id, now)? {
+                Some((episode, air_at)) => Some(NextAir { episode, air_at, estimated: false }),
+                None => db
+                    .catalog_next_airing_rolled(anilist_id, now)?
+                    .map(|(episode, air_at, estimated)| NextAir { episode, air_at, estimated }),
+            },
+        })
+    })?;
     Ok(next)
 }
 
@@ -175,14 +177,15 @@ pub async fn get_anime_catalog(
     page: i64,
     filter: Option<crate::db::CatalogFilter>,
 ) -> Result<CatalogPage, String> {
-    let db = state.db.lock().unwrap();
     let per_page = 30;
     let filter = filter.unwrap_or_default();
-    let items = db.list_catalog_filtered(page, per_page, &filter).map_err(|e| e.to_string())?;
-    let total_synced = db.catalog_count().map_err(|e| e.to_string())?;
-    let total_matching = db.catalog_count_filtered(&filter).map_err(|e| e.to_string())?;
-    let has_next_page = page * per_page < total_matching;
-    Ok(CatalogPage { items, has_next_page, total_synced, total_matching })
+    Ok(state.with_db(|db| {
+        let items = db.list_catalog_filtered(page, per_page, &filter)?;
+        let total_synced = db.catalog_count()?;
+        let total_matching = db.catalog_count_filtered(&filter)?;
+        let has_next_page = page * per_page < total_matching;
+        Ok(CatalogPage { items, has_next_page, total_synced, total_matching })
+    })?)
 }
 
 #[derive(Serialize)]
@@ -199,11 +202,12 @@ pub struct CatalogFacets {
 /// sync (facets only change after a re-sync).
 #[tauri::command]
 pub async fn get_catalog_facets(state: State<'_, AppState>) -> Result<CatalogFacets, String> {
-    let db = state.db.lock().unwrap();
-    let genres = db.distinct_catalog_genres().map_err(|e| e.to_string())?;
-    let formats = db.distinct_catalog_formats().map_err(|e| e.to_string())?;
-    let studios = db.distinct_catalog_studios().map_err(|e| e.to_string())?;
-    Ok(CatalogFacets { genres, formats, studios })
+    Ok(state.with_db(|db| {
+        let genres = db.distinct_catalog_genres()?;
+        let formats = db.distinct_catalog_formats()?;
+        let studios = db.distinct_catalog_studios()?;
+        Ok(CatalogFacets { genres, formats, studios })
+    })?)
 }
 
 #[derive(Serialize, Clone)]
@@ -277,10 +281,7 @@ pub async fn maybe_sync_catalog_incremental(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<Option<i64>, String> {
-    let last_at = {
-        let db = state.db.lock().unwrap();
-        db.get_setting("catalog_auto_sync_last_at").map_err(|e| e.to_string())?
-    };
+    let last_at = state.with_db(|db| Ok(db.get_setting("catalog_auto_sync_last_at")?))?;
     if !should_auto_sync_catalog(last_at.as_deref(), chrono::Utc::now()) {
         return Ok(None);
     }
@@ -293,9 +294,10 @@ pub async fn maybe_sync_catalog_incremental(
         // the catalog was last actually brought up to date", and a full
         // incremental pass is a multi-minute job.
         let state = app_after.state::<AppState>();
-        let db = state.db.lock().unwrap();
-        db.set_setting("catalog_auto_sync_last_at", &chrono::Utc::now().to_rfc3339())
-            .map_err(|e| e.to_string())?;
+        state.with_db(|db| {
+            db.set_setting("catalog_auto_sync_last_at", &chrono::Utc::now().to_rfc3339())?;
+            Ok(())
+        })?;
     }
     result.map(Some)
 }
@@ -328,18 +330,14 @@ pub fn should_stamp_auto_sync<T, E>(outcome: &Result<T, E>) -> bool {
 pub async fn link_series_to_catalog(state: State<'_, AppState>) -> Result<i64, String> {
     // Read the titles under the lock, build the (CPU-heavy) index without it,
     // then take the lock again only to link — see `link_series_to_catalog_with`.
-    let rows = {
-        let db = state.db.lock().unwrap();
-        db.catalog_titles_for_index().map_err(|e| e.to_string())?
-    };
+    let rows = state.with_db(|db| Ok(db.catalog_titles_for_index()?))?;
     let (index, rows) = tauri::async_runtime::spawn_blocking(move || {
         let index = crate::matching::CatalogIndex::build(&rows);
         (index, rows)
     })
     .await
     .map_err(|e| e.to_string())?;
-    let db = state.db.lock().unwrap();
-    db.link_series_to_catalog_with(&index, rows).map_err(|e| e.to_string())
+    Ok(state.with_db(|db| Ok(db.link_series_to_catalog_with(&index, rows)?))?)
 }
 
 #[derive(Serialize, Clone)]
@@ -381,10 +379,7 @@ pub async fn backfill_catalog_metadata(app: AppHandle, state: State<'_, AppState
     // cheap pages worth spending fresh-window headroom on.
     const PACED_SLEEP: std::time::Duration = std::time::Duration::from_millis(2100);
 
-    let stale_ids = {
-        let db = state.db.lock().unwrap();
-        db.stale_catalog_ids().map_err(|e| e.to_string())?
-    };
+    let stale_ids = state.with_db(|db| Ok(db.stale_catalog_ids()?))?;
     let total = stale_ids.len() as i64;
     let mut done = 0i64;
     let _ = app.emit("catalog-backfill-progress", CatalogBackfillProgress { done, total });
@@ -392,15 +387,15 @@ pub async fn backfill_catalog_metadata(app: AppHandle, state: State<'_, AppState
     for batch in stale_ids.chunks(crate::anilist::MAX_IDS_PER_REQUEST * crate::anilist::PAGES_PER_REQUEST as usize) {
         let started = std::time::Instant::now();
         let fetched = crate::anilist::fetch_by_ids_multi(batch).await.map_err(|e| e.to_string())?;
-        {
-            let db = state.db.lock().unwrap();
+        state.with_db(|db| {
             let mut items = Vec::with_capacity(fetched.len());
             for anime in &fetched {
-                let sort_order = db.catalog_sort_order(anime.id).map_err(|e| e.to_string())?;
+                let sort_order = db.catalog_sort_order(anime.id)?;
                 items.push((anime, sort_order));
             }
-            db.upsert_catalog_anime_batch(&items).map_err(|e| e.to_string())?;
-        }
+            db.upsert_catalog_anime_batch(&items)?;
+            Ok(())
+        })?;
         // Counted over the batch, not the response: ids AniList no longer
         // serves (deleted/merged entries) never come back, and counting only
         // what returned would leave the progress bar permanently short of its
@@ -440,10 +435,7 @@ pub async fn refresh_catalog_status(state: State<'_, AppState>) -> Result<Option
 
     const PACED_SLEEP: std::time::Duration = std::time::Duration::from_millis(2100);
 
-    let last_at = {
-        let db = state.db.lock().unwrap();
-        db.get_setting("catalog_status_refreshed_at").map_err(|e| e.to_string())?
-    };
+    let last_at = state.with_db(|db| Ok(db.get_setting("catalog_status_refreshed_at")?))?;
     if !should_refresh_catalog_status(last_at.as_deref(), chrono::Utc::now()) {
         return Ok(None);
     }
@@ -455,34 +447,30 @@ pub async fn refresh_catalog_status(state: State<'_, AppState>) -> Result<Option
         return Ok(None);
     }
 
-    let stale_ids = {
-        let db = state.db.lock().unwrap();
-        db.stale_status_ids().map_err(|e| e.to_string())?
-    };
+    let stale_ids = state.with_db(|db| Ok(db.stale_status_ids()?))?;
 
     let mut done = 0i64;
     for batch in stale_ids.chunks(crate::anilist::MAX_IDS_PER_REQUEST * crate::anilist::PAGES_PER_REQUEST as usize) {
         let started = std::time::Instant::now();
         let fetched = crate::anilist::fetch_by_ids_multi(batch).await.map_err(|e| e.to_string())?;
-        {
-            let db = state.db.lock().unwrap();
+        state.with_db(|db| {
             let mut items = Vec::with_capacity(fetched.len());
             for anime in &fetched {
-                let sort_order = db.catalog_sort_order(anime.id).map_err(|e| e.to_string())?;
+                let sort_order = db.catalog_sort_order(anime.id)?;
                 items.push((anime, sort_order));
             }
-            db.upsert_catalog_anime_batch(&items).map_err(|e| e.to_string())?;
-        }
+            db.upsert_catalog_anime_batch(&items)?;
+            Ok(())
+        })?;
         done += batch.len() as i64;
         tokio::time::sleep(PACED_SLEEP.saturating_sub(started.elapsed())).await;
     }
 
-    {
-        let db = state.db.lock().unwrap();
-        db.set_setting("catalog_status_refreshed_at", &chrono::Utc::now().to_rfc3339())
-            .map_err(|e| e.to_string())?;
-        db.sync_status_from_catalog().map_err(|e| e.to_string())?;
-    }
+    state.with_db(|db| {
+        db.set_setting("catalog_status_refreshed_at", &chrono::Utc::now().to_rfc3339())?;
+        db.sync_status_from_catalog()?;
+        Ok(())
+    })?;
 
     Ok(Some(done))
 }
@@ -609,10 +597,7 @@ async fn try_snapshot_bootstrap(app: &AppHandle, state: &State<'_, AppState>) ->
 #[tauri::command]
 pub async fn export_catalog_snapshot(app: AppHandle, state: State<'_, AppState>) -> Result<String, String> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let items = {
-        let db = state.db.lock().unwrap();
-        db.catalog_all_for_snapshot().map_err(|e| e.to_string())?
-    };
+    let items = state.with_db(|db| Ok(db.catalog_all_for_snapshot()?))?;
     let path = dir.join("catalog-snapshot.json.gz");
     let out = path.clone();
     tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
@@ -642,8 +627,7 @@ async fn run_catalog_sync(
     // than erroring the caller — a concurrent trigger isn't a failure, just
     // redundant.
     if state.catalog_sync_running.swap(true, Ordering::SeqCst) {
-        let db = state.db.lock().unwrap();
-        return db.catalog_count().map_err(|e| e.to_string());
+        return Ok(state.with_db(|db| Ok(db.catalog_count()?))?);
     }
     let _clear = crate::commands::follow::RunningGuard(&state.catalog_sync_running);
 
@@ -680,11 +664,12 @@ async fn run_catalog_sync(
     let mut sync_state = if force_full {
         CatalogSyncState::default()
     } else {
-        let db = state.db.lock().unwrap();
-        db.get_setting("catalog_sync_state")
-            .map_err(|e| e.to_string())?
-            .map(|raw| CatalogSyncState::from_json(&raw))
-            .unwrap_or_default()
+        state.with_db(|db| {
+            Ok(db
+                .get_setting("catalog_sync_state")?
+                .map(|raw| CatalogSyncState::from_json(&raw))
+                .unwrap_or_default())
+        })?
     };
 
     let is_incremental = sync_state.full_sync_completed_at.is_some();
@@ -694,10 +679,7 @@ async fn run_catalog_sync(
         pending_partitions(&build_partitions(current_year), &sync_state.completed)
     };
 
-    let mut synced = {
-        let db = state.db.lock().unwrap();
-        db.catalog_count().map_err(|e| e.to_string())?
-    };
+    let mut synced = state.with_db(|db| Ok(db.catalog_count()?))?;
 
     for partition in &partitions_to_run {
         let mut page = 1i64;
@@ -713,17 +695,16 @@ async fn run_catalog_sync(
                 .await
                 .map_err(|e| e.to_string())?;
 
-            {
-                let db = state.db.lock().unwrap();
+            synced = state.with_db(|db| {
                 let items: Vec<_> = result
                     .items
                     .iter()
                     .enumerate()
                     .map(|(idx, anime)| (anime, synced + idx as i64))
                     .collect();
-                db.upsert_catalog_anime_batch(&items).map_err(|e| e.to_string())?;
-                synced = db.catalog_count().map_err(|e| e.to_string())?;
-            }
+                db.upsert_catalog_anime_batch(&items)?;
+                Ok(db.catalog_count()?)
+            })?;
             let total = FULL_SYNC_ESTIMATE.max(synced);
             let _ = app.emit("catalog-sync-progress", CatalogSyncProgress { synced, total });
 
@@ -743,17 +724,19 @@ async fn run_catalog_sync(
         // and don't consult this list, so there's nothing useful to record.
         if !is_incremental {
             sync_state.completed.push(partition.label.clone());
-            let db = state.db.lock().unwrap();
-            db.set_setting("catalog_sync_state", &sync_state.to_json())
-                .map_err(|e| e.to_string())?;
+            state.with_db(|db| {
+                db.set_setting("catalog_sync_state", &sync_state.to_json())?;
+                Ok(())
+            })?;
         }
     }
 
     if !is_incremental {
         sync_state.full_sync_completed_at = Some(chrono::Utc::now().to_rfc3339());
-        let db = state.db.lock().unwrap();
-        db.set_setting("catalog_sync_state", &sync_state.to_json())
-            .map_err(|e| e.to_string())?;
+        state.with_db(|db| {
+            db.set_setting("catalog_sync_state", &sync_state.to_json())?;
+            Ok(())
+        })?;
     }
 
     let _ = app.emit("catalog-sync-progress", CatalogSyncProgress { synced, total: synced });
@@ -771,10 +754,7 @@ pub async fn link_unlinked_via_anilist(state: State<'_, AppState>) -> Result<i64
     const PACED_SLEEP: std::time::Duration = std::time::Duration::from_millis(2100);
 
     let now = chrono::Utc::now().timestamp();
-    let targets = {
-        let db = state.db.lock().unwrap();
-        db.unlinked_for_search(25, now).map_err(|e| e.to_string())?
-    };
+    let targets = state.with_db(|db| Ok(db.unlinked_for_search(25, now)?))?;
 
     let mut linked_count = 0i64;
     'targets: for target in targets {
@@ -795,8 +775,7 @@ pub async fn link_unlinked_via_anilist(state: State<'_, AppState>) -> Result<i64
             tokio::time::sleep(PACED_SLEEP).await;
         }
 
-        {
-            let db = state.db.lock().unwrap();
+        state.with_db(|db| {
             match &picked {
                 Some(anime) => match db.link_search_result(&target.series_ids, anime) {
                     Ok(()) => {
@@ -809,7 +788,8 @@ pub async fn link_unlinked_via_anilist(state: State<'_, AppState>) -> Result<i64
                     let _ = db.record_search_miss(&target.norm_title, now);
                 }
             }
-        }
+            Ok(())
+        })?;
         tokio::time::sleep(PACED_SLEEP).await;
     }
 

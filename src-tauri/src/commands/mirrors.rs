@@ -102,8 +102,9 @@ pub fn switch_site_core(db: &Db, site_id: &str) -> Result<(SiteSwitchResult, Opt
 #[tauri::command]
 pub async fn get_mirrors(state: State<'_, AppState>) -> Result<Vec<String>, String> {
     let site_id = get_active_site_id(&state);
-    let db = state.db.lock().unwrap();
-    load_mirrors(&db, &site_id)
+    state
+        .with_db(|db| load_mirrors(db, &site_id).map_err(crate::error::AppError::Other))
+        .map_err(String::from)
 }
 
 /// Save the mirror list for the active site. If it would end up without the
@@ -119,24 +120,27 @@ pub async fn get_mirrors(state: State<'_, AppState>) -> Result<Vec<String>, Stri
 #[tauri::command]
 pub async fn set_mirrors(state: State<'_, AppState>, urls: Vec<String>) -> Result<(), String> {
     let site_id = get_active_site_id(&state);
-    let db = state.db.lock().unwrap();
-    let mut cleaned: Vec<String> = urls
-        .iter()
-        .map(|u| normalize(u))
-        .filter(|u| !u.is_empty())
-        .collect();
-    if let Some(bad) = cleaned.iter().find(|u| !is_safe_external_url(u)) {
-        return Err(format!("mirror no permitido: {bad}"));
-    }
-    if let Ok(Some(src_id)) = state.source_id.lock().map(|g| *g) {
-        if let Ok(Some(base_url)) = db.get_source_base_url(src_id) {
-            let base_url = normalize(&base_url);
-            if !cleaned.iter().any(|m| m.eq_ignore_ascii_case(&base_url)) {
-                cleaned.insert(0, base_url);
+    state
+        .with_db(|db| {
+        let mut cleaned: Vec<String> = urls
+            .iter()
+            .map(|u| normalize(u))
+            .filter(|u| !u.is_empty())
+            .collect();
+        if let Some(bad) = cleaned.iter().find(|u| !is_safe_external_url(u)) {
+            return Err(crate::error::AppError::Other(format!("mirror no permitido: {bad}")));
+        }
+        if let Ok(Some(src_id)) = state.source_id.lock().map(|g| *g) {
+            if let Ok(Some(base_url)) = db.get_source_base_url(src_id) {
+                let base_url = normalize(&base_url);
+                if !cleaned.iter().any(|m| m.eq_ignore_ascii_case(&base_url)) {
+                    cleaned.insert(0, base_url);
+                }
             }
         }
-    }
-    save_mirrors(&db, &site_id, &cleaned)
+        save_mirrors(db, &site_id, &cleaned).map_err(crate::error::AppError::Other)
+        })
+        .map_err(String::from)
 }
 
 /// Every site the Settings selector can offer, in `adapter::all_sites()`
@@ -158,11 +162,15 @@ pub fn list_sites() -> Vec<SiteSummary> {
 /// "library is per-site" scope note.
 #[tauri::command]
 pub async fn set_active_site(state: State<'_, AppState>, site_id: String) -> Result<SiteSwitchResult, String> {
-    let db = state.db.lock().unwrap();
-    let (result, existing_source) = switch_site_core(&db, &site_id)?;
-    *state.source_id.lock().unwrap() = existing_source;
-    *state.active_site_id.lock().unwrap() = site_id;
-    Ok(result)
+    state
+        .with_db(|db| {
+            let (result, existing_source) =
+                switch_site_core(db, &site_id).map_err(crate::error::AppError::Other)?;
+            *state.source_id.lock().unwrap() = existing_source;
+            *state.active_site_id.lock().unwrap() = site_id;
+            Ok(result)
+        })
+        .map_err(String::from)
 }
 
 #[cfg(test)]

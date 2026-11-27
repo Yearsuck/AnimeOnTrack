@@ -563,7 +563,7 @@ export function SeriesDetail({
                 })}
               </div>
               <div className="progress">
-                <span style={{ width: `${pct}%` }} />
+                <span style={{ transform: `scaleX(${pct / 100})` }} />
               </div>
             </div>
             <div className="detail-actions">
@@ -704,9 +704,13 @@ export function SeriesDetail({
               >
                 <span className="ep-num">{ep.number}</span>
                 <div className="ep-main">
-                  <div className="ep-title" onClick={(e) => watchEpisode(ep, e.currentTarget)}>
+                  <button
+                    type="button"
+                    className="ep-title"
+                    onClick={(e) => watchEpisode(ep, e.currentTarget)}
+                  >
                     {t("common.episodeNumber", { number: ep.number })}
-                  </div>
+                  </button>
                   {ep.download_status === "failed" && (
                     <div className="dl-error">
                       {dl[ep.id]?.error || t("download.failed")}
@@ -794,7 +798,7 @@ export function SeriesDetail({
                     <div className="dl-progress">
                       <div
                         className="dl-progress-fill"
-                        style={{ width: `${dl[ep.id]?.percent}%` }}
+                        style={{ transform: `scaleX(${(dl[ep.id]?.percent ?? 0) / 100})` }}
                       />
                     </div>
                   )}

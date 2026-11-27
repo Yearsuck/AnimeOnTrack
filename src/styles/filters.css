@@ -192,7 +192,7 @@
   font-weight: var(--fw-bold);
   min-width: 18px;
   height: 18px;
-  padding: 0 4px;
+  padding: 0 var(--sp-1);
   border-radius: var(--radius-round);
   line-height: 1;
 }

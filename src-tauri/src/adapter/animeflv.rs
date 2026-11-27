@@ -57,6 +57,35 @@ fn abs(path: &str) -> String {
     }
 }
 
+/// Extract a series poster from the AnimeFLV detail page: the WordPress theme's
+/// `img.poster-image` (series page) or `img.iframe-poster__image` (episode
+/// player), then the classic `div.AnimeCover img`, then Open
+/// Graph — skipping the site logo the WordPress theme puts in `og:image`.
+pub fn parse_series_cover_html(html: &str) -> Option<String> {
+    let doc = Html::parse_document(html);
+
+    for css in ["img.poster-image", "img.iframe-poster__image", "div.AnimeCover img"] {
+        let Ok(sel) = Selector::parse(css) else { continue };
+        if let Some(src) = doc
+            .select(&sel)
+            .next()
+            .and_then(|img| img.value().attr("src").or_else(|| img.value().attr("data-src")))
+            .map(str::trim)
+            .filter(|src| !src.is_empty())
+        {
+            return Some(abs(src));
+        }
+    }
+
+    Selector::parse(r#"meta[property="og:image"]"#)
+        .ok()
+        .and_then(|sel| doc.select(&sel).next())
+        .and_then(|meta| meta.value().attr("content"))
+        .map(str::trim)
+        .filter(|src| !src.is_empty() && !src.to_ascii_lowercase().contains("logo"))
+        .map(abs)
+}
+
 fn series_slug_from_episode_slug(ep_slug: &str) -> Option<&str> {
     ep_slug.rsplit_once("-episodio-").map(|(series, _num)| series)
 }
@@ -560,6 +589,47 @@ mod tests {
             "synopsis must contain expected text"
         );
         assert_eq!(d.kind, None, "WordPress theme detail page carries no type badge");
+    }
+
+    #[test]
+    fn parses_series_cover_from_the_wordpress_poster_not_the_site_logo() {
+        // animeflv.or.at series page (trimmed): og:image is the site logo, the
+        // poster is img.iframe-poster__image; episode thumbs must not win.
+        let html = r#"<html><head><meta property="og:image" content="https://animeflv.or.at/wp-content/uploads/2026/06/cropped-animeflv-logo-new.jpg"></head><body>
+            <img width="260" height="367" src="https://animeflv.or.at/wp-content/uploads/2026/10/4456.jpg" class="iframe-poster__image" alt="">
+            <img src="https://animeflv.or.at/wp-content/uploads/2026/10/4469-260x200.jpg" class="attachment-animeflv_post_thumb wp-post-image" alt="Other Episodio 8">
+            </body></html>"#;
+        assert_eq!(
+            parse_series_cover_html(html).as_deref(),
+            Some("https://animeflv.or.at/wp-content/uploads/2026/10/4456.jpg")
+        );
+        // Series page of the same theme (trimmed from /anime/koukaku-kidoutai-tv/).
+        let series_page = r#"<html><head><meta property="og:image" content="https://animeflv.or.at/wp-content/uploads/2026/06/cropped-animeflv-logo-new.jpg"></head><body>
+            <img width="142" height="46" src="https://animeflv.or.at/wp-content/uploads/2026/06/cropped-animeflv.png" class="custom-logo" alt="AnimeFLV">
+            <div class="anime-poster"><img src="https://animeflv.or.at/wp-content/uploads/2026/07/4414.jpg" alt="Koukaku Kidoutai (TV)" class="poster-image"></div>
+            </body></html>"#;
+        assert_eq!(
+            parse_series_cover_html(series_page).as_deref(),
+            Some("https://animeflv.or.at/wp-content/uploads/2026/07/4414.jpg")
+        );
+        let logo_only = r#"<html><head><meta property="og:image" content="https://animeflv.or.at/wp-content/uploads/2026/06/cropped-animeflv-logo-new.jpg"></head></html>"#;
+        assert_eq!(parse_series_cover_html(logo_only), None, "the site logo is not a cover");
+    }
+
+    #[test]
+    fn parses_series_cover_from_anime_cover_or_open_graph() {
+        let html = r#"<html><head><meta property="og:image" content="/uploads/animes/covers/fallback.jpg"></head>
+            <body><div class="AnimeCover"><img src="/uploads/animes/covers/main.jpg"></div></body></html>"#;
+        assert_eq!(
+            parse_series_cover_html(html).as_deref(),
+            Some("https://animeflv.or.at/uploads/animes/covers/main.jpg")
+        );
+
+        let fallback = r#"<html><head><meta property="og:image" content="/uploads/animes/covers/fallback.jpg"></head></html>"#;
+        assert_eq!(
+            parse_series_cover_html(fallback).as_deref(),
+            Some("https://animeflv.or.at/uploads/animes/covers/fallback.jpg")
+        );
     }
 
     #[test]

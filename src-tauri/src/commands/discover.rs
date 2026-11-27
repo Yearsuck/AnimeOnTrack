@@ -32,8 +32,7 @@ pub async fn discover_swipe_card(
     let site_id = get_active_site_id(&state);
     let a = get_active_adapter(&state)?;
     let mirrors = {
-        let db = state.db.lock().unwrap();
-        load_mirrors(&db, &site_id)?
+        state.with_db(|db| load_mirrors(db, &site_id).map_err(crate::error::AppError::Other))?
     };
     let genres = ensure_genre_list(&app, &mirrors, &state, a.as_ref(), &site_id).await?;
     if genres.is_empty() {
@@ -44,8 +43,7 @@ pub async fn discover_swipe_card(
     // uniformly at random. Falls back to uniform whenever every genre nets
     // <= 0 (nothing decided yet), so a fresh profile still discovers freely.
     let affinity = {
-        let db = state.db.lock().unwrap();
-        db.get_genre_affinity(src).map_err(|e| e.to_string())?
+        state.with_db(|db| Ok(db.get_genre_affinity(src)?))?
     };
     let weights: Vec<f64> = genres
         .iter()
@@ -58,8 +56,7 @@ pub async fn discover_swipe_card(
     let page = pick_index(last_page as usize).map(|i| i as u32 + 1).unwrap_or(1);
 
     let known = {
-        let db = state.db.lock().unwrap();
-        db.known_series_urls(src).map_err(|e| e.to_string())?
+        state.with_db(|db| Ok(db.known_series_urls(src)?))?
     };
 
     let buffered = state.swipe_buffer.lock().unwrap().remove(&(slug.clone(), page));
@@ -121,49 +118,50 @@ pub async fn decide_swipe(
 
     let sid = match decision {
         SwipeDecision::Discard => {
-            let db = state.db.lock().unwrap();
-            let sid = db.upsert_series(src, &series).map_err(|e| e.to_string())?;
-            db.set_kind(sid, &card.kind).map_err(|e| e.to_string())?;
-            db.set_backlog_status(sid, Some("discarded")).map_err(|e| e.to_string())?;
-            sid
+            state.with_db(|db| {
+                let sid = db.upsert_series(src, &series)?;
+                db.set_kind(sid, &card.kind)?;
+                db.set_backlog_status(sid, Some("discarded"))?;
+                Ok(sid)
+            })?
         }
         SwipeDecision::Want => {
             let mirrors = {
-                let db = state.db.lock().unwrap();
-                load_mirrors(&db, &site_id)?
+                state.with_db(|db| load_mirrors(db, &site_id).map_err(crate::error::AppError::Other))?
             };
             let detail = fetch_series_detail(&app, &mirrors, &card.url, a.as_ref()).await?;
-            let db = state.db.lock().unwrap();
-            let sid = db.upsert_series(src, &series).map_err(|e| e.to_string())?;
-            db.set_kind(sid, detail.kind.as_deref().unwrap_or(&card.kind)).map_err(|e| e.to_string())?;
-            db.insert_series_genres(sid, &detail.genres).map_err(|e| e.to_string())?;
-            if let Some(text) = &detail.synopsis {
-                db.set_series_synopsis(sid, text).map_err(|e| e.to_string())?;
-            }
-            db.set_backlog_status(sid, Some("want")).map_err(|e| e.to_string())?;
-            sid
+            state.with_db(|db| {
+                let sid = db.upsert_series(src, &series)?;
+                db.set_kind(sid, detail.kind.as_deref().unwrap_or(&card.kind))?;
+                db.insert_series_genres(sid, &detail.genres)?;
+                if let Some(text) = &detail.synopsis {
+                    db.set_series_synopsis(sid, text)?;
+                }
+                db.set_backlog_status(sid, Some("want"))?;
+                Ok(sid)
+            })?
         }
         SwipeDecision::Seen => {
             let mirrors = {
-                let db = state.db.lock().unwrap();
-                load_mirrors(&db, &site_id)?
+                state.with_db(|db| load_mirrors(db, &site_id).map_err(crate::error::AppError::Other))?
             };
             let detail = fetch_series_detail(&app, &mirrors, &card.url, a.as_ref()).await?;
             let eps = fetch_episode_list_for(&app, &mirrors, &card.url, a.as_ref()).await?;
-            let db = state.db.lock().unwrap();
-            let sid = db.upsert_series(src, &series).map_err(|e| e.to_string())?;
-            db.set_followed(sid, true).map_err(|e| e.to_string())?;
-            db.set_kind(sid, detail.kind.as_deref().unwrap_or(&card.kind)).map_err(|e| e.to_string())?;
-            db.insert_series_genres(sid, &detail.genres).map_err(|e| e.to_string())?;
-            if let Some(text) = &detail.synopsis {
-                db.set_series_synopsis(sid, text).map_err(|e| e.to_string())?;
-            }
-            for mut e in eps {
-                e.series_id = sid;
-                e.seen = true;
-                db.insert_episode(&e).map_err(|e| e.to_string())?;
-            }
-            sid
+            state.with_db(|db| {
+                let sid = db.upsert_series(src, &series)?;
+                db.set_followed(sid, true)?;
+                db.set_kind(sid, detail.kind.as_deref().unwrap_or(&card.kind))?;
+                db.insert_series_genres(sid, &detail.genres)?;
+                if let Some(text) = &detail.synopsis {
+                    db.set_series_synopsis(sid, text)?;
+                }
+                for mut e in eps {
+                    e.series_id = sid;
+                    e.seen = true;
+                    db.insert_episode(&e)?;
+                }
+                Ok(sid)
+            })?
         }
     };
     push_swipe_history(&state, sid);
@@ -189,8 +187,9 @@ pub async fn decide_swipe(
 pub async fn undo_last_swipe(state: State<'_, AppState>) -> Result<Option<String>, String> {
     let sid = state.swipe_history.lock().unwrap().pop_front();
     let Some(sid) = sid else { return Ok(None) };
-    let db = state.db.lock().unwrap();
-    db.undo_swipe_decision(sid).map_err(|e| e.to_string())
+    state
+        .with_db(|db| Ok(db.undo_swipe_decision(sid)?))
+        .map_err(String::from)
 }
 
 /// One entry in the swipe-history strip — a still-live `series` row from
@@ -232,20 +231,23 @@ fn decision_for_history_row(row: &crate::db::SwipeHistoryRow) -> String {
 #[tauri::command]
 pub async fn list_swipe_history(state: State<'_, AppState>) -> Result<Vec<SwipeHistoryItem>, String> {
     let ids: Vec<i64> = state.swipe_history.lock().unwrap().iter().copied().collect();
-    let db = state.db.lock().unwrap();
-    let mut out = Vec::with_capacity(ids.len());
-    for sid in ids {
-        if let Some(row) = db.get_series_for_history(sid).map_err(|e| e.to_string())? {
-            out.push(SwipeHistoryItem {
-                series_id: sid,
-                title: row.title.clone(),
-                poster_url: row.poster_url.clone(),
-                url: row.url.clone(),
-                decision: decision_for_history_row(&row),
-            });
-        }
-    }
-    Ok(out)
+    state
+        .with_db(|db| {
+            let mut out = Vec::with_capacity(ids.len());
+            for sid in ids {
+                if let Some(row) = db.get_series_for_history(sid)? {
+                    out.push(SwipeHistoryItem {
+                        series_id: sid,
+                        title: row.title.clone(),
+                        poster_url: row.poster_url.clone(),
+                        url: row.url.clone(),
+                        decision: decision_for_history_row(&row),
+                    });
+                }
+            }
+            Ok(out)
+        })
+        .map_err(String::from)
 }
 
 /// Return a specific past card to the deck: hard-delete its series row (so
@@ -262,8 +264,9 @@ pub async fn list_swipe_history(state: State<'_, AppState>) -> Result<Vec<SwipeH
 #[tauri::command]
 pub async fn undo_swipe_entry(state: State<'_, AppState>, series_id: i64) -> Result<(), String> {
     state.swipe_history.lock().unwrap().retain(|&id| id != series_id);
-    let db = state.db.lock().unwrap();
-    db.undo_swipe_decision(series_id).map_err(|e| e.to_string())?;
+    state
+        .with_db(|db| Ok(db.undo_swipe_decision(series_id)?))
+        .map_err(String::from)?;
     Ok(())
 }
 
@@ -297,15 +300,18 @@ pub struct DeckBans {
 /// Read the current deck bans for the Descubrir "Filtros" sub-view.
 #[tauri::command]
 pub async fn get_deck_bans(state: State<'_, AppState>) -> Result<DeckBans, String> {
-    let db = state.db.lock().unwrap();
-    let genres = db.get_banned_genres().map_err(|e| e.to_string())?;
-    let formats = db.get_banned_formats().map_err(|e| e.to_string())?;
-    let hide_upcoming = db.get_hide_upcoming_releases().map_err(|e| e.to_string())?;
-    let status_data_synced = db.has_synced_catalog_status().map_err(|e| e.to_string())?;
-    let min_start_date = db.get_deck_min_start_date().map_err(|e| e.to_string())?;
-    let max_start_date = db.get_deck_max_start_date().map_err(|e| e.to_string())?;
-    let min_score = db.get_deck_min_score().map_err(|e| e.to_string())?;
-    Ok(DeckBans { genres, formats, hide_upcoming, status_data_synced, min_start_date, max_start_date, min_score })
+    state
+        .with_db(|db| {
+            let genres = db.get_banned_genres()?;
+            let formats = db.get_banned_formats()?;
+            let hide_upcoming = db.get_hide_upcoming_releases()?;
+            let status_data_synced = db.has_synced_catalog_status()?;
+            let min_start_date = db.get_deck_min_start_date()?;
+            let max_start_date = db.get_deck_max_start_date()?;
+            let min_score = db.get_deck_min_score()?;
+            Ok(DeckBans { genres, formats, hide_upcoming, status_data_synced, min_start_date, max_start_date, min_score })
+        })
+        .map_err(String::from)
 }
 
 /// Persist the deck bans. Takes effect on the very next `discover_catalog_card`
@@ -321,28 +327,33 @@ pub async fn set_deck_bans(
     max_start_date: Option<i64>,
     min_score: Option<i64>,
 ) -> Result<(), String> {
-    let db = state.db.lock().unwrap();
-    db.set_banned_genres(&genres).map_err(|e| e.to_string())?;
-    db.set_banned_formats(&formats).map_err(|e| e.to_string())?;
-    db.set_hide_upcoming_releases(hide_upcoming).map_err(|e| e.to_string())?;
-    db.set_deck_min_start_date(min_start_date).map_err(|e| e.to_string())?;
-    db.set_deck_max_start_date(max_start_date).map_err(|e| e.to_string())?;
-    db.set_deck_min_score(min_score).map_err(|e| e.to_string())?;
-    Ok(())
+    state
+        .with_db(|db| {
+            db.set_banned_genres(&genres)?;
+            db.set_banned_formats(&formats)?;
+            db.set_hide_upcoming_releases(hide_upcoming)?;
+            db.set_deck_min_start_date(min_start_date)?;
+            db.set_deck_max_start_date(max_start_date)?;
+            db.set_deck_min_score(min_score)?;
+            Ok(())
+        })
+        .map_err(String::from)
 }
 
 /// Read the current discover niche/cult bias setting.
 #[tauri::command]
 pub async fn get_discover_niche(state: State<'_, AppState>) -> Result<f64, String> {
-    let db = state.db.lock().unwrap();
-    db.get_discover_niche().map_err(|e| e.to_string())
+    state
+        .with_db(|db| Ok(db.get_discover_niche()?))
+        .map_err(String::from)
 }
 
 /// Persist the discover niche/cult bias setting in [-1.0, 1.0].
 #[tauri::command]
 pub async fn set_discover_niche(state: State<'_, AppState>, value: f64) -> Result<(), String> {
-    let db = state.db.lock().unwrap();
-    db.set_discover_niche(value).map_err(|e| e.to_string())
+    state
+        .with_db(|db| Ok(db.set_discover_niche(value)?))
+        .map_err(String::from)
 }
 
 
@@ -572,18 +583,22 @@ pub async fn discover_catalog_card(
     recommended: bool,
 ) -> Result<Option<DeckCard>, String> {
     let _ = get_source_id(&state)?;
-    let db = state.db.lock().unwrap();
-    let Some(setup) = prepare_catalog_deck_setup(&db, recommended)? else {
-        return Ok(None);
-    };
-    let res = pick_single_catalog_card(
-        &db,
-        &setup,
-        recommended,
-        &setup.excluded_norm_titles,
-        &HashSet::new(),
-    )?;
-    Ok(res.map(|(card, catalog)| DeckCard { card, catalog }))
+    state
+        .with_db(|db| {
+            let Some(setup) = prepare_catalog_deck_setup(db, recommended).map_err(crate::error::AppError::Other)? else {
+                return Ok(None);
+            };
+            let res = pick_single_catalog_card(
+                db,
+                &setup,
+                recommended,
+                &setup.excluded_norm_titles,
+                &HashSet::new(),
+            )
+            .map_err(crate::error::AppError::Other)?;
+            Ok(res.map(|(card, catalog)| DeckCard { card, catalog }))
+        })
+        .map_err(String::from)
 }
 
 /// Up to `count` (clamped to 1..=20) distinct catalog cards for the deck in ONE call: the
@@ -597,41 +612,45 @@ pub async fn discover_catalog_cards(
     count: u32,
 ) -> Result<Vec<DeckCard>, String> {
     let _ = get_source_id(&state)?;
-    let db = state.db.lock().unwrap();
-    let Some(setup) = prepare_catalog_deck_setup(&db, recommended)? else {
-        return Ok(Vec::new());
-    };
-    let count = count.clamp(1, 20);
-    let mut cards = Vec::with_capacity(count as usize);
-    let mut excluded_titles = setup.excluded_norm_titles.clone();
-    let mut excluded_ids = HashSet::new();
-
-    // One pick can come back empty without the deck being exhausted: it samples a few
-    // random genres, and a small one (every title already picked or decided) is a miss.
-    // Keep going until `count` cards, giving up after a few misses in a row — which is
-    // what the old one-call-per-card deck did implicitly by asking again.
-    const MAX_CONSECUTIVE_MISSES: u32 = 3;
-    let mut misses = 0;
-    while cards.len() < count as usize && misses < MAX_CONSECUTIVE_MISSES {
-        let Some((card, anime)) = pick_single_catalog_card(
-            &db,
-            &setup,
-            recommended,
-            &excluded_titles,
-            &excluded_ids,
-        )? else {
-            misses += 1;
-            continue;
+    state
+        .with_db(|db| {
+        let Some(setup) = prepare_catalog_deck_setup(db, recommended).map_err(crate::error::AppError::Other)? else {
+            return Ok(Vec::new());
         };
-        misses = 0;
-        excluded_ids.insert(anime.id);
-        for t in [Some(&anime.title), anime.title_romaji.as_ref(), anime.title_english.as_ref()].into_iter().flatten() {
-            excluded_titles.insert(crate::matching::normalize_title(t));
-        }
-        cards.push(DeckCard { card, catalog: anime });
-    }
+        let count = count.clamp(1, 20);
+        let mut cards = Vec::with_capacity(count as usize);
+        let mut excluded_titles = setup.excluded_norm_titles.clone();
+        let mut excluded_ids = HashSet::new();
 
-    Ok(cards)
+        // One pick can come back empty without the deck being exhausted: it samples a few
+        // random genres, and a small one (every title already picked or decided) is a miss.
+        // Keep going until `count` cards, giving up after a few misses in a row — which is
+        // what the old one-call-per-card deck did implicitly by asking again.
+        const MAX_CONSECUTIVE_MISSES: u32 = 3;
+        let mut misses = 0;
+        while cards.len() < count as usize && misses < MAX_CONSECUTIVE_MISSES {
+            let Some((card, anime)) = pick_single_catalog_card(
+                db,
+                &setup,
+                recommended,
+                &excluded_titles,
+                &excluded_ids,
+            )
+            .map_err(crate::error::AppError::Other)? else {
+                misses += 1;
+                continue;
+            };
+            misses = 0;
+            excluded_ids.insert(anime.id);
+            for t in [Some(&anime.title), anime.title_romaji.as_ref(), anime.title_english.as_ref()].into_iter().flatten() {
+                excluded_titles.insert(crate::matching::normalize_title(t));
+            }
+            cards.push(DeckCard { card, catalog: anime });
+        }
+
+        Ok(cards)
+        })
+        .map_err(String::from)
 }
 
 /// Decide on a catalog-sourced card: Discard, Want, or Seen. Stores a
@@ -663,35 +682,38 @@ pub async fn decide_catalog_card(
     decision: SwipeDecision,
 ) -> Result<i64, String> {
     let src = get_source_id(&state)?;
-    let db = state.db.lock().unwrap();
-    let series = Series {
-        id: 0,
-        slug: format!("anilist-{anilist_id}"),
-        title,
-        url,
-        cover_url: poster_url,
-        is_airing: false,
-        followed: false, next_episode_at: None, site_episode_count: None,
-    };
-    let sid = db.upsert_series(src, &series).map_err(|e| e.to_string())?;
-    db.set_anilist_id(sid, anilist_id).map_err(|e| e.to_string())?;
-    db.set_kind(sid, &format).map_err(|e| e.to_string())?;
-    db.insert_series_genres(sid, &genres).map_err(|e| e.to_string())?;
-    match decision {
-        SwipeDecision::Discard => {
-            db.set_backlog_status(sid, Some("discarded")).map_err(|e| e.to_string())?;
+    state
+        .with_db(|db| {
+        let series = Series {
+            id: 0,
+            slug: format!("anilist-{anilist_id}"),
+            title,
+            url,
+            cover_url: poster_url,
+            is_airing: false,
+            followed: false, next_episode_at: None, site_episode_count: None,
+        };
+        let sid = db.upsert_series(src, &series)?;
+        db.set_anilist_id(sid, anilist_id)?;
+        db.set_kind(sid, &format)?;
+        db.insert_series_genres(sid, &genres)?;
+        match decision {
+            SwipeDecision::Discard => {
+                db.set_backlog_status(sid, Some("discarded"))?;
+            }
+            SwipeDecision::Want => {
+                db.set_backlog_status(sid, Some("want"))?;
+            }
+            SwipeDecision::Seen => {
+                db.set_backlog_status(sid, None)?;
+                db.set_followed(sid, false)?;
+                db.set_watched_externally(sid, true)?;
+            }
         }
-        SwipeDecision::Want => {
-            db.set_backlog_status(sid, Some("want")).map_err(|e| e.to_string())?;
-        }
-        SwipeDecision::Seen => {
-            db.set_backlog_status(sid, None).map_err(|e| e.to_string())?;
-            db.set_followed(sid, false).map_err(|e| e.to_string())?;
-            db.set_watched_externally(sid, true).map_err(|e| e.to_string())?;
-        }
-    }
-    push_swipe_history(&state, sid);
-    Ok(sid)
+        push_swipe_history(&state, sid);
+        Ok(sid)
+        })
+        .map_err(String::from)
 }
 
 pub fn to_candidates(cards: &[FinishedCard]) -> Vec<crate::matching::TitleCandidate<'_>> {
@@ -778,7 +800,8 @@ pub async fn get_list_entry_meta(
     state: State<'_, AppState>,
     series_ids: Vec<i64>,
 ) -> Result<Vec<crate::models::ListEntryMeta>, String> {
-    let db = state.db.lock().unwrap();
-    db.list_entry_meta(&series_ids).map_err(|e| e.to_string())
+    state
+        .with_db(|db| Ok(db.list_entry_meta(&series_ids)?))
+        .map_err(String::from)
 }
 

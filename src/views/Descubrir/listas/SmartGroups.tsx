@@ -1,4 +1,5 @@
 import { useT } from "../../../i18n";
+import { Chip } from "../../../components/Chip";
 import type { QuickFilter } from "./types";
 
 export interface SmartGroupsProps {
@@ -31,16 +32,15 @@ export function SmartGroups({
       {groups.map((grp) => {
         const active = quickFilter === grp.key;
         return (
-          <button
+          <Chip
             key={grp.key}
-            type="button"
-            className={`chip-toggle${active ? " active" : ""}`}
+            active={active}
             onClick={() => onToggleQuickFilter(grp.key)}
             aria-pressed={active}
           >
             {grp.label}
             <span className="seg-count">{grp.count}</span>
-          </button>
+          </Chip>
         );
       })}
     </div>

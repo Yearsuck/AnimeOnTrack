@@ -98,7 +98,7 @@ function DayActivityChart({
               aria-label={dayLabel}
               title={dayLabel}
             >
-              <div className="dayact-fill" style={{ height: `${pct}%` }} />
+              <div className="dayact-fill" style={{ transform: `scaleY(${pct / 100})` }} />
               {labelAt.has(i) && <span className="dayact-tick">{axisDay(d.day, locale)}</span>}
             </div>
           );
@@ -140,7 +140,7 @@ function HourlyDistributionChart({
               aria-label={hourLabel}
               title={hourLabel}
             >
-              <div className="hourly-fill" style={{ height: `${pct}%` }} />
+              <div className="hourly-fill" style={{ transform: `scaleY(${pct / 100})` }} />
               <span className="hourly-tick">{d.hour}</span>
             </div>
           );
@@ -270,7 +270,7 @@ export function StatsInsights({
                 aria-valuemax={100}
                 aria-label={t("stats.completion")}
               >
-                <span style={{ width: `${completionPct}%` }} />
+                <span style={{ transform: `scaleX(${completionPct / 100})` }} />
               </div>
             </dd>
             <dd className="hero-fig-note">
@@ -499,7 +499,7 @@ export function StatsInsights({
                   aria-label={t("stats.popularityBiasLabel")}
                 >
                   <div className="popbias-track">
-                    <div className="popbias-fill" style={{ width: `${popPct}%` }} />
+                    <div className="popbias-fill" style={{ transform: `scaleX(${popPct / 100})` }} />
                     <div className="popbias-marker" style={{ left: `${popPct}%` }} />
                   </div>
                 </div>

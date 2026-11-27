@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { SettingsRow } from "./SettingsRow";
+import { Chip } from "../../components/Chip";
 import type { Update } from "@tauri-apps/plugin-updater";
 import { THEMES, useTheme } from "../../theme";
 import { LANGS, useLang, useT } from "../../i18n";
@@ -51,77 +53,67 @@ export function AppearanceSection({ onReplayTutorial }: { onReplayTutorial?: () 
       <h3 className="settings-section-title">{t("settings.appearanceHeading")}</h3>
       <p className="settings-section-desc">{t("settings.appearanceDesc")}</p>
 
-      <div className="settings-field">
-        <label className="settings-field-label">{t("settings.theme")}</label>
-        <div className="row">
+      <SettingsRow label={t("settings.theme")} labelId="sf-settings-theme">
+        <div role="group" aria-labelledby="sf-settings-theme" className="row">
           {THEMES.map((th) => (
-            <button
+            <Chip
               key={th.code}
-              type="button"
-              className={`chip-toggle ${theme === th.code ? "active" : ""}`}
+              active={theme === th.code}
               onClick={() => setTheme(th.code)}
             >
               {t(th.labelKey)}
-            </button>
+            </Chip>
           ))}
         </div>
-      </div>
+      </SettingsRow>
 
-      <div className="settings-field">
-        <label className="settings-field-label">{t("settings.language")}</label>
-        <div className="row">
+      <SettingsRow label={t("settings.language")} labelId="sf-settings-language">
+        <div role="group" aria-labelledby="sf-settings-language" className="row">
           {LANGS.map((l) => (
-            <button
+            <Chip
               key={l.code}
-              type="button"
-              className={`chip-toggle ${lang === l.code ? "active" : ""}`}
+              active={lang === l.code}
               onClick={() => setLang(l.code)}
             >
               {l.label}
-            </button>
+            </Chip>
           ))}
         </div>
-      </div>
+      </SettingsRow>
 
-      <div className="settings-field">
-        <label className="settings-field-label">{t("settings.notifyLabel")}</label>
-        <div className="row">
-          <button
-            type="button"
-            className={`chip-toggle ${notifyEnabled ? "active" : ""}`}
+      <SettingsRow label={t("settings.notifyLabel")} labelId="sf-settings-notifyLabel">
+        <div role="group" aria-labelledby="sf-settings-notifyLabel" className="row">
+          <Chip
+            active={notifyEnabled}
             onClick={() => handleNotifyToggle(true)}
           >
             {t("settings.notifyOn")}
-          </button>
-          <button
-            type="button"
-            className={`chip-toggle ${!notifyEnabled ? "active" : ""}`}
+          </Chip>
+          <Chip
+            active={!notifyEnabled}
             onClick={() => handleNotifyToggle(false)}
           >
             {t("settings.notifyOff")}
-          </button>
+          </Chip>
         </div>
         <p className="settings-field-hint">{t(isMobile ? "settings.notifyHintMobile" : "settings.notifyHint")}</p>
-      </div>
+      </SettingsRow>
 
       {!isMobile && (
-        <div className="settings-field">
-          <label className="settings-field-label">{t("settings.updateLabel")}</label>
-          <div className="row">
-            <button
-              type="button"
-              className={`chip-toggle ${updateAuto ? "active" : ""}`}
+        <SettingsRow label={t("settings.updateLabel")} labelId="sf-settings-updateLabel">
+          <div role="group" aria-labelledby="sf-settings-updateLabel" className="row">
+            <Chip
+              active={updateAuto}
               onClick={() => handleUpdateToggle(true)}
             >
               {t("settings.updateOn")}
-            </button>
-            <button
-              type="button"
-              className={`chip-toggle ${!updateAuto ? "active" : ""}`}
+            </Chip>
+            <Chip
+              active={!updateAuto}
               onClick={() => handleUpdateToggle(false)}
             >
               {t("settings.updateOff")}
-            </button>
+            </Chip>
             {updateState.kind === "found" ? (
               <button type="button" className="btn btn-primary" onClick={() => handleUpdateInstall(updateState.update)}>
                 {t("update.install")}
@@ -148,19 +140,18 @@ export function AppearanceSection({ onReplayTutorial }: { onReplayTutorial?: () 
           )}
           {updateState.kind === "failed" && <p className="settings-field-hint">{t("update.failed")}</p>}
           <p className="settings-field-hint">{t("settings.updateHint")}</p>
-        </div>
+        </SettingsRow>
       )}
 
       {onReplayTutorial && (
-        <div className="settings-field">
-          <label className="settings-field-label">{t("settings.tutorialLabel")}</label>
-          <div className="row">
+        <SettingsRow label={t("settings.tutorialLabel")} labelId="sf-settings-tutorialLabel">
+          <div role="group" aria-labelledby="sf-settings-tutorialLabel" className="row">
             <button type="button" className="btn" onClick={onReplayTutorial}>
               {t("settings.tutorialButton")}
             </button>
           </div>
           <p className="settings-field-hint">{t("settings.tutorialHint")}</p>
-        </div>
+        </SettingsRow>
       )}
     </div>
   );

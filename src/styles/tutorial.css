@@ -58,7 +58,7 @@
 .tutorial-art .ta-line { fill: var(--surface-4); }
 .tutorial-art .ta-muted { fill: var(--muted-2); }
 .tutorial-art .ta-accent { fill: var(--accent-solid); }
-.tutorial-art .ta-onaccent { fill: #fff; }
+.tutorial-art .ta-onaccent { fill: var(--on-accent); }
 .tutorial-art .ta-heart { fill: var(--accent); }
 .tutorial-art .ta-ok { fill: var(--accent-dim); stroke: var(--accent); stroke-width: 1.5; }
 .tutorial-art .ta-chip { fill: var(--surface-3); }
@@ -95,7 +95,7 @@
   height: 8px;
   padding: 0;
   border: 0;
-  border-radius: 999px;
+  border-radius: var(--radius-round);
   background: var(--surface-4);
   cursor: pointer;
   transition: background var(--dur-fast) var(--ease), width var(--dur-fast) var(--ease);

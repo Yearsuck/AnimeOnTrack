@@ -1,4 +1,5 @@
 import { useEffect, useRef, type ReactNode } from "react";
+import { Chip } from "../../../components/Chip";
 import { useBackLayer } from "../../../lib/backStack";
 import { useT } from "../../../i18n";
 import { formatLabel } from "../../../lib/formatLabel";
@@ -222,15 +223,14 @@ export function ListasFilterDrawer({
         <legend className="cat-drawer-legend">{t("filters.statusLabel")}</legend>
         <div className="chip-row">
           {(Object.keys(STATUS_KEY) as Exclude<StatusFilter, "">[]).map((st) => (
-            <button
+            <Chip
               key={st}
-              type="button"
-              className={`chip-toggle${filterState.status === st ? " active" : ""}`}
+              active={filterState.status === st}
               aria-pressed={filterState.status === st}
               onClick={() => onStatusChange(filterState.status === st ? "" : st)}
             >
               {t(STATUS_KEY[st])}
-            </button>
+            </Chip>
           ))}
         </div>
       </fieldset>
@@ -242,15 +242,14 @@ export function ListasFilterDrawer({
             {availableGenres.map((g) => {
               const active = filterState.selectedGenres.includes(g);
               return (
-                <button
+                <Chip
                   key={g}
-                  type="button"
-                  className={`chip-toggle${active ? " active" : ""}`}
+                  active={active}
                   aria-pressed={active}
                   onClick={() => onToggleGenre(g)}
                 >
                   {g}
-                </button>
+                </Chip>
               );
             })}
           </div>

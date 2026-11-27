@@ -92,9 +92,9 @@ impl Db {
         Ok(None)
     }
 
-    /// Display name of the site a series row was scraped from (`None` for an
-    /// unknown site id).
-    pub fn series_site_name(&self, series_id: i64) -> Result<Option<String>> {
+    /// Id of the site a series row was scraped from (the caller maps it to a
+    /// display name).
+    pub fn series_site_id(&self, series_id: i64) -> Result<Option<String>> {
         let site_id: Option<String> = self
             .conn
             .query_row(
@@ -104,9 +104,7 @@ impl Db {
             )
             .optional()?
             .flatten();
-        Ok(site_id.and_then(|id| {
-            crate::adapter::all_sites().iter().find(|s| s.id == id).map(|s| s.name.to_string())
-        }))
+        Ok(site_id)
     }
 
     /// Cached AniList extras and when they were fetched (unix seconds).
@@ -296,7 +294,7 @@ mod tests {
         let db = Db::open(":memory:").unwrap();
         let a = db.upsert_source("whatever", "a", "tioanime").unwrap();
         let s = db.upsert_series(a, &mk_airing("x", "X", None)).unwrap();
-        assert_eq!(db.series_site_name(s).unwrap().as_deref(), Some("TioAnime"));
+        assert_eq!(db.series_site_id(s).unwrap().as_deref(), Some("tioanime"));
     }
 
     #[test]

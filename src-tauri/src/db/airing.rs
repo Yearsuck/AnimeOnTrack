@@ -80,6 +80,8 @@ impl Db {
                     s.title AS site_title, c.title AS c_title,
                     c.title_romaji AS c_romaji, c.title_english AS c_english,
                     s.site_episode_count, c.format AS c_format, c.status AS c_status,
+                    c.episodes AS c_episodes,
+                    (SELECT MAX(CAST(e.number AS REAL)) FROM episodes e WHERE e.series_id = s.id) AS max_ep,
                     (SELECT COUNT(*) FROM episodes e WHERE e.series_id = s.id) AS total_ep
              FROM series s LEFT JOIN anilist_catalog c ON c.id = s.anilist_id
              WHERE s.is_airing = 1",
@@ -95,6 +97,9 @@ impl Db {
             /// AniList says the linked (same-season) entry is still releasing
             /// or on hiatus, so a stale scraped date alone must not hide it.
             catalog_active: bool,
+            /// AniList says the linked (same-season) entry is over
+            /// (FINISHED/CANCELLED): a site still listing it is replaying it.
+            catalog_ended: bool,
             /// The catalog confirms an upcoming episode of this very season.
             catalog_upcoming: bool,
             next_episode_estimated: bool,
@@ -111,6 +116,7 @@ impl Db {
                 let mut effective_next = scraped_next;
                 let mut catalog_upcoming = false;
                 let mut catalog_active = false;
+                let mut catalog_ended = false;
                 let mut next_episode_estimated = false;
                 let mut catalog_format: Option<String> = None;
                 if anilist_id.is_some() && r.get::<_, Option<String>>("c_title")?.is_some() {
@@ -124,6 +130,16 @@ impl Db {
                         catalog_format = r.get("c_format")?;
                         let status: Option<String> = r.get("c_status")?;
                         catalog_active = matches!(status.as_deref(), Some("RELEASING" | "HIATUS"));
+                        // ...unless the site already lists an episode past AniList's
+                        // total: a split cour on one site page linked to the finished
+                        // first cour (site evidence beats the catalog, as in
+                        // `sync_status_from_catalog`).
+                        let c_episodes: Option<i64> = r.get("c_episodes")?;
+                        let site_count: Option<i64> = r.get("site_episode_count")?;
+                        let max_ep: Option<f64> = r.get("max_ep")?;
+                        let site_max = site_count.map(|n| n as f64).into_iter().chain(max_ep).fold(None, |m: Option<f64>, v| Some(m.map_or(v, |m| m.max(v))));
+                        let past_total = matches!((c_episodes, site_max), (Some(total), Some(seen)) if seen > total as f64);
+                        catalog_ended = !past_total && matches!(status.as_deref(), Some("FINISHED" | "CANCELLED"));
                         if let Some(cat) = catalog_next.filter(|&cat| cat > now) {
                             effective_next = Some(cat);
                             catalog_upcoming = true;
@@ -153,6 +169,7 @@ impl Db {
                     total_ep: r.get("total_ep")?,
                     catalog_format,
                     catalog_active,
+                    catalog_ended,
                     catalog_upcoming,
                     next_episode_estimated,
                     series: crate::models::Series {
@@ -230,7 +247,11 @@ impl Db {
                 });
                 let stale = !group.iter().any(|m| m.catalog_active)
                     && freshest_next_episode_at.is_some_and(|t| t < now - STALE_AIRING_SECS);
-                if side_content || stale {
+                // AniList is the source of truth: a linked, same-season entry it
+                // marks FINISHED/CANCELLED is not airing, whatever date the
+                // site's listing carries (sites replay or re-date finished shows).
+                let ended = group.iter().any(|m| m.catalog_ended) && !group.iter().any(|m| m.catalog_active);
+                if side_content || stale || ended {
                     continue;
                 }
             }
@@ -1830,6 +1851,40 @@ mod tests {
     }
 
     #[test]
+    fn list_airing_keeps_a_finished_entry_when_the_site_lists_episodes_past_its_total() {
+        // Split cour: the site keeps one page for both cours and it got linked to
+        // cour 1 (12 eps, FINISHED). Episode 14 on the site proves it is still airing.
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("AnimeYT", "https://a", "animeytx").unwrap();
+        let now = chrono::Utc::now().timestamp();
+        let mut anime = crate::db::test_support::catalog_anime(5, "Split Show", &[]);
+        anime.status = Some("FINISHED".into());
+        anime.episodes = Some(12);
+        db.upsert_catalog_anime(&anime, 0).unwrap();
+        let mut row = mk_airing("split", "Split Show", Some(now + 3 * 86400));
+        row.site_episode_count = Some(14);
+        let sid = db.upsert_series(a, &row).unwrap();
+        db.set_anilist_id(sid, 5).unwrap();
+        assert_eq!(airing_titles(&db, a).len(), 1, "episodes past the AniList total keep it");
+    }
+
+    #[test]
+    fn list_airing_hides_unfollowed_row_the_catalog_says_finished() {
+        let db = Db::open(":memory:").unwrap();
+        let a = db.upsert_source("AnimeYT", "https://a", "animeytx").unwrap();
+        let now = chrono::Utc::now().timestamp();
+        let mut anime = crate::db::test_support::catalog_anime(4, "Done Show", &[]);
+        anime.status = Some("FINISHED".into());
+        db.upsert_catalog_anime(&anime, 0).unwrap();
+        // The site lists it with a future date, so the staleness rule alone keeps it.
+        let sid = db.upsert_series(a, &mk_airing("done", "Done Show", Some(now + 3 * 86400))).unwrap();
+        db.set_anilist_id(sid, 4).unwrap();
+        assert!(airing_titles(&db, a).is_empty());
+        db.set_followed(sid, true).unwrap();
+        assert_eq!(airing_titles(&db, a).len(), 1, "followed stays");
+    }
+
+    #[test]
     fn list_airing_keeps_a_stale_scraped_row_when_the_catalog_says_releasing() {
         let db = Db::open(":memory:").unwrap();
         let a = db.upsert_source("AnimeYT", "https://a", "animeytx").unwrap();
@@ -2007,45 +2062,74 @@ mod tests {
         assert_eq!(count as usize, pending.len());
     }
 
+    /// Guards the same regression the old wall-clock test did, without a clock:
+    /// `merged_pending_episodes_at` runs one lookup per candidate series / group
+    /// (episodes by series_id, episode map by anilist_id, series by id). With a
+    /// real library (6k series, 120k episodes) each of those must be an index
+    /// SEARCH; a full SCAN per row makes the whole thing quadratic (the freeze
+    /// that `stale_status_ids` hit). The SQL strings mirror the ones in
+    /// `merged_pending_episodes_at` and `row_align`.
     #[test]
-    fn timing_test_real_size() {
+    fn pending_per_row_lookups_use_an_index_not_a_scan() {
+        let db = Db::open(":memory:").unwrap();
+        let lookups = [
+            "SELECT id, series_id, number, seen FROM episodes WHERE series_id IN (1,2,3)",
+            "SELECT number FROM episodes WHERE series_id = ?1",
+            "SELECT COUNT(*) FROM anilist_episode_map WHERE anilist_id = ?1 AND air_at IS NOT NULL AND air_at <= ?2",
+            "SELECT anilist_id FROM series WHERE id = ?1",
+        ];
+        for sql in lookups {
+            let mut stmt = db.conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+            let params: Vec<i64> = vec![0; stmt.parameter_count()];
+            let plan: Vec<String> = stmt
+                .query_map(rusqlite::params_from_iter(params), |r| r.get::<_, String>(3))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            assert!(!plan.is_empty(), "no plan for {sql}");
+            assert!(
+                plan.iter().all(|d| d.trim_start().starts_with("SEARCH")),
+                "per-row lookup must be an index SEARCH, plan was {plan:?} for {sql}"
+            );
+        }
+    }
+
+    /// Scaled correctness of the pending pipeline over a multi-site library
+    /// (no timing): the count and the list agree and match the fixture.
+    #[test]
+    fn pending_count_matches_list_pending_on_a_scaled_library() {
         let db = Db::open(":memory:").unwrap();
         let src_a = db.upsert_source("AnimeYT", "https://a.example", "animeytx").unwrap();
         let src_b = db.upsert_source("TioAnime", "https://b.example", "tioanime").unwrap();
 
-        // Generate 6k series
         let tx = db.conn.unchecked_transaction().unwrap();
-        for i in 0..6000 {
-            let followed = if i % 3 == 0 { 1 } else { 0 }; // 2k followed
+        let mut followed_n = 0usize;
+        for i in 0..300 {
+            let followed = i % 3 == 0;
+            if followed {
+                followed_n += 1;
+            }
             let src = if i % 2 == 0 { src_a } else { src_b };
             tx.execute(
                 "INSERT INTO series(source_id, slug, title, url, is_airing, followed, watched_externally)
                  VALUES(?1, ?2, ?3, ?4, 0, ?5, 0)",
-                (src, format!("s-{i}"), format!("Show {i}"), format!("u/{i}"), followed)
+                (src, format!("s-{i}"), format!("Show {i}"), format!("u/{i}"), followed as i64),
             ).unwrap();
             let sid = tx.last_insert_rowid();
-            // 20 episodes each => 120k episodes
             for j in 1..=20 {
                 tx.execute(
                     "INSERT INTO episodes(series_id, number, url, seen) VALUES(?1, ?2, ?3, 0)",
-                    (sid, j.to_string(), format!("u/{i}/{j}"))
+                    (sid, j.to_string(), format!("u/{i}/{j}")),
                 ).unwrap();
             }
         }
         tx.commit().unwrap();
 
         let priority = vec!["animeytx".to_string(), "tioanime".to_string()];
-        let start = std::time::Instant::now();
         let count = db.pending_count(src_a, &priority).unwrap();
-        let elapsed = start.elapsed();
-
-        let start2 = std::time::Instant::now();
         let list = db.list_pending(src_a, PendingSort::RemainingAsc, &priority).unwrap();
-        let elapsed2 = start2.elapsed();
-
-        assert!(elapsed.as_millis() < 1500, "pending_count took (debug build, limit 1500) {} ms", elapsed.as_millis());
-        assert!(elapsed2.as_millis() < 1500, "list_pending took {} ms", elapsed2.as_millis());
         assert_eq!(count as usize, list.len());
+        assert_eq!(list.len(), followed_n * 20);
     }
 
     #[test]
@@ -2531,6 +2615,8 @@ mod tests {
         assert_eq!(airing2[0].next_episode_at, None);
 
         // 3. FINISHED status -> no rolled date (None)
+        // (followed, so the FINISHED row is still listed; see ...hides_unfollowed_row_the_catalog_says_finished)
+        db.set_followed(s1, true).unwrap();
         db.conn.execute(
             "UPDATE anilist_catalog SET status = 'FINISHED', next_airing_at = ?1 WHERE id = 101",
             [now - 2 * day],
