@@ -3372,6 +3372,25 @@ fn genre_and_tag_cards_are_fast_at_real_size() {
 }
 
 #[test]
+fn genre_stats_issue_a_constant_number_of_genre_statements() {
+    let db = Db::open(":memory:").unwrap();
+    seed_real_size_taste(&db); // 600 followed series
+    let calls = |f: &dyn Fn()| {
+        REAL_GENRES_BATCH_CALLS.with(|c| c.set(0));
+        f();
+        REAL_GENRES_BATCH_CALLS.with(|c| c.get())
+    };
+    // 600 ids at 450 per chunk: 2 statements, never one per series.
+    let stats = calls(&|| { db.get_genre_stats().unwrap(); });
+    let cards = calls(&|| { db.get_genre_cards().unwrap(); });
+    let graph = calls(&|| { db.get_stats_graph_data().unwrap(); });
+    println!("genre statements: stats={stats} cards={cards} graph={graph}");
+    assert!(stats <= 2, "get_genre_stats ran {stats} genre statements");
+    assert!(cards <= 2, "get_genre_cards ran {cards} genre statements");
+    assert!(graph <= 2, "get_stats_graph_data ran {graph} genre statements");
+}
+
+#[test]
 fn tag_cards_list_ranked_tags_weighted_like_genre_cards() {
     let db = Db::open(":memory:").unwrap();
     seed_genres_and_tags(&db);

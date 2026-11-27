@@ -696,6 +696,13 @@ struct CanonicalFollowed {
     cover_url: Option<String>,
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Test-only count of `real_genres_batch` statements, to pin the stats
+    /// genre lookups to O(chunks) instead of O(series).
+    pub(super) static REAL_GENRES_BATCH_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 impl Db {
     /// Genre counts across every show the user follows or marked "Ya lo vi",
     /// canonical across sites: a show followed on two sites (or followed on
@@ -704,11 +711,12 @@ impl Db {
     /// twice — see `group_taste_canonically`.
     pub fn get_genre_stats(&self) -> Result<Vec<crate::models::GenreStat>> {
         let groups = self.group_taste_canonically()?;
+        let genres_by_id = self.stats_genres_for_groups(groups.iter().map(|g| &g.member_ids))?;
         let mut counts: HashMap<String, i64> = HashMap::new();
         for g in &groups {
             let mut genres: HashSet<String> = HashSet::new();
-            for &id in &g.member_ids {
-                genres.extend(self.stats_genres(id)?);
+            for id in &g.member_ids {
+                genres.extend(genres_by_id.get(id).into_iter().flatten().cloned());
             }
             for genre in genres {
                 *counts.entry(genre).or_insert(0) += 1;
@@ -730,7 +738,10 @@ impl Db {
     /// over its member rows: real marks (mirrors counted once), or the "Ya lo vi"
     /// catalog estimate when larger — never their sum.
     pub fn get_genre_cards(&self) -> Result<Vec<crate::models::GenreCard>> {
-        self.taste_cards(|db, id| db.stats_genres(id), None)
+        self.taste_cards(
+            |db, groups| db.stats_genres_for_groups(groups.iter().map(|g| &g.member_ids)),
+            None,
+        )
     }
 
     /// The tag counterpart of `get_genre_cards`: AniList tags with rank >= 50
@@ -739,7 +750,16 @@ impl Db {
     /// Kept apart from genres so the graph and genre cards stay readable.
     /// Unlinked shows have no tags (the sites only publish genres).
     pub fn get_tag_cards(&self, limit: usize) -> Result<Vec<crate::models::GenreCard>> {
-        self.taste_cards(|db, id| db.stats_tags(id), Some(limit))
+        self.taste_cards(
+            |db, groups| {
+                let mut map = HashMap::new();
+                for id in groups.iter().flat_map(|g| g.member_ids.iter().copied()) {
+                    map.insert(id, db.stats_tags(id)?);
+                }
+                Ok(map)
+            },
+            Some(limit),
+        )
     }
 
     /// Shared body of the genre and tag cards. Each canonical show is weighted
@@ -748,10 +768,11 @@ impl Db {
     /// their sum) and contributes once to each label any member carries.
     fn taste_cards(
         &self,
-        labels_of: impl Fn(&Self, i64) -> Result<Vec<String>>,
+        labels_of: impl Fn(&Self, &[CanonicalFollowed]) -> Result<HashMap<i64, Vec<String>>>,
         limit: Option<usize>,
     ) -> Result<Vec<crate::models::GenreCard>> {
         let groups = self.group_taste_canonically()?;
+        let labels_by_id = labels_of(self, &groups)?;
         let watch_rows: HashMap<i64, SeriesWatchRow> = self
             .series_watch_rows("s.followed=1 OR s.watched_externally=1")?
             .into_iter()
@@ -764,7 +785,7 @@ impl Db {
             let mut labels: HashSet<String> = HashSet::new();
             let mut rollup = RollupBuilder::new(g.display_title.clone());
             for &id in &g.member_ids {
-                labels.extend(labels_of(self, id)?);
+                labels.extend(labels_by_id.get(&id).into_iter().flatten().cloned());
                 if let Some(row) = watch_rows.get(&id) {
                     rollup.add(row);
                 }
@@ -789,8 +810,19 @@ impl Db {
     /// precedence as the `series_effective_genres` view minus its AniList
     /// tags, which stay in that view for Descubrir's affinity but read as a
     /// hairball of 15+ "genres" per show here (see `stats_tags`).
-    fn stats_genres(&self, series_id: i64) -> Result<Vec<String>> {
-        Ok(self.real_genres_batch(&[series_id])?.remove(&series_id).unwrap_or_default())
+    /// Genres of every member of every group, fetched in chunked batches
+    /// (the statement repeats the placeholder list, so stay well under
+    /// SQLite's variable limit) instead of one statement per series row.
+    fn stats_genres_for_groups<'a>(
+        &self,
+        member_ids: impl Iterator<Item = &'a Vec<i64>>,
+    ) -> Result<HashMap<i64, Vec<String>>> {
+        let all_ids: Vec<i64> = member_ids.flatten().copied().collect();
+        let mut map = HashMap::with_capacity(all_ids.len());
+        for chunk in all_ids.chunks(450) {
+            map.extend(self.real_genres_batch(chunk)?);
+        }
+        Ok(map)
     }
 
     /// `stats_genres` for many series rows in one statement: id -> sorted,
@@ -802,6 +834,8 @@ impl Db {
         if series_ids.is_empty() {
             return Ok(map);
         }
+        #[cfg(test)]
+        REAL_GENRES_BATCH_CALLS.with(|c| c.set(c.get() + 1));
         let placeholders = (1..=series_ids.len()).map(|i| format!("?{i}")).collect::<Vec<_>>().join(",");
         let sql = format!(
             "SELECT s.id, cg.genre, 1
@@ -1176,12 +1210,13 @@ impl Db {
     /// to be a stable per-node key for the graph, not a specific site's row.
     pub fn get_stats_graph_data(&self) -> Result<Vec<crate::models::SeriesGraphNode>> {
         let groups = self.group_followed_canonically()?;
+        let genres_by_id = self.stats_genres_for_groups(groups.iter().map(|g| &g.member_ids))?;
         let mut nodes: Vec<crate::models::SeriesGraphNode> = groups
             .into_iter()
             .map(|g| {
                 let mut genres: HashSet<String> = HashSet::new();
-                for &id in &g.member_ids {
-                    genres.extend(self.stats_genres(id)?);
+                for id in &g.member_ids {
+                    genres.extend(genres_by_id.get(id).into_iter().flatten().cloned());
                 }
                 let mut genres: Vec<String> = genres.into_iter().collect();
                 genres.sort();
