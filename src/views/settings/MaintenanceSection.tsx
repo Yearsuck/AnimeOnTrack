@@ -2,6 +2,7 @@ import { useState } from "react";
 import { exportDiagnostics, refresh, revealInFolder } from "../../api";
 import { useT } from "../../i18n";
 import { BusyLabel } from "../../components/BusyLabel";
+import { showDesktopOnlySettings } from "../../lib/platform";
 
 export function MaintenanceSection() {
   const t = useT();
@@ -70,9 +71,9 @@ export function MaintenanceSection() {
         {savedPath && (
           <div>
             <p className="muted settings-msg">{t("settings.diagnosticsSaved", { path: savedPath })}</p>
-            <button className="btn" onClick={doRevealInFolder}>
+            {showDesktopOnlySettings() && <button className="btn" onClick={doRevealInFolder}>
               {t("settings.diagnosticsReveal")}
-            </button>
+            </button>}
           </div>
         )}
         {diagError && <p className="muted settings-msg">{diagError}</p>}

@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { detectMobile } from "./platform";
+import { detectMobile, showDesktopOnlySettings } from "./platform";
 
 describe("detectMobile", () => {
   const originalUserAgent = navigator.userAgent;
@@ -54,5 +54,14 @@ describe("detectMobile", () => {
       writable: true,
     });
     expect(detectMobile()).toBe(false);
+  });
+});
+
+describe("showDesktopOnlySettings", () => {
+  it("shows desktop-only settings on desktop", () => {
+    expect(showDesktopOnlySettings(false)).toBe(true);
+  });
+  it("hides desktop-only settings on mobile", () => {
+    expect(showDesktopOnlySettings(true)).toBe(false);
   });
 });
