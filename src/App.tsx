@@ -679,6 +679,7 @@ export default function App() {
               <Library
                 onOpenSeries={openSeries}
                 onGoToListas={() => goCatalogSection("listas")}
+                onGoAiring={() => navigate("airing")}
               />
             </Suspense>
           </div>

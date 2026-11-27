@@ -676,6 +676,20 @@ textarea.input {
   height: 12px;
   margin-bottom: var(--sp-2);
 }
+.skeleton-poster {
+  aspect-ratio: 2 / 3;
+  border-radius: var(--radius);
+}
+/* Pendientes loading row: same 120x180 thumb as .pending-thumb. */
+.pending-skeleton-thumb {
+  flex: none;
+  width: 120px;
+  height: 180px;
+}
+.pending-skeleton-body {
+  flex: 1;
+  min-width: 0;
+}
 .skeleton-title {
   height: 18px;
   width: 40%;

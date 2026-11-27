@@ -50,6 +50,9 @@ export function Pending({
 }) {
   const t = useT();
   const [items, setItems] = useState<PendingItem[]>([]);
+  // False until the first listPending settles, so the empty state (and its
+  // CTA) never flashes before data arrives.
+  const [loaded, setLoaded] = useState(false);
   const [removing, setRemoving] = useState<Set<number>>(new Set());
   const [sort, setSort] = useState<PendingSort>("remaining_asc");
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
@@ -103,7 +106,11 @@ export function Pending({
   }
 
   const load = useCallback(async () => {
-    setItems(await listPending(sort));
+    try {
+      setItems(await listPending(sort));
+    } finally {
+      setLoaded(true);
+    }
     // A refresh can add an episode on another site: re-resolve on next open.
     setSourcesCache(new Map());
   }, [sort]);
@@ -196,7 +203,7 @@ export function Pending({
     <div className="page">
       <div className="page-head">
         <h2 className="page-title">{t("nav.pending")}</h2>
-        <span className="muted pending-head-count">{t("pending.episodesToWatch", { count: items.length })}</span>
+        <span className="muted pending-head-count">{loaded ? t("pending.episodesToWatch", { count: items.length }) : ""}</span>
         <div className="spacer" />
         {items.length > 0 && (
           <div className="lib-filter-bar">
@@ -223,7 +230,20 @@ export function Pending({
         )}
       </div>
 
-      {items.length === 0 ? (
+      {!loaded ? (
+        <div role="status" aria-label={t("common.loading")}>
+          {[0, 1, 2].map((i) => (
+            <div className="series-block pending-block" key={i} aria-hidden="true">
+              <div className="skeleton pending-skeleton-thumb" />
+              <div className="pending-skeleton-body">
+                <div className="skeleton skeleton-title" />
+                <div className="skeleton skeleton-text" />
+                <div className="skeleton skeleton-text" />
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : items.length === 0 ? (
         <div className="empty">
           {t("pending.empty")}
           <br />
