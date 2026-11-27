@@ -47,6 +47,28 @@ pub async fn download_episode(
 
 /// Validate, mark `downloading` and hand the episode to the background task.
 /// Shared by the single-episode command and the "download all pending" batch.
+/// Run `f` with the DB locked from a `DlError` context. A poisoned lock fails
+/// the download with `DlError::Io("internal error: database lock poisoned")`.
+fn dl_db<T>(state: &AppState, f: impl FnOnce(&Db) -> Result<T, DlError>) -> Result<T, DlError> {
+    state
+        .with_db(|db| Ok(f(db)))
+        .map_err(|e| DlError::Io(e.to_string()))
+        .and_then(|r| r)
+}
+
+/// Best-effort DB write for the spawned task (which returns `()`): a poisoned
+/// lock skips the write and is logged instead of panicking.
+fn task_db_write(state: &AppState, episode_id: i64, f: impl FnOnce(&Db)) {
+    if let Err(e) = state.with_db(|db| {
+        f(db);
+        Ok(())
+    }) {
+        crate::file_log::warn(&format!(
+            "download: DB write skipped for episode {episode_id}: {e}"
+        ));
+    }
+}
+
 fn enqueue(app: &AppHandle, episode_id: i64) -> Result<(), String> {
     {
         let state = app.state::<AppState>();
@@ -87,7 +109,9 @@ fn enqueue(app: &AppHandle, episode_id: i64) -> Result<(), String> {
             Err(join_err) => {
                 crate::file_log::warn(&format!("download task panicked: episode {episode_id}: {join_err}"));
                 let state = app.state::<AppState>();
-                let _ = state.db.lock().unwrap().set_download_status(episode_id, "failed", None);
+                task_db_write(&state, episode_id, |db| {
+                    let _ = db.set_download_status(episode_id, "failed", None);
+                });
                 emit(&app, episode_id, "failed", None, Some("download task panicked".into()));
                 return;
             }
@@ -99,13 +123,24 @@ fn enqueue(app: &AppHandle, episode_id: i64) -> Result<(), String> {
                 // The cancel flag is read while holding the DB lock and right before
                 // the row is written, so a cancel/delete that lands any earlier is
                 // always honoured and the window left is a few instructions wide.
-                let committed = {
-                    let db = state.db.lock().unwrap();
-                    if cancel_task.load(Ordering::SeqCst) {
+                let committed = state.with_db(|db| {
+                    Ok(if cancel_task.load(Ordering::SeqCst) {
                         false
                     } else {
                         let _ = db.set_download_status(episode_id, "downloaded", Some(&path));
                         true
+                    })
+                });
+                let committed = match committed {
+                    Ok(c) => c,
+                    Err(e) => {
+                        // Poisoned lock: the row could not be written. Leave the
+                        // file alone and report the failure instead of panicking.
+                        crate::file_log::warn(&format!(
+                            "download: DB write skipped for episode {episode_id}: {e}"
+                        ));
+                        emit(&app, episode_id, "failed", None, Some(e.to_string()));
+                        return;
                     }
                 };
                 if !committed {
@@ -118,7 +153,9 @@ fn enqueue(app: &AppHandle, episode_id: i64) -> Result<(), String> {
                             }
                         }
                     }
-                    let _ = state.db.lock().unwrap().clear_download_columns(&[episode_id]);
+                    task_db_write(&state, episode_id, |db| {
+                        let _ = db.clear_download_columns(&[episode_id]);
+                    });
                     emit(&app, episode_id, "cancelled", None, None);
                 } else {
                     crate::file_log::info(&format!("download finished: episode {episode_id}"));
@@ -126,11 +163,15 @@ fn enqueue(app: &AppHandle, episode_id: i64) -> Result<(), String> {
                 }
             }
             Err(DlError::Cancelled) => {
-                let _ = state.db.lock().unwrap().clear_download_columns(&[episode_id]);
+                task_db_write(&state, episode_id, |db| {
+                    let _ = db.clear_download_columns(&[episode_id]);
+                });
                 emit(&app, episode_id, "cancelled", None, None);
             }
             Err(e) => {
-                let _ = state.db.lock().unwrap().set_download_status(episode_id, "failed", None);
+                task_db_write(&state, episode_id, |db| {
+                    let _ = db.set_download_status(episode_id, "failed", None);
+                });
                 crate::file_log::warn(&format!("download failed: episode {episode_id}: {e}"));
                 emit(&app, episode_id, "failed", None, Some(e.to_string()));
             }
@@ -416,9 +457,10 @@ async fn scrape_and_try_siblings(
 
     let to_scrape = {
         let state = app.state::<AppState>();
-        let db = state.db.lock().unwrap();
-        db.siblings_to_scrape(episode_id)
-            .map_err(|e| DlError::Io(e.to_string()))?
+        dl_db(&state, |db| {
+            db.siblings_to_scrape(episode_id)
+                .map_err(|e| DlError::Io(e.to_string()))
+        })?
     };
 
     crate::file_log::info(&format!(
@@ -532,32 +574,39 @@ async fn scrape_and_try_siblings(
 
         {
             let state = app.state::<AppState>();
-            let db = state.db.lock().unwrap();
-            if let Err(e) = db.apply_episode_diff(row.series_id, None, &episodes) {
-                crate::file_log::info(&format!(
-                    "download fallback: apply diff failed for series {} on {site}: {e}",
-                    row.series_id
-                ));
+            let applied = dl_db(&state, |db| {
+                if let Err(e) = db.apply_episode_diff(row.series_id, None, &episodes) {
+                    crate::file_log::info(&format!(
+                        "download fallback: apply diff failed for series {} on {site}: {e}",
+                        row.series_id
+                    ));
+                    return Ok(Some(e.to_string()));
+                }
+                // Same as the episode fallback after a refetch: carry the watched
+                // progress of the sibling's twins onto the freshly inserted rows so
+                // they do not surface as unseen in Pendientes.
+                let _ = db.sync_seen_progress_across_sites();
+                Ok(None)
+            })?;
+            if let Some(e) = applied {
                 errors.push((
                     site,
                     DlError::Net(format!("could not load episode list: {e}")),
                 ));
                 continue;
             }
-            // Same as the episode fallback after a refetch: carry the watched
-            // progress of the sibling's twins onto the freshly inserted rows so
-            // they do not surface as unseen in Pendientes.
-            let _ = db.sync_seen_progress_across_sites();
         }
 
         let updated_siblings = {
             let state = app.state::<AppState>();
-            let db = state.db.lock().unwrap();
-            db.sibling_episodes(episode_id)
-                .map_err(|e| DlError::Io(e.to_string()))?
-                .into_iter()
-                .map(|s| (s.site_id, s.url))
-                .collect::<Vec<_>>()
+            dl_db(&state, |db| {
+                Ok(db
+                    .sibling_episodes(episode_id)
+                    .map_err(|e| DlError::Io(e.to_string()))?
+                    .into_iter()
+                    .map(|s| (s.site_id, s.url))
+                    .collect::<Vec<_>>())
+            })?
         };
 
         let new_candidates: Vec<String> = plan_download_urls(episode_url, &updated_siblings, priority)
@@ -634,9 +683,10 @@ async fn search_other_sites_and_try(
 
     let context = {
         let state = app.state::<AppState>();
-        let db = state.db.lock().unwrap();
-        db.download_search_context(episode_id)
-            .map_err(|e| DlError::Io(e.to_string()))?
+        dl_db(&state, |db| {
+            db.download_search_context(episode_id)
+                .map_err(|e| DlError::Io(e.to_string()))
+        })?
     };
 
     let Some(context) = context else {
@@ -676,11 +726,12 @@ async fn search_other_sites_and_try(
 
         let mirrors = {
             let state = app.state::<AppState>();
-            let db = state.db.lock().unwrap();
-            crate::commands::mirrors::load_mirrors(&db, site.id)
-                .ok()
-                .filter(|v| !v.is_empty())
-                .unwrap_or_else(|| vec![site.default_base_url.to_string()])
+            dl_db(&state, |db| {
+                Ok(crate::commands::mirrors::load_mirrors(db, site.id)
+                    .ok()
+                    .filter(|v| !v.is_empty())
+                    .unwrap_or_else(|| vec![site.default_base_url.to_string()]))
+            })?
         };
 
         crate::file_log::info(&format!(
@@ -836,24 +887,25 @@ async fn run_download(app: &AppHandle, episode_id: i64, cancel: &Arc<AtomicBool>
 
     let (episode_url, series_id, siblings, priority, preferred_height) = {
         let state = app.state::<AppState>();
-        let db = state.db.lock().unwrap();
-        let ep = db.get_episode(episode_id).map_err(|e| DlError::Io(e.to_string()))?;
-        let siblings = db
-            .sibling_episodes(episode_id)
-            .map_err(|e| DlError::Io(e.to_string()))?
-            .into_iter()
-            .map(|s| (s.site_id, s.url))
-            .collect::<Vec<_>>();
-        let known: Vec<&str> = crate::adapter::all_sites().iter().map(|s| s.id).collect();
-        let priority = db.get_site_priority(&known).unwrap_or_default();
-        let quality_str = db.get_download_quality().unwrap_or_else(|_| "best".to_string());
-        let pref_h = match quality_str.as_str() {
-            "1080" => Some(1080),
-            "720" => Some(720),
-            "480" => Some(480),
-            _ => None,
-        };
-        (ep.url, ep.series_id, siblings, priority, pref_h)
+        dl_db(&state, |db| {
+            let ep = db.get_episode(episode_id).map_err(|e| DlError::Io(e.to_string()))?;
+            let siblings = db
+                .sibling_episodes(episode_id)
+                .map_err(|e| DlError::Io(e.to_string()))?
+                .into_iter()
+                .map(|s| (s.site_id, s.url))
+                .collect::<Vec<_>>();
+            let known: Vec<&str> = crate::adapter::all_sites().iter().map(|s| s.id).collect();
+            let priority = db.get_site_priority(&known).unwrap_or_default();
+            let quality_str = db.get_download_quality().unwrap_or_else(|_| "best".to_string());
+            let pref_h = match quality_str.as_str() {
+                "1080" => Some(1080),
+                "720" => Some(720),
+                "480" => Some(480),
+                _ => None,
+            };
+            Ok((ep.url, ep.series_id, siblings, priority, pref_h))
+        })?
     };
     let dir = app
         .path()
