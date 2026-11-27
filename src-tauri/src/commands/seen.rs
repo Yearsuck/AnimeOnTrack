@@ -358,7 +358,7 @@ pub(crate) fn cleanup_downloads(
             for (id, path) in &paths {
                 let p = std::path::Path::new(path);
                 let can_delete = match downloads_dir {
-                    Some(dir) => crate::commands::storage::is_safe_file_in_dir(dir, p),
+                    Some(dir) => crate::download_safety::is_safe_file_in_dir(dir, p),
                     None => p.is_file(),
                 };
                 if can_delete {
@@ -367,7 +367,7 @@ pub(crate) fn cleanup_downloads(
                             cleaned.push(*id);
                             if let Some(parent) = p.parent() {
                                 if let Some(dir) = downloads_dir {
-                                    crate::commands::storage::remove_empty_dir_in_dir(dir, parent);
+                                    crate::download_safety::remove_empty_dir_in_dir(dir, parent);
                                 } else {
                                     let _ = std::fs::remove_dir(parent);
                                 }

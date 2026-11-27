@@ -252,6 +252,33 @@ pub fn inspect(path: &Path) -> Inspection {
     }
 }
 
+/// Validates that `file_path` is a regular file located strictly inside `base_dir`
+/// without symlink escape.
+pub fn is_safe_file_in_dir(base_dir: &Path, file_path: &Path) -> bool {
+    if !file_path.is_file() {
+        return false;
+    }
+    let (Ok(canon_base), Ok(canon_file)) = (base_dir.canonicalize(), file_path.canonicalize()) else {
+        return false;
+    };
+    canon_file.starts_with(&canon_base) && canon_file != canon_base
+}
+
+/// Attempts to remove an empty directory strictly inside `base_dir` using `std::fs::remove_dir`.
+/// Never uses `remove_dir_all`. Returns true if the directory was removed.
+pub fn remove_empty_dir_in_dir(base_dir: &Path, dir_path: &Path) -> bool {
+    if !dir_path.is_dir() {
+        return false;
+    }
+    let (Ok(canon_base), Ok(canon_dir)) = (base_dir.canonicalize(), dir_path.canonicalize()) else {
+        return false;
+    };
+    if !canon_dir.starts_with(&canon_base) || canon_dir == canon_base {
+        return false;
+    }
+    std::fs::remove_dir(&canon_dir).is_ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -369,5 +396,70 @@ mod tests {
         let _ = harden_downloads_dir(&dir);
         assert!(dir.is_dir());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn tmp_dir(name: &str) -> std::path::PathBuf {
+        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "aot_dlsafety_test_{}_{}_{}",
+            name,
+            std::process::id(),
+            N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn is_safe_file_in_dir_validates_path_boundaries() {
+        let temp = tmp_dir("safe_path");
+        let downloads = temp.join("downloads");
+        let series_dir = downloads.join("42");
+        std::fs::create_dir_all(&series_dir).unwrap();
+
+        let valid_file = series_dir.join("101.mp4");
+        std::fs::write(&valid_file, b"content").unwrap();
+
+        // Valid file inside downloads
+        assert!(is_safe_file_in_dir(&downloads, &valid_file));
+
+        // Directory itself is not a safe file
+        assert!(!is_safe_file_in_dir(&downloads, &series_dir));
+
+        // Non-existent file is not safe
+        assert!(!is_safe_file_in_dir(&downloads, &series_dir.join("missing.mp4")));
+
+        // File outside downloads directory is rejected
+        let outside_file = temp.join("outside.txt");
+        std::fs::write(&outside_file, b"secret").unwrap();
+        assert!(!is_safe_file_in_dir(&downloads, &outside_file));
+
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn remove_empty_dir_only_removes_empty_subdirs() {
+        let temp = tmp_dir("remove_empty");
+        let downloads = temp.join("downloads");
+        let series_empty = downloads.join("empty_series");
+        let series_with_file = downloads.join("full_series");
+        std::fs::create_dir_all(&series_empty).unwrap();
+        std::fs::create_dir_all(&series_with_file).unwrap();
+        std::fs::write(series_with_file.join("ep.mp4"), b"video").unwrap();
+
+        // Empty dir is removed
+        assert!(remove_empty_dir_in_dir(&downloads, &series_empty));
+        assert!(!series_empty.exists());
+
+        // Non-empty dir is NOT removed
+        assert!(!remove_empty_dir_in_dir(&downloads, &series_with_file));
+        assert!(series_with_file.exists());
+
+        // Base dir itself is never removed
+        assert!(!remove_empty_dir_in_dir(&downloads, &downloads));
+        assert!(downloads.exists());
+
+        let _ = std::fs::remove_dir_all(&temp);
     }
 }

@@ -60,8 +60,12 @@ pub struct SeriesSiteInfo {
 #[tauri::command]
 pub async fn get_series_site_info(state: State<'_, AppState>, series_id: i64) -> Result<SeriesSiteInfo, String> {
     let db = state.db.lock().unwrap();
+    let site_id = db.series_site_id(series_id).map_err(|e| e.to_string())?;
+    let site_name = site_id.and_then(|id| {
+        crate::adapter::all_sites().iter().find(|s| s.id == id).map(|s| s.name.to_string())
+    });
     Ok(SeriesSiteInfo {
-        site_name: db.series_site_name(series_id).map_err(|e| e.to_string())?,
+        site_name,
         synopsis: db.series_synopsis(series_id).map_err(|e| e.to_string())?,
     })
 }
