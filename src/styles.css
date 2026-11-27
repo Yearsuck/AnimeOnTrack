@@ -3920,3 +3920,10 @@ html[data-vt] .detail-cover {
     animation-delay: 0ms;
   }
 }
+
+/* inline, recoverable save/load error for settings cards (role="alert") */
+.settings-error {
+  color: var(--danger);
+  font-size: var(--fs-sm);
+  margin: 0 0 var(--sp-4) 0;
+}

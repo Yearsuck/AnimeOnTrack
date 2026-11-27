@@ -185,6 +185,8 @@ export const en: Messages = {
   "settings.playerClean": "Clean player mode",
   "settings.playerCleanHelp": "Only the player and the anime name; no menus, comments or ads.",
   "settings.playerAdblock": "Advanced ad blocking",
+  "settings.saveError": "Could not save. Try again.",
+  "settings.loadError": "Could not load the settings.",
   "settings.playerAdblockHelp": "Blocks ads, pop-ups and trackers using open filter lists (EasyList). Turn it off if a site stops loading the video.",
   "settings.playerHelp": "Configure which monitor episodes open on and whether they open in a normal window or a maximised one. Real full screen is up to you once the episode starts.",
 

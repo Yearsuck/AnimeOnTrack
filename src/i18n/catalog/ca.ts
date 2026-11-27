@@ -192,6 +192,8 @@ export const ca: Messages = {
   "settings.playerClean": "Mode reproductor net",
   "settings.playerCleanHelp": "Només el reproductor i el nom de l'anime; sense menús, comentaris ni anuncis.",
   "settings.playerAdblock": "Bloquejador d'anuncis avançat",
+  "settings.saveError": "No s'ha pogut desar. Torna-ho a provar.",
+  "settings.loadError": "No s'han pogut carregar els ajustos.",
   "settings.playerAdblockHelp": "Bloqueja anuncis, finestres emergents i rastrejadors amb llistes obertes (EasyList). Desactiva'l si una web deixa de carregar el vídeo.",
   "settings.playerHelp": "Configura a quin monitor s'obren els episodis i si s'obren en una finestra normal o maximitzada a pantalla completa. La pantalla completa real l'actives tu en començar l'episodi.",
 
