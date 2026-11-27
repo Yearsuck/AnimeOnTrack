@@ -1,4 +1,5 @@
 use super::*;
+use crate::error::AppError;
 use tauri::{AppHandle, Manager};
 use std::sync::atomic::Ordering;
 use crate::models::Series;
@@ -46,16 +47,15 @@ async fn run_episode_fallback(app: AppHandle) -> Result<(), String> {
     }
     let _clear = crate::commands::follow::RunningGuard(&state.episode_fallback_running);
 
-    let (_active_source_id, active_site_id, candidates) = {
-        let db = state.db.lock().unwrap();
-        let src = get_source_id(&state)?;
+    let (_active_source_id, active_site_id, candidates) = state.with_db(|db| {
+        let src = get_source_id(&state).map_err(AppError::Other)?;
         let site_id = get_active_site_id(&state);
 
         let now = chrono::Utc::now().timestamp();
-        let candidates = db.shows_needing_episode_source(src, now).map_err(|e| e.to_string())?;
+        let candidates = db.shows_needing_episode_source(src, now)?;
 
-        (src, site_id, candidates)
-    };
+        Ok((src, site_id, candidates))
+    })?;
 
     if candidates.is_empty() {
         eprintln!("[fallback] no followed show needs another episode source");
@@ -70,8 +70,7 @@ async fn run_episode_fallback(app: AppHandle) -> Result<(), String> {
     let now_ts = chrono::Utc::now().timestamp();
     let mut fresh: Vec<_> = Vec::new();
     let mut recent: Vec<_> = Vec::new();
-    {
-        let db = state.db.lock().unwrap();
+    state.with_db(|db| {
         for c in candidates {
             if db.recently_attempted_episode_fallback(&c.canon_key, now_ts).unwrap_or(false) {
                 recent.push(c);
@@ -79,26 +78,23 @@ async fn run_episode_fallback(app: AppHandle) -> Result<(), String> {
                 fresh.push(c);
             }
         }
-    }
+        Ok(())
+    })?;
     fresh.extend(recent);
     for candidate in fresh.into_iter().take(3) {
-        {
-            let db = state.db.lock().unwrap();
+        state.with_db(|db| {
             let _ = db.record_episode_fallback_attempt(&candidate.canon_key, now_ts);
-        }
+            Ok(())
+        })?;
         let mut found_episodes = false;
         let mut had_refetch_error = false;
 
-        let priority = {
-            let db = state.db.lock().unwrap();
+        let priority = state.with_db(|db| {
             let known: Vec<&str> = all_sites.iter().map(|s| s.id).collect();
-            db.get_site_priority(&known).unwrap_or_default()
-        };
+            Ok(db.get_site_priority(&known).unwrap_or_default())
+        })?;
 
-        let expected = {
-            let db = state.db.lock().unwrap();
-            expected_episode_for_candidate(&db, &candidate).unwrap_or(0)
-        };
+        let expected = state.with_db(|db| Ok(expected_episode_for_candidate(db, &candidate).unwrap_or(0)))?;
 
         // 1. For candidate with known_rows, FIRST refetch each known row of a site
         // other than the already-fresh ones, in site_priority order.
@@ -138,16 +134,13 @@ async fn run_episode_fallback(app: AppHandle) -> Result<(), String> {
                     }
                 };
 
-                {
-                    let db = state.db.lock().unwrap();
+                state.with_db(|db| {
                     let _ = db.apply_episode_diff(series_id, None, &episodes);
                     let _ = db.sync_seen_progress_across_sites();
-                }
+                    Ok(())
+                })?;
 
-                let current_max = {
-                    let db = state.db.lock().unwrap();
-                    max_episode_for_candidate(&db, &candidate).unwrap_or(0)
-                };
+                let current_max = state.with_db(|db| Ok(max_episode_for_candidate(db, &candidate).unwrap_or(0)))?;
 
                 if expected > 0 && current_max >= expected {
                     found_episodes = true;
@@ -163,16 +156,14 @@ async fn run_episode_fallback(app: AppHandle) -> Result<(), String> {
         // 2. Only if still behind, continue with existing search over sites_to_try
         if !found_episodes {
             let (title, romaji, english) = if let Some(al_id) = candidate.anilist_id {
-                let db = state.db.lock().unwrap();
-                db.get_catalog_titles(al_id).map_err(|e| e.to_string())?.unwrap_or((candidate.title.clone(), None, None))
+                state.with_db(|db| Ok(db.get_catalog_titles(al_id)?.unwrap_or((candidate.title.clone(), None, None))))?
             } else {
                 (candidate.title.clone(), None, None)
             };
             let primary_query = romaji.clone().unwrap_or_else(|| title.clone());
 
             // Get misses for this candidate
-            let site_misses = {
-                let db = state.db.lock().unwrap();
+            let site_misses = state.with_db(|db| {
                 let now = chrono::Utc::now().timestamp();
                 let mut misses = Vec::new();
                 for site in all_sites {
@@ -180,8 +171,8 @@ async fn run_episode_fallback(app: AppHandle) -> Result<(), String> {
                         misses.push(site.id.to_string());
                     }
                 }
-                misses
-            };
+                Ok(misses)
+            })?;
 
             let sites_to_try = next_sites_to_try(all_sites, &active_site_id, &site_misses, &priority);
             let sites_to_try: Vec<&crate::adapter::SiteInfo> = sites_to_try
@@ -195,10 +186,9 @@ async fn run_episode_fallback(app: AppHandle) -> Result<(), String> {
                     None => continue,
                 };
 
-                let mirrors = {
-                    let db = state.db.lock().unwrap();
-                    mirrors_or_default(crate::commands::mirrors::load_mirrors(&db, site.id).map_err(|e| e.to_string()), site.default_base_url)
-                };
+                let mirrors = state.with_db(|db| {
+                    Ok(mirrors_or_default(crate::commands::mirrors::load_mirrors(db, site.id).map_err(|e| e.to_string()), site.default_base_url))
+                })?;
 
                 if mirrors.first().map(|m| crate::domain_breaker::is_open(m)).unwrap_or(false) {
                     continue;
@@ -286,13 +276,20 @@ async fn run_episode_fallback(app: AppHandle) -> Result<(), String> {
                         // new_slug bound above
 
                         let is_releasing = if let Some(al_id) = candidate.anilist_id {
-                            let db = state.db.lock().unwrap();
-                            let status: Option<String> = db.conn.query_row("SELECT status FROM anilist_catalog WHERE id=?1", [al_id], |r| r.get(0)).ok();
-                            status.as_deref() == Some("RELEASING") || status.as_deref() == Some("HIATUS")
+                            // Poisoned lock: same as a failed query (status None -> false).
+                            state
+                                .with_db(|db| {
+                                    let status: Option<String> = db.conn.query_row("SELECT status FROM anilist_catalog WHERE id=?1", [al_id], |r| r.get(0)).ok();
+                                    Ok(status.as_deref() == Some("RELEASING") || status.as_deref() == Some("HIATUS"))
+                                })
+                                .unwrap_or_else(|e| {
+                                    eprintln!("[fallback] releasing-status lookup skipped: {e}");
+                                    false
+                                })
                         } else { false };
 
-                        let (target_id, written) = {
-                            let db = state.db.lock().unwrap();
+                        // Poisoned lock: same as a failed DB step.
+                        let step_result = state.with_db(|db| {
                             let step = ResolverStep {
                                 site,
                                 mirrors: &mirrors,
@@ -304,22 +301,32 @@ async fn run_episode_fallback(app: AppHandle) -> Result<(), String> {
                                 kind: &kind,
                                 is_releasing,
                             };
-                            match perform_resolver_db_step(&db, &step) {
-                                Ok(res) => res,
-                                Err(_) => return SiteOutcome::TransientError,
+                            Ok(perform_resolver_db_step(db, &step))
+                        });
+                        let (target_id, written) = match step_result {
+                            Ok(Ok(res)) => res,
+                            Ok(Err(_)) => return SiteOutcome::TransientError,
+                            Err(e) => {
+                                eprintln!("[fallback] resolver DB step skipped: {e}");
+                                return SiteOutcome::TransientError;
                             }
                         };
 
                         if written {
-                            let db = state.db.lock().unwrap();
-                            if let Some(n) = db.take_carried_seen_number(target_id).unwrap_or(None) {
-                                let matched_season = crate::matching::effective_season(&matched.title, &new_slug);
-                                let cand_season = crate::matching::effective_season(&candidate.title, "");
-                                if !matches!((matched_season, cand_season), (Some(a), Some(b)) if a != b) {
-                                    let _ = db.set_seen_cascade(target_id, &n.to_string(), true);
+                            // Poisoned lock: skip the carried-seen step (episodes are already written).
+                            if let Err(e) = state.with_db(|db| {
+                                if let Some(n) = db.take_carried_seen_number(target_id).unwrap_or(None) {
+                                    let matched_season = crate::matching::effective_season(&matched.title, &new_slug);
+                                    let cand_season = crate::matching::effective_season(&candidate.title, "");
+                                    if !matches!((matched_season, cand_season), (Some(a), Some(b)) if a != b) {
+                                        let _ = db.set_seen_cascade(target_id, &n.to_string(), true);
+                                    }
                                 }
+                                let _ = db.sync_seen_progress_across_sites();
+                                Ok(())
+                            }) {
+                                eprintln!("[fallback] carried-seen step skipped: {e}");
                             }
-                            let _ = db.sync_seen_progress_across_sites();
                             return SiteOutcome::FoundEpisodes;
                         }
                         SiteOutcome::TransientError
@@ -332,16 +339,17 @@ async fn run_episode_fallback(app: AppHandle) -> Result<(), String> {
 
                 eprintln!("[fallback] '{}' on {}: {:?}", candidate.title, site.id, outcome);
                 if outcome == SiteOutcome::DefinitiveMiss {
-                    let db = state.db.lock().unwrap();
                     let now = chrono::Utc::now().timestamp();
-                    let _ = db.record_episode_fallback_site_miss(&candidate.canon_key, site.id, now);
+                    state.with_db(|db| {
+                        let _ = db.record_episode_fallback_site_miss(&candidate.canon_key, site.id, now);
+                        Ok(())
+                    })?;
                 }
 
                 tokio::time::sleep(FALLBACK_PACED).await;
 
                 if outcome == SiteOutcome::FoundEpisodes {
-                    let db = state.db.lock().unwrap();
-                    let current_max = max_episode_for_candidate(&db, &candidate).unwrap_or(0);
+                    let current_max = state.with_db(|db| Ok(max_episode_for_candidate(db, &candidate).unwrap_or(0)))?;
                     if expected <= 0 || current_max >= expected {
                         found_episodes = true;
                         break;
@@ -351,9 +359,11 @@ async fn run_episode_fallback(app: AppHandle) -> Result<(), String> {
         }
 
         if !found_episodes && should_record_group_miss(had_refetch_error, &outcomes, !candidate.known_rows.is_empty()) {
-            let db = state.db.lock().unwrap();
             let now = chrono::Utc::now().timestamp();
-            let _ = db.record_episode_fallback_miss(&candidate.canon_key, now);
+            state.with_db(|db| {
+                let _ = db.record_episode_fallback_miss(&candidate.canon_key, now);
+                Ok(())
+            })?;
         }
     }
 

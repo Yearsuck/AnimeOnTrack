@@ -1,4 +1,5 @@
 use super::*;
+use crate::error::AppError;
 
 /// Prefix for the per-site cached genre-archive list
 /// (`genre_list:{site_id}`) — see `ensure_genre_list`.
@@ -32,10 +33,7 @@ pub async fn ensure_genre_list(
     a: &dyn SiteAdapter,
     site_id: &str,
 ) -> Result<Vec<(String, String)>, String> {
-    let cached = {
-        let db = state.db.lock().unwrap();
-        load_genre_list(&db, site_id)?
-    };
+    let cached = state.with_db(|db| load_genre_list(db, site_id).map_err(AppError::Other))?;
     if !cached.is_empty() {
         return Ok(cached);
     }
@@ -43,8 +41,7 @@ pub async fn ensure_genre_list(
         a.parse_genre_list(&scraped.html)
     })
     .await?;
-    let db = state.db.lock().unwrap();
-    save_genre_list(&db, site_id, &pairs)?;
+    state.with_db(|db| save_genre_list(db, site_id, &pairs).map_err(AppError::Other))?;
     Ok(pairs)
 }
 
@@ -152,21 +149,27 @@ pub async fn backfill_series_genre_if_missing(
     series: &Series,
     a: &dyn SiteAdapter,
 ) -> bool {
-    let needs = {
-        let db = db.lock().unwrap();
-        db.series_needs_genre_backfill(series.id).unwrap_or(false)
-    };
+    // Poisoned lock: same fallback as a DB error here (`false`), which skips the backfill.
+    let needs = crate::commands::with_lock(db, |db| Ok(db.series_needs_genre_backfill(series.id).unwrap_or(false)))
+        .unwrap_or_else(|e| {
+            eprintln!("[scan] backfill genre check for series {}: {e}", series.id);
+            false
+        });
     if !needs {
         return false;
     }
     if let Ok(detail) = fetch_series_detail(app, mirrors, &series.url, a).await {
-        let db = db.lock().unwrap();
-        let _ = db.insert_series_genres(series.id, &detail.genres);
-        if let Some(kind) = &detail.kind {
-            let _ = db.set_kind(series.id, kind);
-        }
-        if let Some(text) = &detail.synopsis {
-            let _ = db.set_series_synopsis(series.id, text);
+        if let Err(e) = crate::commands::with_lock(db, |db| {
+            let _ = db.insert_series_genres(series.id, &detail.genres);
+            if let Some(kind) = &detail.kind {
+                let _ = db.set_kind(series.id, kind);
+            }
+            if let Some(text) = &detail.synopsis {
+                let _ = db.set_series_synopsis(series.id, text);
+            }
+            Ok(())
+        }) {
+            eprintln!("[scan] backfill genre write for series {} skipped: {e}", series.id);
         }
     }
     true
@@ -296,56 +299,53 @@ async fn scan_airing_via_mirrors(
         .map(|s| s.name)
         .unwrap_or(site_id);
 
-    let db = state.db.lock().unwrap();
-    save_mirrors(&db, site_id, &mirrors)?;
-    let src = db
-        .upsert_source(site_name, &working_mirror, site_id)
-        .map_err(|e| e.to_string())?;
-    let mut upserted_ids: Vec<i64> = Vec::with_capacity(series.len());
-    for s in &series {
-        upserted_ids.push(db.upsert_series(src, s).map_err(|e| e.to_string())?);
-    }
-    if listing_complete {
-        let listed: std::collections::HashSet<&str> = series.iter().map(|s| s.slug.as_str()).collect();
-        if let Err(e) = db.mark_unlisted_not_airing(src, &listed) {
-            eprintln!("[scan] mark_unlisted_not_airing failed: {e}");
+    let airing = state.with_db(|db| {
+        save_mirrors(db, site_id, &mirrors).map_err(AppError::Other)?;
+        let src = db
+            .upsert_source(site_name, &working_mirror, site_id)?;
+        let mut upserted_ids: Vec<i64> = Vec::with_capacity(series.len());
+        for s in &series {
+            upserted_ids.push(db.upsert_series(src, s)?);
         }
-    }
-    // Cross-site follow carry-over: a series followed on ANOTHER site that
-    // matches (by title) one just scanned here inherits the follow + a
-    // progress watermark, so switching sites doesn't strand your library. The
-    // watermark is applied later, once refresh() fetches this site's episode
-    // list (see refresh + db::carry_follow). Matching is title-based and
-    // conservative (matching::MATCH_THRESHOLD) — a wrong carry would falsely
-    // follow + mark-seen the wrong show.
-    let followed_elsewhere = db
-        .followed_titles_with_watermark(src)
-        .map_err(|e| e.to_string())?;
-    if !followed_elsewhere.is_empty() {
-        let new_site_anilist = db
-            .anilist_ids_for_series(&upserted_ids)
-            .map_err(|e| e.to_string())?;
-        for (idx, watermark) in plan_carryover(&series, &new_site_anilist, &followed_elsewhere) {
-            db.carry_follow(upserted_ids[idx], watermark).map_err(|e| e.to_string())?;
+        if listing_complete {
+            let listed: std::collections::HashSet<&str> = series.iter().map(|s| s.slug.as_str()).collect();
+            if let Err(e) = db.mark_unlisted_not_airing(src, &listed) {
+                eprintln!("[scan] mark_unlisted_not_airing failed: {e}");
+            }
         }
-    }
-    // Keep completion consistent across sites right after a switch/scan: a
-    // show completed elsewhere shouldn't resurface as unwatched-pending here.
-    db.reconcile_completion_across_sites().map_err(|e| e.to_string())?;
-    // And ordinary per-episode progress too — carry_follow above only ever
-    // fires once (the first time a site gains the follow); a show followed
-    // on two sites for a while needs its watermark re-checked on every
-    // switch/scan, not just at first-follow, or episodes watched on the
-    // other site keep reappearing as pending here.
-    db.sync_seen_progress_across_sites().map_err(|e| e.to_string())?;
-    // A site's own scrape never un-airs a show once scraped as airing (see
-    // sync_status_from_catalog's doc comment) — AniList's synced
-    // status is the only signal that actually catches a real finish.
-    db.sync_status_from_catalog().map_err(|e| e.to_string())?;
+        // Cross-site follow carry-over: a series followed on ANOTHER site that
+        // matches (by title) one just scanned here inherits the follow + a
+        // progress watermark, so switching sites doesn't strand your library. The
+        // watermark is applied later, once refresh() fetches this site's episode
+        // list (see refresh + db::carry_follow). Matching is title-based and
+        // conservative (matching::MATCH_THRESHOLD) — a wrong carry would falsely
+        // follow + mark-seen the wrong show.
+        let followed_elsewhere = db
+            .followed_titles_with_watermark(src)?;
+        if !followed_elsewhere.is_empty() {
+            let new_site_anilist = db
+                .anilist_ids_for_series(&upserted_ids)?;
+            for (idx, watermark) in plan_carryover(&series, &new_site_anilist, &followed_elsewhere) {
+                db.carry_follow(upserted_ids[idx], watermark)?;
+            }
+        }
+        // Keep completion consistent across sites right after a switch/scan: a
+        // show completed elsewhere shouldn't resurface as unwatched-pending here.
+        db.reconcile_completion_across_sites()?;
+        // And ordinary per-episode progress too — carry_follow above only ever
+        // fires once (the first time a site gains the follow); a show followed
+        // on two sites for a while needs its watermark re-checked on every
+        // switch/scan, not just at first-follow, or episodes watched on the
+        // other site keep reappearing as pending here.
+        db.sync_seen_progress_across_sites()?;
+        // A site's own scrape never un-airs a show once scraped as airing (see
+        // sync_status_from_catalog's doc comment) — AniList's synced
+        // status is the only signal that actually catches a real finish.
+        db.sync_status_from_catalog()?;
 
-    *state.source_id.lock().unwrap() = Some(src);
-    let airing = db.list_airing(src).map_err(|e| e.to_string())?;
-    drop(db);
+        *state.source_id.lock().unwrap() = Some(src);
+        Ok(db.list_airing(src)?)
+    })?;
 
     // Auto-import the whole library onto this site on every airing (re)scan —
     // the airing-page carry-over above only reaches the ~airing overlap, so
@@ -377,10 +377,7 @@ pub async fn scan_airing(
     let _keep_alive = crate::scraper_engine::keep_alive::scan_keep_alive(&app);
     let site_id = get_active_site_id(&state);
     let a = get_active_adapter(&state)?;
-    let existing = {
-        let db = state.db.lock().unwrap();
-        load_mirrors(&db, &site_id)?
-    };
+    let existing = state.with_db(|db| load_mirrors(db, &site_id).map_err(AppError::Other))?;
     let mirrors = with_mirror(existing, &base_url);
     scan_airing_via_mirrors(&app, &state, mirrors, a.as_ref(), &site_id).await
 }
@@ -391,18 +388,14 @@ pub async fn scan_airing(
 pub async fn rescan_airing(app: AppHandle, state: State<'_, AppState>) -> Result<Vec<Series>, String> {
     let site_id = get_active_site_id(&state);
     let a = get_active_adapter(&state)?;
-    let mirrors = {
-        let db = state.db.lock().unwrap();
-        load_mirrors(&db, &site_id)?
-    };
+    let mirrors = state.with_db(|db| load_mirrors(db, &site_id).map_err(AppError::Other))?;
     scan_airing_via_mirrors(&app, &state, mirrors, a.as_ref(), &site_id).await
 }
 
 #[tauri::command]
 pub async fn list_airing(state: State<'_, AppState>) -> Result<Vec<Series>, String> {
     let src = get_source_id(&state)?;
-    let db = state.db.lock().unwrap();
-    db.list_airing(src).map_err(|e| e.to_string())
+    Ok(state.with_db(|db| Ok(db.list_airing(src)?))?)
 }
 
 /// Same series/order as `list_airing`, each paired with a real premiere date
@@ -424,13 +417,14 @@ pub async fn list_airing(state: State<'_, AppState>) -> Result<Vec<Series>, Stri
 pub async fn list_airing_season(state: State<'_, AppState>) -> Result<Vec<AiringItem>, String> {
     let src = get_source_id(&state)?;
     let (series, rolled, first_dates, meta_rows, banners_and_scores) = {
-        let db = state.db.lock().unwrap();
-        let (series, rolled) = db.list_airing_with_rolled(src).map_err(|e| e.to_string())?;
-        let first_dates = db.first_episode_dates(src).map_err(|e| e.to_string())?;
-        let meta_rows = db.catalog_airing_meta_rows().map_err(|e| e.to_string())?;
-        let airing_ids: Vec<i64> = series.iter().map(|s| s.id).collect();
-        let banners_and_scores = db.series_banners_and_scores(&airing_ids).map_err(|e| e.to_string())?;
-        (series, rolled, first_dates, meta_rows, banners_and_scores)
+        state.with_db(|db| {
+            let (series, rolled) = db.list_airing_with_rolled(src)?;
+            let first_dates = db.first_episode_dates(src)?;
+            let meta_rows = db.catalog_airing_meta_rows()?;
+            let airing_ids: Vec<i64> = series.iter().map(|s| s.id).collect();
+            let banners_and_scores = db.series_banners_and_scores(&airing_ids)?;
+            Ok((series, rolled, first_dates, meta_rows, banners_and_scores))
+        })?
     };
     let meta = tauri::async_runtime::spawn_blocking(move || {
         Db::build_catalog_airing_meta(meta_rows)
@@ -483,10 +477,11 @@ pub async fn get_series_banner(
     series_id: i64,
 ) -> Result<Option<String>, String> {
     let (cached_banner, title, anilist_id) = {
-        let db = state.db.lock().unwrap();
-        let cached = db.get_series_banner(series_id).map_err(|e| e.to_string())?;
-        let (title, anilist_id) = db.get_series_title_and_anilist_id(series_id).map_err(|e| e.to_string())?;
-        (cached, title, anilist_id)
+        state.with_db(|db| {
+            let cached = db.get_series_banner(series_id)?;
+            let (title, anilist_id) = db.get_series_title_and_anilist_id(series_id)?;
+            Ok((cached, title, anilist_id))
+        })?
     };
 
     if let Some(banner) = cached_banner {
@@ -495,8 +490,10 @@ pub async fn get_series_banner(
 
     match crate::anilist::fetch_banner_by_id_or_title(anilist_id, Some(&title)).await {
         Ok(Some(banner_url)) => {
-            let db = state.db.lock().unwrap();
-            let _ = db.set_series_banner(series_id, &banner_url);
+            state.with_db(|db| {
+                let _ = db.set_series_banner(series_id, &banner_url);
+                Ok(())
+            })?;
             Ok(Some(banner_url))
         }
         Ok(None) => Ok(None),
@@ -517,25 +514,23 @@ pub async fn backfill_genres(app: AppHandle, state: State<'_, AppState>) -> Resu
     let site_id = get_active_site_id(&state);
     let a = get_active_adapter(&state)?;
     let (candidates, mirrors) = {
-        let db = state.db.lock().unwrap();
-        let followed = db.list_followed(src).map_err(|e| e.to_string())?;
-        let mut candidates = Vec::new();
-        for s in followed {
-            if db.series_needs_genre_backfill(s.id).map_err(|e| e.to_string())? {
-                candidates.push(s);
+        state.with_db(|db| {
+            let followed = db.list_followed(src)?;
+            let mut candidates = Vec::new();
+            for s in followed {
+                if db.series_needs_genre_backfill(s.id)? {
+                    candidates.push(s);
+                }
             }
-        }
-        (candidates, load_mirrors(&db, &site_id)?)
+            Ok((candidates, load_mirrors(db, &site_id).map_err(AppError::Other)?))
+        })?
     };
     let total = candidates.len();
     let mut filled = 0i64;
     for (idx, s) in candidates.into_iter().enumerate() {
         emit_refresh_progress(&app, idx, total, &s.title, false);
         if backfill_series_genre_if_missing(&app, &state.db, &mirrors, &s, a.as_ref()).await {
-            let got = {
-                let db = state.db.lock().unwrap();
-                !db.series_needs_genre_backfill(s.id).map_err(|e| e.to_string())?
-            };
+            let got = state.with_db(|db| Ok(!db.series_needs_genre_backfill(s.id)?))?;
             if got {
                 filled += 1;
             }
@@ -636,10 +631,7 @@ async fn run_episode_backfill(app: AppHandle) -> Result<(), String> {
     }
     let _clear = crate::commands::follow::RunningGuard(&state.episode_backfill_running);
 
-    let rows = {
-        let db = state.db.lock().unwrap();
-        db.catalog_titles_for_index().map_err(|e| e.to_string())?
-    };
+    let rows = state.with_db(|db| Ok(db.catalog_titles_for_index()?))?;
     let (index, rows) = tauri::async_runtime::spawn_blocking(move || {
         let index = crate::matching::CatalogIndex::build(&rows);
         (index, rows)
@@ -647,12 +639,11 @@ async fn run_episode_backfill(app: AppHandle) -> Result<(), String> {
     .await
     .map_err(|e| e.to_string())?;
 
-    let (a, mirrors, needing) = {
-        let db = state.db.lock().unwrap();
-        let src = get_source_id(&state)?;
-        let a = get_active_adapter(&state)?;
+    let (a, mirrors, needing) = state.with_db(|db| {
+        let src = get_source_id(&state).map_err(AppError::Other)?;
+        let a = get_active_adapter(&state).map_err(AppError::Other)?;
         let site_id = get_active_site_id(&state);
-        let mirrors = load_mirrors(&db, &site_id)?;
+        let mirrors = load_mirrors(db, &site_id).map_err(AppError::Other)?;
         // Catalog linking + the finished-status correction it feeds both
         // moved here (off the synchronous scan_airing_via_mirrors path):
         // series_needing_catalog_link's `OR s.is_airing=1` clause matches
@@ -664,14 +655,13 @@ async fn run_episode_backfill(app: AppHandle) -> Result<(), String> {
         // runtime long enough to crash the app — confirmed live 2026-08-14.
         // Local-only (no network) so it's safe to run before the paced
         // network loop below, not after.
-        db.link_series_to_catalog_with(&index, rows).map_err(|e| e.to_string())?;
-        db.sync_status_from_catalog().map_err(|e| e.to_string())?;
-        let needing_raw = db.followed_series_without_episodes(src).map_err(|e| e.to_string())?;
+        db.link_series_to_catalog_with(&index, rows)?;
+        db.sync_status_from_catalog()?;
+        let needing_raw = db.followed_series_without_episodes(src)?;
         let mut needing = Vec::with_capacity(needing_raw.len());
         for s in needing_raw {
             let anilist_id = db
-                .get_series_for_link(s.id)
-                .map_err(|e| e.to_string())?
+                .get_series_for_link(s.id)?
                 .and_then(|info| info.anilist_id);
             needing.push(BackfillTarget {
                 id: s.id,
@@ -681,8 +671,8 @@ async fn run_episode_backfill(app: AppHandle) -> Result<(), String> {
                 anilist_id,
             });
         }
-        (a, mirrors, needing)
-    };
+        Ok((a, mirrors, needing))
+    })?;
 
     for s in needing {
         let Some((eps, working_mirror, path, synopsis)) =
@@ -698,14 +688,13 @@ async fn run_episode_backfill(app: AppHandle) -> Result<(), String> {
         // invisible apart from one line on stderr and the remaining followed
         // series simply stayed at zero episodes until the next site switch
         // happened to reach them.
-        let db_result: Result<(), String> = (|| {
-            let db = state.db.lock().unwrap();
+        let db_result: Result<(), AppError> = state.with_db(|db| {
             let new_url = format!("{working_mirror}{path}");
             let new_url = (new_url != s.url).then_some(new_url.as_str());
             if let Some(text) = &synopsis {
                 let _ = db.set_series_synopsis(s.id, text);
             }
-            if !apply_backfill_writes(&db, s.id, s.anilist_id, &s.slug, new_url, &eps)? {
+            if !apply_backfill_writes(db, s.id, s.anilist_id, &s.slug, new_url, &eps).map_err(AppError::Other)? {
                 eprintln!(
                     "[backfill] series {} ({}) identity changed after fetch, skipping write",
                     s.id, s.title
@@ -713,7 +702,7 @@ async fn run_episode_backfill(app: AppHandle) -> Result<(), String> {
                 return Ok(());
             }
             Ok(())
-        })();
+        });
         if let Err(e) = db_result {
             eprintln!("[backfill] series {} ({}): DB update failed, skipping to next series: {e}", s.id, s.title);
         }
@@ -810,10 +799,7 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
     let src = get_source_id(&state)?;
     let site_id = get_active_site_id(&state);
     let a = get_active_adapter(&state)?;
-    let mirrors = {
-        let db = state.db.lock().unwrap();
-        load_mirrors(&db, &site_id)?
-    };
+    let mirrors = state.with_db(|db| load_mirrors(db, &site_id).map_err(AppError::Other))?;
 
     // One fresh airing-listing scan up front — the skip decisions below are
     // only sound against metadata from *this* scan, never a stale one, so
@@ -831,10 +817,7 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
             Ok((series, _working_mirror, listing_complete)) => {
                 // One synchronous lock scope, one transaction, no await while
                 // the lock is held (see `Db::persist_listing`).
-                {
-                    let db = state.db.lock().unwrap();
-                    db.persist_listing(src, &series, listing_complete).map_err(|e| e.to_string())?;
-                }
+                state.with_db(|db| Ok(db.persist_listing(src, &series, listing_complete)?))?;
                 Some(series.into_iter().map(|s| s.slug).collect())
             }
             Err(e) => {
@@ -848,21 +831,20 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
     // each for every followed series' max episode number / last-checked age
     // (see `Db::max_episode_numbers_for_source`'s doc comment); a series
     // absent from a map falls back to the old per-series defaults (0, None).
-    let (followed, max_numbers, checked_ages, failed_ages, linked_ids) = {
-        let db = state.db.lock().unwrap();
+    let (followed, max_numbers, checked_ages, failed_ages, linked_ids) = state.with_db(|db| {
         // Local-only, no network: catch up any followed show whose watermark
         // on this site fell behind progress made on another (same reason as
         // scan_airing_via_mirrors — see sync_seen_progress_across_sites).
-        db.sync_seen_progress_across_sites().map_err(|e| e.to_string())?;
-        db.sync_status_from_catalog().map_err(|e| e.to_string())?;
-        (
-            db.list_followed(src).map_err(|e| e.to_string())?,
-            db.max_episode_numbers_for_source(src).map_err(|e| e.to_string())?,
-            db.last_checked_ages_for_source(src).map_err(|e| e.to_string())?,
-            db.fetch_failure_ages_for_source(src).map_err(|e| e.to_string())?,
-            db.followed_linked_series_ids(src).map_err(|e| e.to_string())?,
-        )
-    };
+        db.sync_seen_progress_across_sites()?;
+        db.sync_status_from_catalog()?;
+        Ok((
+            db.list_followed(src)?,
+            db.max_episode_numbers_for_source(src)?,
+            db.last_checked_ages_for_source(src)?,
+            db.fetch_failure_ages_for_source(src)?,
+            db.followed_linked_series_ids(src)?,
+        ))
+    })?;
     let total_series = followed.len();
     let now_unix = chrono::Utc::now().timestamp();
 
@@ -978,7 +960,10 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
 
         for (s, result) in chunk.iter().zip(fetched) {
             let Some((eps, working_mirror, path, synopsis)) = result else {
-                let _ = state.db.lock().unwrap().set_last_fetch_failed_at(s.id);
+                state.with_db(|db| {
+                    let _ = db.set_last_fetch_failed_at(s.id);
+                    Ok(())
+                })?;
                 continue;
             };
             // A per-series DB error (a data-integrity problem this
@@ -988,8 +973,7 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
             // to kill every one of them along with this one, silently
             // freezing the frontend's progress bar on whatever number it
             // last reached. Log and move on to the next series instead.
-            let db_result: Result<(), String> = (|| {
-                let db = state.db.lock().unwrap();
+            let db_result: Result<(), AppError> = state.with_db(|db| {
                 let new_url = format!("{working_mirror}{path}");
                 let new_url = (new_url != s.url).then_some(new_url.as_str());
                 // De-duplicate by episode number, not URL (the site may have
@@ -998,7 +982,7 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
                 // `apply_episode_diff`'s doc comment for why this is one
                 // transaction instead of a loop of individually committed
                 // statements.
-                total_new += db.apply_episode_diff(s.id, new_url, &eps).map_err(|e| e.to_string())?;
+                total_new += db.apply_episode_diff(s.id, new_url, &eps)?;
                 if let Some(text) = &synopsis {
                     let _ = db.set_series_synopsis(s.id, text);
                 }
@@ -1009,11 +993,11 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
                 // been fetched, then clear the marker so it never re-fires.
                 // Kept outside the transaction above — set_seen_cascade opens
                 // its own (SQLite doesn't nest transactions on one connection).
-                if let Some(n) = db.take_carried_seen_number(s.id).map_err(|e| e.to_string())? {
-                    db.set_seen_cascade(s.id, &n.to_string(), true).map_err(|e| e.to_string())?;
+                if let Some(n) = db.take_carried_seen_number(s.id)? {
+                    db.set_seen_cascade(s.id, &n.to_string(), true)?;
                 }
                 Ok(())
-            })();
+            });
             if let Err(e) = db_result {
                 eprintln!("[refresh] series {} ({}): DB update failed, skipping to next series: {e}", s.id, s.title);
                 continue;
@@ -1033,8 +1017,10 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
                     if !crate::db::is_csp_displayable_cover(Some(remote)) {
                         cover_attempted.insert(s.id);
                         if let Some(cover) = fetch_single_cover_with_fallback(&app, remote, s.id, &s.title, "followed").await {
-                            let db = state.db.lock().unwrap();
-                            let _ = db.update_series_cover(s.id, &cover);
+                            state.with_db(|db| {
+                                let _ = db.update_series_cover(s.id, &cover);
+                                Ok(())
+                            })?;
                         }
                     }
                 }
@@ -1066,8 +1052,10 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
             if !crate::db::is_csp_displayable_cover(Some(remote)) {
                 cover_attempted.insert(s.id);
                 if let Some(cover) = fetch_single_cover_with_fallback(&app, remote, s.id, &s.title, "backlog").await {
-                    let db = state.db.lock().unwrap();
-                    let _ = db.update_series_cover(s.id, &cover);
+                    state.with_db(|db| {
+                        let _ = db.update_series_cover(s.id, &cover);
+                        Ok(())
+                    })?;
                 }
             }
         }
@@ -1099,14 +1087,12 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
     // animeflv.net/uploads, which the plain HTTP client cannot even reach).
     const OTHER_SITE_WEBVIEW_FALLBACK_CAP: usize = 3;
 
-    let airing_needing = {
-        let db = state.db.lock().unwrap();
+    let airing_needing = state.with_db(|db| {
         // No source_id argument: the query now spans all sites.
         // Only AnimeFLV series pages are parsed for a missing cover (see below).
         let null_cover_source = (site_id == "animeflv").then_some(src);
-        db.airing_series_needing_cover_fetch(AIRING_COVER_BATCH_LIMIT, null_cover_source)
-            .map_err(|e| e.to_string())?
-    };
+        Ok(db.airing_series_needing_cover_fetch(AIRING_COVER_BATCH_LIMIT, null_cover_source)?)
+    })?;
 
     // NULL-cover rows need to discover a remote poster before the existing
     // direct-download/cache pipeline can run. AnimeFLV is the one adapter that
@@ -1125,7 +1111,10 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
             let path = match url::Url::parse(&series_url) {
                 Ok(u) => u.path().to_string(),
                 Err(_) => {
-                    let _ = state.db.lock().unwrap().record_cover_failure(id, &series_url);
+                    state.with_db(|db| {
+                        let _ = db.record_cover_failure(id, &series_url);
+                        Ok(())
+                    })?;
                     continue;
                 }
             };
@@ -1142,14 +1131,23 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
                         let remote = rebase_to_mirror(&remote, &working_mirror);
                         // Persist it so a failed download backs off on this URL
                         // instead of re-loading the series page every refresh.
-                        let _ = state.db.lock().unwrap().set_missing_cover_url(id, &remote);
+                        state.with_db(|db| {
+                            let _ = db.set_missing_cover_url(id, &remote);
+                            Ok(())
+                        })?;
                         resolved_airing_needing.push((id, title, remote, row_src));
                     } else {
-                        let _ = state.db.lock().unwrap().record_cover_failure(id, &series_url);
+                        state.with_db(|db| {
+                            let _ = db.record_cover_failure(id, &series_url);
+                            Ok(())
+                        })?;
                     }
                 }
                 Err(_) => {
-                    let _ = state.db.lock().unwrap().record_cover_failure(id, &series_url);
+                    state.with_db(|db| {
+                        let _ = db.record_cover_failure(id, &series_url);
+                        Ok(())
+                    })?;
                 }
             }
         }
@@ -1184,8 +1182,10 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
                     Ok(path) => {
                         let normalized = path.display().to_string().replace('\\', "/");
                         let file_url = format!("file:{normalized}");
-                        let db = state.db.lock().unwrap();
-                        let _ = db.update_series_cover(id, &file_url);
+                        state.with_db(|db| {
+                            let _ = db.update_series_cover(id, &file_url);
+                            Ok(())
+                        })?;
                     }
                     Err(ref err) if err.should_fallback_to_webview() => {
                         if row_src == src {
@@ -1205,7 +1205,10 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
                     }
                     Err(err) => {
                         eprintln!("[cover] airing series {id} ({title}): direct download failed: {err}");
-                        let _ = state.db.lock().unwrap().record_cover_failure(id, &remote);
+                        state.with_db(|db| {
+                            let _ = db.record_cover_failure(id, &remote);
+                            Ok(())
+                        })?;
                     }
                 }
             }
@@ -1226,15 +1229,23 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
             Ok(data_uri) => {
                 if crate::cover_cache::is_placeholder_data_uri(&data_uri) {
                     eprintln!("[cover] airing series {id} ({title}): webview fallback returned a placeholder");
-                    let _ = state.db.lock().unwrap().record_cover_failure(id, &remote);
+                    state.with_db(|db| {
+                        let _ = db.record_cover_failure(id, &remote);
+                        Ok(())
+                    })?;
                 } else {
-                    let db = state.db.lock().unwrap();
-                    let _ = db.update_series_cover(id, &data_uri);
+                    state.with_db(|db| {
+                        let _ = db.update_series_cover(id, &data_uri);
+                        Ok(())
+                    })?;
                 }
             }
             Err(e) => {
                 eprintln!("[cover] airing series {id} ({title}): webview fallback failed: {e}");
-                let _ = state.db.lock().unwrap().record_cover_failure(id, &remote);
+                state.with_db(|db| {
+                    let _ = db.record_cover_failure(id, &remote);
+                    Ok(())
+                })?;
             }
         }
     }
@@ -1271,8 +1282,7 @@ pub async fn refresh(app: AppHandle, state: State<'_, AppState>, force: bool) ->
 /// All episodes of a series (progress view), oldest first.
 #[tauri::command]
 pub async fn list_episodes(state: State<'_, AppState>, series_id: i64) -> Result<Vec<Episode>, String> {
-    let db = state.db.lock().unwrap();
-    db.list_series_episodes(series_id).map_err(|e| e.to_string())
+    Ok(state.with_db(|db| Ok(db.list_series_episodes(series_id)?))?)
 }
 
 #[cfg(test)]
