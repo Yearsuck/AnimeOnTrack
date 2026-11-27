@@ -128,7 +128,7 @@ impl Db {
     }
 
     /// Highest numeric episode number we have for a series — the correct DB
-    /// side of refresh()'s skip decision (see `commands::should_fetch_series`),
+    /// side of refresh()'s skip decision (see `refresh_plan::should_fetch_series`),
     /// unlike `episode_count` which is a row COUNT and gets inflated by
     /// recap/"0"/version-reupload rows (Bug B, 2026-07-12 airing-refresh fix).
     /// SQLite's `CAST(x AS INTEGER)` parses a leading integer and stops at the

@@ -22,6 +22,7 @@ mod matching;
 mod models;
 mod player;
 mod recommend;
+mod refresh_plan;
 mod scraper_engine;
 mod swipe;
 mod sync;

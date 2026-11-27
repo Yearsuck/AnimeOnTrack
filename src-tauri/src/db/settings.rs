@@ -148,7 +148,7 @@ impl Db {
 
     /// Record "this series' episode list was actually fetched just now" —
     /// gates the FINISHED_RECHECK interval for followed series absent from
-    /// the airing listing (see `commands::should_fetch_series`).
+    /// the airing listing (see `refresh_plan::should_fetch_series`).
     pub fn set_last_checked_at(&self, series_id: i64) -> Result<()> {
         self.conn.execute(
             "UPDATE series SET last_checked_at=datetime('now'), last_fetch_failed_at=NULL WHERE id=?1",
@@ -158,7 +158,7 @@ impl Db {
     }
 
     /// Record that this series' episode-list fetch failed on every mirror
-    /// (see `commands::effective_check_age`).
+    /// (see `refresh_plan::effective_check_age`).
     pub fn set_last_fetch_failed_at(&self, series_id: i64) -> Result<()> {
         self.conn.execute(
             "UPDATE series SET last_fetch_failed_at=datetime('now') WHERE id=?1",
