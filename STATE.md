@@ -1,6 +1,6 @@
 # Estado de AnimeOnTrack
 
-Instantánea del 2026-11-27 14:00 (v0.27.0 publicada). Se reescribe tras cada merge a `develop`, cada release y antes de compactar una
+Instantánea del 2026-11-27 17:00 (v0.27.0 publicada; trabajo a medias en ramas, ver abajo). Se reescribe tras cada merge a `develop`, cada release y antes de compactar una
 conversación (ver "Docs that travel with the code" en `AGENTS.md`). Lo que no está aquí hay que mirarlo en git.
 
 ## Publicado
@@ -18,8 +18,16 @@ conversación (ver "Docs that travel with the code" en `AGENTS.md`). Lo que no e
 - Android: compila y funciona en un móvil real, pero **no se publica instalador** todavía.
 
 ## En `develop` sin publicar
+- Ningún `lock().unwrap()` sobre la base de datos en sync ni descargas: los comandos devuelven el error, la tarea de descarga y el auto-sync lo registran y siguen (#206).
 - Arquitectura (sin cambio de comportamiento): comandos de backup, diagnóstico y descargas con `with_db` (#201, #204); tests de `db/airing.rs` y `db/episodes.rs` a archivos hermanos (#202); `arch-check` ya no avisa por el tamaño de los tests (#203).
 - Sin verificar de v0.26.0: sincronización entre dos dispositivos reales y con Drive real (probada en sandbox con carpeta). Sin verificar de v0.25.0: visor en un segundo monitor con otra escala, AnimeLand y AnimoraTV en vivo.
+
+## Ramas a medias (empujadas, sin PR ni revisión; retomar desde aquí)
+- `refactor/with-db-scan-fallback`: `scan.rs` (37 sitios) y `fallback.rs` (17) con `with_db`; en tareas sin `Result` se registra y se salta. Falta: clippy/test, PR y revisor.
+- `refactor/split-db-catalog`: `db/catalog.rs` partido en `catalog/{types,sync,link,query,deck}.rs` (raíz de 17 líneas). Comprobado que es solo mover código (multiconjunto de líneas). Falta: clippy/test, PR y revisor.
+- `perf/optimize`: auditoría de rendimiento `docs/perf/2026-11-27-perf-audit.md` (12 hallazgos; primeros PRs: N+1 de `row_align` en Pendientes, caché de mapas de títulos en `list_airing_season`, N+1 de géneros en Estadísticas, sondeo barato `has_source` al arrancar, índices NOCASE en el filtro de Catálogo).
+- `perf/pending-row-align` y `perf/stats-genres-batch`: implementación de los hallazgos 1 y 4 cortada a medias (la primera seguramente no compila). Revisar o rehacer.
+- Pendiente después: Hito 3.3-3.5 (puerto `SiteFetcher`, `buffer_unordered`, `ProgressSink`) cuando entre la rama de scan; trocear `db/series.rs` y `db/airing.rs` como catalog.
 
 ## Abierto
 - **Datos**: fechas extrapoladas por animeytx (+1 semana) sin marcar y fechas de estreno parciales de AniList
