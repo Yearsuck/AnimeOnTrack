@@ -13,6 +13,9 @@ pub enum AppError {
     Parse(String),
     Config(String),
     Internal(String),
+    /// An error from the anyhow-based `Db` layer, shown exactly as the old
+    /// `e.to_string()` so command error texts do not change.
+    Other(String),
 }
 
 impl fmt::Display for AppError {
@@ -25,6 +28,7 @@ impl fmt::Display for AppError {
             AppError::Parse(m) => write!(f, "parse error: {m}"),
             AppError::Config(m) => write!(f, "config error: {m}"),
             AppError::Internal(m) => write!(f, "internal error: {m}"),
+            AppError::Other(m) => write!(f, "{m}"),
         }
     }
 }
@@ -46,7 +50,7 @@ impl From<rusqlite::Error> for AppError {
 
 impl From<anyhow::Error> for AppError {
     fn from(e: anyhow::Error) -> Self {
-        AppError::Internal(format!("{e:#}"))
+        AppError::Other(e.to_string())
     }
 }
 
@@ -79,9 +83,12 @@ mod tests {
     }
 
     #[test]
-    fn from_anyhow_is_internal() {
-        let e: AppError = anyhow::anyhow!("boom").into();
-        assert!(matches!(&e, AppError::Internal(m) if m.contains("boom")));
+    fn from_anyhow_keeps_the_old_text() {
+        let src = anyhow::anyhow!("boom").context("outer");
+        let old = src.to_string();
+        let e: AppError = src.into();
+        assert!(matches!(&e, AppError::Other(_)));
+        assert_eq!(e.to_string(), old);
     }
 
     #[test]
