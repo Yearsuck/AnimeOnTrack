@@ -773,3 +773,67 @@ html[data-platform="mobile"] .poster-action {
   opacity: 1 !important;
   pointer-events: auto !important;
 }
+
+/* --------------------------------------------------------------------
+   Touch targets (UI audit #9). Coarse pointers (finger) get >= --hit-min
+   on every interactive control. Fine pointers (mouse) are untouched.
+   Placed last so it wins over the scattered 32/36px rules above; the
+   `html` prefix matches the specificity of the platform-scoped ones.
+   -------------------------------------------------------------------- */
+:root {
+  --hit-min: 44px;
+}
+
+@media (pointer: coarse) {
+  html .btn,
+  html .btn-sm,
+  html .topbar .topbar-refresh,
+  html .topbar .btn,
+  html[data-platform="mobile"] .topbar .topbar-refresh,
+  html[data-platform="mobile"] .topbar .btn,
+  html .spotlight-btn,
+  html[data-platform="mobile"] .spotlight-btn,
+  html .tab,
+  html .input,
+  html select.input,
+  html .ep-host {
+    min-height: var(--hit-min);
+  }
+
+  /* Pills: grow by padding so the label stays centred. */
+  html .chip-toggle {
+    min-height: var(--hit-min);
+    padding-top: 0;
+    padding-bottom: 0;
+  }
+
+  html .seg-btn,
+  html .page-head .seg-btn {
+    min-height: var(--hit-min);
+    min-width: var(--hit-min);
+    padding-top: 0;
+    padding-bottom: 0;
+  }
+
+  html .spotlight-nav,
+  html[data-platform="mobile"] .spotlight-nav {
+    width: var(--hit-min);
+    height: var(--hit-min);
+  }
+
+  /* Visual size unchanged (rows/posters keep their layout); the invisible
+     ::after extends the tappable area to --hit-min. */
+  html .check::after,
+  html .card-menu-btn::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: var(--hit-min);
+    height: var(--hit-min);
+    transform: translate(-50%, -50%);
+  }
+  html .card-menu-btn {
+    position: relative;
+  }
+}
