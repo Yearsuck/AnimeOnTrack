@@ -1,6 +1,7 @@
 use super::*;
 use super::discover::to_candidates;
 use crate::adapter::SiteInfo;
+use crate::error::AppError;
 
 /// One search-results page, wrapped so a genuine "zero hits" answer can be
 /// told apart from "this mirror's page didn't parse at all". See
@@ -104,10 +105,12 @@ pub async fn set_followed(
     series_id: i64,
     followed: bool,
 ) -> Result<(), String> {
-    let db = state.db.lock().unwrap();
     // Canonical: following is an AniList-level fact, applied across every site
     // that has the show, so "seguidos" stay identical when you switch sites.
-    db.set_followed_canonical(series_id, followed).map_err(|e| e.to_string())?;
+    state.with_db(|db| {
+        db.set_followed_canonical(series_id, followed)?;
+        Ok(())
+    })?;
     Ok(())
 }
 
@@ -124,32 +127,24 @@ pub async fn promote_discarded(
 ) -> Result<(), String> {
     let site_id = get_active_site_id(&state);
     let a = get_active_adapter(&state)?;
-    let (needs_detail, series_url, mirrors, info) = {
-        let db = state.db.lock().unwrap();
-        let info = db
-            .get_series_for_link(series_id)
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| "series not found".to_string())?;
-        let needs_detail = db.series_needs_genre_backfill(series_id).map_err(|e| e.to_string())?;
-        let url = db
-            .get_series_url(series_id)
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| "series not found".to_string())?;
-        (needs_detail, url, load_mirrors(&db, &site_id)?, info)
+    let found = state.with_db(|db| {
+        let Some(info) = db.get_series_for_link(series_id)? else { return Ok(None) };
+        let needs_detail = db.series_needs_genre_backfill(series_id)?;
+        let Some(url) = db.get_series_url(series_id)? else { return Ok(None) };
+        Ok(Some((needs_detail, url, load_mirrors(db, &site_id), info)))
+    })?;
+    let Some((needs_detail, series_url, mirrors, info)) = found else {
+        return Err("series not found".to_string());
     };
+    let mirrors = mirrors?;
     let detail = if needs_detail {
         Some(fetch_series_detail(&app, &mirrors, &series_url, a.as_ref()).await?)
     } else {
         None
     };
-    let db = state.db.lock().unwrap();
-    if !apply_promote_discarded_writes(
-        &db,
-        series_id,
-        info.anilist_id,
-        &info.slug,
-        detail.as_ref(),
-    )? {
+    if !state.with_db(|db| {
+        apply_promote_discarded_writes(db, series_id, info.anilist_id, &info.slug, detail.as_ref())
+    })? {
         eprintln!(
             "[promote_discarded] series {} identity changed after fetch, skipping write",
             series_id
@@ -165,23 +160,20 @@ fn apply_promote_discarded_writes(
     expected_anilist_id: Option<i64>,
     expected_slug: &str,
     detail: Option<&SeriesDetail>,
-) -> Result<bool, String> {
-    if !db
-        .series_still_is(series_id, expected_anilist_id, expected_slug)
-        .map_err(|e| e.to_string())?
-    {
+) -> Result<bool, AppError> {
+    if !db.series_still_is(series_id, expected_anilist_id, expected_slug)? {
         return Ok(false);
     }
     if let Some(detail) = detail {
-        db.insert_series_genres(series_id, &detail.genres).map_err(|e| e.to_string())?;
+        db.insert_series_genres(series_id, &detail.genres)?;
         if let Some(kind) = &detail.kind {
-            db.set_kind(series_id, kind).map_err(|e| e.to_string())?;
+            db.set_kind(series_id, kind)?;
         }
         if let Some(text) = &detail.synopsis {
-            db.set_series_synopsis(series_id, text).map_err(|e| e.to_string())?;
+            db.set_series_synopsis(series_id, text)?;
         }
     }
-    db.set_backlog_status(series_id, Some("want")).map_err(|e| e.to_string())?;
+    db.set_backlog_status(series_id, Some("want"))?;
     Ok(true)
 }
 
@@ -211,23 +203,18 @@ pub async fn start_watching(
     state: State<'_, AppState>,
     series_id: i64,
 ) -> Result<LinkOutcome, String> {
-    let info = {
-        let db = state.db.lock().unwrap();
-        let status = db.get_backlog_status(series_id).map_err(|e| e.to_string())?;
+    let info = state.with_db(|db| {
+        let status = db.get_backlog_status(series_id)?;
         if status.as_deref() != Some("want") {
-            return Err("series is not in the 'want' backlog".into());
+            return Ok(Err("series is not in the 'want' backlog".to_string()));
         }
-        db.get_series_for_link(series_id)
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| "series not found".to_string())?
-    };
+        Ok(Ok(db.get_series_for_link(series_id)?))
+    })??;
+    let info = info.ok_or_else(|| "series not found".to_string())?;
 
     // Catalog row (anilist-backed) with no real site episodes yet: link it
     // before following. A NoMatch leaves the row exactly as it is.
-    let has_episodes = {
-        let db = state.db.lock().unwrap();
-        !db.list_series_episodes(series_id).map_err(|e| e.to_string())?.is_empty()
-    };
+    let has_episodes = state.with_db(|db| Ok(!db.list_series_episodes(series_id)?.is_empty()))?;
     if info.anilist_id.is_some() && !has_episodes {
         let (outcome, resulting_id) = link_series_core(&app, &state, series_id, true).await?;
         let Some(target_id) = resulting_id else {
@@ -235,47 +222,54 @@ pub async fn start_watching(
             // surface "No encontrado" and keep the row in the backlog.
             return Ok(outcome);
         };
-        let db = state.db.lock().unwrap();
         // Canonical, not per-row: see `Db::set_followed_canonical`'s doc
         // comment — this is the exact "start_watching" path the per-site
         // follow-inconsistency bug lived in (a series already scraped-but-
         // unfollowed on another site stayed unfollowed there after being
         // started here).
-        db.set_followed_canonical(target_id, true).map_err(|e| e.to_string())?;
-        db.set_backlog_status(target_id, None).map_err(|e| e.to_string())?;
+        state.with_db(|db| {
+            db.set_followed_canonical(target_id, true)?;
+            db.set_backlog_status(target_id, None)?;
+            Ok(())
+        })?;
         return Ok(outcome);
     }
 
     // Site row: fetch its episode list (all unseen), follow, clear backlog.
     let site_id = get_active_site_id(&state);
     let a = get_active_adapter(&state)?;
-    let (series_url, mirrors) = {
-        let db = state.db.lock().unwrap();
-        let url = db
-            .get_series_url(series_id)
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| "series not found".to_string())?;
-        (url, load_mirrors(&db, &site_id)?)
+    let found = state.with_db(|db| {
+        let Some(url) = db.get_series_url(series_id)? else { return Ok(None) };
+        Ok(Some((url, load_mirrors(db, &site_id))))
+    })?;
+    let Some((series_url, mirrors)) = found else {
+        return Err("series not found".to_string());
     };
+    let mirrors = mirrors?;
     let eps = fetch_episode_list_for(&app, &mirrors, &series_url, a.as_ref()).await?;
-    let db = state.db.lock().unwrap();
-    // Same in-flight-delete race as `apply_link_writes` guards: this scrape
-    // takes seconds, during which the row can be removed from Listas (or
-    // undone from the history strip). Writing episodes to a dead id would
-    // leave orphan `episodes` rows behind, which no cascade cleans up.
-    // Also guards against rowid reuse: verify the row still has the same identity.
-    if !db.series_still_is(series_id, info.anilist_id, &info.slug).map_err(|e| e.to_string())? {
+    let episode_count = eps.len() as i64;
+    let linked = state.with_db(|db| {
+        // Same in-flight-delete race as `apply_link_writes` guards: this scrape
+        // takes seconds, during which the row can be removed from Listas (or
+        // undone from the history strip). Writing episodes to a dead id would
+        // leave orphan `episodes` rows behind, which no cascade cleans up.
+        // Also guards against rowid reuse: verify the row still has the same identity.
+        if !db.series_still_is(series_id, info.anilist_id, &info.slug)? {
+            return Ok(false);
+        }
+        // De-duplicate by number, not URL (a domain change makes every URL look
+        // new). Episodes already present — e.g. scraped by an earlier airing scan,
+        // possibly already marked seen — are refreshed in place, never re-inserted
+        // as unseen duplicates. See db.rs's episode-dedup migration. One
+        // transaction for the whole list — see `apply_episode_diff`'s doc comment.
+        db.apply_episode_diff(series_id, None, &eps)?;
+        db.set_followed_canonical(series_id, true)?;
+        db.set_backlog_status(series_id, None)?;
+        Ok(true)
+    })?;
+    if !linked {
         return Ok(LinkOutcome::NoMatch);
     }
-    let episode_count = eps.len() as i64;
-    // De-duplicate by number, not URL (a domain change makes every URL look
-    // new). Episodes already present — e.g. scraped by an earlier airing scan,
-    // possibly already marked seen — are refreshed in place, never re-inserted
-    // as unseen duplicates. See db.rs's episode-dedup migration. One
-    // transaction for the whole list — see `apply_episode_diff`'s doc comment.
-    db.apply_episode_diff(series_id, None, &eps).map_err(|e| e.to_string())?;
-    db.set_followed_canonical(series_id, true).map_err(|e| e.to_string())?;
-    db.set_backlog_status(series_id, None).map_err(|e| e.to_string())?;
     Ok(LinkOutcome::Linked { url: series_url, episodes: episode_count })
 }
 
@@ -289,8 +283,7 @@ pub async fn set_backlog_status(
     series_id: i64,
     status: Option<String>,
 ) -> Result<(), String> {
-    let db = state.db.lock().unwrap();
-    db.set_backlog_status(series_id, status.as_deref()).map_err(|e| e.to_string())
+    Ok(state.with_db(|db| Ok(db.set_backlog_status(series_id, status.as_deref())?))?)
 }
 
 /// The four non-scraping classification states a series can be moved
@@ -322,27 +315,21 @@ pub enum Classification {
 /// so a crash between two of them can't leave a partial classification —
 /// the `state.db` mutex alone only ever protected against another *thread*
 /// interleaving, not a process crash mid-sequence.
-fn reclassify_series_core(db: &Db, series_id: i64, to: Classification) -> Result<(), String> {
-    let tx = db.conn.unchecked_transaction().map_err(|e| e.to_string())?;
+fn reclassify_series_core(db: &Db, series_id: i64, to: Classification) -> Result<(), AppError> {
+    let tx = db.conn.unchecked_transaction()?;
     // Canonical unfollow — the mirror image of `start_watching`'s canonical
     // follow. Without this, unfollowing on one site left a sibling row
     // followed via `set_followed_canonical` elsewhere still marked followed.
-    db.set_followed_canonical(series_id, false).map_err(|e| e.to_string())?;
-    db.set_backlog_status(series_id, None).map_err(|e| e.to_string())?;
-    db.set_watched_externally(series_id, false).map_err(|e| e.to_string())?;
+    db.set_followed_canonical(series_id, false)?;
+    db.set_backlog_status(series_id, None)?;
+    db.set_watched_externally(series_id, false)?;
     match to {
         Classification::None => {}
-        Classification::Want => {
-            db.set_backlog_status(series_id, Some("want")).map_err(|e| e.to_string())?
-        }
-        Classification::Discarded => {
-            db.set_backlog_status(series_id, Some("discarded")).map_err(|e| e.to_string())?
-        }
-        Classification::WatchedExternally => {
-            db.set_watched_externally(series_id, true).map_err(|e| e.to_string())?
-        }
+        Classification::Want => db.set_backlog_status(series_id, Some("want"))?,
+        Classification::Discarded => db.set_backlog_status(series_id, Some("discarded"))?,
+        Classification::WatchedExternally => db.set_watched_externally(series_id, true)?,
     }
-    tx.commit().map_err(|e| e.to_string())?;
+    tx.commit()?;
     Ok(())
 }
 
@@ -358,8 +345,7 @@ pub async fn reclassify_series(
     series_id: i64,
     to: Classification,
 ) -> Result<(), String> {
-    let db = state.db.lock().unwrap();
-    reclassify_series_core(&db, series_id, to)
+    Ok(state.with_db(|db| reclassify_series_core(db, series_id, to))?)
 }
 
 /// Search the configured site (with mirror fallback) for `query`.
@@ -501,13 +487,12 @@ async fn run_library_import(app: AppHandle) -> Result<crate::models::LibraryImpo
     // guard on and block every future import for the whole session.
     let _clear = RunningGuard(&state.library_import_running);
 
-    let (src, missing) = {
-        let db = state.db.lock().unwrap();
-        let src = get_source_id(&state)?;
+    let src = get_source_id(&state)?;
+    let missing = state.with_db(|db| {
         // Rebuild the projection first so follows made this session are included.
-        db.sync_library_from_series().map_err(|e| e.to_string())?;
-        (src, db.library_entries_missing_on_site(src).map_err(|e| e.to_string())?)
-    };
+        db.sync_library_from_series()?;
+        Ok(db.library_entries_missing_on_site(src)?)
+    })?;
     let total = missing.len();
     let mut linked = 0usize;
     let mut skipped = 0usize;
@@ -524,8 +509,7 @@ async fn run_library_import(app: AppHandle) -> Result<crate::models::LibraryImpo
         // A synthetic anilist-keyed row for `link_series_core` to resolve — the
         // same shape a catalog swipe creates. Its URL is a placeholder; linking
         // rewrites it to the real site URL.
-        let sid = {
-            let db = state.db.lock().unwrap();
+        let sid = state.with_db(|db| {
             let series = Series {
                 id: 0,
                 slug: format!("anilist-{anilist_id}"),
@@ -537,22 +521,24 @@ async fn run_library_import(app: AppHandle) -> Result<crate::models::LibraryImpo
                 next_episode_at: None,
                 site_episode_count: None,
             };
-            let sid = db.upsert_series(src, &series).map_err(|e| e.to_string())?;
-            db.set_anilist_id(sid, anilist_id).map_err(|e| e.to_string())?;
-            sid
-        };
+            let sid = db.upsert_series(src, &series)?;
+            db.set_anilist_id(sid, anilist_id)?;
+            Ok(sid)
+        })?;
         match link_series_core(&app, &state, sid, false).await {
             Ok((_, Some(target_id))) => {
-                let db = state.db.lock().unwrap();
-                db.set_followed_canonical(target_id, true).map_err(|e| e.to_string())?;
-                db.set_backlog_status(target_id, None).map_err(|e| e.to_string())?;
-                if entry.seen_watermark > 0.0 {
-                    let now = chrono::Utc::now().timestamp();
-                    let align = db.row_align(target_id, now).map_err(|e| e.to_string())?;
-                    let row_number = crate::db::episode_align::format_ep_number(align.to_row(entry.seen_watermark));
-                    db.set_seen_cascade(target_id, &row_number, true)
-                        .map_err(|e| e.to_string())?;
-                }
+                state.with_db(|db| {
+                    db.set_followed_canonical(target_id, true)?;
+                    db.set_backlog_status(target_id, None)?;
+                    if entry.seen_watermark > 0.0 {
+                        let now = chrono::Utc::now().timestamp();
+                        let align = db.row_align(target_id, now)?;
+                        let row_number =
+                            crate::db::episode_align::format_ep_number(align.to_row(entry.seen_watermark));
+                        db.set_seen_cascade(target_id, &row_number, true)?;
+                    }
+                    Ok(())
+                })?;
                 linked += 1;
             }
             // NoMatch on this site, or a scrape error. The placeholder row
@@ -567,8 +553,7 @@ async fn run_library_import(app: AppHandle) -> Result<crate::models::LibraryImpo
             // `delete_orphan_synthetic_series`: only an untouched placeholder
             // is ever deleted.
             Ok((_, None)) | Err(_) => {
-                let db = state.db.lock().unwrap();
-                if let Err(e) = db.delete_orphan_synthetic_series(sid) {
+                if let Err(e) = state.with_db(|db| Ok(db.delete_orphan_synthetic_series(sid)?)) {
                     eprintln!("[library] could not clean up failed import placeholder {sid}: {e}");
                 }
                 skipped += 1;
@@ -577,10 +562,7 @@ async fn run_library_import(app: AppHandle) -> Result<crate::models::LibraryImpo
         tokio::time::sleep(PACED).await;
     }
 
-    {
-        let db = state.db.lock().unwrap();
-        db.sync_library_from_series().map_err(|e| e.to_string())?;
-    }
+    state.with_db(|db| Ok(db.sync_library_from_series()?))?;
     let _ = app.emit(
         "library-import-progress",
         crate::models::LibraryImportProgress { done: total, total, title: String::new() },
@@ -727,27 +709,24 @@ async fn link_series_core(
 ) -> Result<(LinkOutcome, Option<i64>), String> {
     let site_id = get_active_site_id(state);
     let a = get_active_adapter(state)?;
-    let (mirrors, info) = {
-        let db = state.db.lock().unwrap();
-        let mirrors = load_mirrors(&db, &site_id)?;
-        let info = db
-            .get_series_for_link(series_id)
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| "series not found".to_string())?;
-        (mirrors, info)
-    };
+    let (mirrors, info) = state.with_db(|db| {
+        let mirrors = load_mirrors(db, &site_id);
+        if mirrors.is_err() {
+            return Ok((mirrors, None));
+        }
+        Ok((mirrors, db.get_series_for_link(series_id)?))
+    })?;
+    let mirrors = mirrors?;
+    let info = info.ok_or_else(|| "series not found".to_string())?;
     // See SeriesForLink::already_linked_to_site's doc comment for why this
     // checks more than just `anilist_id.is_some()`.
     if info.already_linked_to_site() {
         return Ok((LinkOutcome::AlreadyLinked, Some(series_id)));
     }
     let anilist_id = info.anilist_id.unwrap();
-    let (title, romaji, english) = {
-        let db = state.db.lock().unwrap();
-        db.get_catalog_titles(anilist_id)
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| "catalog entry not found for this anilist_id".to_string())?
-    };
+    let (title, romaji, english) = state
+        .with_db(|db| Ok(db.get_catalog_titles(anilist_id)?))?
+        .ok_or_else(|| "catalog entry not found for this anilist_id".to_string())?;
 
     let active_match = search_series_for_link(
         app,
@@ -767,11 +746,11 @@ async fn link_series_core(
         None if !allow_fallback => return Ok((LinkOutcome::NoMatch, None)),
         None => {
             let all_sites = crate::adapter::all_sites();
-            let priority = {
-                let db = state.db.lock().unwrap();
-                let known: Vec<&str> = all_sites.iter().map(|s| s.id).collect();
-                db.get_site_priority(&known).unwrap_or_default()
-            };
+            let priority = state
+                .with_db(|db| {
+                    let known: Vec<&str> = all_sites.iter().map(|s| s.id).collect();
+                    Ok(db.get_site_priority(&known).unwrap_or_default())
+                })?;
             let fallback_sites = link_fallback_sites(all_sites, &site_id, &priority);
             let mut found: Option<(FinishedCard, Box<dyn SiteAdapter>, i64)> = None;
 
@@ -780,10 +759,9 @@ async fn link_series_core(
                     Some(adapter) => adapter,
                     None => continue,
                 };
-                let fallback_mirrors = {
-                    let db = state.db.lock().unwrap();
-                    super::fallback::mirrors_or_default(load_mirrors(&db, site.id), site.default_base_url)
-                };
+                let fallback_mirrors = state.with_db(|db| {
+                    Ok(super::fallback::mirrors_or_default(load_mirrors(db, site.id), site.default_base_url))
+                })?;
                 if fallback_mirrors.first().map(|m| crate::domain_breaker::is_open(m)).unwrap_or(false) {
                     continue;
                 }
@@ -799,9 +777,8 @@ async fn link_series_core(
                 .await
                 {
                     Ok(Some(hit)) => {
-                        let x_source_id = {
-                            let db = state.db.lock().unwrap();
-                            match db.get_source_id_for_site(site.id).map_err(|e| e.to_string())? {
+                        let x_source_id = state.with_db(|db| {
+                            Ok(match db.get_source_id_for_site(site.id)? {
                                 Some(id) => id,
                                 None => {
                                     let working = fallback_mirrors
@@ -809,10 +786,10 @@ async fn link_series_core(
                                         .find(|m| hit.url.starts_with(*m))
                                         .cloned()
                                         .unwrap_or_else(|| site.default_base_url.to_string());
-                                    db.upsert_source(site.name, &working, site.id).map_err(|e| e.to_string())?
+                                    db.upsert_source(site.name, &working, site.id)?
                                 }
-                            }
-                        };
+                            })
+                        })?;
                         found = Some((hit, fallback_adapter, x_source_id));
                         break;
                     }
@@ -841,22 +818,20 @@ async fn link_series_core(
     // `undo_swipe_decision` takes the same mutex, so this can't observe the
     // row and then merge a row that undo deleted in between (see
     // `apply_link_writes`).
-    {
-        let db = state.db.lock().unwrap();
-        if !db.series_still_is(series_id, info.anilist_id, &info.slug).map_err(|e| e.to_string())? {
-            return Ok((LinkOutcome::NoMatch, None));
+    let merged = state.with_db(|db| {
+        if !db.series_still_is(series_id, info.anilist_id, &info.slug)? {
+            return Ok(Some((LinkOutcome::NoMatch, None)));
         }
-        if let Some(existing_id) =
-            db.find_series_id_by_slug(target_source_id, &new_slug, series_id).map_err(|e| e.to_string())?
-        {
-            db.merge_series_into(existing_id, series_id).map_err(|e| e.to_string())?;
-            let episodes = db.list_series_episodes(existing_id).map_err(|e| e.to_string())?.len() as i64;
-            let url = db
-                .get_series_url(existing_id)
-                .map_err(|e| e.to_string())?
-                .unwrap_or(matched.url.clone());
-            return Ok((LinkOutcome::Linked { url, episodes }, Some(existing_id)));
+        if let Some(existing_id) = db.find_series_id_by_slug(target_source_id, &new_slug, series_id)? {
+            db.merge_series_into(existing_id, series_id)?;
+            let episodes = db.list_series_episodes(existing_id)?.len() as i64;
+            let url = db.get_series_url(existing_id)?.unwrap_or(matched.url.clone());
+            return Ok(Some((LinkOutcome::Linked { url, episodes }, Some(existing_id))));
         }
+        Ok(None)
+    })?;
+    if let Some(result) = merged {
+        return Ok(result);
     }
 
     // No collision: fetch the matched series page once for the episode list.
@@ -869,17 +844,15 @@ async fn link_series_core(
         .map_err(|e| e.to_string())?;
 
     let episode_count = episodes.len() as i64;
-    let written = {
-        let db = state.db.lock().unwrap();
-        if !db.series_still_is(series_id, info.anilist_id, &info.slug).map_err(|e| e.to_string())? {
-            false
+    let written = state.with_db(|db| {
+        if !db.series_still_is(series_id, info.anilist_id, &info.slug)? {
+            Ok(false)
         } else {
             if is_fallback {
-                db.set_series_source(series_id, target_source_id, &new_slug, &matched.url)
-                    .map_err(|e| e.to_string())?;
+                db.set_series_source(series_id, target_source_id, &new_slug, &matched.url)?;
             }
             apply_link_writes(
-                &db,
+                db,
                 series_id,
                 info.anilist_id,
                 &info.slug,
@@ -890,9 +863,9 @@ async fn link_series_core(
                 None,
                 &episodes,
                 info.watched_externally,
-            )?
+            )
         }
-    };
+    })?;
     if !written {
         // The user undid the decision while the scrape above was running.
         // Nothing to link, and nothing was written. `NoMatch` (rather than a
@@ -944,29 +917,25 @@ fn apply_link_writes(
     genres: Option<&[String]>,
     episodes: &[Episode],
     watched_externally: bool,
-) -> Result<bool, String> {
-    if !db
-        .series_still_is(series_id, expected_anilist_id, expected_slug)
-        .map_err(|e| e.to_string())?
-    {
+) -> Result<bool, AppError> {
+    if !db.series_still_is(series_id, expected_anilist_id, expected_slug)? {
         return Ok(false);
     }
     let existing_kind: String = db
         .conn
-        .query_row("SELECT COALESCE(kind, '') FROM series WHERE id=?1", [series_id], |r| r.get(0))
-        .map_err(|e| e.to_string())?;
+        .query_row("SELECT COALESCE(kind, '') FROM series WHERE id=?1", [series_id], |r| r.get(0))?;
     let effective_kind = kind.unwrap_or(&existing_kind);
-    db.relink_series(series_id, slug, url, cover_url, effective_kind).map_err(|e| e.to_string())?;
+    db.relink_series(series_id, slug, url, cover_url, effective_kind)?;
     if let Some(genres) = genres {
-        db.replace_series_genres(series_id, genres).map_err(|e| e.to_string())?;
+        db.replace_series_genres(series_id, genres)?;
     }
     // De-duplicate by number (see the follow path above / db.rs migration): a
     // re-link after a domain change must refresh links, not duplicate
     // episodes. One transaction for the whole list — see
     // `apply_episode_diff`'s doc comment.
-    db.apply_episode_diff(series_id, None, episodes).map_err(|e| e.to_string())?;
+    db.apply_episode_diff(series_id, None, episodes)?;
     if watched_externally {
-        db.mark_all_episodes_seen(series_id).map_err(|e| e.to_string())?;
+        db.mark_all_episodes_seen(series_id)?;
     }
     Ok(true)
 }
