@@ -17,12 +17,16 @@ Dos tareas encoladas por el autor (UI/UX y arquitectura), ejecutadas en autónom
   (la suite completa pasa sin fallos). `tools/arch-check.mjs` en CI (#174).
 - Hito 1: #174 `db` ya no importa `commands` ni `adapter`.
 - Hito 2 (parcial): #186 `AppError` + `AppState::with_db` (lock envenenado -> error, sin pánico), comandos de biblioteca;
-  #191 comandos de seguimiento + los errores de anyhow conservan el texto antiguo.
+  #191 comandos de seguimiento + los errores de anyhow conservan el texto antiguo; #194 catálogo; #196 seen, stats y
+  priority.
 - Hito 3 (parcial): #184 decisión skip/fetch de `refresh` en el módulo puro `refresh_plan`; #178 el listado se persiste
   en una sola transacción.
 - Hito 4 (parcial): #188 `RetryPolicy` compartida, usada en el 429 de AniList (mismos tiempos, espera tope 120 s).
+- Hito 5 (parcial): tests a archivos hermanos: #193 `db/stats.rs` (7098 -> 2819 líneas), #195 `db/catalog.rs`
+  (5637 -> 2189) y `db/series.rs` (4181 -> 1766).
 
 ## Pendiente
-- Hito 2: resto de grupos de comandos (catalog, playback...). Hito 3.3-3.5: puerto `SiteFetcher`, `buffer_unordered`,
-  `ProgressSink`. Hito 4: adoptar la política en anizip/catalog/fallback. Hito 5: trocear `db/stats.rs` (7k líneas),
-  `db/catalog.rs`, `db/series.rs`.
+- Hito 2: resto de grupos de comandos (download, scan, sync, mirrors, storage, discover, fallback, backup...).
+  Hito 3.3-3.5: puerto `SiteFetcher`, `buffer_unordered`, `ProgressSink`. Hito 4: adoptar la política en
+  anizip/catalog/fallback. Hito 5: trocear el código de producción de `db/airing.rs`, `db/catalog.rs` y `db/series.rs`
+  por subdominio.
