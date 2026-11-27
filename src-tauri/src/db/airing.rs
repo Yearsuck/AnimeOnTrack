@@ -2062,45 +2062,74 @@ mod tests {
         assert_eq!(count as usize, pending.len());
     }
 
+    /// Guards the same regression the old wall-clock test did, without a clock:
+    /// `merged_pending_episodes_at` runs one lookup per candidate series / group
+    /// (episodes by series_id, episode map by anilist_id, series by id). With a
+    /// real library (6k series, 120k episodes) each of those must be an index
+    /// SEARCH; a full SCAN per row makes the whole thing quadratic (the freeze
+    /// that `stale_status_ids` hit). The SQL strings mirror the ones in
+    /// `merged_pending_episodes_at` and `row_align`.
     #[test]
-    fn timing_test_real_size() {
+    fn pending_per_row_lookups_use_an_index_not_a_scan() {
+        let db = Db::open(":memory:").unwrap();
+        let lookups = [
+            "SELECT id, series_id, number, seen FROM episodes WHERE series_id IN (1,2,3)",
+            "SELECT number FROM episodes WHERE series_id = ?1",
+            "SELECT COUNT(*) FROM anilist_episode_map WHERE anilist_id = ?1 AND air_at IS NOT NULL AND air_at <= ?2",
+            "SELECT anilist_id FROM series WHERE id = ?1",
+        ];
+        for sql in lookups {
+            let mut stmt = db.conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+            let params: Vec<i64> = vec![0; stmt.parameter_count()];
+            let plan: Vec<String> = stmt
+                .query_map(rusqlite::params_from_iter(params), |r| r.get::<_, String>(3))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            assert!(!plan.is_empty(), "no plan for {sql}");
+            assert!(
+                plan.iter().all(|d| d.trim_start().starts_with("SEARCH")),
+                "per-row lookup must be an index SEARCH, plan was {plan:?} for {sql}"
+            );
+        }
+    }
+
+    /// Scaled correctness of the pending pipeline over a multi-site library
+    /// (no timing): the count and the list agree and match the fixture.
+    #[test]
+    fn pending_count_matches_list_pending_on_a_scaled_library() {
         let db = Db::open(":memory:").unwrap();
         let src_a = db.upsert_source("AnimeYT", "https://a.example", "animeytx").unwrap();
         let src_b = db.upsert_source("TioAnime", "https://b.example", "tioanime").unwrap();
 
-        // Generate 6k series
         let tx = db.conn.unchecked_transaction().unwrap();
-        for i in 0..6000 {
-            let followed = if i % 3 == 0 { 1 } else { 0 }; // 2k followed
+        let mut followed_n = 0usize;
+        for i in 0..300 {
+            let followed = i % 3 == 0;
+            if followed {
+                followed_n += 1;
+            }
             let src = if i % 2 == 0 { src_a } else { src_b };
             tx.execute(
                 "INSERT INTO series(source_id, slug, title, url, is_airing, followed, watched_externally)
                  VALUES(?1, ?2, ?3, ?4, 0, ?5, 0)",
-                (src, format!("s-{i}"), format!("Show {i}"), format!("u/{i}"), followed)
+                (src, format!("s-{i}"), format!("Show {i}"), format!("u/{i}"), followed as i64),
             ).unwrap();
             let sid = tx.last_insert_rowid();
-            // 20 episodes each => 120k episodes
             for j in 1..=20 {
                 tx.execute(
                     "INSERT INTO episodes(series_id, number, url, seen) VALUES(?1, ?2, ?3, 0)",
-                    (sid, j.to_string(), format!("u/{i}/{j}"))
+                    (sid, j.to_string(), format!("u/{i}/{j}")),
                 ).unwrap();
             }
         }
         tx.commit().unwrap();
 
         let priority = vec!["animeytx".to_string(), "tioanime".to_string()];
-        let start = std::time::Instant::now();
         let count = db.pending_count(src_a, &priority).unwrap();
-        let elapsed = start.elapsed();
-
-        let start2 = std::time::Instant::now();
         let list = db.list_pending(src_a, PendingSort::RemainingAsc, &priority).unwrap();
-        let elapsed2 = start2.elapsed();
-
-        assert!(elapsed.as_millis() < 1500, "pending_count took (debug build, limit 1500) {} ms", elapsed.as_millis());
-        assert!(elapsed2.as_millis() < 1500, "list_pending took {} ms", elapsed2.as_millis());
         assert_eq!(count as usize, list.len());
+        assert_eq!(list.len(), followed_n * 20);
     }
 
     #[test]
