@@ -18,15 +18,20 @@ Dos tareas encoladas por el autor (UI/UX y arquitectura), ejecutadas en autónom
 - Hito 1: #174 `db` ya no importa `commands` ni `adapter`.
 - Hito 2 (parcial): #186 `AppError` + `AppState::with_db` (lock envenenado -> error, sin pánico), comandos de biblioteca;
   #191 comandos de seguimiento + los errores de anyhow conservan el texto antiguo; #194 catálogo; #196 seen, stats y
-  priority.
+  priority; #198 mirrors, storage y discover; #201 backup y diagnostics; #204 descargas (quedan la tarea de descarga
+  en segundo plano y los helpers con `DlError`, `sync.rs` y `scan.rs`).
 - Hito 3 (parcial): #184 decisión skip/fetch de `refresh` en el módulo puro `refresh_plan`; #178 el listado se persiste
   en una sola transacción.
 - Hito 4 (parcial): #188 `RetryPolicy` compartida, usada en el 429 de AniList (mismos tiempos, espera tope 120 s).
 - Hito 5 (parcial): tests a archivos hermanos: #193 `db/stats.rs` (7098 -> 2819 líneas), #195 `db/catalog.rs`
-  (5637 -> 2189) y `db/series.rs` (4181 -> 1766).
+  (5637 -> 2189) y `db/series.rs` (4181 -> 1766); #202 `db/airing.rs` (3073 -> 994) y `db/episodes.rs`
+  (2921 -> 1165). #203 `arch-check` no cuenta los `tests.rs` en el aviso de tamaño.
+- v0.27.0 publicada (#199, #200).
 
 ## Pendiente
-- Hito 2: resto de grupos de comandos (download, scan, sync, mirrors, storage, discover, fallback, backup...).
+- Hito 2: `scan.rs`, `fallback.rs`, `sync.rs` (sus helpers devuelven valores, no `Result`: hace falta cambiar firmas) y
+  la tarea de descarga. Hito 4: los bucles de reintento que quedan (conflicto de sync, segmentos de descarga) son simples
+  y mutan estado; adoptar `RetryPolicy` ahí no compensa, se deja.
   Hito 3.3-3.5: puerto `SiteFetcher`, `buffer_unordered`, `ProgressSink`. Hito 4: adoptar la política en
   anizip/catalog/fallback. Hito 5: trocear el código de producción de `db/airing.rs`, `db/catalog.rs` y `db/series.rs`
   por subdominio.
