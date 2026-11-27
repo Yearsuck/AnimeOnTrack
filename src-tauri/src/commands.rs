@@ -152,6 +152,56 @@ pub struct AppState {
     pub extras_guard: crate::extras_guard::ExtrasGuard,
 }
 
+/// Run `f` under `m`'s lock. A poisoned mutex (a previous holder panicked,
+/// possibly mid-write) yields `AppError::Internal` instead of panicking the
+/// calling command. We deliberately do NOT recover with `into_inner`: the
+/// guarded data may be half-updated, so refusing is safer than continuing.
+pub(crate) fn with_lock<D, T>(
+    m: &Mutex<D>,
+    f: impl FnOnce(&D) -> Result<T, crate::error::AppError>,
+) -> Result<T, crate::error::AppError> {
+    let guard = m
+        .lock()
+        .map_err(|_| crate::error::AppError::Internal("database lock poisoned".into()))?;
+    f(&guard)
+}
+
+impl AppState {
+    /// Run `f` with the DB locked; see [`with_lock`] for poison handling.
+    pub fn with_db<T>(
+        &self,
+        f: impl FnOnce(&Db) -> Result<T, crate::error::AppError>,
+    ) -> Result<T, crate::error::AppError> {
+        with_lock(&self.db, f)
+    }
+}
+
+#[cfg(test)]
+mod with_lock_tests {
+    use super::*;
+    use crate::error::AppError;
+    use std::sync::Arc;
+
+    #[test]
+    fn ok_path_runs_closure() {
+        let m = Mutex::new(5);
+        assert_eq!(with_lock(&m, |v| Ok(*v + 1)).unwrap(), 6);
+    }
+
+    #[test]
+    fn poisoned_lock_returns_internal_err() {
+        let m = Arc::new(Mutex::new(1));
+        let m2 = Arc::clone(&m);
+        let _ = std::thread::spawn(move || {
+            let _g = m2.lock().unwrap();
+            panic!("poison it");
+        })
+        .join();
+        let r: Result<i32, AppError> = with_lock(&m, |v| Ok(*v));
+        assert!(matches!(r, Err(AppError::Internal(_))));
+    }
+}
+
 /// How many recent swipe decisions `swipe_history` remembers.
 const SWIPE_HISTORY_CAP: usize = 5;
 
