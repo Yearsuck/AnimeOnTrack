@@ -11,6 +11,7 @@ import { SyncCard } from "./settings/SyncCard";
 import { StorageCard } from "./settings/StorageCard";
 import { MaintenanceSection } from "./settings/MaintenanceSection";
 import { UninstallCard } from "./settings/UninstallCard";
+import { showDesktopOnlySettings } from "../lib/platform";
 
 type SettingsTab = "general" | "sources" | "data" | "maintenance";
 
@@ -121,7 +122,7 @@ export function Settings({
             {visited.has("general") && (
               <>
                 <AppearanceSection onReplayTutorial={onReplayTutorial} />
-                <PlayerSettingsCard />
+                {showDesktopOnlySettings() && <PlayerSettingsCard />}
               </>
             )}
           </section>
@@ -167,7 +168,7 @@ export function Settings({
             {visited.has("maintenance") && (
               <>
                 <MaintenanceSection />
-                <UninstallCard />
+                {showDesktopOnlySettings() && <UninstallCard />}
               </>
             )}
           </section>
