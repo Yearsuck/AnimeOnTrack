@@ -23,6 +23,7 @@ mod matching;
 mod models;
 mod player;
 mod recommend;
+mod retry;
 mod refresh_plan;
 mod scraper_engine;
 mod swipe;
