@@ -1,10 +1,11 @@
 # Estado de AnimeOnTrack
 
-Instantánea del 2026-11-27 06:00 (v0.26.0 publicada; muchos cambios en develop sin publicar). Se reescribe tras cada merge a `develop`, cada release y antes de compactar una
+Instantánea del 2026-11-27 14:00 (v0.27.0 publicada). Se reescribe tras cada merge a `develop`, cada release y antes de compactar una
 conversación (ver "Docs that travel with the code" en `AGENTS.md`). Lo que no está aquí hay que mirarlo en git.
 
 ## Publicado
-- Última versión: **v0.26.0** (2026-11-26): sincronización entre dispositivos por carpeta o Google Drive (fusión campo a campo con stamps ordenados, sin subir si no cambia; #163, #164); Android: escaneo con la pantalla apagada (servicio en primer plano, #162) que pide una vez el permiso de notificaciones (#165), episodios en el navegador del sistema (#160), secretos de Drive en el Keystore (#161). 14 archivos en la release.
+- Última versión: **v0.27.0** (2026-11-27): En emisión ordenada por puntuación de AniList, portadas de AnimeFLV y series terminadas fuera de En emisión (#169, #170); webs de cada episodio como botones en Pendientes (#168); auditoría UI/UX aplicada (contraste WCAG AA, objetivos táctiles de 44 px, foco atrapado, estados vacíos y de carga, ajustes solo de escritorio ocultos en Android, errores al guardar ajustes; #175-#190); refactors de arquitectura sin cambio de comportamiento (#174-#198). 14 archivos en la release.
+- Anterior: **v0.26.0** (2026-11-26): sincronización entre dispositivos por carpeta o Google Drive (fusión campo a campo con stamps ordenados, sin subir si no cambia; #163, #164); Android: escaneo con la pantalla apagada (servicio en primer plano, #162) que pide una vez el permiso de notificaciones (#165), episodios en el navegador del sistema (#160), secretos de Drive en el Keystore (#161). 14 archivos en la release.
 - Anterior: **v0.25.0** (2026-11-25): Pendientes ya no cambia al cambiar de sitio activo (#153); "Ver" abre el sitio principal y clic en el episodio muestra un botón por web (#155); ventana y visor nunca bajo la barra de tareas (#151); reproductor limpio en MonosChinos, AnimeYT, Gogoanime y AnimeLand (#152); coherencia AniList en enlaces, traspasos de seguimiento y biblioteca (#154). 14 archivos en la release (Windows, macOS, Linux, `latest.json`).
 - Anterior: **v0.24.3** (2026-11-07): las filas de catálogo sin enlazar (`anilist-<id>`) ya no se raspan como filas del sitio (animeyt.cc devolvía episodios de otras series que acababan en Pendientes: Goblin, Magic Repo Man...); se ignoran en Pendientes y una reparación única al arrancar borra los episodios ya guardados (510 en la base del autor) tras copiar la base a `animeontrack.sqlite.before-synthetic-repair` (#148).
 - Antes: **v0.24.2** (2026-11-07): animeytx ya no guarda como pendiente el episodio sin emitir (#144).
@@ -17,10 +18,7 @@ conversación (ver "Docs that travel with the code" en `AGENTS.md`). Lo que no e
 - Android: compila y funciona en un móvil real, pero **no se publica instalador** todavía.
 
 ## En `develop` sin publicar
-- Pendientes: las webs de cada episodio salen como botones con color por web dentro de la tarjeta abierta, con la etiqueta "Principal" (#168).
-- En emisión: ordenar por puntuación de AniList con la puntuación en cada tarjeta; se ocultan las series no seguidas que AniList da por terminadas salvo que la web tenga episodios por encima del total (#169); portadas de AnimeFLV leídas de la página de la serie para las filas sin enlazar (#170).
-- Trabajo nocturno 2026-11-27 (#172-#191): auditoría UI/UX con sus 11 PRs aplicados y auditoría de arquitectura con los
-  hitos 0-1 y parte de 2-4; detalle en `docs/superpowers/plans/2026-11-27-overnight-progress.md`.
+- Arquitectura (sin cambio de comportamiento): comandos de backup, diagnóstico y descargas con `with_db` (#201, #204); tests de `db/airing.rs` y `db/episodes.rs` a archivos hermanos (#202); `arch-check` ya no avisa por el tamaño de los tests (#203).
 - Sin verificar de v0.26.0: sincronización entre dos dispositivos reales y con Drive real (probada en sandbox con carpeta). Sin verificar de v0.25.0: visor en un segundo monitor con otra escala, AnimeLand y AnimoraTV en vivo.
 
 ## Abierto
