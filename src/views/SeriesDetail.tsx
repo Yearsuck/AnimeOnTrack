@@ -704,9 +704,13 @@ export function SeriesDetail({
               >
                 <span className="ep-num">{ep.number}</span>
                 <div className="ep-main">
-                  <div className="ep-title" onClick={(e) => watchEpisode(ep, e.currentTarget)}>
+                  <button
+                    type="button"
+                    className="ep-title"
+                    onClick={(e) => watchEpisode(ep, e.currentTarget)}
+                  >
                     {t("common.episodeNumber", { number: ep.number })}
-                  </div>
+                  </button>
                   {ep.download_status === "failed" && (
                     <div className="dl-error">
                       {dl[ep.id]?.error || t("download.failed")}

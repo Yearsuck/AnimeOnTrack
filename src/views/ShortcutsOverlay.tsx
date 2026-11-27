@@ -1,7 +1,9 @@
+import { useRef } from "react";
 import { useT, type MessageKey } from "../i18n";
 import { useBackLayer } from "../lib/backStack";
 import { SHORTCUT_ROWS } from "../lib/shortcuts";
 import { isMobile } from "../lib/platform";
+import { useFocusTrap } from "../lib/useFocusTrap";
 
 interface ShortcutsOverlayProps {
   open: boolean;
@@ -11,6 +13,8 @@ interface ShortcutsOverlayProps {
 export function ShortcutsOverlay({ open, onClose }: ShortcutsOverlayProps) {
   const t = useT();
   useBackLayer(open, onClose);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(open && !isMobile, dialogRef, { onEscape: onClose });
 
   if (isMobile || !open) return null;
 
@@ -24,6 +28,7 @@ export function ShortcutsOverlay({ open, onClose }: ShortcutsOverlayProps) {
       }}
     >
       <div
+        ref={dialogRef}
         className="shortcuts-dialog"
         role="dialog"
         aria-modal="true"
@@ -37,7 +42,6 @@ export function ShortcutsOverlay({ open, onClose }: ShortcutsOverlayProps) {
             className="shortcuts-close"
             onClick={onClose}
             aria-label={t("shortcuts.close")}
-            autoFocus
           >
             ✕
           </button>
