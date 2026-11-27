@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import { SettingsRow } from "./SettingsRow";
+import { Chip } from "../../components/Chip";
 import { listMonitors, getPlayerSettings, setPlayerSettings } from "../../api";
 import { useT } from "../../i18n";
 import { useSettingSave } from "../../lib/useSettingSave";
@@ -60,8 +62,7 @@ export function PlayerSettingsCard() {
         </p>
       )}
 
-      <div className="settings-field">
-        <label className="settings-field-label" htmlFor="sf-settings-playerMonitor">{t("settings.playerMonitor")}</label>
+      <SettingsRow label={t("settings.playerMonitor")} htmlFor="sf-settings-playerMonitor">
         <select
           id="sf-settings-playerMonitor"
           disabled={disabled}
@@ -84,63 +85,56 @@ export function PlayerSettingsCard() {
             );
           })}
         </select>
-      </div>
+      </SettingsRow>
 
-      <div className="settings-field">
-        <span className="settings-field-label" id="sf-settings-playerMode">{t("settings.playerMode")}</span>
+      <SettingsRow label={t("settings.playerMode")} labelId="sf-settings-playerMode">
         <div role="group" aria-labelledby="sf-settings-playerMode" className="row">
-          <button
-            type="button"
+          <Chip
             disabled={disabled}
-            className={`chip-toggle ${!fullscreen ? "active" : ""}`}
+            active={!fullscreen}
             onClick={() => handleFullscreenChange(false)}
           >
             🗗 {t("settings.playerWindowed")}
-          </button>
-          <button
-            type="button"
+          </Chip>
+          <Chip
             disabled={disabled}
-            className={`chip-toggle ${fullscreen ? "active" : ""}`}
+            active={fullscreen}
             onClick={() => handleFullscreenChange(true)}
           >
             ⛶ {t("settings.playerFullscreen")}
-          </button>
+          </Chip>
         </div>
-      </div>
+      </SettingsRow>
 
-      <div className="settings-field" role="group" aria-labelledby="sf-settings-playerClean">
-        <span className="settings-field-label" id="sf-settings-playerClean">{t("settings.playerClean")}</span>
+      <SettingsRow label={t("settings.playerClean")} labelId="sf-settings-playerClean" group>
         <p className="settings-section-desc">{t("settings.playerCleanHelp")}</p>
         <div className="row">
-          <button
-            type="button"
+          <Chip
             disabled={disabled}
-            className={`chip-toggle ${clean ? "active" : ""}`}
+            active={clean}
             aria-pressed={clean}
             onClick={() => handleCleanChange(!clean)}
           >
             {clean ? "✓ " : ""}
             {t("settings.playerClean")}
-          </button>
+          </Chip>
         </div>
-      </div>
+      </SettingsRow>
 
-      <div className="settings-field" role="group" aria-labelledby="sf-settings-playerAdblock">
-        <span className="settings-field-label" id="sf-settings-playerAdblock">{t("settings.playerAdblock")}</span>
+      <SettingsRow label={t("settings.playerAdblock")} labelId="sf-settings-playerAdblock" group>
         <p className="settings-section-desc">{t("settings.playerAdblockHelp")}</p>
         <div className="row">
-          <button
-            type="button"
+          <Chip
             disabled={disabled}
-            className={`chip-toggle ${adblock ? "active" : ""}`}
+            active={adblock}
             aria-pressed={adblock}
             onClick={() => handleAdblockChange(!adblock)}
           >
             {adblock ? "✓ " : ""}
             {t("settings.playerAdblock")}
-          </button>
+          </Chip>
         </div>
-      </div>
+      </SettingsRow>
     </div>
   );
 }

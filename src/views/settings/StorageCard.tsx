@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import { SettingsRow } from "./SettingsRow";
+import { Chip } from "../../components/Chip";
 import {
   getStorageReport,
   getDownloadQuality,
@@ -169,8 +171,7 @@ export function StorageCard() {
       <p className="settings-section-desc">{t("storage.desc")}</p>
 
       {/* Storage usage breakdown */}
-      <div className="settings-field" role="group" aria-labelledby="storage-usageHeading">
-        <span className="settings-field-label" id="storage-usageHeading">{t("storage.usageHeading")}</span>
+      <SettingsRow label={t("storage.usageHeading")} labelId="storage-usageHeading" group>
         {report && (
           <div className="storage-usage-list">
             <div className="storage-usage-row">
@@ -202,13 +203,10 @@ export function StorageCard() {
           </button>
         </div>
         {reportError && <p className="muted text-sm text-danger">{reportError}</p>}
-      </div>
+      </SettingsRow>
 
       {/* Download quality selection */}
-      <div className="settings-field">
-        <label className="settings-field-label" htmlFor="storage-quality-select">
-          {t("storage.qualityLabel")}
-        </label>
+      <SettingsRow label={t("storage.qualityLabel")} htmlFor="storage-quality-select">
         <select
           id="storage-quality-select"
           className="input settings-select"
@@ -223,38 +221,34 @@ export function StorageCard() {
         </select>
         <p className="settings-field-hint">{t("storage.qualityHint")}</p>
         {qualityError && <p className="muted text-sm text-danger">{qualityError}</p>}
-      </div>
+      </SettingsRow>
 
       {/* Auto-delete watched downloads toggle */}
-      <div className="settings-field" role="group" aria-labelledby="storage-autoDeleteLabel">
-        <span className="settings-field-label" id="storage-autoDeleteLabel">{t("storage.autoDeleteLabel")}</span>
+      <SettingsRow label={t("storage.autoDeleteLabel")} labelId="storage-autoDeleteLabel" group>
         <div className="row">
-          <button
-            type="button"
-            className={`chip-toggle ${autoDelete ? "active" : ""}`}
+          <Chip
+            active={autoDelete}
             aria-pressed={autoDelete}
             disabled={savingAutoDelete || !autoDeleteLoaded}
             onClick={() => handleAutoDeleteChange(true)}
           >
             {t("storage.autoDeleteOn")}
-          </button>
-          <button
-            type="button"
-            className={`chip-toggle ${!autoDelete ? "active" : ""}`}
+          </Chip>
+          <Chip
+            active={!autoDelete}
             aria-pressed={!autoDelete}
             disabled={savingAutoDelete || !autoDeleteLoaded}
             onClick={() => handleAutoDeleteChange(false)}
           >
             {t("storage.autoDeleteOff")}
-          </button>
+          </Chip>
         </div>
         <p className="settings-field-hint">{t("download.autoDeleteHint")}</p>
         {autoDeleteError && <p className="muted text-sm text-danger">{autoDeleteError}</p>}
-      </div>
+      </SettingsRow>
 
       {/* Orphan files scan & deletion */}
-      <div className="settings-field" role="group" aria-labelledby="storage-orphansHeading">
-        <span className="settings-field-label" id="storage-orphansHeading">{t("storage.orphansHeading")}</span>
+      <SettingsRow label={t("storage.orphansHeading")} labelId="storage-orphansHeading" group>
         <p className="settings-field-hint">{t("storage.orphansDesc")}</p>
         <div className="row">
           <button
@@ -323,7 +317,7 @@ export function StorageCard() {
 
         {orphansMessage && <p className="muted settings-msg">{orphansMessage}</p>}
         {orphansError && <p className="muted text-sm text-danger">{orphansError}</p>}
-      </div>
+      </SettingsRow>
     </div>
   );
 }

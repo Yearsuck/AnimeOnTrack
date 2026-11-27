@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { SettingsRow } from "./SettingsRow";
 import {
   scanAiring,
   rescanAiring,
@@ -173,8 +174,7 @@ export function SourcesSection({ onSiteChanged }: SourcesSectionProps) {
       <h3 className="settings-section-title">{t("settings.siteHeading")}</h3>
       <p className="settings-section-desc">{t("settings.sourcesIntro")}</p>
 
-      <div className="settings-field">
-        <label className="settings-field-label" htmlFor="sf-settings-sourcesActiveLabel">{t("settings.sourcesActiveLabel")}</label>
+      <SettingsRow label={t("settings.sourcesActiveLabel")} htmlFor="sf-settings-sourcesActiveLabel">
         <select id="sf-settings-sourcesActiveLabel"
           className="input settings-select"
           value={pendingSiteId ?? activeSite?.id ?? ""}
@@ -210,10 +210,9 @@ export function SourcesSection({ onSiteChanged }: SourcesSectionProps) {
             </div>
           </div>
         )}
-      </div>
+      </SettingsRow>
 
-      <div className="settings-field" role="group" aria-labelledby="sf-settings-sitePriorityHeading">
-        <span className="settings-field-label" id="sf-settings-sitePriorityHeading">{t("settings.sitePriorityHeading")}</span>
+      <SettingsRow label={t("settings.sitePriorityHeading")} labelId="sf-settings-sitePriorityHeading" group>
         <p className="settings-section-desc">{t("settings.sitePriorityHint")}</p>
         {priorityOrder.map((siteId, index) => {
           const site = sites.find((s) => s.id === siteId);
@@ -243,13 +242,12 @@ export function SourcesSection({ onSiteChanged }: SourcesSectionProps) {
             </div>
           );
         })}
-      </div>
+      </SettingsRow>
 
       <details className="settings-details">
         <summary className="settings-details-summary">{t("settings.sourcesAdvanced")}</summary>
         <div className="settings-details-body">
-          <div className="settings-field">
-            <span className="settings-field-label" id="sf-settings-addNewSiteDesc">{t("settings.addNewSiteDesc")}</span>
+          <SettingsRow label={t("settings.addNewSiteDesc")} labelId="sf-settings-addNewSiteDesc">
             <div role="group" aria-labelledby="sf-settings-addNewSiteDesc" className="row">
               <input
                 className="input settings-url-input"
@@ -262,12 +260,9 @@ export function SourcesSection({ onSiteChanged }: SourcesSectionProps) {
                 <BusyLabel busy={busy} idle={t("common.scan")} busyText={t("common.scanning")} />
               </button>
             </div>
-          </div>
+          </SettingsRow>
 
-          <div className="settings-field">
-            <label className="settings-field-label" htmlFor="sf-settings-mirrorsDesc">
-              {t("settings.mirrorsDesc", { site: activeSite?.name ?? t("settings.activeSiteFallback") })}
-            </label>
+          <SettingsRow label={t("settings.mirrorsDesc", { site: activeSite?.name ?? t("settings.activeSiteFallback") })} htmlFor="sf-settings-mirrorsDesc">
             <textarea id="sf-settings-mirrorsDesc"
               className="input textarea-mono"
               rows={5}
@@ -282,7 +277,7 @@ export function SourcesSection({ onSiteChanged }: SourcesSectionProps) {
                 <BusyLabel busy={busy} idle={t("settings.rescan")} busyText={t("common.scanning")} />
               </button>
             </div>
-          </div>
+          </SettingsRow>
         </div>
       </details>
 

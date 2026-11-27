@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import { SettingsRow } from "./SettingsRow";
+import { Chip } from "../../components/Chip";
 import { setSyncTransport, syncNow, syncStatus } from "../../api";
 import { useT } from "../../i18n";
 import type { SyncStatus, SyncTransport } from "../../types";
@@ -96,42 +98,37 @@ export function SyncCard() {
       <h3 className="settings-section-title">{t("settings.syncHeading")}</h3>
       <p className="settings-section-desc">{t("settings.syncDesc")}</p>
 
-      <div className="settings-field">
-        <span className="settings-field-label" id="sf-settings-syncTransportLabel">{t("settings.syncTransportLabel")}</span>
+      <SettingsRow label={t("settings.syncTransportLabel")} labelId="sf-settings-syncTransportLabel">
         <div role="group" aria-labelledby="sf-settings-syncTransportLabel" className="row">
-          <button
-            type="button"
-            className={`chip-toggle ${currentTransport === "off" ? "active" : ""}`}
+          <Chip
+            active={currentTransport === "off"}
             disabled={isBusy}
             onClick={() => handleSelectTransport("off")}
           >
             {t("settings.syncTransportOff")}
-          </button>
-          <button
-            type="button"
-            className={`chip-toggle ${currentTransport === "folder" ? "active" : ""}`}
+          </Chip>
+          <Chip
+            active={currentTransport === "folder"}
             disabled={isBusy}
             onClick={() => handleSelectTransport("folder")}
           >
             {t("settings.syncTransportFolder")}
-          </button>
-          <button
-            type="button"
-            className={`chip-toggle ${currentTransport === "drive" ? "active" : ""}`}
+          </Chip>
+          <Chip
+            active={currentTransport === "drive"}
             disabled={isBusy || !status.drive_connected}
             onClick={() => handleSelectTransport("drive")}
           >
             {t("settings.syncTransportDrive")}
-          </button>
+          </Chip>
         </div>
         {!status.drive_connected && (
           <p className="muted text-sm">{t("settings.syncDriveNotConnected")}</p>
         )}
-      </div>
+      </SettingsRow>
 
       {currentTransport === "folder" && (
-        <div className="settings-field">
-          <span className="settings-field-label" id="sf-settings-syncFolderLabel">{t("settings.syncFolderLabel")}</span>
+        <SettingsRow label={t("settings.syncFolderLabel")} labelId="sf-settings-syncFolderLabel">
           <div role="group" aria-labelledby="sf-settings-syncFolderLabel" className="row settings-cred-row">
             <input
               className="input settings-url-input"
@@ -151,7 +148,7 @@ export function SyncCard() {
             </button>
           </div>
           <p className="muted text-sm">{t("settings.syncFolderHint")}</p>
-        </div>
+        </SettingsRow>
       )}
 
       <div className="row">
