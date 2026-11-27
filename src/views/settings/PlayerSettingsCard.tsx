@@ -1,77 +1,70 @@
 import { useEffect, useState } from "react";
 import { listMonitors, getPlayerSettings, setPlayerSettings } from "../../api";
 import { useT } from "../../i18n";
+import { useSettingSave } from "../../lib/useSettingSave";
 import type { MonitorOption } from "../../types";
+
+type PlayerPrefs = { monitor: string; fullscreen: boolean; clean: boolean; adblock: boolean };
 
 /// Player preferences card: select target screen and windowed vs full-screen mode.
 export function PlayerSettingsCard() {
   const t = useT();
   const [monitors, setMonitors] = useState<MonitorOption[]>([]);
-  const [targetMonitor, setTargetMonitor] = useState<string>("");
-  const [fullscreen, setFullscreen] = useState(false);
-  const [clean, setClean] = useState(true);
-  const [adblock, setAdblock] = useState(true);
+  const { value: prefs, replace, save, failed, saving } = useSettingSave<PlayerPrefs>({
+    monitor: "",
+    fullscreen: false,
+    clean: true,
+    adblock: true,
+  });
   const [loading, setLoading] = useState(true);
+  const [loadFailed, setLoadFailed] = useState(false);
 
   useEffect(() => {
     Promise.all([listMonitors(), getPlayerSettings()])
       .then(([mons, settings]) => {
         setMonitors(mons);
-        setTargetMonitor(settings.monitor ?? "");
-        setFullscreen(settings.fullscreen);
-        setClean(settings.clean);
-        setAdblock(settings.adblock);
+        replace({
+          monitor: settings.monitor ?? "",
+          fullscreen: settings.fullscreen,
+          clean: settings.clean,
+          adblock: settings.adblock,
+        });
       })
-      .catch((err) => console.error("Error loading player settings:", err))
+      .catch((err) => {
+        console.error("Error loading player settings:", err);
+        setLoadFailed(true);
+      })
       .finally(() => setLoading(false));
-  }, []);
+  }, [replace]);
 
-  const handleMonitorChange = async (val: string) => {
-    setTargetMonitor(val);
-    try {
-      await setPlayerSettings(val.trim() === "" ? null : val, fullscreen, clean, adblock);
-    } catch (err) {
-      console.error("Failed to save monitor setting:", err);
-    }
-  };
+  const update = (patch: Partial<PlayerPrefs>) =>
+    save(patch, (n) =>
+      setPlayerSettings(n.monitor.trim() === "" ? null : n.monitor, n.fullscreen, n.clean, n.adblock),
+    );
 
-  const handleFullscreenChange = async (fs: boolean) => {
-    setFullscreen(fs);
-    try {
-      await setPlayerSettings(targetMonitor.trim() === "" ? null : targetMonitor, fs, clean, adblock);
-    } catch (err) {
-      console.error("Failed to save fullscreen setting:", err);
-    }
-  };
-
-  const handleCleanChange = async (next: boolean) => {
-    setClean(next);
-    try {
-      await setPlayerSettings(targetMonitor.trim() === "" ? null : targetMonitor, fullscreen, next, adblock);
-    } catch (err) {
-      console.error("Failed to save clean player setting:", err);
-    }
-  };
-
-  const handleAdblockChange = async (next: boolean) => {
-    setAdblock(next);
-    try {
-      await setPlayerSettings(targetMonitor.trim() === "" ? null : targetMonitor, fullscreen, clean, next);
-    } catch (err) {
-      console.error("Failed to save adblock setting:", err);
-    }
-  };
-
-  if (loading) return null;
+  const targetMonitor = prefs.monitor;
+  const { fullscreen, clean, adblock } = prefs;
+  const handleMonitorChange = (val: string) => update({ monitor: val });
+  const handleFullscreenChange = (fs: boolean) => update({ fullscreen: fs });
+  const handleCleanChange = (next: boolean) => update({ clean: next });
+  const handleAdblockChange = (next: boolean) => update({ adblock: next });
+  const disabled = loading || loadFailed || saving;
 
   return (
     <div className="settings-section">
       <h3 className="settings-section-title">{t("settings.playerHeading")}</h3>
       <p className="settings-section-desc">{t("settings.playerDesc")}</p>
+      {(failed || loadFailed) && (
+        <p className="settings-error" role="alert">
+          {t(loadFailed ? "settings.loadError" : "settings.saveError")}
+        </p>
+      )}
 
       <div className="settings-field">
         <label className="settings-field-label" htmlFor="sf-settings-playerMonitor">{t("settings.playerMonitor")}</label>
-        <select id="sf-settings-playerMonitor"
+        <select
+          id="sf-settings-playerMonitor"
+          disabled={disabled}
           className="input settings-select"
           value={targetMonitor}
           onChange={(e) => handleMonitorChange(e.target.value)}
@@ -98,6 +91,7 @@ export function PlayerSettingsCard() {
         <div role="group" aria-labelledby="sf-settings-playerMode" className="row">
           <button
             type="button"
+            disabled={disabled}
             className={`chip-toggle ${!fullscreen ? "active" : ""}`}
             onClick={() => handleFullscreenChange(false)}
           >
@@ -105,6 +99,7 @@ export function PlayerSettingsCard() {
           </button>
           <button
             type="button"
+            disabled={disabled}
             className={`chip-toggle ${fullscreen ? "active" : ""}`}
             onClick={() => handleFullscreenChange(true)}
           >
@@ -119,6 +114,7 @@ export function PlayerSettingsCard() {
         <div className="row">
           <button
             type="button"
+            disabled={disabled}
             className={`chip-toggle ${clean ? "active" : ""}`}
             aria-pressed={clean}
             onClick={() => handleCleanChange(!clean)}
@@ -135,6 +131,7 @@ export function PlayerSettingsCard() {
         <div className="row">
           <button
             type="button"
+            disabled={disabled}
             className={`chip-toggle ${adblock ? "active" : ""}`}
             aria-pressed={adblock}
             onClick={() => handleAdblockChange(!adblock)}
