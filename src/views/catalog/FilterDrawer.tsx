@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { Chip } from "../../components/Chip";
 import { useBackLayer } from "../../lib/backStack";
 import { useT } from "../../i18n";
 import { formatLabel, sortFormats } from "../../lib/formatLabel";
@@ -106,15 +107,14 @@ export function FilterDrawer({
         <legend className="cat-drawer-legend">{t("filters.statusLabel")}</legend>
         <div className="chip-row">
           {STATUSES.map(([value, key]) => (
-            <button
+            <Chip
               key={value}
-              type="button"
-              className={`chip-toggle${status === value ? " active" : ""}`}
+              active={status === value}
               aria-pressed={status === value}
               onClick={() => setStatus(status === value ? "" : value)}
             >
               {t(key)}
-            </button>
+            </Chip>
           ))}
         </div>
       </fieldset>
@@ -124,15 +124,14 @@ export function FilterDrawer({
           <legend className="cat-drawer-legend">{t("catalog.genres")}</legend>
           <div className="chip-row">
             {facets.genres.map((g) => (
-              <button
+              <Chip
                 key={g}
-                type="button"
-                className={`chip-toggle${selectedGenres.includes(g) ? " active" : ""}`}
+                active={selectedGenres.includes(g)}
                 aria-pressed={selectedGenres.includes(g)}
                 onClick={() => toggleGenre(g)}
               >
                 {g}
-              </button>
+              </Chip>
             ))}
           </div>
         </fieldset>
@@ -187,16 +186,16 @@ export function FilterDrawer({
         label={t("catalog.dateRangeLabel")}
       />
 
-      <button
-        type="button"
-        className={`chip-toggle cat-drawer-hide${hideWatched ? " active" : ""}`}
+      <Chip
+        className="cat-drawer-hide"
+        active={hideWatched}
         onClick={() => setHideWatched(!hideWatched)}
         aria-pressed={hideWatched}
         title={t("catalog.hideWatchedTooltip")}
       >
         {hideWatched ? "✓ " : ""}
         {t("catalog.hideWatched")}
-      </button>
+      </Chip>
     </aside>
   );
 }

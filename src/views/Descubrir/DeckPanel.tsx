@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { Chip } from "../../components/Chip";
 import { useBackLayer } from "../../lib/backStack";
 import { getCatalogFacets, getDeckBans, getDiscoverNiche, setDeckBans, setDiscoverNiche } from "../../api";
 import { useT } from "../../i18n";
@@ -276,15 +277,14 @@ export function DeckPanel({
             <legend className="cat-drawer-legend">{t("discover.filtersFormatsHeading")}</legend>
             <div className="chip-row">
               {DECK_FORMATS.map((f) => (
-                <button
+                <Chip
                   key={f}
-                  type="button"
-                  className={`chip-toggle${bannedFormats.has(f) ? " active" : ""}`}
+                  active={bannedFormats.has(f)}
                   aria-pressed={bannedFormats.has(f)}
                   onClick={() => toggle(bannedFormats, setBannedFormats, f)}
                 >
                   {formatLabel(t, f)}
-                </button>
+                </Chip>
               ))}
             </div>
           </fieldset>
@@ -294,24 +294,22 @@ export function DeckPanel({
               <legend className="cat-drawer-legend">{t("discover.filtersGenresHeading")}</legend>
               <div className="chip-row">
                 {allGenres.map((g) => (
-                  <button
+                  <Chip
                     key={g}
-                    type="button"
-                    className={`chip-toggle${bannedGenres.has(g) ? " active" : ""}`}
+                    active={bannedGenres.has(g)}
                     aria-pressed={bannedGenres.has(g)}
                     onClick={() => toggle(bannedGenres, setBannedGenres, g)}
                   >
                     {g}
-                  </button>
+                  </Chip>
                 ))}
               </div>
             </fieldset>
           )}
 
           <div className="cat-drawer-group">
-            <button
-              type="button"
-              className={`chip-toggle${hideUpcoming ? " active" : ""}`}
+            <Chip
+              active={hideUpcoming}
               aria-pressed={hideUpcoming}
               onClick={() => {
                 setHideUpcoming((prev) => !prev);
@@ -319,7 +317,7 @@ export function DeckPanel({
               }}
             >
               {t("discover.filtersHideUpcoming")}
-            </button>
+            </Chip>
             {hideUpcoming && !statusDataSynced && (
               <p className="muted text-sm text-danger deck-panel-warn">
                 {t("discover.filtersHideUpcomingNeedsSync")}
