@@ -5,7 +5,8 @@
 //    (db is the lowest layer and must not import upward).
 //  - FAIL (exit 1): pure modules (PURE_MODULES) reference crate::db, crate::commands,
 //    tauri, reqwest or tokio.
-//  - WARN (informational only): any .rs file under src-tauri/src over 3000 lines.
+//  - WARN (informational only): any non-test .rs file under src-tauri/src over 3000 lines
+//    (test modules split into sibling tests.rs files are exempt).
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, dirname, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,7 +31,8 @@ let failures = 0;
 for (const file of walk(src)) {
   const rel = relative(root, file).replaceAll("\\", "/");
   const lines = readFileSync(file, "utf8").split(/\r?\n/);
-  if (lines.length > MAX_LINES) console.warn(`warn: ${rel} has ${lines.length} lines (> ${MAX_LINES})`);
+  const isTest = rel.endsWith("/tests.rs") || rel.includes("/tests/");
+  if (!isTest && lines.length > MAX_LINES) console.warn(`warn: ${rel} has ${lines.length} lines (> ${MAX_LINES})`);
   if (PURE_MODULES.includes(rel)) {
     lines.forEach((l, i) => {
       if (impure.test(l)) {
