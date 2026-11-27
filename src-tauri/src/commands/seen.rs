@@ -19,11 +19,12 @@ pub async fn open_episode(
     fullscreen: Option<bool>,
 ) -> Result<(), String> {
     let (eff_monitor, eff_fullscreen, eff_clean) = {
-        let db = state.db.lock().unwrap();
-        let mon = monitor.or_else(|| db.get_player_monitor().ok().flatten());
-        let fs = fullscreen.unwrap_or_else(|| db.get_player_fullscreen().unwrap_or(false));
-        let clean = db.get_player_clean().unwrap_or(true);
-        (mon, fs, clean)
+        state.with_db(|db| {
+            let mon = monitor.or_else(|| db.get_player_monitor().ok().flatten());
+            let fs = fullscreen.unwrap_or_else(|| db.get_player_fullscreen().unwrap_or(false));
+            let clean = db.get_player_clean().unwrap_or(true);
+            Ok((mon, fs, clean))
+        })?
     };
 
     let ep = Episode {
@@ -81,12 +82,13 @@ pub async fn list_monitors(app: AppHandle) -> Result<Vec<crate::models::MonitorO
 /// Retrieves stored player playback preferences (target monitor and fullscreen).
 #[tauri::command]
 pub async fn get_player_settings(state: State<'_, AppState>) -> Result<crate::models::PlayerSettings, String> {
-    let db = state.db.lock().unwrap();
-    let monitor = db.get_player_monitor().map_err(|e| e.to_string())?;
-    let fullscreen = db.get_player_fullscreen().map_err(|e| e.to_string())?;
-    let clean = db.get_player_clean().map_err(|e| e.to_string())?;
-    let adblock = db.get_player_adblock().map_err(|e| e.to_string())?;
-    Ok(crate::models::PlayerSettings { monitor, fullscreen, clean, adblock })
+    Ok(state.with_db(|db| {
+        let monitor = db.get_player_monitor()?;
+        let fullscreen = db.get_player_fullscreen()?;
+        let clean = db.get_player_clean()?;
+        let adblock = db.get_player_adblock()?;
+        Ok(crate::models::PlayerSettings { monitor, fullscreen, clean, adblock })
+    })?)
 }
 
 /// Persists player playback preferences (target monitor and fullscreen).
@@ -98,15 +100,16 @@ pub async fn set_player_settings(
     clean: bool,
     adblock: Option<bool>,
 ) -> Result<(), String> {
-    let db = state.db.lock().unwrap();
-    db.set_player_monitor(monitor.as_deref()).map_err(|e| e.to_string())?;
-    db.set_player_fullscreen(fullscreen).map_err(|e| e.to_string())?;
-    db.set_player_clean(clean).map_err(|e| e.to_string())?;
-    if let Some(adblock) = adblock {
-        db.set_player_adblock(adblock).map_err(|e| e.to_string())?;
-        crate::ad_block::set_engine_enabled(adblock);
-    }
-    Ok(())
+    Ok(state.with_db(|db| {
+        db.set_player_monitor(monitor.as_deref())?;
+        db.set_player_fullscreen(fullscreen)?;
+        db.set_player_clean(clean)?;
+        if let Some(adblock) = adblock {
+            db.set_player_adblock(adblock)?;
+            crate::ad_block::set_engine_enabled(adblock);
+        }
+        Ok(())
+    })?)
 }
 
 /// A streaming site source for an episode.
@@ -214,15 +217,17 @@ pub async fn episode_sources(
     episode_id: i64,
 ) -> Result<Vec<EpisodeSource>, String> {
     let active = state.active_site_id.lock().unwrap().clone();
-    let (sources, priority) = {
-        let db = state.db.lock().unwrap();
-        let sources = assemble_episode_sources(&db, episode_id)?;
+    let found = state.with_db(|db| {
+        let sources = assemble_episode_sources(db, episode_id).map_err(crate::error::AppError::Other)?;
         if sources.is_empty() {
-            return Ok(vec![]);
+            return Ok(None);
         }
         let known: Vec<&str> = crate::adapter::all_sites().iter().map(|s| s.id).collect();
-        let priority = db.get_site_priority(&known).map_err(|e| e.to_string())?;
-        (sources, priority)
+        let priority = db.get_site_priority(&known)?;
+        Ok(Some((sources, priority)))
+    })?;
+    let Some((sources, priority)) = found else {
+        return Ok(vec![]);
     };
     Ok(order_sources(sources, &active, &priority))
 }
@@ -239,15 +244,18 @@ pub async fn set_seen(
     seen: bool,
 ) -> Result<(), String> {
     let (should_cleanup, downloads_dir) = {
-        let db = state.db.lock().unwrap();
-        db.set_seen(episode_id, seen).map_err(|e| e.to_string())?;
-        let auto_delete = db.get_auto_delete_seen_downloads().unwrap_or(true);
-        let dir = app.path().app_data_dir().ok().map(|d| d.join("downloads"));
-        (seen && auto_delete, dir)
+        state.with_db(|db| {
+            db.set_seen(episode_id, seen)?;
+            let auto_delete = db.get_auto_delete_seen_downloads().unwrap_or(true);
+            let dir = app.path().app_data_dir().ok().map(|d| d.join("downloads"));
+            Ok((seen && auto_delete, dir))
+        })?
     };
     if should_cleanup {
-        let db = state.db.lock().unwrap();
-        cleanup_downloads(&db, &[episode_id], downloads_dir.as_deref());
+        state.with_db(|db| {
+            cleanup_downloads(db, &[episode_id], downloads_dir.as_deref());
+            Ok(())
+        })?;
     }
     Ok(())
 }
@@ -265,46 +273,48 @@ pub async fn set_seen_cascade(
     number: String,
     seen: bool,
 ) -> Result<(), String> {
-    let db = state.db.lock().unwrap();
-    let mut sids = db
-        .canonical_series_ids(series_id)
-        .unwrap_or_else(|_| vec![series_id]);
-    if sids.is_empty() {
-        sids.push(series_id);
-    }
-    // Collect the IDs that will flip to seen BEFORE the cascade runs, so we
-    // know which downloads to clean up afterwards.
-    let affected_ids = if seen {
-        let mut ids = Vec::new();
-        let now = chrono::Utc::now().timestamp();
-        let clicked_align = db.row_align(series_id, now).ok();
-        let canonical = crate::db::parse_ep_number(&number)
-            .and_then(|n| clicked_align.as_ref()?.to_canonical(n));
-        if let Some(c) = canonical {
-            for &sid in &sids {
-                if let Ok(align) = db.row_align(sid, now) {
-                    let num_str = crate::db::episode_align::format_ep_number(align.to_row(c));
-                    if let Ok(ep_ids) = db.episode_ids_in_cascade(sid, &num_str, true) {
-                        ids.extend(ep_ids);
+    let (affected_ids, auto_delete, downloads_dir) = state.with_db(|db| {
+        let mut sids = db
+            .canonical_series_ids(series_id)
+            .unwrap_or_else(|_| vec![series_id]);
+        if sids.is_empty() {
+            sids.push(series_id);
+        }
+        // Collect the IDs that will flip to seen BEFORE the cascade runs, so we
+        // know which downloads to clean up afterwards.
+        let affected_ids = if seen {
+            let mut ids = Vec::new();
+            let now = chrono::Utc::now().timestamp();
+            let clicked_align = db.row_align(series_id, now).ok();
+            let canonical = crate::db::parse_ep_number(&number)
+                .and_then(|n| clicked_align.as_ref()?.to_canonical(n));
+            if let Some(c) = canonical {
+                for &sid in &sids {
+                    if let Ok(align) = db.row_align(sid, now) {
+                        let num_str = crate::db::episode_align::format_ep_number(align.to_row(c));
+                        if let Ok(ep_ids) = db.episode_ids_in_cascade(sid, &num_str, true) {
+                            ids.extend(ep_ids);
+                        }
                     }
                 }
+            } else if let Ok(ep_ids) = db.episode_ids_in_cascade(series_id, &number, true) {
+                ids.extend(ep_ids);
             }
-        } else if let Ok(ep_ids) = db.episode_ids_in_cascade(series_id, &number, true) {
-            ids.extend(ep_ids);
-        }
-        ids
-    } else {
-        vec![]
-    };
-    db.set_seen_cascade_in(series_id, &sids, &number, seen)
-        .map_err(|e| e.to_string())?;
-    let auto_delete = db.get_auto_delete_seen_downloads().unwrap_or(true);
-    let downloads_dir = app.path().app_data_dir().ok().map(|d| d.join("downloads"));
-    drop(db);
+            ids
+        } else {
+            vec![]
+        };
+        db.set_seen_cascade_in(series_id, &sids, &number, seen)?;
+        let auto_delete = db.get_auto_delete_seen_downloads().unwrap_or(true);
+        let downloads_dir = app.path().app_data_dir().ok().map(|d| d.join("downloads"));
+        Ok((affected_ids, auto_delete, downloads_dir))
+    })?;
 
     if seen && auto_delete && !affected_ids.is_empty() {
-        let db = state.db.lock().unwrap();
-        cleanup_downloads(&db, &affected_ids, downloads_dir.as_deref());
+        state.with_db(|db| {
+            cleanup_downloads(db, &affected_ids, downloads_dir.as_deref());
+            Ok(())
+        })?;
     }
     Ok(())
 }
@@ -319,23 +329,25 @@ pub async fn delete_series(
     series_id: i64,
 ) -> Result<(), String> {
     let running: Vec<i64> = {
-        let db = state.db.lock().unwrap();
-        db.list_series_episodes(series_id)
-            .map_err(|e| e.to_string())?
-            .into_iter()
-            .filter(|e| e.download_status.as_deref() == Some("downloading"))
-            .map(|e| e.id)
-            .collect()
+        state.with_db(|db| {
+            Ok(db
+                .list_series_episodes(series_id)?
+                .into_iter()
+                .filter(|e| e.download_status.as_deref() == Some("downloading"))
+                .map(|e| e.id)
+                .collect())
+        })?
     };
     // A running download would otherwise finish into a folder of a series
     // that no longer exists, leaving an orphan behind.
     crate::commands::download::cancel_active(&running);
     let (paths, downloads_dir) = {
-        let db = state.db.lock().unwrap();
-        let paths = db.series_downloaded_paths(series_id).unwrap_or_default();
-        db.delete_series(series_id).map_err(|e| e.to_string())?;
-        let dir = app.path().app_data_dir().ok().map(|d| d.join("downloads"));
-        (paths, dir)
+        state.with_db(|db| {
+            let paths = db.series_downloaded_paths(series_id).unwrap_or_default();
+            db.delete_series(series_id)?;
+            let dir = app.path().app_data_dir().ok().map(|d| d.join("downloads"));
+            Ok((paths, dir))
+        })?
     };
     if let Some(ref dir) = downloads_dir {
         crate::commands::storage::delete_series_files_and_dir(dir, series_id, &paths);

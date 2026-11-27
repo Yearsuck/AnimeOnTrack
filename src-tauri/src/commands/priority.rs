@@ -26,15 +26,13 @@ pub fn set_site_priority_core(db: &Db, order: Vec<String>, known: &[&str]) -> Re
 #[tauri::command]
 pub async fn get_site_priority(state: State<'_, AppState>) -> Result<Vec<String>, String> {
     let known: Vec<&str> = adapter::all_sites().iter().map(|s| s.id).collect();
-    let db = state.db.lock().unwrap();
-    get_site_priority_core(&db, &known)
+    Ok(state.with_db(|db| get_site_priority_core(db, &known).map_err(crate::error::AppError::Other))?)
 }
 
 #[tauri::command]
 pub async fn set_site_priority(state: State<'_, AppState>, order: Vec<String>) -> Result<(), String> {
     let known: Vec<&str> = adapter::all_sites().iter().map(|s| s.id).collect();
-    let db = state.db.lock().unwrap();
-    set_site_priority_core(&db, order, &known)
+    Ok(state.with_db(|db| set_site_priority_core(db, order, &known).map_err(crate::error::AppError::Other))?)
 }
 
 #[cfg(test)]
