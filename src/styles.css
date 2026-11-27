@@ -6,9 +6,11 @@
   --surface-3: #223447;
   --surface-4: #2b415699;
   --border: #24384a;
+  /* Outline of controls whose border is the only boundary (>= 3:1, WCAG 1.4.11). */
+  --border-strong: #56738f;
   --text: #e9eff5;
   --muted: #90a4b7;
-  --muted-2: #6b7f92;
+  --muted-2: #7d91a4;
   /* Brand red, matching the AOT logo. Dark theme uses a brighter red so it
      reads as text/border/icon against the navy ground; the fill (--accent-
      solid) is the logo's own red with white text on top. */
@@ -19,10 +21,12 @@
      A red fill is dark enough for white text in both themes, so --on-accent
      is white throughout (unlike the old bright-blue accent, which needed
      dark text). */
-  --accent-solid: #e23b3b;
-  --accent-solid-hover: #f04848;
+  --accent-solid: #d83030;
+  --accent-solid-hover: #db3434;
   --on-accent: #ffffff;
   --on-success: #04140d;
+  --info: #5aa2ff;
+  --info-dim: rgba(90, 162, 255, 0.16);
   --success: #46d19e;
   --success-dim: rgba(70, 209, 158, 0.16);
   --danger: #ff5c7c;
@@ -116,9 +120,10 @@
   --surface-3: #e2e8f0;
   --surface-4: #dbe3ec99;
   --border: #d3dde8;
+  --border-strong: #7a8b9e;
   --text: #17222e;
-  --muted: #5a6b7d;
-  --muted-2: #8394a5;
+  --muted: #566778;
+  --muted-2: #5e6f80;
   /* Brand red on a light ground: darkened from the logo's #e23b3b so red
      text/borders clear 4.5:1 on white, and so white text clears it on the
      filled variant. */
@@ -129,9 +134,11 @@
   --accent-solid-hover: #b31f1f;
   --on-accent: #ffffff;
   --on-success: #04140d;
-  --success: #1f9d6b;
+  --info: #1d5fd1;
+  --info-dim: rgba(29, 95, 209, 0.1);
+  --success: #15774f;
   --success-dim: rgba(31, 157, 107, 0.14);
-  --danger: #d83a5a;
+  --danger: #c42d4d;
   --danger-dim: rgba(216, 58, 90, 0.1);
   --danger-border: rgba(216, 58, 90, 0.35);
 
@@ -429,7 +436,7 @@ select.input {
   min-height: 32px;
   padding: 0 var(--sp-3);
   background: var(--surface);
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
   color: var(--text);
   font-family: inherit;
@@ -492,7 +499,7 @@ textarea.input {
   gap: var(--sp-2);
 }
 .chip-toggle {
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong);
   background: var(--surface-2);
   color: var(--muted);
   padding: 6px 13px;
@@ -835,7 +842,7 @@ select.input {
   min-height: 32px;
   padding: 0 var(--sp-3);
   background: var(--surface);
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
   color: var(--text);
   font-family: inherit;
@@ -898,7 +905,7 @@ textarea.input {
   gap: var(--sp-2);
 }
 .chip-toggle {
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong);
   background: var(--surface-2);
   color: var(--muted);
   padding: 6px 13px;
@@ -2055,8 +2062,8 @@ button.ep-title:focus-visible {
   color: var(--success);
 }
 .listas-chip-airing {
-  background: rgba(59, 130, 246, 0.15);
-  color: #60a5fa;
+  background: var(--info-dim);
+  color: var(--info);
 }
 .listas-chip-eps {
   background: var(--surface-3);
