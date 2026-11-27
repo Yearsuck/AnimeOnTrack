@@ -760,63 +760,83 @@ pub async fn fetch_by_ids_multi(ids: &[i64]) -> Result<Vec<CatalogAnime>> {
 /// `data` object plus the rate-limit headroom AniList reported. Every query path in
 /// this module goes through here so the rate-limit handling cannot drift.
 async fn post_graphql(body: serde_json::Value, context: &str) -> Result<(serde_json::Value, Option<i64>)> {
-    const MAX_RETRIES: u32 = 5;
+    // Same timing as the old hand-rolled loop: up to 5 retries (6 requests), a constant
+    // 2 s wait unless AniList sends `Retry-After`; the cap only bounds absurd values.
+    const POLICY: crate::retry::RetryPolicy = crate::retry::RetryPolicy {
+        max_attempts: 6,
+        base: Duration::from_secs(2),
+        factor: 1.0,
+        max_delay: Duration::from_secs(120),
+        jitter: 0.0,
+    };
+
+    enum Failure {
+        RateLimited(Duration),
+        Fatal(anyhow::Error),
+    }
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(20))
         .build()
         .map_err(|e| anyhow!("could not build the AniList HTTP client ({context}): {e}"))?;
-    let mut attempt = 0u32;
-    loop {
-        let resp = client
-            .post(ENDPOINT)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| anyhow!("AniList request failed ({context}): {e}"))?;
-
-        if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
-            attempt += 1;
-            if attempt > MAX_RETRIES {
-                return Err(anyhow!(
-                    "AniList rate-limited ({context}) after {MAX_RETRIES} retries"
-                ));
+    let result = crate::retry::retry_with_hint(
+        POLICY,
+        || async {
+            let resp = client
+                .post(ENDPOINT)
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| Failure::Fatal(anyhow!("AniList request failed ({context}): {e}")))?;
+            if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                let secs = resp
+                    .headers()
+                    .get("retry-after")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .unwrap_or(2);
+                return Err(Failure::RateLimited(Duration::from_secs(secs)));
             }
-            let retry_after_secs = resp
-                .headers()
-                .get("retry-after")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|v| v.parse::<u64>().ok())
-                .unwrap_or(2);
-            tokio::time::sleep(Duration::from_secs(retry_after_secs)).await;
-            continue;
+            Ok(resp)
+        },
+        |f| matches!(f, Failure::RateLimited(_)),
+        |f| match f {
+            Failure::RateLimited(d) => Some(*d),
+            Failure::Fatal(_) => None,
+        },
+    )
+    .await;
+    let resp = match result {
+        Ok(r) => r,
+        Err(Failure::Fatal(e)) => return Err(e),
+        Err(Failure::RateLimited(_)) => {
+            return Err(anyhow!("AniList rate-limited ({context}) after 5 retries"))
         }
+    };
+    let rate_remaining = resp
+        .headers()
+        .get("x-ratelimit-remaining")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<i64>().ok());
 
-        let rate_remaining = resp
-            .headers()
-            .get("x-ratelimit-remaining")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.parse::<i64>().ok());
-
-        let parsed: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| anyhow!("AniList response was not valid JSON ({context}): {e}"))?;
-        if let Some(errors) = parsed.get("errors").and_then(|e| e.as_array()).filter(|e| !e.is_empty()) {
-            let msg = errors
-                .iter()
-                .filter_map(|e| e.get("message").and_then(|m| m.as_str()))
-                .collect::<Vec<_>>()
-                .join("; ");
-            return Err(anyhow!("AniList returned an error ({context}): {msg}"));
-        }
-        let data = parsed
-            .get("data")
-            .filter(|d| !d.is_null())
-            .cloned()
-            .ok_or_else(|| anyhow!("AniList response had no data ({context})"))?;
-        return Ok((data, rate_remaining));
+    let parsed: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| anyhow!("AniList response was not valid JSON ({context}): {e}"))?;
+    if let Some(errors) = parsed.get("errors").and_then(|e| e.as_array()).filter(|e| !e.is_empty()) {
+        let msg = errors
+            .iter()
+            .filter_map(|e| e.get("message").and_then(|m| m.as_str()))
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(anyhow!("AniList returned an error ({context}): {msg}"));
     }
+    let data = parsed
+        .get("data")
+        .filter(|d| !d.is_null())
+        .cloned()
+        .ok_or_else(|| anyhow!("AniList response had no data ({context})"))?;
+    Ok((data, rate_remaining))
 }
 
 /// One related title of an anime, as AniList's `relations` edge reports it —
